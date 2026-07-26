@@ -2,7 +2,7 @@ import { Suspense, useEffect, useState, type KeyboardEvent } from 'react';
 import { Menu, Input, Badge, Avatar, Dropdown, Popover, List, Empty, Tag, Tooltip, Drawer, Tabs, Button, Modal, Alert, message } from 'antd';
 import {
   DashboardOutlined, RobotOutlined, RiseOutlined, CalendarOutlined,
-  ExperimentOutlined, ScheduleOutlined, BarChartOutlined, GoldOutlined, SettingOutlined,
+  ExperimentOutlined, ScheduleOutlined, BarChartOutlined, GoldOutlined, SettingOutlined, ShopOutlined,
   BellOutlined, MailOutlined, QuestionCircleOutlined, LogoutOutlined,
   ThunderboltOutlined, UserOutlined, ControlOutlined, WalletOutlined, MobileOutlined,
   PictureOutlined, MessageOutlined,
@@ -25,6 +25,7 @@ const MENUS = [
   { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content' },
   { key: '/execution', icon: <ScheduleOutlined />, label: '今日经营', mod: 'execution' },
   { key: '/analysis', icon: <BarChartOutlined />, label: '经营洞察', mod: 'analysis' },
+  { key: '/store-data', icon: <ShopOutlined />, label: '门店数据', mod: 'analysis' },
   { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets' },
   { key: '/system', icon: <SettingOutlined />, label: '系统管理', mod: 'system' },
   { key: '/recharge', icon: <WalletOutlined />, label: '充值中心', bossOnly: true },
@@ -46,7 +47,7 @@ const THEME_KEY = 'nanowork_industry_theme_v1';
 const KEY_OF_PATH: Record<string, string> = {
   '/': 'dashboard', '/advisor': 'advisor', '/employees': 'marshals', '/marshals': 'marshals', '/toolbox': 'content', '/growth': 'growth',
   '/activities': 'activities', '/content': 'content', '/execution': 'execution',
-  '/analysis': 'analysis', '/assets': 'assets', '/data-intake': 'system', '/system': 'system',
+  '/analysis': 'analysis', '/store-data': 'analysis', '/assets': 'assets', '/data-intake': 'system', '/system': 'system',
 };
 
 // 无障碍：给非 button 的可点击元素补键盘可达性（role/tabIndex/Enter/Space），不改布局结构
