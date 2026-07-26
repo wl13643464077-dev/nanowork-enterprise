@@ -1184,15 +1184,8 @@ r.get('/feishu/qr', requireRole('boss', 'ops_director', 'admin'), async (req, re
   const out = await bindQr();
   res.json({ ...out, appReady: appReady(), appBotOnly: true });
 });
-r.get('/feishu/chats', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
-  res.json([]);
-});
-r.post('/feishu/bind', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
-  return res.status(410).json({ error: '已切换为飞书应用机器人单人绑定，不再支持群绑定' });
-});
-r.get('/feishu/autobind', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
-  res.json({ bound: false, deprecated: true, chats: 0, message: '已切换为飞书应用机器人单人绑定，无需获取群列表' });
-});
+// 群绑定接口（/feishu/chats、/feishu/bind、/feishu/autobind）已随 V3 应用机器人单人绑定下线；
+// 前端从未调用，2026-07 升级中删除废弃桩，避免死接口误导集成方。
 r.post('/feishu/test', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
   const { pushFeishuToManagers } = await import('../engines/feishu.js');
   const out = await pushFeishuToManagers({

@@ -339,3 +339,83 @@ test('测试环境安全阀：未注入 mock 时引擎拒绝发真实网络请�
   );
   _setHttpCall(async () => ({ status: 200, text: '{}' }));
 });
+
+// =====================================================================
+// 主动对账与超时关单（迭代八）：轮询状态时顺带查网关，防掉单；过期+宽限后自动关单
+// =====================================================================
+
+const setBothChannelEnvs = () => {
+  process.env.WXPAY_MCHID = '1900000001';
+  process.env.WXPAY_SERIAL_NO = 'MCH_SERIAL_TEST';
+  process.env.WXPAY_PRIVATE_KEY = priPem(wxMerchant);
+  process.env.WXPAY_APIV3_KEY = APIV3_KEY;
+  process.env.WXPAY_APPID = 'wx_test_app';
+  process.env.WXPAY_NOTIFY_URL = 'https://demo.example.com/api/recharge/notify/wechat';
+  process.env.WXPAY_PLATFORM_CERT = pubPem(wxPlatform);
+  process.env.ALIPAY_APPID = 'ALI_APP_ID_TEST';
+  process.env.ALIPAY_PRIVATE_KEY = priPem(aliMerchant);
+  process.env.ALIPAY_PUBLIC_KEY = pubPem(aliOfficial);
+  process.env.ALIPAY_NOTIFY_URL = 'https://demo.example.com/api/recharge/notify/alipay';
+};
+
+function reconcileMock({ aliQuery, wxQuery } = {}) {
+  _setHttpCall(async (opts) => {
+    const body = String(opts.body || '');
+    if (opts.url.includes('/v3/pay/transactions/out-trade-no/')) {
+      return { status: 200, text: JSON.stringify(wxQuery || { trade_state: 'NOTPAY' }) };
+    }
+    if (opts.url.includes('api.mch.weixin.qq.com')) {
+      return { status: 200, text: JSON.stringify({ code_url: 'weixin://wxpay/bizpayurl?pr=RECON' }) };
+    }
+    if (body.includes('alipay.trade.query')) {
+      return { status: 200, text: JSON.stringify({ alipay_trade_query_response: aliQuery || { code: '40004', sub_code: 'ACQ.TRADE_NOT_EXIST' }, sign: 'fake' }) };
+    }
+    return { status: 200, text: JSON.stringify({ alipay_trade_precreate_response: { code: '10000', msg: 'Success', qr_code: 'https://qr.alipay.com/RECON' }, sign: 'fake' }) };
+  });
+}
+
+test('主动对账：轮询状态时查得支付宝已支付 → 自动入账一次，重复轮询不重复入账', async () => {
+  setBothChannelEnvs();
+  reconcileMock({ aliQuery: { code: '10000', msg: 'Success', trade_status: 'TRADE_SUCCESS', trade_no: 'RECON_TRADE_1', total_amount: '88.80' } });
+  const before = tenantCredits();
+  const created = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' });
+  assert.ok(created.json.orderNo, `下单失败：${JSON.stringify(created.json)}`);
+  const orderNo = created.json.orderNo;
+  const polled = await getJson(`/api/recharge/orders/${orderNo}/status`);
+  assert.equal(polled.json.status, '已支付');
+  assert.equal(tenantCredits(), before + 9880);
+  assert.equal(orderLogCount(orderNo), 1);
+  const again = await getJson(`/api/recharge/orders/${orderNo}/status`);
+  assert.equal(again.json.status, '已支付');
+  assert.equal(orderLogCount(orderNo), 1); // 幂等：绝不二次入账
+});
+
+test('主动对账：微信侧订单已关闭（CLOSED）→ 本地订单自动取消', async () => {
+  setBothChannelEnvs();
+  reconcileMock({ wxQuery: { trade_state: 'CLOSED' } });
+  const created = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'wechat' });
+  assert.ok(created.json.orderNo, `下单失败：${JSON.stringify(created.json)}`);
+  const polled = await getJson(`/api/recharge/orders/${created.json.orderNo}/status`);
+  assert.equal(polled.json.status, '已取消');
+});
+
+test('超时自动关单：二维码过期超过宽限期且网关未支付 → 订单自动取消；对公转账订单不受影响', async () => {
+  setBothChannelEnvs();
+  reconcileMock(); // 网关返回未支付
+  const created = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' });
+  const orderNo = created.json.orderNo;
+  // 把过期时间拨到 10 分钟前（宽限 5 分钟已过）
+  q.run(`UPDATE recharge_orders SET pay_expire_at=? WHERE order_no=?`, new Date(Date.now() - 10 * 60_000).toISOString(), orderNo);
+  const polled = await getJson(`/api/recharge/orders/${orderNo}/status`);
+  assert.equal(polled.json.status, '已取消');
+  // 对公转账订单（无通道）：即使很旧也绝不自动关单
+  for (const k of ['WXPAY_MCHID', 'WXPAY_SERIAL_NO', 'WXPAY_PRIVATE_KEY', 'WXPAY_APIV3_KEY', 'WXPAY_APPID',
+    'WXPAY_NOTIFY_URL', 'WXPAY_PLATFORM_CERT', 'ALIPAY_APPID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
+    'ALIPAY_NOTIFY_URL']) delete process.env[k];
+  const manual = await postJson('/api/recharge/orders', { packageId: pkgId });
+  assert.ok(manual.json.orderNo, `下单失败：${JSON.stringify(manual.json)}`);
+  const manualNo = manual.json.orderNo;
+  q.run(`UPDATE recharge_orders SET created_at=datetime('now','-3 days') WHERE order_no=?`, manualNo);
+  const manualPolled = await getJson(`/api/recharge/orders/${manualNo}/status`);
+  assert.equal(manualPolled.json.status, '待支付');
+});

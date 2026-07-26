@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { q, db, getTenant, runWithTenant } from '../db.js';
 import { logOp, requireRole, notify } from '../util.js';
 import { balanceOfTenant, creditTenant } from '../engines/credits.js';
-import { paymentChannels, createPayment } from '../engines/payment.js';
+import { paymentChannels, createPayment, queryPayment } from '../engines/payment.js';
 
 // 在线支付扩展列（幂等迁移：首次用到时补齐，不改 db.js）
 let payColumnsReady = false;
@@ -142,12 +142,51 @@ r.post('/orders', async (req, res) => {
 });
 
 // 订单状态轮询（前端扫码支付页每3秒查一次）
-r.get('/orders/:orderNo/status', (req, res) => {
+// 网关主动查询节流：同一订单最短 15 秒查一次（前端 3 秒轮询主要读本地状态）
+const gatewayQueryAt = new Map();
+const GATEWAY_QUERY_MIN_MS = 15_000;
+const EXPIRE_GRACE_MS = 5 * 60_000; // 二维码过期后留 5 分钟宽限给迟到回调，再自动关单
+const CHANNEL_DISPLAY = { wechat: '微信支付', alipay: '支付宝' };
+
+r.get('/orders/:orderNo/status', async (req, res) => {
   ensurePayColumns();
   const tid = req.user.tenant_id || 1;
-  const o = q.get(`SELECT order_no, status, paid_at, credits, pay_channel FROM recharge_orders WHERE order_no = ? AND tenant_id = ?`,
-    String(req.params.orderNo || ''), tid);
+  const orderNo = String(req.params.orderNo || '');
+  const fetchOrder = () => q.get(`SELECT order_no, status, paid_at, credits, pay_channel, pay_expire_at
+    FROM recharge_orders WHERE order_no = ? AND tenant_id = ?`, orderNo, tid);
+  let o = fetchOrder();
   if (!o) return res.status(404).json({ error: '订单不存在' });
+
+  // 主动对账（防掉单）：仅对通道订单，在轮询时顺带查网关（15 秒节流）；
+  // 查询失败静默容错——异步回调仍是入账主路径。对公转账订单（无通道）不参与自动对账/关单。
+  if (o.status === '待支付' && o.pay_channel) {
+    const last = gatewayQueryAt.get(orderNo) || 0;
+    if (Date.now() - last >= GATEWAY_QUERY_MIN_MS) {
+      gatewayQueryAt.set(orderNo, Date.now());
+      try {
+        const gw = await queryPayment(o.pay_channel, orderNo);
+        if (gw.paid) {
+          settlePaidOrder({ orderNo, channelName: `${CHANNEL_DISPLAY[o.pay_channel] || o.pay_channel}（对账查得）`, tradeNo: gw.tradeNo, paidFen: gw.paidFen });
+          o = fetchOrder();
+        } else if (gw.closed) {
+          q.run(`UPDATE recharge_orders SET status='已取消' WHERE order_no=? AND tenant_id=? AND status='待支付'`, orderNo, tid);
+          o = fetchOrder();
+        }
+      } catch (e) {
+        console.warn(`[recharge] 订单 ${orderNo} 网关对账查询失败（回调仍为主路径）：`, e?.message || e);
+      }
+    }
+    // 超时自动关单：二维码过期 + 5 分钟宽限仍未支付
+    if (o.status === '待支付' && o.pay_expire_at && Date.now() > new Date(o.pay_expire_at).getTime() + EXPIRE_GRACE_MS) {
+      const closed = q.run(`UPDATE recharge_orders SET status='已取消' WHERE order_no=? AND tenant_id=? AND status='待支付'`, orderNo, tid);
+      if (closed.changes) {
+        gatewayQueryAt.delete(orderNo);
+        logOp(req.user, '充值中心', '超时自动关单', `order ${orderNo}`);
+        o = fetchOrder();
+      }
+    }
+  }
+  if (o.status !== '待支付') gatewayQueryAt.delete(orderNo);
   res.json({ orderNo: o.order_no, status: o.status, paidAt: o.paid_at, credits: o.credits, channel: o.pay_channel });
 });
 
