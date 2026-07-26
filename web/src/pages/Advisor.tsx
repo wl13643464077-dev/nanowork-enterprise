@@ -28,12 +28,13 @@ const DIAG_TYPES = [
   { label: '风险诊断', icon: '⚠️' },
 ];
 
+// 真实阶段（由实际事件驱动：提交 → 首个流式分片 → 完成），不再用定时器演出假进度
 const STEP_DEFS = [
-  { title: '问题判断', desc: '解析问题类型与诊断范围' },
-  { title: '智能体调度', desc: '匹配并调度相关数字员工' },
-  { title: '风险提示', desc: '识别关联的经营风险点' },
-  { title: '方案生成', desc: '输出结论与可执行方案' },
+  { title: '问题已提交', desc: '问题与附件已送达老板参谋' },
+  { title: 'AI 生成中', desc: '流式返回中，内容逐段呈现' },
+  { title: '完成', desc: '结论、来源与推荐转派已就绪' },
 ];
+const STEP_DONE = STEP_DEFS.length + 1; // 全部完成标记
 
 const DEFAULT_QUESTIONS = [
   '本月销售下滑的主要原因是什么？',
@@ -177,10 +178,9 @@ export default function Advisor() {
       { id: nextId(), role: 'user', content: question },
       { id: loadingId, role: 'assistant', content: '', loading: true },
     ]);
-    // 右侧四步进度逐步点亮，营造"AI思考"过程
+    // 阶段进度由真实事件驱动：此处进入「问题已提交」，收到首个流式分片时进入「AI 生成中」
     setStepActive(0);
     setStepDetails([]);
-    [1, 2, 3].forEach(i => stepTimersRef.current.push(setTimeout(() => setStepActive(i), 600 * i)));
     try {
       // 真流式（SSE）：delta 逐段渲染，reset 表示服务端通道切换需清屏重来
       const res = await api.stream('/advisor/chat', {
@@ -192,14 +192,17 @@ export default function Advisor() {
       }, (ev) => {
         if (viewVersion !== conversationViewRef.current) return;
         if (ev.reset) setMessages(prev => prev.map(m => m.id === loadingId ? { ...m, content: '', loading: true, typing: false } : m));
-        else if (typeof ev.delta === 'string') setMessages(prev => prev.map(m => m.id === loadingId ? { ...m, loading: false, typing: true, content: (m.content || '') + ev.delta } : m));
+        else if (typeof ev.delta === 'string') {
+          setStepActive(prev => (prev >= 0 && prev < 1 ? 1 : prev)); // 首个分片：真实进入「AI 生成中」
+          setMessages(prev => prev.map(m => m.id === loadingId ? { ...m, loading: false, typing: true, content: (m.content || '') + ev.delta } : m));
+        }
       });
       setAttachments([]);
       if (res.billing) { notifyCredits(res.billing.balance); if (res.billing.credits > 0) message.success(`本次会诊消耗 ${res.billing.credits} 积分`); }
       conversationsQ.retry();
       if (viewVersion !== conversationViewRef.current) return;
       clearTimers();
-      setStepActive(4);
+      setStepActive(STEP_DONE);
       if (Array.isArray(res.steps)) setStepDetails(res.steps);
       if (res.conversationId) setConversationId(res.conversationId);
       setRecommended(res.recommended || []);
@@ -259,7 +262,7 @@ export default function Advisor() {
 
   const stepItems = STEP_DEFS.map((s, i) => {
     const status: 'wait' | 'process' | 'finish' =
-      stepActive === 4 ? 'finish' : stepActive === -1 ? 'wait' : i < stepActive ? 'finish' : i === stepActive ? 'process' : 'wait';
+      stepActive === STEP_DONE ? 'finish' : stepActive === -1 ? 'wait' : i < stepActive ? 'finish' : i === stepActive ? 'process' : 'wait';
     const detail = stepDetails[i] && stepDetails[i] !== s.title ? stepDetails[i] : s.desc;
     return {
       title: <span style={{ fontSize: 12.5, fontWeight: status === 'wait' ? 400 : 600, color: status === 'wait' ? 'var(--ui-muted)' : 'var(--ui-text)' }}>{s.title}</span>,
@@ -506,7 +509,7 @@ export default function Advisor() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* ① AI初步判断 */}
             <Panel title={<><BulbOutlined style={{ color: 'var(--ui-accent)' }} /> AI初步判断</>} style={{ height: 'auto' }}
-              extra={stepActive === 4
+              extra={stepActive === STEP_DONE
                 ? <Tag color="success" style={{ fontSize: 11, margin: 0 }}>已完成</Tag>
                 : stepActive >= 0 ? <Tag color="processing" style={{ fontSize: 11, margin: 0 }}>分析中</Tag>
                 : <span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>待启动</span>}>
