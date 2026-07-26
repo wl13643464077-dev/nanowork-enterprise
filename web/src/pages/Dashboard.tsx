@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Row, Col, Table, Tag, Progress, Badge, Avatar, Tooltip, Segmented, Empty, Modal, Drawer, Button, Spin, Descriptions, Timeline, Space, message, Input, InputNumber, Alert, DatePicker } from 'antd';
+import { Row, Col, Table, Tag, Progress, Badge, Avatar, Tooltip, Segmented, Empty, Modal, Drawer, Button, Spin, Descriptions, Timeline, Space, message, Input, InputNumber, Alert, DatePicker, Dropdown } from 'antd';
 import {
   DollarOutlined, UserAddOutlined, ClockCircleOutlined, CalendarOutlined,
   CheckCircleOutlined, HeartOutlined, RightOutlined, BulbOutlined, AlertOutlined, RobotOutlined, MessageOutlined,
@@ -46,6 +46,18 @@ export default function Dashboard() {
   const [todos, setTodos] = useState<any>({});
   // 今日经营诊断（主动式）：无 analysis 模块权限或接口失败时整卡隐藏
   const [diagnosis, setDiagnosis] = useState<any[] | null>(null);
+  // 每日经营日报（昨日涨跌→归因→建议）；empty 时隐藏
+  const [digest, setDigest] = useState<any>(null);
+  // 诊断卡当日关闭（Shopify 模式：可关闭并附反馈理由，次日自动恢复）
+  const DIAG_DISMISS_KEY = 'nanowork_diag_dismiss_v1';
+  const [diagDismissed, setDiagDismissed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(DIAG_DISMISS_KEY) || 'null')?.date === new Date().toLocaleDateString('sv-SE'); } catch { return false; }
+  });
+  const dismissDiagnosis = (reason: string) => {
+    localStorage.setItem(DIAG_DISMISS_KEY, JSON.stringify({ date: new Date().toLocaleDateString('sv-SE'), reason }));
+    setDiagDismissed(true);
+    message.success('今日诊断已收起，明天会根据最新数据重新生成');
+  };
   const [loadError, setLoadError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [weekActs, setWeekActs] = useState<any[]>([]);
@@ -89,6 +101,7 @@ export default function Dashboard() {
     api.get('/dashboard/marshal-shortcuts').then(setMarshals);
     api.get('/dashboard/widgets/preferences').then(setWidgetPrefs).catch(() => {});
     api.get('/analysis/insights').then((d: any) => setDiagnosis(Array.isArray(d) ? d : [])).catch(() => setDiagnosis(null));
+    api.get('/dashboard/daily-digest').then((d: any) => setDigest(d && !d.empty ? d : null)).catch(() => setDigest(null));
   }, [canViewManagementBriefing]);
 
   const dataMarshal = marshals.find((m: any) => m.code === 'M-07');
@@ -286,11 +299,37 @@ export default function Dashboard() {
           style={{ borderColor: 'var(--ui-border-strong)', background: 'var(--ui-surface-2)' }} />
       )}
       {loadError && <ErrorState description="经营概览拉取失败，页面数字可能过期。" onRetry={() => setReloadKey(k => k + 1)} />}
-      {diagnosis !== null && diagnosis.length > 0 && (
+      {!diagDismissed && (digest || (diagnosis !== null && diagnosis.length > 0)) && (
         <Panel
-          title={<><AlertOutlined style={{ color: 'var(--warn)' }} /> 今日经营诊断 · 建议先做这{Math.min(diagnosis.length, 3)}件事</>}
-          extra={<Button size="small" type="link" onClick={() => nav('/analysis')}>查看完整分析 <RightOutlined /></Button>}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-3)' }}>
+          title={<><AlertOutlined style={{ color: 'var(--warn)' }} /> 今日经营诊断</>}
+          extra={<Space size={4}>
+            <Button size="small" type="link" onClick={() => nav('/analysis')}>查看完整分析 <RightOutlined /></Button>
+            <Dropdown menu={{ items: [
+              { key: '不准确', label: '收起：内容不准确' },
+              { key: '不重要', label: '收起：对我不重要' },
+              { key: '已处理', label: '收起：已经处理了' },
+            ], onClick: ({ key }) => dismissDiagnosis(key) }}>
+              <Button size="small" type="text" style={{ color: 'var(--ui-muted)' }}>今日不再显示</Button>
+            </Dropdown>
+          </Space>}>
+          {digest && (
+            <div style={{ marginBottom: diagnosis?.length ? 'var(--space-3)' : 0, padding: 'var(--space-3) var(--space-4)',
+              background: 'var(--ui-surface-2)', border: '1px solid var(--ui-border)', borderRadius: 'var(--radius-md)',
+              display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+              <div style={{ fontWeight: 650, color: 'var(--ui-text)', fontSize: 'var(--font-3)' }}>
+                {digest.headline}
+                {digest.deltaPct !== null && digest.deltaPct !== undefined && (
+                  <Tag style={{ marginLeft: 8 }} color={digest.deltaPct >= 0 ? 'green' : 'red'}>
+                    {digest.deltaPct >= 0 ? '+' : ''}{digest.deltaPct}%
+                  </Tag>
+                )}
+              </div>
+              <div style={{ color: 'var(--ui-text-2)', fontSize: 'var(--font-2)', lineHeight: 1.7 }}><b>归因</b> · {digest.attribution}</div>
+              <div style={{ color: 'var(--ui-text-2)', fontSize: 'var(--font-2)', lineHeight: 1.7 }}><b>建议</b> · {digest.suggestion}</div>
+              <div style={{ color: 'var(--ui-muted)', fontSize: 'var(--font-1)' }}>每日 08:00 同步推送到站内通知{'、'}已绑定的飞书群 · 口径：{digest.source === 'orders' ? '订单记录' : '手填日报'}</div>
+            </div>
+          )}
+          {diagnosis !== null && diagnosis.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-3)' }}>
             {diagnosis.slice(0, 3).map((item: any, index: number) => (
               <button key={index} type="button" onClick={() => nav('/advisor')}
                 style={{ appearance: 'none', textAlign: 'left', font: 'inherit', cursor: 'pointer',
@@ -303,7 +342,7 @@ export default function Dashboard() {
                 <div style={{ color: 'var(--ui-primary)', fontSize: 'var(--font-1)', marginTop: 'var(--space-2)' }}>问老板参谋怎么做 <RightOutlined style={{ fontSize: 10 }} /></div>
               </button>
             ))}
-          </div>
+          </div>}
         </Panel>
       )}
       <Panel title="经营数据时间范围" extra={<Space size={8}>

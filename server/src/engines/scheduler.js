@@ -1,5 +1,6 @@
 import { db, q, curTenant, runWithTenant } from '../db.js';
 import { generateBattlePlan, generateWeeklyReview } from './plans.js';
+import { sendDailyDigest } from './daily-digest.js';
 import { notify } from '../util.js';
 import {
   executeContentAutomationRun,
@@ -191,6 +192,13 @@ function runTenantJobs(clock, now, contentAutomationRunner) {
   };
   if (clock.hour === '06' && clock.minute === '30') {
     result.battlePlan = runOnce(`battle-plan:${clock.date}`, () => generateBattlePlan(clock.date));
+  }
+  // 每日经营日报（08:00 上海时间）：总结昨日，涨跌→归因→建议，推送老板与运营负责人
+  if (clock.hour === '08' && clock.minute === '00') {
+    const yesterday = new Date(`${clock.date}T00:00:00`);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const target = yesterday.toLocaleDateString('sv-SE');
+    result.dailyDigest = runOnce(`daily-digest:${clock.date}`, () => sendDailyDigest(target));
   }
   if (clock.weekday === 'Mon' && clock.hour === '08' && clock.minute === '30') {
     result.weeklyReview = runOnce(`weekly-review:${clock.date}`, () => generateWeeklyReview(clock.date));

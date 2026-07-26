@@ -78,7 +78,15 @@ export async function kbSearch(categories = [], role = null, query = null, optio
   // “员工产出”是用户主动入档的跨场景知识，所有 AI 入口都应可按语义抽调。
   const cats = [...new Set([...(categories.length ? categories : ['品牌资料', '招商政策', '话术案例', '客户画像']), '员工产出'])];
   const list = cats.map(() => '?').join(',');
-  let docs = q.all(`SELECT id, category, title, body, callable_roles, embedding, ref_count FROM kb_docs WHERE tenant_id = ${curTenant()} AND enabled = 1 AND category IN (${list})`, ...cats);
+  // 容量护栏（向量索引重构前的短期方案）：候选集按热度预筛，避免全表拉取 embedding
+  // 阻塞事件循环，以及文档数超过 SQLite 变量上限直接报错；超限时如实打点。
+  const RAG_DOC_CANDIDATES = 200;
+  let docs = q.all(`SELECT id, category, title, body, callable_roles, embedding, ref_count FROM kb_docs
+    WHERE tenant_id = ${curTenant()} AND enabled = 1 AND category IN (${list})
+    ORDER BY ref_count DESC, id DESC LIMIT ${RAG_DOC_CANDIDATES}`, ...cats);
+  if (docs.length === RAG_DOC_CANDIDATES) {
+    console.warn(`[rag] 知识库候选达到 ${RAG_DOC_CANDIDATES} 篇预筛上限（tenant=${curTenant()}），低热度文档未参与本次检索；建议规划向量索引（sqlite-vec）重构`);
+  }
   if (role && role !== 'boss') docs = docs.filter(d => {
     return roleListAllows(d.callable_roles, role);
   });
@@ -99,7 +107,7 @@ export async function kbSearch(categories = [], role = null, query = null, optio
     // 分块召回：有块的文档按块打分（长文档后半段也能命中），无块的文档按整文向量打分，统一排序
     const byId = new Map(docs.map(d => [d.id, d]));
     const ids = docs.map(d => d.id);
-    const chunkRows = q.all(`SELECT doc_id, seq, text, embedding FROM kb_chunks WHERE doc_id IN (${ids.map(() => '?').join(',')})`, ...ids);
+    const chunkRows = q.all(`SELECT doc_id, seq, text, embedding FROM kb_chunks WHERE doc_id IN (${ids.map(() => '?').join(',')}) ORDER BY doc_id, seq LIMIT 2000`, ...ids);
     const chunkedDocIds = new Set(chunkRows.map(c => c.doc_id));
     const candidates = [];
     for (const c of chunkRows) {

@@ -3,6 +3,7 @@ import { q, curTenant, mergeMarshals } from '../db.js';
 import { today, daysAgo, monthStart, pct, maskPhone, logOp, notify, safeJsonParse, requireRole } from '../util.js';
 import { funnel } from '../engines/scoring.js';
 import { healthScore } from '../engines/health.js';
+import { buildDailyDigest } from '../engines/daily-digest.js';
 import { generateBattlePlan } from '../engines/plans.js';
 import { canAccessOwner, hasFullDataAccess, userScopeClause } from '../engines/access.js';
 
@@ -656,6 +657,12 @@ r.get('/briefing', requireRole('boss', 'ops_director', 'admin', 'platform_super'
   // 自愈：旧版字符串简报 → 重新生成为结构化（text/link/source 可溯源）
   if (!plan || typeof plan.briefing?.[0] === 'string') plan = generateBattlePlan(today());
   res.json(plan);
+});
+
+// 每日经营日报（昨日：涨跌→归因→建议）；无任何经营数据时返回 empty，前端整卡隐藏
+r.get('/daily-digest', (req, res) => {
+  const digest = buildDailyDigest(daysAgo(1));
+  res.json(digest || { empty: true });
 });
 
 r.get('/todos', (req, res) => {
