@@ -199,6 +199,13 @@ const VIDEO_TIERS = [
   { key: 'standard', label: '标准', color: 'blue', desc: '常规内容生产' },
   { key: 'fast', label: '快速', color: 'green', desc: '低消耗批量试稿' },
 ];
+// 前台生成预计耗时提示（与 client.ts 超时分级一致：生图125s/视频95s/PPT120s/文案60s）
+const GEN_TIME_HINTS: Record<string, string> = {
+  'AI图片': '图片生成通常需要 1-2 分钟，可随时取消',
+  'AI视频': '视频生成通常需要 1-2 分钟，可随时取消',
+  'AIPPT': 'PPT 生成通常需要 1-2 分钟，可随时取消',
+};
+const genTimeHint = (tab: string) => GEN_TIME_HINTS[tab] || '文案生成通常需要 10-60 秒，可随时取消';
 const WEEKDAY_LABELS = ['-', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const AUTOMATION_STATUS_COLOR: Record<string, string> = { 运行中: 'processing', 成功: 'success', 失败: 'error' };
 
@@ -273,7 +280,8 @@ export default function ContentFactory() {
     return () => { cancelled = true; };
   }, [requestedTab]);
   const openEffectDetail = (id: number) => {
-    api.get(`/content/detail/${id}`).then((row: any) => setViewRec(row)).catch(() => {});
+    api.get(`/content/detail/${id}`).then((row: any) => setViewRec(row))
+      .catch(() => message.error('内容详情加载失败，请稍后重试'));
   };
   const openContentDetail = (rec: any) => {
     if (rec?.id) openEffectDetail(rec.id);
@@ -370,15 +378,18 @@ export default function ContentFactory() {
     }
   }, [tab, videoModels.default, videoModels.models, form]);
 
-  const loadSummary = () => api.get('/content/summary').then(setSummary).catch(() => {});
-  const loadTemplates = () => api.get('/content/templates').then(r => setTemplates(r || [])).catch(() => {});
+  const loadSummary = () => api.get('/content/summary').then(setSummary)
+    .catch(() => message.error('内容统计加载失败，可稍后刷新页面重试'));
+  const loadTemplates = () => api.get('/content/templates').then(r => setTemplates(r || []))
+    .catch(() => message.error('模板列表加载失败，可稍后刷新页面重试'));
   const loadMaterials = () => api.get('/content/materials').then(r => {
     const next = r || [];
     setMaterials(next);
     const available = new Set(next.map((material: any) => Number(material.id)));
     setSelectedMaterialIds(current => current.filter(id => available.has(id)));
-  }).catch(() => {});
-  const loadEffectTop = () => api.get('/content/effect-top').then(r => setEffectTop(r || [])).catch(() => {});
+  }).catch(() => message.error('素材列表加载失败，可稍后刷新页面重试'));
+  const loadEffectTop = () => api.get('/content/effect-top').then(r => setEffectTop(r || []))
+    .catch(() => message.error('效果TOP榜加载失败，可稍后刷新页面重试'));
   const loadAutomations = () => {
     setAutomationLoading(true);
     api.get('/content/automations')
@@ -406,7 +417,8 @@ export default function ContentFactory() {
   const loadList = useCallback(() => {
     const t = MEDIA_TABS.includes(tab) ? tab : '';
     api.get(`/content/list?type=${encodeURIComponent(t)}&status=${encodeURIComponent(statusFilter)}&page=${page}&size=12`)
-      .then(r => { setRows(r.rows || []); setTotal(r.total || 0); }).catch(() => {});
+      .then(r => { setRows(r.rows || []); setTotal(r.total || 0); })
+      .catch(() => message.error('内容列表加载失败，请刷新重试'));
   }, [page, statusFilter, tab]);
   const refreshList = () => { if (LIB_TABS.includes(tab)) return; if (page === 1) loadList(); else setPage(1); };
 
@@ -416,8 +428,11 @@ export default function ContentFactory() {
       if (cancelled) return;
       loadSummary(); loadTemplates(); loadMaterials(); loadPending(); loadEffectTop();
       loadAutomations();
+      // 跨模块辅助简报：未开通 dashboard 模块的角色 403 属正常路径，缺失仅隐藏建议区，保留静默
       api.get('/dashboard/briefing').then(setBriefing).catch(() => {});
-      api.get('/content/prompt-guides').then((r: PromptGuide[]) => setPromptGuides(r || [])).catch(() => {});
+      api.get('/content/prompt-guides').then((r: PromptGuide[]) => setPromptGuides(r || []))
+        .catch(() => message.error('提示词指南加载失败，可稍后刷新页面重试'));
+      // 跨模块可选数据：未开通 marshals 模块的角色属正常缺失，仅影响可选的"数字员工"下拉，保留静默
       api.get('/marshals').then((rows: any[]) => setMarshals((rows || []).filter(m => m.online))).catch(() => {});
     });
     return () => { cancelled = true; };
@@ -435,7 +450,10 @@ export default function ContentFactory() {
     return api.get(`/content/media-jobs?kind=${kind}`).then((rows: any[]) => {
       setMediaJobs(rows || []);
       setSelectedMediaJobIds(prev => prev.filter(id => (rows || []).some(j => j.id === id)));
-    }).catch(() => {}).finally(() => {
+    }).catch(() => {
+      // silent=true 时为 5s 轮询容错，静默合理；手动/切页加载失败则明确提示
+      if (!silent) message.error('媒体任务列表加载失败，可点击刷新重试');
+    }).finally(() => {
       if (!silent) setMediaJobsRefreshing(false);
     });
   }, []);
@@ -446,7 +464,8 @@ export default function ContentFactory() {
       if (tab === 'AI图片') void loadMediaJobs('image');
       if (tab === 'AI视频') {
         void loadMediaJobs('video');
-        void api.get('/content/video-models').then(setVideoModels).catch(() => {});
+        void api.get('/content/video-models').then(setVideoModels)
+          .catch(() => message.error('视频模型清单加载失败，请刷新重试'));
       }
     });
     return () => { cancelled = true; };
@@ -645,6 +664,8 @@ export default function ContentFactory() {
   // —— 生成（文本走 /generate；图片/视频走真实媒体通道并按张/条计费）——
   // —— 后台生成（长任务异步化）：立即拿 jobId，5s 轮询，完成后替换结果卡；离开页面也有铃铛通知兜底 ——
   const bgTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({});
+  // 前台生成的取消控制器：生成期间持有，取消/结束后置空
+  const genAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => { Object.values(bgTimersRef.current).forEach(t => clearInterval(t)); }, []);
   const pollBgJob = (jobId: number) => {
     bgTimersRef.current[jobId] = setInterval(async () => {
@@ -675,16 +696,31 @@ export default function ContentFactory() {
     });
   };
 
+  // 用户主动取消当前前台生成（图片125s/视频95s/PPT120s 的长任务不再只能干等）
+  // 后端在请求中断时会立即终止上游供应商调用并全额退回预授权积分（见 server/src/index.js 请求取消中间件
+  // 与 content.js executeHeldDelivery/releaseHold），因此「本次不计费」文案与后端语义一致。
+  const cancelGenerate = () => genAbortRef.current?.abort();
   const onGenerate = () => {
     form.validateFields().then(v => {
       setGenerating(true);
+      const aborter = new AbortController();
+      genAbortRef.current = aborter;
+      const genOptions = { signal: aborter.signal };
+      const onGenFail = () => {
+        // 用户主动取消：client.ts 不弹全局错误，这里给出明确反馈；其他错误请求层已统一提示
+        if (aborter.signal.aborted) message.info('已取消，本次不计费');
+      };
+      const genDone = () => {
+        if (genAbortRef.current === aborter) genAbortRef.current = null;
+        setGenerating(false);
+      };
       // 模板套用：以模板提示词骨架为底（{主题}替换），要求描述作补充
       const skeleton = selTpl && selTpl.tab === tab ? (mediaPromptText || selTpl.promptSkeleton).split('{主题}').join(v.topic) : '';
       const prompt = skeleton
         ? `${skeleton}${v.requirement ? `。补充要求：${v.requirement}` : ''}`
         : `${v.topic}${v.requirement ? '。' + v.requirement : ''}`;
       if (tab === 'AI图片') {
-        api.post('/content/generate-image', { prompt, images: refImgs.map(image => image.url), employeeIdx: CONTENT_EXECUTION_STATIONS.media.employeeIdx, materialIds: selectedMaterialIds })
+        api.post('/content/generate-image', { prompt, images: refImgs.map(image => image.url), employeeIdx: CONTENT_EXECUTION_STATIONS.media.employeeIdx, materialIds: selectedMaterialIds }, genOptions)
           .then(res => {
             if (res.billing) notifyCredits(res.billing.balance);
             const billingView = mediaBillingPresentation(res.billing);
@@ -703,11 +739,12 @@ export default function ContentFactory() {
             }, ...prev]);
             loadMediaJobs('image'); loadSummary();
           })
-          .finally(() => setGenerating(false));
+          .catch(onGenFail)
+          .finally(genDone);
         return;
       }
       if (tab === 'AI视频') {
-        api.post('/content/generate-video', { prompt, model: v.videoModel || videoModels.default, images: refImgs.map(image => image.url), employeeIdx: CONTENT_EXECUTION_STATIONS.media.employeeIdx, materialIds: selectedMaterialIds })
+        api.post('/content/generate-video', { prompt, model: v.videoModel || videoModels.default, images: refImgs.map(image => image.url), employeeIdx: CONTENT_EXECUTION_STATIONS.media.employeeIdx, materialIds: selectedMaterialIds }, genOptions)
           .then(res => {
             if (res.billing) notifyCredits(res.billing.balance);
             const billingView = mediaBillingPresentation(res.billing);
@@ -732,7 +769,8 @@ export default function ContentFactory() {
             }, ...prev]);
             loadMediaJobs('video'); loadSummary();
           })
-          .finally(() => setGenerating(false));
+          .catch(onGenFail)
+          .finally(genDone);
         return;
       }
       if (tab === 'AIPPT') {
@@ -742,7 +780,7 @@ export default function ContentFactory() {
           structure: selTpl?.tab === 'AIPPT' ? selTpl.extra : (v.requirement || ''),
           employeeIdx: CONTENT_EXECUTION_STATIONS.deck.employeeIdx,
           materialIds: selectedMaterialIds,
-        }).then(res => {
+        }, genOptions).then(res => {
             if (res.billing) {
               notifyCredits(res.billing.balance);
               const billingView = mediaBillingPresentation(res.billing);
@@ -767,7 +805,8 @@ export default function ContentFactory() {
             }, ...prev]);
             refreshList(); loadSummary();
           })
-          .finally(() => setGenerating(false));
+          .catch(onGenFail)
+          .finally(genDone);
         return;
       }
       const media = MEDIA_TABS.includes(tab);
@@ -777,7 +816,7 @@ export default function ContentFactory() {
         employeeIdx: CONTENT_EXECUTION_STATIONS.draft.employeeIdx,
         materialIds: selectedMaterialIds,
       };
-      api.post('/content/generate', payload)
+      api.post('/content/generate', payload, genOptions)
         .then(res => {
           if (res.billing) notifyCredits(res.billing.balance);
           setResults(prev => [{ ...res, type: payload.type, topic: v.topic, media, kbCat: res.kbCat }, ...prev]);
@@ -790,7 +829,8 @@ export default function ContentFactory() {
           });
           refreshList(); loadPending(); loadSummary();
         })
-        .finally(() => setGenerating(false));
+        .catch(onGenFail)
+        .finally(genDone);
     });
   };
 
@@ -918,6 +958,7 @@ export default function ContentFactory() {
       setResults(prev => prev.filter(x => x.id !== rec.id));
       loadSummary(); loadPending(); loadEffectTop();
       refreshList();
+      // 删除失败时请求层已弹出服务端具体原因（权限/状态冲突等），此处仅吞掉 rejection 防止 unhandled
     }).catch(() => {});
   };
   const deleteTemplate = (tpl: any) => {
@@ -925,6 +966,7 @@ export default function ContentFactory() {
       message.success('模板已删除并进入回收站');
       setTplDetail(null);
       loadTemplates();
+      // 删除失败时请求层已弹出服务端具体原因，此处仅吞掉 rejection 防止 unhandled
     }).catch(() => {});
   };
   const deleteMaterial = (mat: any) => {
@@ -932,6 +974,7 @@ export default function ContentFactory() {
       message.success('素材已删除并进入回收站');
       setMatDetail(null);
       loadMaterials(); loadSummary();
+      // 删除失败时请求层已弹出服务端具体原因，此处仅吞掉 rejection 防止 unhandled
     }).catch(() => {});
   };
 
@@ -1912,6 +1955,12 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                       }}>
                       {generating ? '内容生产中…' : '开始生成'}
                     </Button>
+                    {generating && (
+                      <>
+                        <Button size="large" danger onClick={cancelGenerate}>取消生成</Button>
+                        <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{genTimeHint(tab)}</span>
+                      </>
+                    )}
     {!MEDIA_TABS.includes(tab) && (
                       <Tooltip title="立即返回，后台生成，完成后铃铛通知——不用盯着等">
                         <Button size="large" icon={<ClockCircleOutlined />} onClick={onGenerateBackground}

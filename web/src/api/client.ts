@@ -32,11 +32,23 @@ function timeoutFor(url: string) {
   return 60000;
 }
 
-async function request(method: string, url: string, body?: any) {
+// 可选请求项：signal 为外部 AbortSignal（如用户点击「取消生成」）。
+// 外部取消与内部超时并存：任一触发即中止请求；用户主动取消不弹全局错误提示。
+export type RequestOptions = { signal?: AbortSignal };
+
+async function request(method: string, url: string, body?: any, options: RequestOptions = {}) {
   let res: Response;
+  const external = options.signal;
   const controller = new AbortController();
   const timeoutMs = timeoutFor(url);
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  // 手动桥接外部 signal（等效 AbortSignal.any，兼容旧运行时）
+  const onExternalAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternalAbort, { once: true });
+  }
   const requestId = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
   try {
     res = await fetch(`/api${url}`, {
@@ -50,16 +62,21 @@ async function request(method: string, url: string, body?: any) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) {
+    const aborted = e instanceof DOMException && e.name === 'AbortError';
+    // 用户主动取消：静默抛出，由调用方决定如何提示（与超时/断网区分开）
+    if (aborted && !timedOut && external?.aborted) throw e;
     // 网络层失败（断网/超时/服务未响应）——此前唯一会"完全静默"的路径。
     // 节流 3s：避免一个页面并发多个请求时错误提示刷屏。
     const now = Date.now();
-    const aborted = e instanceof DOMException && e.name === 'AbortError';
     if (now - lastNetErrAt > 3000) {
       lastNetErrAt = now;
       message.error(aborted ? `请求超过${Math.round(timeoutMs / 1000)}秒，已自动停止，请缩短要求后重试` : '网络连接失败，请检查网络后重试');
     }
     throw e;
-  } finally { window.clearTimeout(timeout); }
+  } finally {
+    window.clearTimeout(timeout);
+    external?.removeEventListener('abort', onExternalAbort);
+  }
   if (res.status === 401) {
     clearAuth();
     if (location.pathname !== '/login') location.href = '/login';
@@ -131,10 +148,10 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
 }
 
 export const api = {
-  get: (url: string) => request('GET', url),
-  post: (url: string, body?: any) => request('POST', url, body),
-  put: (url: string, body?: any) => request('PUT', url, body),
-  del: (url: string) => request('DELETE', url),
+  get: (url: string, options?: RequestOptions) => request('GET', url, undefined, options),
+  post: (url: string, body?: any, options?: RequestOptions) => request('POST', url, body, options),
+  put: (url: string, body?: any, options?: RequestOptions) => request('PUT', url, body, options),
+  del: (url: string, options?: RequestOptions) => request('DELETE', url, undefined, options),
   stream: (url: string, body: any, onEvent: (e: any) => void) => streamRequest(url, body, onEvent),
 };
 
