@@ -134,6 +134,17 @@ export default function Employees() {
     });
   }, [catalog.employees, debouncedKeyword, group, statusFilter]);
 
+  // 按部门分组展示（目录本身按分部排序，这里保序分桶）
+  const groupedSections = useMemo(() => {
+    const map = new Map<string, Employee[]>();
+    for (const employee of filtered) {
+      const g = employee.group || '其他';
+      if (!map.has(g)) map.set(g, []);
+      map.get(g)!.push(employee);
+    }
+    return [...map.entries()];
+  }, [filtered]);
+
   const statusOptions = useMemo(() => [...new Set(catalog.employees.map(employee => employee.status || '状态未知'))]
     .filter(Boolean).sort().map(value => ({ value, label: value })), [catalog.employees]);
   const coreCount = catalog.coreCount ?? catalog.employees.filter(employee => !employee.extension).length;
@@ -239,8 +250,21 @@ export default function Employees() {
       {loading ? (
         <div className="employee-grid">{Array.from({ length: 12 }, (_, index) => <div className="employee-card employee-card-loading" key={index}><Skeleton active paragraph={{ rows: 3 }} /></div>)}</div>
       ) : loadError ? null : filtered.length ? (
-        <section className="employee-grid" aria-live="polite">
-          {filtered.map((employee, index) => (
+        <div aria-live="polite">
+          {groupedSections.map(([groupName, members]) => (
+            <section className="employee-dept-section" key={groupName} aria-label={groupName}>
+              <header className="employee-dept-head">
+                <strong>{groupName}</strong>
+                <span className="employee-dept-count">{members.length} 位数字员工</span>
+                {(runningByGroup.get(groupName) || 0) > 0 && (
+                  <span className="employee-dept-running">
+                    <i className="dot" aria-hidden="true" />{runningByGroup.get(groupName)} 个任务执行中
+                  </span>
+                )}
+                <i className="employee-dept-rule" aria-hidden="true" />
+              </header>
+              <div className="employee-grid">
+                {members.map((employee, index) => (
             <article className={`employee-card nw-rise${employee.status === '执行中' ? ' busy' : ''}`}
               style={{ '--enter-delay': `${Math.min(index * 35, 560)}ms` } as CSSProperties}
               key={employee.idx} onClick={() => openEmployee(employee)} tabIndex={0}
@@ -260,7 +284,7 @@ export default function Employees() {
               <div className="employee-card-top">
                 <div className={`employee-portrait${employee.status === '执行中' ? ' working' : ''}`}
                   style={{ '--employee-color': employee.color || '#2c76dc' } as CSSProperties}>
-                  <EmployeeAvatar idx={employee.idx} color={employee.color || '#2c76dc'} group={employee.group} size={58} />
+                  <EmployeeAvatar idx={employee.idx} name={employee.person || employee.name} color={employee.color || '#2c76dc'} size={58} />
                 </div>
                 <div className="employee-identity">
                   <div><strong>{employee.person || employee.name}</strong>{employee.extension && <Tag color="blue">扩展</Tag>}</div>
@@ -295,8 +319,11 @@ export default function Employees() {
                 <span className="employee-card-link">查看档案 · 派活 <span>→</span></span>
               </div>
             </article>
+                ))}
+              </div>
+            </section>
           ))}
-        </section>
+        </div>
       ) : (
         <Empty className="employee-empty" description="没有匹配的员工，换一个经营问题试试" />
       )}
@@ -328,6 +355,15 @@ const STYLES = `
 .employee-drawer-title{display:flex;align-items:center;gap:10px}.employee-drawer-title>span{width:40px;height:40px;display:grid;place-items:center;border-radius:11px;background:#eaf2fc;font-size:21px}.employee-drawer-title strong,.employee-drawer-title small{display:block}.employee-drawer-title strong{font-size:15px}.employee-drawer-title small{margin-top:2px;color:var(--ui-muted);font-size:11px;font-weight:400}.employee-detail{display:flex;flex-direction:column;gap:22px}.employee-detail-banner{padding:18px;border:1px solid #dbe8f7;border-radius:14px;background:linear-gradient(135deg,#f3f8fe,#e9f2fd)}:root[data-theme='midnight'] .employee-detail-banner{border-color:var(--ui-border);background:var(--ui-surface-2)}.employee-detail-banner>div:first-child{color:var(--ui-primary);font-size:11px;font-weight:650}.employee-detail-banner p{margin:10px 0 12px;color:var(--ui-text-2);font-size:12.5px;line-height:1.8}.employee-detail-tags .ant-tag{font-size:10px}.employee-detail section{padding-top:2px}.employee-detail h3{margin:0 0 12px;color:var(--ui-text);font-size:14px}.employee-check-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}.employee-check-list li{display:flex;align-items:flex-start;gap:7px;padding:9px 10px;border-radius:8px;background:var(--ui-surface-2);color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-check-list .anticon{margin-top:2px;color:#36a879}.employee-detail .ant-timeline{margin-top:4px}.employee-detail .ant-timeline-item-content{color:var(--ui-text-2);font-size:11.5px;line-height:1.65}.employee-deliverables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.employee-deliverables>div{display:flex;align-items:flex-start;gap:8px;padding:10px 11px;border:1px solid var(--ui-border);border-radius:9px;color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-deliverables .anticon{margin-top:2px;color:var(--ui-primary)}.employee-section-title{display:flex;align-items:center;justify-content:space-between}.employee-section-title span{color:var(--ui-muted);font-size:10px}.task-done{color:#32ad79}.task-running{color:#2780dc}
 @media(max-width:1500px){.employee-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:1180px){.employee-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.employee-hero{grid-template-columns:1fr}.employee-hero-stats{max-width:520px}}@media(max-width:760px){.employee-hero{min-height:0;padding:24px 20px}.employee-hero-stats{grid-template-columns:repeat(4,1fr)}.employee-hero-stats div{padding:12px 8px}.employee-hero-stats strong{font-size:20px}.employee-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.employee-toolbar{align-items:stretch;flex-direction:column;gap:8px}.employee-status-filter{width:100%}.employee-filter-count{margin:0}.employee-check-list,.employee-deliverables{grid-template-columns:1fr}}@media(max-width:520px){.employee-grid{grid-template-columns:1fr}.employee-card{min-height:220px}.employee-hero-stats{grid-template-columns:repeat(2,1fr)}}
 
+/* ===== 部门分组（迭代七）：组头 + 执行中脉搏 + 分隔线 ===== */
+.employee-dept-section{margin-bottom:22px}
+.employee-dept-head{display:flex;align-items:center;gap:10px;margin:2px 2px 12px}
+.employee-dept-head strong{font-size:15px;color:var(--ui-text);letter-spacing:-.2px;flex:0 0 auto}
+.employee-dept-count{font-size:11px;color:var(--ui-muted);flex:0 0 auto}
+.employee-dept-running{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;background:rgba(230,162,60,.13);color:#b97f1e;font-size:11px;font-weight:600;flex:0 0 auto}
+.employee-dept-running .dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:employee-pulse 1.6s ease-out infinite}
+.employee-dept-rule{flex:1 1 auto;height:1px;background:linear-gradient(90deg,var(--ui-border),transparent)}
+
 /* ===== 工牌形制（迭代七）：挂绳孔 / 落款工号 / 插画头像 / 拟人化状态 / KPI ===== */
 .badge-slot{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:34px;height:7px;border-radius:999px;background:var(--ui-surface-2);border:1px solid var(--ui-border);box-shadow:inset 0 1px 2px rgba(20,48,82,.1)}
 .badge-brand{display:flex;align-items:center;justify-content:space-between;margin:10px 0 12px;padding-bottom:9px;border-bottom:1px dashed var(--ui-border)}
@@ -337,10 +373,12 @@ const STYLES = `
 .employee-card:hover .employee-portrait{transform:scale(1.05) rotate(-2deg)}
 .employee-portrait.working:after{content:'';position:absolute;inset:-3px;border-radius:19px;border:2px solid color-mix(in srgb,var(--employee-color) 55%,transparent);animation:portrait-ring 1.8s ease-out infinite}
 @keyframes portrait-ring{0%{opacity:.9;transform:scale(.96)}100%{opacity:0;transform:scale(1.1)}}
-.employee-identity strong{font-size:16px}
+.employee-card:before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(115deg,transparent 32%,rgba(255,255,255,.22) 46%,transparent 60%);transform:translateX(-130%);transition:transform .65s var(--ease-out);pointer-events:none;z-index:1}
+.employee-card:hover:before{transform:translateX(130%)}
+.employee-identity strong{font-size:17px;letter-spacing:-.2px}
 .employee-title{display:block;color:var(--ui-text-2);font-size:12px;font-weight:600;margin-top:2px}
 .employee-dept{display:block;font-style:normal;color:var(--ui-muted);font-size:11px;margin-top:1px}
-.employee-duty-line{display:flex;align-items:center;gap:6px;margin:10px 0 8px;padding:5px 10px;border-radius:8px;font-size:11.5px;font-weight:600;min-width:0}
+.employee-duty-line{display:flex;align-items:center;gap:6px;margin:10px 0 7px;padding:4px 9px;border-radius:7px;font-size:11px;font-weight:600;min-width:0}
 .employee-duty-line .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
 .employee-duty-line.idle{color:#2f9e6e;background:rgba(58,194,142,.1)}
 .employee-duty-line.idle .dot{animation:employee-breathe 3.2s ease-in-out infinite}

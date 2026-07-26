@@ -423,6 +423,13 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState('dispatch');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const toggleAdvanced = () => {
+    setShowAdvanced(current => {
+      if (current && ['skills', 'prompts', 'config'].includes(activeTab)) setActiveTab('dispatch');
+      return !current;
+    });
+  };
   const [saving, setSaving] = useState<MutationName | 'dispatch' | ''>('');
   const [promptDraft, setPromptDraft] = useState('');
   const [customSkillOpen, setCustomSkillOpen] = useState(false);
@@ -786,11 +793,13 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
         <Alert type={dispatchAvailable ? 'info' : 'warning'} showIcon
           message={dispatchAvailable ? `本次锁定 ${capabilityCount} 项岗位必备能力，不可关闭` : '该员工当前不可执行'}
           description={profile.dispatch.snapshotNotice || profile.dispatch.boundary || '任务记录会保存能力、提示词与配置快照，便于追溯。'} />
-        <div className="ewb-dispatch-capabilities" aria-label="本次锁定能力">
-          {profile.capabilities.filter(capability => capability.required !== false).map((capability, index) => (
-            <Tag icon={<LockOutlined />} color="blue" key={capability.id || capability.key || `${capability.name}-${index}`}>{capability.name}</Tag>
-          ))}
-        </div>
+        {showAdvanced && (
+          <div className="ewb-dispatch-capabilities" aria-label="本次锁定能力">
+            {profile.capabilities.filter(capability => capability.required !== false).map((capability, index) => (
+              <Tag icon={<LockOutlined />} color="blue" key={capability.id || capability.key || `${capability.name}-${index}`}>{capability.name}</Tag>
+            ))}
+          </div>
+        )}
         <section className="ewb-dispatch-guide" aria-label={`${profile.identity.name}派活操作指引`}>
           <div className="ewb-dispatch-guide-intro">
             <span>这个岗位怎么派活</span>
@@ -1277,14 +1286,19 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
     </div>
   );
 
+  // 信息密度控制：普通用户只看业务面板（派活/能力/工作方式/岗位档案）；
+  // 技能库/提示词/工作配置属于管理调优面板，管理角色点「高级设置」才展开。
+  const canAdvanced = !!profile?.permissions?.canViewPrompt;
   const tabItems = profile ? [
     { key: 'dispatch', label: <span><RocketOutlined /> 单独派活</span>, children: dispatchTab },
     { key: 'capabilities', label: <span><ThunderboltOutlined /> 能力</span>, children: capabilityTab },
     { key: 'method', label: <span><ApartmentOutlined /> 工作方式</span>, children: <WorkMethodTab method={profile.workMethod} /> },
-    { key: 'skills', label: <span><BookOutlined /> 技能库</span>, children: skillsTab },
-    { key: 'prompts', label: <span><CodeOutlined /> 提示词</span>, children: promptTab },
-    { key: 'config', label: <span><SettingOutlined /> 工作配置</span>, children: configTab },
     { key: 'profile', label: <span><IdcardOutlined /> 岗位档案</span>, children: jobTab },
+    ...(canAdvanced && showAdvanced ? [
+      { key: 'skills', label: <span><BookOutlined /> 技能库</span>, children: skillsTab },
+      { key: 'prompts', label: <span><CodeOutlined /> 提示词</span>, children: promptTab },
+      { key: 'config', label: <span><SettingOutlined /> 工作配置</span>, children: configTab },
+    ] : []),
   ] : [];
 
   const provenance = profile?.provenance;
@@ -1304,8 +1318,8 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
           <div className="ewb-title" style={{ '--ewb-color': identityColor(titleIdentity) || 'var(--ui-primary)' } as CSSProperties}>
             <span className="ewb-title-avatar">
               {domain === 'restaurant' && typeof titleIdentity.idx === 'number'
-                ? <EmployeeAvatar idx={titleIdentity.idx} color={identityColor(titleIdentity) || '#2c76dc'}
-                    group={String(titleIdentity.group || '')} size={40} />
+                ? <EmployeeAvatar idx={titleIdentity.idx} name={String(titleIdentity.person || titleIdentity.name || '')}
+                    color={identityColor(titleIdentity) || '#2c76dc'} size={40} />
                 : (titleIdentity.emoji || '🧑‍💼')}
             </span>
             <div className="ewb-title-copy">
@@ -1348,7 +1362,12 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
               )}
             </section>
             <main className="ewb-content">
-              <Tabs className="ewb-tabs" activeKey={activeTab} onChange={setActiveTab} items={tabItems} animated={false} />
+              <Tabs className="ewb-tabs" activeKey={activeTab} onChange={setActiveTab} items={tabItems} animated={false}
+                tabBarExtraContent={canAdvanced ? (
+                  <Button size="small" type="text" style={{ color: 'var(--ui-muted)' }} icon={<SettingOutlined />} onClick={toggleAdvanced}>
+                    {showAdvanced ? '收起高级设置' : '高级设置'}
+                  </Button>
+                ) : undefined} />
               {(provenanceText || provenance?.boundary) && (
                 <footer className="ewb-provenance">
                   <FileTextOutlined /> {[provenanceText, provenance?.boundary].filter(Boolean).join(' · ')}
