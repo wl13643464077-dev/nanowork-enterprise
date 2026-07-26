@@ -28,6 +28,7 @@ import contentEmployeeWorkbenchRoutes from './routes/content-employee-workbench.
 import advisorRoutes from './routes/advisor.js';
 import executionRoutes from './routes/execution.js';
 import analysisRoutes from './routes/analysis.js';
+import storeDataRoutes from './routes/store-data.js';
 import assetRoutes from './routes/assets.js';
 import systemRoutes from './routes/system.js';
 import agentRoutes from './routes/agents.js';
@@ -223,6 +224,7 @@ app.use('/api/data-intake', authMiddleware, tenantScope, tenantGate, moduleGuard
 app.use('/api/advisor', authMiddleware, tenantScope, tenantGate, moduleGuard('advisor'), aiGuard('advisor'), advisorRoutes);
 app.use('/api/execution', authMiddleware, tenantScope, tenantGate, moduleGuard('execution'), executionRoutes);
 app.use('/api/analysis', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), analysisRoutes);
+app.use('/api/store-data', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), storeDataRoutes);
 app.use('/api/assets', authMiddleware, tenantScope, tenantGate, moduleGuard('assets'), assetRoutes);
 app.use('/api/sys', authMiddleware, tenantScope, tenantGate, systemRoutes); // 含通知等通用能力，内部已按角色细分权限
 app.use('/api/admin', authMiddleware, tenantScope, tenantGate, adminRoutes); // 企业管理后台（boss/admin）

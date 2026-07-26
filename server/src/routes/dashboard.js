@@ -371,8 +371,11 @@ r.get('/summary', (req, res) => {
     const prevOpsSales = fullDataAccess
       ? q.get(`SELECT COALESCE(SUM(deal_amount),0) a FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`, T, selectedScope.prevStart, selectedScope.prevEndExclusive)?.a || 0
       : 0;
-    const rangeSales = orderSales || opsSales || 0;
-    const prevSales = prevOrderSales || prevOpsSales || 0;
+    // 显式营收口径（修双源短路 bug）：范围内 orders 有记录就用订单口径，否则才用 daily_ops 日报口径；
+    // 不再按金额真值 || 回退——订单合计恰为 0 或口径缺失时会静默串源。对比期跟随当期口径，不跨源比较。
+    const revenueSource = orderRows > 0 ? 'orders' : (opsRows > 0 ? 'daily_ops' : null);
+    const rangeSales = revenueSource === 'orders' ? orderSales : revenueSource === 'daily_ops' ? opsSales : 0;
+    const prevSales = revenueSource === 'orders' ? prevOrderSales : revenueSource === 'daily_ops' ? prevOpsSales : 0;
     const leadRows = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${leadScope.sql}`,
       T, selectedScope.start, selectedScope.endExclusive, ...leadScope.params)?.n || 0;
     const prevLeadRows = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${leadScope.sql}`,
@@ -410,6 +413,7 @@ r.get('/summary', (req, res) => {
     return res.json({
       todaySales: rangeSales,
       rangeSales,
+      revenueSource,
       salesWow: prevSales ? pct(rangeSales - prevSales, prevSales) : 0,
       monthLeads: rangeLeads,
       rangeLeads,
@@ -444,7 +448,10 @@ r.get('/summary', (req, res) => {
     ? q.get(`SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?`, y) || {}
     : {};
   const todaySales = q.get(`SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`, t, ...orderScope.params)?.a || 0;
+  const todayOrderRows = q.get(`SELECT COUNT(*) n FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`, t, ...orderScope.params)?.n || 0;
   const yesterdaySales = q.get(`SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`, y, ...orderScope.params)?.a || 0;
+  // 与范围口径同款修复：今日营收也用显式口径（有订单记录=订单口径，否则=日报口径），不按金额真值串源
+  const todayRevenueSource = todayOrderRows > 0 ? 'orders' : (tOps.id ? 'daily_ops' : null);
   const mLeads = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ${curTenant()} AND created_at >= ?${leadScope.sql}`, monthStart(), ...leadScope.params)?.n || 0;
   const lmLeads = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ${curTenant()} AND created_at >= date(?, '-1 month') AND created_at < ?${leadScope.sql}`, monthStart(), monthStart(), ...leadScope.params)?.n || 0;
   const pendingFollow = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ${curTenant()} AND stage NOT IN ('已成交','复购','已流失') AND next_follow_at IS NOT NULL${leadScope.sql}`, ...leadScope.params)?.n || 0;
@@ -460,7 +467,9 @@ r.get('/summary', (req, res) => {
   const taskTotal = q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= ?${taskScope.sql}`, monthStart(), ...taskScope.params)?.n || 1;
   const taskDone = q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND status = '已完成' AND created_at >= ?${taskScope.sql}`, monthStart(), ...taskScope.params)?.n || 0;
   res.json({
-    todaySales: todaySales || tOps.deal_amount || 0, salesWow: pct((todaySales || 0) - (yesterdaySales || 0), yesterdaySales || 1),
+    todaySales: todayRevenueSource === 'orders' ? todaySales : todayRevenueSource === 'daily_ops' ? (tOps.deal_amount || 0) : 0,
+    revenueSource: todayRevenueSource,
+    salesWow: pct((todaySales || 0) - (yesterdaySales || 0), yesterdaySales || 1),
     monthLeads: mLeads, leadsWow: pct(mLeads - lmLeads, lmLeads || 1),
     pendingFollow, overdue, communicatedCustomers, followRecords, runningActivities: running, weekActivities: week,
     taskRate: pct(taskDone, taskTotal), health: health ? { score: health.total, level: health.level } : null,
