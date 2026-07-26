@@ -5,6 +5,7 @@ import {
   FundOutlined, ArrowUpOutlined, ArrowDownOutlined, BulbOutlined, FileTextOutlined,
   ThunderboltOutlined, ExperimentOutlined, RiseOutlined, SwapOutlined, ExportOutlined,
   ReloadOutlined, DownloadOutlined, CarryOutOutlined, CommentOutlined, UploadOutlined, DatabaseOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs, { Dayjs } from 'dayjs';
@@ -67,6 +68,24 @@ export default function Analysis() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
   const analysisRequestRef = useRef(0);
+  // 数据来源地图：每个指标背后的数据出处（事实表 / 责任人 / 补录入口 / 溯源链）
+  const [sourceMap, setSourceMap] = useState<any>(null);
+  const [sourceMapError, setSourceMapError] = useState('');
+  const loadSourceMap = () => {
+    setSourceMapError('');
+    api.get('/analysis/source-map').then(setSourceMap)
+      .catch((e: any) => setSourceMapError(e?.message || '来源地图加载失败'));
+  };
+  useEffect(loadSourceMap, []);
+  const openSourceSample = (card: any) => {
+    setSourceDetail({ open: true, loading: true, data: null, title: card.title });
+    api.get(`/analysis/source-samples/${card.key}`)
+      .then(d => setSourceDetail({ open: true, loading: false, data: d, title: d.title || card.title }))
+      .catch((e: any) => {
+        message.error(e?.message || '暂无来源样本');
+        setSourceDetail({ open: false, loading: false, data: null, title: '' });
+      });
+  };
 
   const renderSourceCell = (v: any) => {
     if (v === null || v === undefined || v === '') return <span style={{ color: '#b6bdc9' }}>-</span>;
@@ -540,6 +559,46 @@ export default function Analysis() {
           </Panel>
         </Col>
       </Row>
+
+      {/* 数据来源地图：每个指标背后的数据出处，可点开真实样本核对 */}
+      <Panel title={<><ApartmentOutlined style={{ color: 'var(--ui-accent)' }} /> 数据来源地图</>}
+        extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>每个结论都能回查数据出处，点击卡片查看真实样本</span>}>
+        {sourceMapError ? (
+          <div style={{ textAlign: 'center', padding: '18px 0' }}>
+            <div style={{ fontSize: 12.5, color: '#f25b6b', marginBottom: 10 }}>来源地图加载失败：{sourceMapError}</div>
+            <Button size="small" icon={<ReloadOutlined />} onClick={loadSourceMap}>重试</Button>
+          </div>
+        ) : !sourceMap ? (
+          <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+        ) : (sourceMap.cards || []).length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无来源信息。数据来源地图会展示每个结论背后的数据出处。" />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 10 }}>
+              {(sourceMap.cards || []).map((c: any) => (
+                <div key={c.key} onClick={() => openSourceSample(c)}
+                  style={{ border: '1px solid var(--ui-border)', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', background: 'var(--ui-surface)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                    <b style={{ fontSize: 13, color: 'var(--ui-text)' }}>{c.title}</b>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-accent)', whiteSpace: 'nowrap' }}>{c.count ?? 0} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ui-muted)' }}>条</span></span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', margin: '6px 0 4px', fontFamily: 'Consolas,Menlo,monospace' }}>{c.tables}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.6 }}>责任口径：{c.owner}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', lineHeight: 1.6, marginTop: 4 }}>{c.trace}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-accent)', marginTop: 6 }}>查看来源样本 ›</div>
+                </div>
+              ))}
+            </div>
+            {(sourceMap.rules || []).length > 0 && (
+              <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 12px' }}>
+                {(sourceMap.rules || []).map((rule: string, i: number) => (
+                  <div key={i} style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.8 }}>· {rule}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Panel>
 
       {/* 底部：自定义分析 */}
       <Panel title="自定义分析">

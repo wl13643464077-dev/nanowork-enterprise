@@ -3,9 +3,11 @@ import { Row, Col, Table, Tag, Badge, Progress, Select, Input, Collapse, Timelin
 import {
   DatabaseOutlined, PayCircleOutlined, PlusSquareOutlined, PlayCircleOutlined,
   FundOutlined, ThunderboltOutlined, FireOutlined, AlertOutlined, SyncOutlined, PieChartOutlined,
-  UploadOutlined, DeleteOutlined,
+  UploadOutlined, DeleteOutlined, PlusOutlined, EditOutlined, DownloadOutlined, ApartmentOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { api, fmtMoney, fmtWan } from '../api/client';
+import { loadXlsx } from '../utils/xlsx';
 import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
@@ -45,6 +47,14 @@ export default function Assets() {
   const [sourceDetail, setSourceDetail] = useState<{ open: boolean; loading: boolean; data: any; title: string }>({ open: false, loading: false, data: null, title: '' });
   const [importOpen, setImportOpen] = useState(false);
   const [importForm] = Form.useForm();
+  // 单条新增 / 编辑
+  const [assetModal, setAssetModal] = useState<{ open: boolean; id: number | null }>({ open: false, id: null });
+  const [assetSaving, setAssetSaving] = useState(false);
+  const [assetForm] = Form.useForm();
+  const [exporting, setExporting] = useState(false);
+  // 数据来源地图（每个资产口径的数据出处）
+  const [sourceMap, setSourceMap] = useState<any>(null);
+  const [sourceMapError, setSourceMapError] = useState('');
   // 清单筛选
   const [category, setCategory] = useState<string | undefined>();
   const [status, setStatus] = useState<string | undefined>();
@@ -112,6 +122,82 @@ export default function Assets() {
     api.get('/assets/flows').then(setFlows);
     loadList();
   };
+  const loadSourceMap = () => {
+    setSourceMapError('');
+    api.get('/assets/source-map').then(setSourceMap)
+      .catch((e: any) => setSourceMapError(e?.message || '来源地图加载失败'));
+  };
+  useEffect(loadSourceMap, []);
+  const openSourceSample = (card: any) => {
+    setSourceDetail({ open: true, loading: true, data: null, title: card.title });
+    api.get(`/assets/source-samples/${card.key}`)
+      .then(d => setSourceDetail({ open: true, loading: false, data: d, title: d.title || card.title }))
+      .catch((e: any) => {
+        message.error(e?.message || '暂无来源样本');
+        setSourceDetail({ open: false, loading: false, data: null, title: '' });
+      });
+  };
+
+  const openAssetForm = (r?: any) => {
+    assetForm.resetFields();
+    if (r) assetForm.setFieldsValue({
+      name: r.name, category: r.category, value: r.value ?? 0, status: r.status,
+      owner: r.owner, url: r.url, note: r.note,
+    });
+    else assetForm.setFieldsValue({ category: '数据资产', status: '使用中', value: 0 });
+    setAssetModal({ open: true, id: r?.id ?? null });
+  };
+  const submitAssetForm = async () => {
+    const v = await assetForm.validateFields();
+    setAssetSaving(true);
+    try {
+      const payload = { ...v, value: v.value ?? 0 };
+      if (assetModal.id) {
+        await api.put(`/assets/${assetModal.id}`, payload);
+        message.success('资产已更新');
+      } else {
+        await api.post('/assets', payload);
+        message.success('资产已登记，并写入流转动态');
+      }
+      setAssetModal({ open: false, id: null });
+      refreshAssets();
+    } finally { setAssetSaving(false); }
+  };
+
+  const SOURCE_LABEL: Record<string, string> = { content: '内容', media_job: '媒体', kb: '知识库', lead: '客户', order: '订单', daily_ops: '日报', activity: '活动', partner: '合伙人', task: '任务', manual_upload: '导入', manual: '手动' };
+  const exportAssets = async () => {
+    setExporting(true);
+    try {
+      const rows: any[] = [];
+      let p = 1;
+      for (;;) {
+        const d = await api.get(`/assets?category=${encodeURIComponent(category || '')}&status=${encodeURIComponent(status || '')}&kw=${encodeURIComponent(kw)}&page=${p}&size=100`);
+        rows.push(...(d.rows || []));
+        if (!(d.rows || []).length || rows.length >= (d.total || 0) || p >= 50) break;
+        p += 1;
+      }
+      if (!rows.length) { message.warning('当前筛选条件下暂无资产可导出'); return; }
+      const exportRows = rows.map((r: any) => ({
+        资产名称: r.name,
+        分类: r.category,
+        估值: Number(r.value) > 0 ? Number(r.value) : '未估值',
+        状态: r.status,
+        调用次数: r.use_count ?? 0,
+        归属: r.owner || '',
+        来源: SOURCE_LABEL[r.source_type] || r.source_type || '',
+        链接: r.url || '',
+        备注: r.note || '',
+        登记时间: String(r.created_at || '').slice(0, 16),
+        更新时间: String(r.updated_at || '').slice(0, 16),
+      }));
+      const XLSX = await loadXlsx();
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exportRows), '资产台账');
+      XLSX.writeFile(wb, `资产台账-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      message.success(`已导出 ${exportRows.length} 项资产`);
+    } finally { setExporting(false); }
+  };
+
   const deleteAsset = (r: any) => {
     api.del(`/assets/${r.id}`).then(() => {
       message.success('资产已删除并进入回收站');
@@ -301,10 +387,12 @@ export default function Assets() {
                 onChange={v => { setStatus(v); setPage(1); }} />
               <Input.Search size="small" placeholder="搜索资产名称" allowClear style={{ width: 170 }}
                 onSearch={v => { setKw(v.trim()); setPage(1); }} />
-              <Button size="small" type="primary" icon={<UploadOutlined />} onClick={() => {
+              <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openAssetForm()}>新增资产</Button>
+              <Button size="small" icon={<UploadOutlined />} onClick={() => {
                 importForm.setFieldsValue({ category: '数据资产', status: '使用中' });
                 setImportOpen(true);
               }}>导入资产</Button>
+              <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={exportAssets}>导出 Excel</Button>
             </div>
           }>
             <Table size="small" rowKey="id" dataSource={list.rows || []}
@@ -315,17 +403,23 @@ export default function Assets() {
               columns={[
                 { title: '资产名称', dataIndex: 'name', ellipsis: true, render: (v: string) => <span style={{ fontWeight: 600, color: 'var(--ui-text)' }}>{v}</span> },
                 { title: '分类', dataIndex: 'category', width: 90, render: (v: string) => <Tag color={catTagColor[v] || 'default'}>{v}</Tag> },
-                { title: '资产价值', dataIndex: 'value', align: 'right', width: 100, render: (v: number) => <span style={{ fontWeight: 600 }}>{fmtMoney(v)}</span> },
+                {
+                  title: '资产价值', dataIndex: 'value', align: 'right', width: 100,
+                  render: (v: number) => Number(v) > 0
+                    ? <span style={{ fontWeight: 600 }}>{fmtMoney(v)}</span>
+                    : <Tooltip title="估值为 0 表示尚未估值，不计入资产总值；可点「编辑」补充"><Tag style={{ margin: 0, color: 'var(--ui-muted)' }}>未估值</Tag></Tooltip>,
+                },
                 { title: '状态', dataIndex: 'status', width: 84, render: (v: string) => <Badge color={statusColor[v] || 'var(--ui-muted)'} text={<span style={{ fontSize: 12 }}>{v}</span>} /> },
                 { title: '来源', dataIndex: 'source_type', width: 96, render: (v: string) => <Tag color={v === 'manual_upload' ? 'gold' : v === 'content' || v === 'media_job' ? 'blue' : v === 'kb' ? 'purple' : 'default'} style={{ margin: 0 }}>{({ content: '内容', media_job: '媒体', kb: '知识库', lead: '客户', manual_upload: '导入', manual: '手动' } as Record<string, string>)[v] || v || '-'}</Tag> },
                 { title: '调用次数', dataIndex: 'use_count', align: 'right', width: 80, render: (v: number) => <span style={{ color: v > 0 ? 'var(--ui-text)' : 'var(--ui-muted)' }}>{v ?? 0}</span> },
                 { title: '归属', dataIndex: 'owner', width: 80 },
                 { title: '创建时间', dataIndex: 'created_at', width: 100, render: (v: string) => <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>{String(v || '').slice(0, 10)}</span> },
                 {
-                  title: '操作', key: 'op', width: 222,
+                  title: '操作', key: 'op', width: 268,
                   render: (_: any, r: any) => (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Button size="small" onClick={() => openTrace(r.id)}>追溯</Button>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openAssetForm(r)}>编辑</Button>
                       <Select size="small" value={r.status} style={{ width: 96 }}
                         options={STATUSES.map(s => ({ value: s, label: s === r.status ? s : `转${s}` }))}
                         onChange={v => { if (v !== r.status) changeStatus(r.id, v); }} />
@@ -469,6 +563,46 @@ export default function Assets() {
         </Col>
       </Row>
 
+      {/* 数据来源地图：每个资产口径的数据出处，对抗“数字凭空而来”的质疑 */}
+      <Panel title={<><ApartmentOutlined style={{ color: 'var(--ui-accent)' }} /> 数据来源地图</>}
+        extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>展示每类资产背后的数据出处，点击卡片查看真实样本</span>}>
+        {sourceMapError ? (
+          <div style={{ textAlign: 'center', padding: '18px 0' }}>
+            <div style={{ fontSize: 12.5, color: '#f25b6b', marginBottom: 10 }}>来源地图加载失败：{sourceMapError}</div>
+            <Button size="small" icon={<ReloadOutlined />} onClick={loadSourceMap}>重试</Button>
+          </div>
+        ) : !sourceMap ? (
+          <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+        ) : (sourceMap.cards || []).length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无来源信息。数据来源地图会展示每个结论背后的数据出处。" />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}>
+              {(sourceMap.cards || []).map((c: any) => (
+                <div key={c.key} onClick={() => openSourceSample(c)}
+                  style={{ border: '1px solid var(--ui-border)', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', background: 'var(--ui-surface)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                    <b style={{ fontSize: 13, color: 'var(--ui-text)' }}>{c.title}</b>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-accent)', whiteSpace: 'nowrap' }}>{c.count ?? 0} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ui-muted)' }}>项</span></span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', margin: '6px 0 4px', fontFamily: 'Consolas,Menlo,monospace' }}>{c.table}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.6 }}>来源：{c.source}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', lineHeight: 1.6, marginTop: 4 }}>溯源链：{c.trace}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-accent)', marginTop: 6 }}>查看来源样本 ›</div>
+                </div>
+              ))}
+            </div>
+            {(sourceMap.rules || []).length > 0 && (
+              <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 12px' }}>
+                {(sourceMap.rules || []).map((rule: string, i: number) => (
+                  <div key={i} style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.8 }}>· {rule}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Panel>
+
       {/* ===== 统计卡钻取 Modal ===== */}
       <Modal open={drill.open} width={780} footer={null} onCancel={() => setDrill({ open: false, kind: '', data: null })}
         title={drill.data?.title || '加载中…'}>
@@ -594,6 +728,45 @@ export default function Assets() {
           <Form.Item name="url" label="外部链接 / 文件位置">
             <Input placeholder="可选，便于领导审核追溯" />
           </Form.Item>
+          <Form.Item name="note" label="来源备注">
+            <Input.TextArea rows={3} maxLength={300} placeholder="说明这个资产从哪里来、谁整理、后续怎么用" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* ===== 资产新增 / 编辑 Modal ===== */}
+      <Modal open={assetModal.open} title={assetModal.id ? '编辑资产' : '新增资产'} okText={assetModal.id ? '保存修改' : '登记资产'}
+        confirmLoading={assetSaving} width={640}
+        onOk={submitAssetForm} onCancel={() => setAssetModal({ open: false, id: null })} destroyOnClose>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="估值填 0 表示「未估值」，不计入资产总值；每次新增/编辑都会写入资产流转动态，可在溯源中追责。" />
+        <Form form={assetForm} layout="vertical">
+          <Row gutter={10}>
+            <Col span={12}>
+              <Form.Item name="name" label="资产名称" rules={[{ required: true, whitespace: true, message: '请填写资产名称' }]}>
+                <Input maxLength={80} placeholder="例如：企业团餐沟通手册" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="category" label="分类" rules={[{ required: true, message: '请选择分类' }]}>
+                <Select options={CATEGORIES.map(c => ({ value: c, label: c }))} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="value" label="估值（0=未估值）">
+                <InputNumber min={0} precision={0} style={{ width: '100%' }} prefix="¥" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="status" label="状态" rules={[{ required: true, message: '请选择状态' }]}>
+                <Select options={STATUSES.map(s => ({ value: s, label: s }))} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="owner" label="归属"><Input maxLength={40} placeholder="部门/人员" /></Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="url" label="外部链接 / 文件位置"><Input maxLength={300} placeholder="可选，便于审核追溯" /></Form.Item>
           <Form.Item name="note" label="来源备注">
             <Input.TextArea rows={3} maxLength={300} placeholder="说明这个资产从哪里来、谁整理、后续怎么用" />
           </Form.Item>

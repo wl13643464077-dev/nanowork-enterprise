@@ -480,6 +480,73 @@ r.post('/import', (req, res) => {
   res.json({ ok: true, created, errors });
 });
 
+// 单条创建：与批量导入同一套校验与流水口径；估值允许 0（未估值语义，进入「信息不完整」盘点）
+r.post('/', (req, res) => {
+  const b = req.body || {};
+  const name = clean(b.name);
+  if (!name) return res.status(400).json({ error: '请填写资产名称' });
+  const categoryInput = clean(b.category);
+  if (categoryInput && !VALID_CATEGORIES.has(categoryInput)) return res.status(400).json({ error: '无效资产分类' });
+  const statusInput = clean(b.status);
+  if (statusInput && !VALID_STATUSES.has(statusInput)) return res.status(400).json({ error: '无效资产状态' });
+  const category = categoryInput || '数据资产';
+  const status = statusInput || '使用中';
+  const value = Math.max(0, num(b.value, 0));   // 0 = 未估值，不虚构估值
+  const owner = clean(b.owner || req.user.name, req.user.name);
+  const url = clean(b.url);
+  const note = clean(b.note, '手动登记资产');
+  const result = q.run(`INSERT INTO biz_assets(name,category,value,status,use_count,owner,source_type,creator_id,url,note)
+    VALUES(?,?,?,?,0,?,'manual',?,?,?)`,
+    name, category, value, status, owner, req.user.id, url || null, note);
+  const id = result.lastInsertRowid;
+  q.run('INSERT INTO asset_flows(asset_id,action,note,operator_id) VALUES(?,?,?,?)',
+    id, '创建', `${req.user.name || '用户'}登记：${note}`, req.user.id);
+  logOp(req.user, '数据资产', '新增资产', name);
+  res.json({ ok: true, asset: q.get(`SELECT * FROM biz_assets WHERE tenant_id = ${curTenant()} AND id = ?`, id) });
+});
+
+// 编辑：仅本人可见范围内的资产可改；每次编辑写流转流水便于追责
+r.put('/:id', (req, res) => {
+  const a = getVisibleAsset(req, req.params.id);
+  if (!a) return res.status(404).json({ error: '资产不存在或无权编辑' });
+  const b = req.body || {};
+  const sets = [];
+  const params = [];
+  const changed = [];
+  const apply = (field, label, nextValue) => {
+    if (String(nextValue ?? '') === String(a[field] ?? '')) return;
+    sets.push(`${field} = ?`);
+    params.push(nextValue);
+    changed.push(label);
+  };
+  if (b.name !== undefined) {
+    const name = clean(b.name);
+    if (!name) return res.status(400).json({ error: '资产名称不能为空' });
+    apply('name', '名称', name);
+  }
+  if (b.category !== undefined) {
+    const category = clean(b.category);
+    if (!VALID_CATEGORIES.has(category)) return res.status(400).json({ error: '无效资产分类' });
+    apply('category', '分类', category);
+  }
+  if (b.status !== undefined) {
+    const status = clean(b.status);
+    if (!VALID_STATUSES.has(status)) return res.status(400).json({ error: '无效资产状态' });
+    apply('status', '状态', status);
+  }
+  if (b.value !== undefined) apply('value', '估值', Math.max(0, num(b.value, 0)));
+  if (b.owner !== undefined) apply('owner', '归属', clean(b.owner));
+  if (b.url !== undefined) apply('url', '链接', clean(b.url) || null);
+  if (b.note !== undefined) apply('note', '备注', clean(b.note));
+  if (!sets.length) return res.json({ ok: true, asset: a, message: '无变更' });
+  q.run(`UPDATE biz_assets SET ${sets.join(', ')}, updated_at = datetime('now','localtime') WHERE tenant_id = ? AND id = ?`,
+    ...params, curTenant(), a.id);
+  q.run('INSERT INTO asset_flows(asset_id,action,note,operator_id) VALUES(?,?,?,?)',
+    a.id, '更新', `${req.user.name || '用户'}编辑：${changed.join('、')}`, req.user.id);
+  logOp(req.user, '数据资产', '编辑资产', `asset#${a.id} ${changed.join('、')}`);
+  res.json({ ok: true, asset: q.get(`SELECT * FROM biz_assets WHERE tenant_id = ${curTenant()} AND id = ?`, a.id) });
+});
+
 function getVisibleAsset(req, id) {
   const scoped = assetWhere(req, 'a', 'a.id = ?', [id]);
   return q.get(`SELECT a.* FROM biz_assets a WHERE ${scoped.where}`, ...scoped.params);
