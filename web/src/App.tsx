@@ -18,6 +18,7 @@ const Activities = lazy(() => import('./pages/Activities'));
 const ContentFactory = lazy(() => import('./pages/ContentFactory'));
 const Execution = lazy(() => import('./pages/Execution'));
 const Analysis = lazy(() => import('./pages/Analysis'));
+const StoreData = lazy(() => import('./pages/StoreData'));
 const Assets = lazy(() => import('./pages/Assets'));
 const System = lazy(() => import('./pages/System'));
 const Admin = lazy(() => import('./pages/Admin'));
@@ -92,6 +93,7 @@ export default function App() {
           <Route path="/content" element={<ModuleOnly moduleKey="content"><ContentFactory /></ModuleOnly>} />
           <Route path="/execution" element={<ModuleOnly moduleKey="execution"><Execution /></ModuleOnly>} />
           <Route path="/analysis" element={<ModuleOnly moduleKey="analysis"><Analysis /></ModuleOnly>} />
+          <Route path="/store-data" element={<ModuleOnly moduleKey="analysis"><StoreData /></ModuleOnly>} />
           <Route path="/assets" element={<ModuleOnly moduleKey="assets"><Assets /></ModuleOnly>} />
           <Route path="/data-intake" element={<ModuleOnly moduleKey="system"><Navigate to="/system?tab=data-intake" replace /></ModuleOnly>} />
           <Route path="/system" element={<ModuleOnly moduleKey="system"><System /></ModuleOnly>} />

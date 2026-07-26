@@ -490,6 +490,65 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS sys_config (
     key TEXT PRIMARY KEY, value TEXT
   );
+  -- ===== 餐饮真数据模型（审计报告 P0）：门店/菜品/订单明细/成本 =====
+  -- 新表直接内建 tenant_id（与 content_publish_logs 等新表一致，不依赖 migrateV2 补列），
+  -- 并登记进下方 ISOLATED 集合：INSERT 自动注入租户、读取走 q.scopedAll/scopedGet。
+  CREATE TABLE IF NOT EXISTS stores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    code TEXT,
+    address TEXT,
+    city TEXT,
+    area TEXT,
+    biz_type TEXT DEFAULT '快餐',        -- 快餐/正餐/茶饮/火锅/其他
+    opened_at TEXT,
+    status TEXT DEFAULT '营业中',         -- 营业中/筹备中/已关店
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS dishes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    store_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    code TEXT,
+    category TEXT,
+    price REAL DEFAULT 0,
+    cost REAL DEFAULT 0,
+    unit TEXT,
+    status TEXT DEFAULT '在售',           -- 在售/下架
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS order_items (
+    -- 订单明细：orders 表保留为订单头（o.product 字段不动，向后兼容）
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    order_id INTEGER NOT NULL,
+    dish_id INTEGER,
+    dish_name_snapshot TEXT NOT NULL,
+    qty INTEGER NOT NULL DEFAULT 1,
+    unit_price REAL NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0,
+    discount REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    store_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    category TEXT NOT NULL,               -- 食材/人力/房租/水电/营销/其他
+    amount REAL NOT NULL,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_stores_tenant_status ON stores(tenant_id, status);
+  CREATE INDEX IF NOT EXISTS idx_dishes_tenant_store ON dishes(tenant_id, store_id, status);
+  CREATE INDEX IF NOT EXISTS idx_order_items_tenant_order ON order_items(tenant_id, order_id);
+  CREATE INDEX IF NOT EXISTS idx_order_items_tenant_dish ON order_items(tenant_id, dish_id);
+  CREATE INDEX IF NOT EXISTS idx_costs_tenant_date ON costs(tenant_id, date);
+  CREATE INDEX IF NOT EXISTS idx_costs_tenant_store ON costs(tenant_id, store_id, date);
   CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
   CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(owner_id);
   CREATE INDEX IF NOT EXISTS idx_follow_lead ON follow_ups(lead_id);
@@ -515,6 +574,7 @@ const ISOLATED = new Set([
   'deleted_records', 'scheduled_runs', 'notifications', 'tool_runs', 'tool_run_events',
   'employee_workbench_configs', 'content_employee_workbench_configs', 'content_employee_runs',
   'content_automation_rules', 'content_automation_runs', 'content_publish_logs', 'content_material_refs',
+  'stores', 'dishes', 'order_items', 'costs',
   // 注：specialists（数字员工）与 marshals（内部任务分部）一样是全局基础数据，全租户共享同一份编制，
   // 不在隔离集——读取本就应跨租户取全量；如误列入会导致非总部企业看到 0 个专员。
 ]);

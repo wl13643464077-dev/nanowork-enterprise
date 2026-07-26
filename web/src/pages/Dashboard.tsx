@@ -4,7 +4,7 @@ import {
   DollarOutlined, UserAddOutlined, ClockCircleOutlined, CalendarOutlined,
   CheckCircleOutlined, HeartOutlined, RightOutlined, BulbOutlined, AlertOutlined, RobotOutlined, MessageOutlined,
   CrownFilled, TrophyFilled, StarFilled, FireFilled, GiftOutlined, PlusOutlined,
-  SettingOutlined, AppstoreOutlined,
+  SettingOutlined, AppstoreOutlined, PayCircleOutlined, FundOutlined,
 } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -135,6 +135,18 @@ export default function Dashboard() {
   const [ai, setAi] = useState<{ open: boolean; loading: boolean; title: string; text?: string }>({ open: false, loading: false, title: '' });
   const [feishu, setFeishu] = useState<any>(null);
   useEffect(() => { api.get('/sys/feishu').then(setFeishu).catch(() => {}); }, []);
+
+  // 门店真数据 KPI（当月真实客单价/毛利率）：值为 null 时整卡不渲染；调用失败（含无 analysis 权限）静默隐藏。
+  // 用原生 fetch 而非 api.get：api 封装会对失败请求弹全局错误提示，这里必须完全静默。
+  const [storeKpi, setStoreKpi] = useState<any>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/store-data/kpi?month=${dayjs().format('YYYY-MM')}`, { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) setStoreKpi(d); })
+      .catch(() => { if (!cancelled) setStoreKpi(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   const openDayDetail = (date: string) => {
     setDayDetail({ loading: true, date });
@@ -385,6 +397,15 @@ export default function Dashboard() {
           value={summary.health ? summary.health.level : '仅管理层可见'}
           suffix={summary.health ? `${summary.health.score}分` : undefined}
           onClick={summary.health ? () => nav('/analysis') : undefined} /></Col>
+        {/* 门店真数据卡：只在真实录入了订单明细/成本时出现，null 一律不渲染（不显示 '-' 冒充有数） */}
+        {storeKpi?.avgTicket != null && (
+          <Col xs={12} md={8} xl={4}><StatCard icon={<PayCircleOutlined />} color="#0ea5a4" label="本月真实客单价"
+            value={fmtMoney(storeKpi.avgTicket)} suffix="按订单明细" onClick={() => nav('/store-data')} /></Col>
+        )}
+        {storeKpi?.grossMargin != null && (
+          <Col xs={12} md={8} xl={4}><StatCard icon={<FundOutlined />} color="#7c5cd6" label="本月毛利率"
+            value={`${storeKpi.grossMargin}%`} suffix="按登记成本" onClick={() => nav('/store-data')} /></Col>
+        )}
       </Row>}
 
       {shown('follow') && <Panel title={<><MessageOutlined style={{ color: '#22c4a8' }} /> {scopeLabel}沟通跟进看板</>}
