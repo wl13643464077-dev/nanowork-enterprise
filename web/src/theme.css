@@ -175,3 +175,57 @@ button, input, textarea, select { letter-spacing: 0; }
   outline: 2px solid var(--ui-primary);
   outline-offset: 2px;
 }
+
+/* ===== 鲜活化动效工具（迭代六）：进场、呼吸、打字点 ===== */
+@keyframes nw-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.nw-rise {
+  animation: nw-rise 0.5s var(--ease-out) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+/* 打字点（AI 生成中）：<span class="nw-typing"><i/><i/><i/></span> */
+.nw-typing {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.nw-typing i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: nw-typing 1.2s ease-in-out infinite;
+}
+.nw-typing i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.nw-typing i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes nw-typing {
+  0%, 60%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nw-rise {
+    animation: none;
+  }
+  .nw-typing i {
+    animation: none;
+  }
+}

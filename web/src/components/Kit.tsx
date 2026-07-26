@@ -1,6 +1,33 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Card, Skeleton, Tag } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+
+// 数字滚动：KPI 数值变化时从旧值缓动到新值（尊重 prefers-reduced-motion）
+export function AnimatedNumber({ value, duration = 700 }: { value: number; duration?: number }) {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+  useEffect(() => {
+    if (!Number.isFinite(value)) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      fromRef.current = value;
+      setDisplay(value);
+      return;
+    }
+    const from = fromRef.current;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisplay(Math.round(from + (value - from) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = value;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{display.toLocaleString()}</>;
+}
 
 // KPI 统计卡（对照UI：左icon色块 + 数值 + 环比chip）
 export function StatCard({ icon, color, label, value, suffix, trend, trendLabel, onClick }: {
@@ -18,7 +45,7 @@ export function StatCard({ icon, color, label, value, suffix, trend, trendLabel,
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ color: 'var(--ui-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{label}</div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 21, fontWeight: 700, color: 'var(--ui-text)', whiteSpace: 'nowrap' }}>{value}</span>
+            <span style={{ fontSize: 21, fontWeight: 700, color: 'var(--ui-text)', whiteSpace: 'nowrap' }}>{typeof value === 'number' ? <AnimatedNumber value={value} /> : value}</span>
             {suffix && <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{suffix}</span>}
             {trend !== undefined && trend !== null && (
               <span style={{ fontSize: 11, color: trend >= 0 ? '#16a34a' : '#ef4444', whiteSpace: 'nowrap' }}>

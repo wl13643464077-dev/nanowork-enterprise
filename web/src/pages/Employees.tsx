@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { AnimatedNumber } from '../components/Kit';
 import EmployeeWorkbench from '../components/EmployeeWorkbench';
 
 type Employee = {
@@ -77,6 +78,40 @@ export default function Employees() {
     return () => { active = false; };
   }, []);
 
+  // 实时脉搏：分部执行中任务数 + 最新任务动态（30 秒可见性门控轮询；失败静默隐藏，不用空框冒充）
+  const [pulse, setPulse] = useState<{ depts: any[]; feed: any[] } | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = () => Promise.all([
+      api.get('/marshals/drill/marshals').catch(() => null),
+      api.get('/marshals/drill/outputs').catch(() => null),
+    ]).then(([depts, outputs]: any[]) => {
+      if (!active) return;
+      const deptRows = Array.isArray(depts?.rows) ? depts.rows : [];
+      const feedRows = Array.isArray(outputs?.rows) ? outputs.rows.slice(0, 7) : [];
+      setPulse(deptRows.length || feedRows.length ? { depts: deptRows, feed: feedRows } : null);
+    });
+    load();
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') load(); }, 30000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  // 员工运行状态静默刷新（执行中/空闲实时变化，不打断浏览）
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      api.get('/employees').then((data: EmployeeCatalog | Employee[]) => {
+        if (Array.isArray(data)) setCatalog(current => ({ ...current, employees: data }));
+        else setCatalog({ total: data.total ?? data.employees?.length ?? 0, coreCount: data.coreCount, extensionCount: data.extensionCount, groups: data.groups || [], employees: data.employees || [] });
+      }).catch(() => {});
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const runningByGroup = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const d of pulse?.depts || []) map.set(String(d.name || ''), Number(d.running) || 0);
+    return map;
+  }, [pulse]);
+
   // 搜索防抖 200ms：避免逐字符触发 70 张卡全量重算
   const [debouncedKeyword, setDebouncedKeyword] = useState(keyword);
   useEffect(() => {
@@ -99,7 +134,7 @@ export default function Employees() {
     .filter(Boolean).sort().map(value => ({ value, label: value })), [catalog.employees]);
   const coreCount = catalog.coreCount ?? catalog.employees.filter(employee => !employee.extension).length;
   const extensionCount = catalog.extensionCount ?? catalog.employees.filter(employee => employee.extension).length;
-  const displayCount = (value: number) => loading || loadError ? '—' : value;
+  const displayCount = (value: number) => loading || loadError ? '—' : <AnimatedNumber value={value} />;
 
   const selectGroup = (value: string) => {
     setGroup(value);
@@ -156,12 +191,39 @@ export default function Employees() {
         <button className={group === '全部分部' ? 'active' : ''} onClick={() => selectGroup('全部分部')}>
           <AppstoreOutlined /> 全部分部 <span>{loading || loadError ? '—' : catalog.total}</span>
         </button>
-        {catalog.groups.map(item => (
-          <button key={item.name} className={group === item.name ? 'active' : ''} onClick={() => selectGroup(item.name)}>
-            <i>{item.emoji || '•'}</i>{item.name.replace('部', '')}<span>{item.count}</span>
-          </button>
-        ))}
+        {catalog.groups.map(item => {
+          const running = runningByGroup.get(item.name) || 0;
+          return (
+            <button key={item.name} className={group === item.name ? 'active' : ''} onClick={() => selectGroup(item.name)}
+              title={running > 0 ? `${item.name}：${running} 个任务执行中` : undefined}>
+              <i>{item.emoji || '•'}</i>{item.name.replace('部', '')}<span>{item.count}</span>
+              {running > 0 && <em className="group-live" aria-label={`${running} 个任务执行中`}>{running}</em>}
+            </button>
+          );
+        })}
       </nav>
+
+      {pulse && pulse.feed.length > 0 && (
+        <section className="employee-pulse nw-rise" aria-label="数字员工实时工作动态">
+          <div className="employee-pulse-head">
+            <strong>实时工作动态</strong>
+            <span>来自真实任务记录 · 30 秒自动刷新</span>
+          </div>
+          <div className="employee-pulse-feed">
+            {pulse.feed.map((item: any, index: number) => (
+              <div className="employee-pulse-item" key={item.id} style={{ '--enter-delay': `${Math.min(index * 60, 360)}ms` } as CSSProperties}>
+                <span className="employee-pulse-emoji" aria-hidden="true">{item.emoji || '🤖'}</span>
+                <span className="employee-pulse-dept">{item.marshal}</span>
+                <span className="employee-pulse-title">{item.title}</span>
+                <span className={`employee-pulse-status s-${item.status === '生成中' ? 'run' : item.status === '待审阅' ? 'wait' : item.status === '已完成' ? 'done' : 'other'}`}>
+                  {item.status === '生成中' ? <>生成中<span className="nw-typing"><i /><i /><i /></span></> : item.status}
+                </span>
+                <time>{String(item.created_at || '').slice(5, 16)}</time>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <Alert className="employee-origin" type="info" showIcon
         message="员工定义来自派活餐饮产业部岗位手册；历史测试输出未作为经营事实或知识答案导入。" />
@@ -174,8 +236,10 @@ export default function Employees() {
         <div className="employee-grid">{Array.from({ length: 12 }, (_, index) => <div className="employee-card employee-card-loading" key={index}><Skeleton active paragraph={{ rows: 3 }} /></div>)}</div>
       ) : loadError ? null : filtered.length ? (
         <section className="employee-grid" aria-live="polite">
-          {filtered.map(employee => (
-            <article className="employee-card" key={employee.idx} onClick={() => openEmployee(employee)} tabIndex={0}
+          {filtered.map((employee, index) => (
+            <article className={`employee-card nw-rise${employee.status === '执行中' ? ' busy' : ''}`}
+              style={{ '--enter-delay': `${Math.min(index * 35, 560)}ms` } as CSSProperties}
+              key={employee.idx} onClick={() => openEmployee(employee)} tabIndex={0}
               role="button" aria-label={`打开${employee.person || employee.name}的完整员工工作台`}
               onKeyDown={event => {
                 if (event.key === 'Enter' || event.key === ' ') {
@@ -192,11 +256,16 @@ export default function Employees() {
                   <span>{employee.group}</span>
                 </div>
                 <Tooltip title={employee.status === '执行中'
-                  ? '正在执行任务'
+                  ? '正在执行任务，完成后会进入待审阅'
                   : employee.status === '空闲'
-                    ? '当前空闲，可以派活'
+                    ? '当前空闲，可以立即派活'
                     : employee.status || '运行状态尚未上报'}>
-                  <i className={`employee-status ${employee.status === '执行中' ? 'busy' : employee.status === '空闲' ? '' : 'unknown'}`} />
+                  <span className={`employee-live ${employee.status === '执行中' ? 'busy' : employee.status === '空闲' ? 'idle' : 'unknown'}`}>
+                    <i className="dot" aria-hidden="true" />
+                    {employee.status === '执行中'
+                      ? <>执行中<span className="nw-typing"><i /><i /><i /></span></>
+                      : employee.status === '空闲' ? '空闲' : '未知'}
+                  </span>
                 </Tooltip>
               </div>
               <h2>{employee.name}</h2>
@@ -240,4 +309,38 @@ const STYLES = `
 .employee-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.employee-card{position:relative;min-width:0;min-height:248px;content-visibility:auto;contain-intrinsic-size:auto 248px;padding:16px 15px 14px;border:1px solid var(--ui-border);border-radius:14px;background:var(--ui-surface);box-shadow:0 8px 22px rgba(21,55,93,.045);cursor:pointer;outline:none;transition:transform .22s,border-color .22s,box-shadow .22s}.employee-card:hover,.employee-card:focus-visible{transform:translateY(-3px);border-color:#8db7e8;box-shadow:0 16px 32px rgba(19,79,148,.11)}.employee-card:focus-visible{box-shadow:0 0 0 3px rgba(44,118,220,.18),0 16px 32px rgba(19,79,148,.11)}.employee-card-top{display:flex;align-items:center;gap:10px}.employee-avatar{width:43px;height:43px;display:grid;place-items:center;flex:0 0 auto;border-radius:12px;background:color-mix(in srgb,var(--employee-color) 12%,var(--ui-surface));border:1px solid color-mix(in srgb,var(--employee-color) 23%,transparent)}.employee-avatar span{font-size:21px;filter:drop-shadow(0 3px 6px rgba(20,54,90,.12))}.employee-identity{min-width:0;flex:1}.employee-identity>div{display:flex;align-items:center;gap:4px}.employee-identity strong{overflow:hidden;color:var(--ui-text);font-size:13.5px;text-overflow:ellipsis;white-space:nowrap}.employee-identity .ant-tag{margin:0;font-size:9px;line-height:17px}.employee-identity>span{display:block;margin-top:2px;overflow:hidden;color:var(--ui-muted);font-size:9.8px;text-overflow:ellipsis;white-space:nowrap}.employee-status{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#3ac28e;box-shadow:0 0 0 4px rgba(58,194,142,.1)}.employee-status.busy{background:#e6a23c;box-shadow:0 0 0 4px rgba(230,162,60,.1)}.employee-status.unknown{background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.12)}.employee-card h2{margin:17px 0 7px;color:var(--ui-text);font-size:14px;line-height:1.45}.employee-card p{display:-webkit-box;min-height:62px;margin:0;overflow:hidden;color:var(--ui-text-2);font-size:11.5px;line-height:1.75;-webkit-box-orient:vertical;-webkit-line-clamp:3}.employee-card-foot{position:absolute;left:15px;right:15px;bottom:13px;display:flex;align-items:center;justify-content:space-between;padding-top:11px;border-top:1px solid var(--ui-border);color:var(--ui-muted);font-size:10px}.employee-card-foot span{display:flex;align-items:center;gap:4px}.employee-card-link{color:var(--ui-primary);font-size:10.5px;font-weight:600}.employee-card-link span{display:inline}.employee-card-loading{cursor:default}.employee-card-loading:hover{transform:none}.employee-empty{padding:80px 0}
 .employee-drawer-title{display:flex;align-items:center;gap:10px}.employee-drawer-title>span{width:40px;height:40px;display:grid;place-items:center;border-radius:11px;background:#eaf2fc;font-size:21px}.employee-drawer-title strong,.employee-drawer-title small{display:block}.employee-drawer-title strong{font-size:15px}.employee-drawer-title small{margin-top:2px;color:var(--ui-muted);font-size:11px;font-weight:400}.employee-detail{display:flex;flex-direction:column;gap:22px}.employee-detail-banner{padding:18px;border:1px solid #dbe8f7;border-radius:14px;background:linear-gradient(135deg,#f3f8fe,#e9f2fd)}:root[data-theme='midnight'] .employee-detail-banner{border-color:var(--ui-border);background:var(--ui-surface-2)}.employee-detail-banner>div:first-child{color:var(--ui-primary);font-size:11px;font-weight:650}.employee-detail-banner p{margin:10px 0 12px;color:var(--ui-text-2);font-size:12.5px;line-height:1.8}.employee-detail-tags .ant-tag{font-size:10px}.employee-detail section{padding-top:2px}.employee-detail h3{margin:0 0 12px;color:var(--ui-text);font-size:14px}.employee-check-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}.employee-check-list li{display:flex;align-items:flex-start;gap:7px;padding:9px 10px;border-radius:8px;background:var(--ui-surface-2);color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-check-list .anticon{margin-top:2px;color:#36a879}.employee-detail .ant-timeline{margin-top:4px}.employee-detail .ant-timeline-item-content{color:var(--ui-text-2);font-size:11.5px;line-height:1.65}.employee-deliverables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.employee-deliverables>div{display:flex;align-items:flex-start;gap:8px;padding:10px 11px;border:1px solid var(--ui-border);border-radius:9px;color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-deliverables .anticon{margin-top:2px;color:var(--ui-primary)}.employee-section-title{display:flex;align-items:center;justify-content:space-between}.employee-section-title span{color:var(--ui-muted);font-size:10px}.task-done{color:#32ad79}.task-running{color:#2780dc}
 @media(max-width:1500px){.employee-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:1180px){.employee-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.employee-hero{grid-template-columns:1fr}.employee-hero-stats{max-width:520px}}@media(max-width:760px){.employee-hero{min-height:0;padding:24px 20px}.employee-hero-stats{grid-template-columns:repeat(4,1fr)}.employee-hero-stats div{padding:12px 8px}.employee-hero-stats strong{font-size:20px}.employee-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.employee-toolbar{align-items:stretch;flex-direction:column;gap:8px}.employee-status-filter{width:100%}.employee-filter-count{margin:0}.employee-check-list,.employee-deliverables{grid-template-columns:1fr}}@media(max-width:520px){.employee-grid{grid-template-columns:1fr}.employee-card{min-height:220px}.employee-hero-stats{grid-template-columns:repeat(2,1fr)}}
+
+/* ===== 鲜活化（迭代六）：状态芯片 / 忙碌辉光 / 实时动态流 / 分部脉搏 ===== */
+.employee-live{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;flex:0 0 auto;white-space:nowrap}
+.employee-live.idle{color:#2f9e6e;background:rgba(58,194,142,.12)}
+.employee-live.busy{color:#b97f1e;background:rgba(230,162,60,.14)}
+.employee-live.unknown{color:var(--ui-muted);background:var(--ui-surface-2)}
+.employee-live .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.employee-live.idle .dot{animation:employee-breathe 3.2s ease-in-out infinite}
+.employee-live.busy .dot{animation:employee-pulse 1.6s ease-out infinite}
+@keyframes employee-breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes employee-pulse{0%{box-shadow:0 0 0 0 rgba(230,162,60,.5)}75%{box-shadow:0 0 0 6px rgba(230,162,60,0)}100%{box-shadow:0 0 0 0 rgba(230,162,60,0)}}
+.employee-card.busy .employee-avatar{animation:employee-glow 2.4s ease-in-out infinite}
+@keyframes employee-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--employee-color) 0%,transparent)}50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--employee-color) 22%,transparent)}}
+.employee-card .employee-avatar{transition:transform .25s var(--ease-out)}
+.employee-card:hover .employee-avatar{transform:scale(1.08) rotate(-3deg)}
+.group-live{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 4px;margin-left:2px;border-radius:999px;background:#e6a23c;color:#fff;font-style:normal;font-size:10px;font-weight:700;animation:employee-pulse 1.6s ease-out infinite}
+.employee-pulse{border:1px solid var(--ui-border);border-radius:var(--radius-lg);background:var(--ui-surface);padding:12px 16px}
+.employee-pulse-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.employee-pulse-head strong{font-size:13px;color:var(--ui-text)}
+.employee-pulse-head span{font-size:11px;color:var(--ui-muted)}
+.employee-pulse-feed{display:flex;flex-direction:column}
+.employee-pulse-item{display:flex;align-items:center;gap:10px;padding:7px 2px;border-top:1px dashed var(--ui-border);font-size:12px;animation:nw-rise .5s var(--ease-out) both;animation-delay:var(--enter-delay,0ms)}
+.employee-pulse-item:first-child{border-top:none}
+.employee-pulse-emoji{font-size:15px;flex:0 0 auto}
+.employee-pulse-dept{color:var(--ui-text-2);font-weight:600;flex:0 0 auto}
+.employee-pulse-title{color:var(--ui-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
+.employee-pulse-status{flex:0 0 auto;display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.employee-pulse-status.s-run{color:#b97f1e;background:rgba(230,162,60,.14)}
+.employee-pulse-status.s-wait{color:#1769d2;background:rgba(23,105,210,.1)}
+.employee-pulse-status.s-done{color:#2f9e6e;background:rgba(58,194,142,.12)}
+.employee-pulse-status.s-other{color:var(--ui-muted);background:var(--ui-surface-2)}
+.employee-pulse-item time{color:var(--ui-muted);font-size:11px;flex:0 0 auto;font-variant-numeric:tabular-nums}
+@media(max-width:640px){.employee-pulse-dept{display:none}.employee-pulse-item time{display:none}}
+@media(prefers-reduced-motion:reduce){.employee-live .dot,.employee-card.busy .employee-avatar,.group-live{animation:none}.employee-card:hover .employee-avatar{transform:none}}
 `;

@@ -918,7 +918,8 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
                 {restaurantTask.failed
                   ? '生成失败，预扣积分已全额退回；可调整输入后重新派活。'
                   : restaurantTask.status === '生成中'
-                    ? '数字员工正在生成，此处每 5 秒自动刷新；也可关闭窗口，完成后会收到站内通知。'
+                    ? <>数字员工正在奋笔疾书<span className="nw-typing"><i /><i /><i /></span> 此处每 5 秒自动刷新；也可关闭窗口，完成后会收到站内通知。</>
+
                     : restaurantTask.status === '待审阅'
                       ? '产出已生成，等待人工审阅；全文可在「经营洞察 → 员工产出」中查看与穿透。'
                       : '任务已结束；产出与证据可在「经营洞察 → 员工产出」中随时回看。'}
