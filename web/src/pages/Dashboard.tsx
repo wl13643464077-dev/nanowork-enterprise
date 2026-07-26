@@ -9,7 +9,7 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, fmtMoney, notifyCredits, getUser } from '../api/client';
-import { StatCard, Panel, StageTag, GradeTag } from '../components/Kit';
+import { StatCard, Panel, StageTag, GradeTag, ErrorState } from '../components/Kit';
 import { Markdown } from '../components/Markdown';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 
@@ -44,6 +44,10 @@ export default function Dashboard() {
   const [keyCustomers, setKeyCustomers] = useState<any[]>([]);
   const [briefing, setBriefing] = useState<any>(null);
   const [todos, setTodos] = useState<any>({});
+  // 今日经营诊断（主动式）：无 analysis 模块权限或接口失败时整卡隐藏
+  const [diagnosis, setDiagnosis] = useState<any[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [weekActs, setWeekActs] = useState<any[]>([]);
   const [marshals, setMarshals] = useState<any[]>([]);
   const [followOverview, setFollowOverview] = useState<any>({ summary: {}, daily: [], staff: [], recent: [] });
@@ -84,6 +88,7 @@ export default function Dashboard() {
     api.get('/dashboard/todos').then(setTodos);
     api.get('/dashboard/marshal-shortcuts').then(setMarshals);
     api.get('/dashboard/widgets/preferences').then(setWidgetPrefs).catch(() => {});
+    api.get('/analysis/insights').then((d: any) => setDiagnosis(Array.isArray(d) ? d : [])).catch(() => setDiagnosis(null));
   }, [canViewManagementBriefing]);
 
   const dataMarshal = marshals.find((m: any) => m.code === 'M-07');
@@ -91,14 +96,20 @@ export default function Dashboard() {
     const requestId = ++scopeRequestRef.current;
     let cancelled = false;
     const current = () => !cancelled && requestId === scopeRequestRef.current;
-    api.get(`/dashboard/summary${scopePath}`).then(data => { if (current()) setSummary(data); });
+    setLoadError(false);
+    api.get(`/dashboard/summary${scopePath}`).then(data => { if (current()) setSummary(data); })
+      .catch(() => { if (current()) setLoadError(true); });
     api.get(`/dashboard/trend${scopePath}`).then((d: any) => { if (current()) setTrend(Array.isArray(d) ? d : d.rows || []); });
     api.get(`/dashboard/channels${scopePath}`).then((d: any) => { if (current()) setChannels(Array.isArray(d) ? d : d.rows || []); });
     api.get(`/dashboard/week-activities${scopePath}`).then((d: any) => { if (current()) setWeekActs(Array.isArray(d) ? d : d.rows || []); });
     api.get(`/dashboard/follow-overview${scopePath}`).then(data => { if (current()) setFollowOverview(data); });
-    const timer = setInterval(() => api.get(`/dashboard/summary${scopePath}`).then(data => { if (current()) setSummary(data); }), 30000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [scopePath]);
+    // 轮询带可见性门控：后台标签页不发请求，回到前台立即刷新一次
+    const poll = () => api.get(`/dashboard/summary${scopePath}`).then(data => { if (current()) setSummary(data); }).catch(() => {});
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') poll(); }, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { cancelled = true; clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [scopePath, reloadKey]);
 
   const totalTodos = (todos.approvals || 0) + (todos.overdueLeads || 0) + (todos.silentPartners || 0) + (todos.reviewTasks || 0);
 
@@ -273,6 +284,27 @@ export default function Dashboard() {
         <Alert type="info" showIcon
           message={summary.timeScope?.note || `当前为 ${summary.timeScope.today} 实时口径：今日销售额为当天实时数据；下方图表/活动按已有历史记录展示（经营数据最近 ${summary.timeScope.latestOps || '-'}，活动最近 ${summary.timeScope.latestActivity || '-'}）。`}
           style={{ borderColor: 'var(--ui-border-strong)', background: 'var(--ui-surface-2)' }} />
+      )}
+      {loadError && <ErrorState description="经营概览拉取失败，页面数字可能过期。" onRetry={() => setReloadKey(k => k + 1)} />}
+      {diagnosis !== null && diagnosis.length > 0 && (
+        <Panel
+          title={<><AlertOutlined style={{ color: 'var(--warn)' }} /> 今日经营诊断 · 建议先做这{Math.min(diagnosis.length, 3)}件事</>}
+          extra={<Button size="small" type="link" onClick={() => nav('/analysis')}>查看完整分析 <RightOutlined /></Button>}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-3)' }}>
+            {diagnosis.slice(0, 3).map((item: any, index: number) => (
+              <button key={index} type="button" onClick={() => nav('/advisor')}
+                style={{ appearance: 'none', textAlign: 'left', font: 'inherit', cursor: 'pointer',
+                  background: 'var(--ui-surface-2)', border: '1px solid var(--ui-border)', borderRadius: 'var(--radius-md)',
+                  padding: 'var(--space-3) var(--space-4)', color: 'inherit' }}
+                aria-label={`经营诊断：${item.issue}，点击咨询老板参谋`}>
+                <Tag color="blue" style={{ marginBottom: 'var(--space-1)' }}>{item.dimension}</Tag>
+                <div style={{ fontWeight: 600, color: 'var(--ui-text)', fontSize: 'var(--font-2)', lineHeight: 1.6 }}>{item.issue}</div>
+                <div style={{ color: 'var(--ui-muted)', fontSize: 'var(--font-1)', marginTop: 'var(--space-1)', lineHeight: 1.7 }}>{item.suggestion}</div>
+                <div style={{ color: 'var(--ui-primary)', fontSize: 'var(--font-1)', marginTop: 'var(--space-2)' }}>问老板参谋怎么做 <RightOutlined style={{ fontSize: 10 }} /></div>
+              </button>
+            ))}
+          </div>
+        </Panel>
       )}
       <Panel title="经营数据时间范围" extra={<Space size={8}>
         <Tag color="green">数据源：当前企业</Tag>

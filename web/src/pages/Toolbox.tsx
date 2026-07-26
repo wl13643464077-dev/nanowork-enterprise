@@ -42,14 +42,14 @@ type ToolRun = {
 };
 
 const TOOLS: ToolDefinition[] = [
-  { key: 'hot', title: '今日必发', short: '今天发什么', description: '根据门店品类、客群和今天的经营重点，给出 3 个可立即发布的内容选题与承接动作。', icon: <FireOutlined />, accent: '#ef6d43', employee: '云营销', employeeIdx: 141, cost: '免费 · 模板整理', inputs: ['门店品类', '发布渠道', '今天主推'], output: '3个选题 + 文案角度 + 到店承接动作' },
-  { key: 'remix', title: '视频混剪', short: '手机素材成片', description: '把门店手机视频整理为一条有开头、有卖点、有行动指令的竖屏短视频方案。', icon: <PlayCircleOutlined />, accent: '#4f77dd', employee: '章文案', employeeIdx: 140, cost: '免费 · 模板整理', inputs: ['素材说明', '目标平台', '成片目的'], output: '分镜 + 口播 + 字幕 + 配乐与剪辑指令' },
-  { key: 'pcal', title: '私域日历', short: '整月不愁发', description: '按月编排朋友圈与社群内容，让促销、口碑、会员维护和老板人设形成节奏。', icon: <CalendarOutlined />, accent: '#258f78', employee: '云营销', employeeIdx: 141, cost: '免费 · 模板整理', inputs: ['月份', '经营重点', '渠道'], output: '月度日历 + 每日主题 + 推荐发布时间' },
-  { key: 'bench', title: '竞品盯梢', short: '看懂对手动作', description: '记录最多 8 个对标门店，整理价格、产品、口碑和活动变化，标出可行动的空白。', icon: <EyeOutlined />, accent: '#755db9', employee: '钱商圈', employeeIdx: 102, cost: '免费 · 模板整理', inputs: ['对标门店', '观察周期', '关注主题'], output: '变化清单 + 机会空白 + 不建议跟随项' },
-  { key: 'warm', title: '起号军师', short: '30天冷启动', description: '把门店定位、老板人设和平台机制转成 30 天账号冷启动路线，而不是堆选题。', icon: <RocketOutlined />, accent: '#d98b2b', employee: '苏种草', employeeIdx: 142, cost: '免费 · 模板整理', inputs: ['平台', '门店定位', '老板人设'], output: '30天节奏 + 内容支柱 + 每周验收指标' },
-  { key: 'leads', title: '线索雷达', short: '发现本地需求', description: '从求推荐、吐槽、攻略和比价等公开信号中，整理值得人工核验的本地需求与承接话术。', icon: <RadarChartOutlined />, accent: '#cb4e72', employee: '潘口碑', employeeIdx: 143, cost: '免费 · 模板整理', inputs: ['城市/商圈', '产品', '目标客群'], output: '信号清单 + 核验提示 + 评论/私信承接话术' },
-  { key: 'shot', title: '产品图文', short: '一份产品多端用', description: '围绕一道菜或一款套餐，形成外卖、小红书、朋友圈和到店物料共用的卖点系统。', icon: <CameraOutlined />, accent: '#2784c7', employee: '章文案', employeeIdx: 140, cost: '免费 · 模板整理', inputs: ['产品信息', '真实卖点', '使用渠道'], output: '卖点结构 + 多平台文案 + 拍摄与海报指引' },
-  { key: 'vars', title: '口播矩阵', short: '一稿裂变多版', description: '把一条老板口播改成不同开头、节奏和行动指令，保持事实一致但不机械换词。', icon: <SoundOutlined />, accent: '#247b9b', employee: '章文案', employeeIdx: 140, cost: '免费 · 模板整理', inputs: ['原始口播', '裂变数量', '目标平台'], output: '2-6版口播 + 镜头建议 + 风险检查' },
+  { key: 'hot', title: '今日必发', short: '今天发什么', description: '根据门店品类、客群和今天的经营重点，给出 3 个可立即发布的内容选题与承接动作。', icon: <FireOutlined />, accent: '#ef6d43', employee: '云营销', employeeIdx: 141, cost: '免费', inputs: ['门店品类', '发布渠道', '今天主推'], output: '3个选题 + 文案角度 + 到店承接动作' },
+  { key: 'remix', title: '视频混剪', short: '手机素材成片', description: '把门店手机视频整理为一条有开头、有卖点、有行动指令的竖屏短视频方案。', icon: <PlayCircleOutlined />, accent: '#4f77dd', employee: '章文案', employeeIdx: 140, cost: '免费', inputs: ['素材说明', '目标平台', '成片目的'], output: '分镜 + 口播 + 字幕 + 配乐与剪辑指令' },
+  { key: 'pcal', title: '私域日历', short: '整月不愁发', description: '按月编排朋友圈与社群内容，让促销、口碑、会员维护和老板人设形成节奏。', icon: <CalendarOutlined />, accent: '#258f78', employee: '云营销', employeeIdx: 141, cost: '免费', inputs: ['月份', '经营重点', '渠道'], output: '月度日历 + 每日主题 + 推荐发布时间' },
+  { key: 'bench', title: '竞品盯梢', short: '看懂对手动作', description: '记录最多 8 个对标门店，整理价格、产品、口碑和活动变化，标出可行动的空白。', icon: <EyeOutlined />, accent: '#755db9', employee: '钱商圈', employeeIdx: 102, cost: '免费', inputs: ['对标门店', '观察周期', '关注主题'], output: '变化清单 + 机会空白 + 不建议跟随项' },
+  { key: 'warm', title: '起号军师', short: '30天冷启动', description: '把门店定位、老板人设和平台机制转成 30 天账号冷启动路线，而不是堆选题。', icon: <RocketOutlined />, accent: '#d98b2b', employee: '苏种草', employeeIdx: 142, cost: '免费', inputs: ['平台', '门店定位', '老板人设'], output: '30天节奏 + 内容支柱 + 每周验收指标' },
+  { key: 'leads', title: '线索雷达', short: '发现本地需求', description: '从求推荐、吐槽、攻略和比价等公开信号中，整理值得人工核验的本地需求与承接话术。', icon: <RadarChartOutlined />, accent: '#cb4e72', employee: '潘口碑', employeeIdx: 143, cost: '免费', inputs: ['城市/商圈', '产品', '目标客群'], output: '信号清单 + 核验提示 + 评论/私信承接话术' },
+  { key: 'shot', title: '产品图文', short: '一份产品多端用', description: '围绕一道菜或一款套餐，形成外卖、小红书、朋友圈和到店物料共用的卖点系统。', icon: <CameraOutlined />, accent: '#2784c7', employee: '章文案', employeeIdx: 140, cost: '免费', inputs: ['产品信息', '真实卖点', '使用渠道'], output: '卖点结构 + 多平台文案 + 拍摄与海报指引' },
+  { key: 'vars', title: '口播矩阵', short: '一稿裂变多版', description: '把一条老板口播改成不同开头、节奏和行动指令，保持事实一致但不机械换词。', icon: <SoundOutlined />, accent: '#247b9b', employee: '章文案', employeeIdx: 140, cost: '免费', inputs: ['原始口播', '裂变数量', '目标平台'], output: '2-6版口播 + 镜头建议 + 风险检查' },
 ];
 
 const toolByKey = (key: string | null) => TOOLS.find(tool => tool.key === key) || TOOLS[0];
@@ -173,7 +173,7 @@ export default function Toolbox() {
         <div>
           <div className="toolbox-kicker"><ToolOutlined /> 经营工具箱</div>
           <h1>老板常用的活，不必每次从空白开始</h1>
-          <p>8 个高频模板助手，把老板的输入整理成可执行的结构化草案；全部免费，不消耗积分。真 AI 生成能力将在后续版本接入。</p>
+          <p>8 个高频经营工具，把老板的输入变成可执行的结构化草案；全部免费，不消耗积分。已配置 AI 模型时由对应数字员工真实生成，未配置时自动使用本地安全模板（结果页会如实标注执行模式）。</p>
         </div>
         <div className="toolbox-flow" aria-label="工具闭环">
           <span>经营问题</span><b>→</b><span>选择工具</span><b>→</b><span>员工执行</span><b>→</b><span>结果回流</span>
@@ -206,7 +206,7 @@ export default function Toolbox() {
             {fields}
             <Alert type="warning" showIcon message="工具结果是经营建议，不会自动发布、改价、采购、排班或处罚员工；关键动作需要老板确认。" />
             <div className="toolbox-submit-row">
-              <span>{active.cost} · 基于你的输入做结构化整理，当前不调用外部 AI 模型</span>
+              <span>{active.cost} · 已配置 AI 时由数字员工生成，未配置时使用本地安全模板</span>
               <Button type="primary" size="large" icon={<ThunderboltOutlined />} loading={running} onClick={runTool}>开始运行</Button>
             </div>
           </Form>

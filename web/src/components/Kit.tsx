@@ -1,6 +1,6 @@
 import React from 'react';
-import { Card, Tag } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { Button, Card, Skeleton, Tag } from 'antd';
+import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 
 // KPI 统计卡（对照UI：左icon色块 + 数值 + 环比chip）
 export function StatCard({ icon, color, label, value, suffix, trend, trendLabel, onClick }: {
@@ -46,6 +46,40 @@ export function Panel({ title, extra, children, style, bodyStyle }: {
         </div>
       )}
       {children}
+    </Card>
+  );
+}
+
+// 页面内容区骨架：切换 lazy 路由时保留布局外壳，只在内容区显示与最终布局近似的骨架
+export function PageSkeleton() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', padding: 'var(--space-1)' }} aria-busy="true" aria-label="页面加载中">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--space-3)' }}>
+        {[0, 1, 2, 3].map(i => (
+          <Card key={i} size="small" style={{ borderRadius: 'var(--radius-md)' }}>
+            <Skeleton active title={false} paragraph={{ rows: 2, width: ['60%', '90%'] }} />
+          </Card>
+        ))}
+      </div>
+      <Card size="small" style={{ borderRadius: 'var(--radius-md)' }}>
+        <Skeleton active paragraph={{ rows: 6 }} />
+      </Card>
+    </div>
+  );
+}
+
+// 整页/区块级错误态：静默失败的替代品——明确告知失败并提供重试入口
+export function ErrorState({ description, onRetry }: { description?: string; onRetry: () => void }) {
+  return (
+    <Card size="small" style={{ borderRadius: 'var(--radius-md)', borderColor: 'var(--danger)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <WarningOutlined style={{ color: 'var(--danger)', fontSize: 'var(--font-5)' }} />
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontWeight: 600, color: 'var(--ui-text)', fontSize: 'var(--font-3)' }}>数据加载失败</div>
+          <div style={{ color: 'var(--ui-muted)', fontSize: 'var(--font-1)', marginTop: 2 }}>{description || '网络或服务暂时不可用，请重试；若持续失败请联系平台服务人员。'}</div>
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={onRetry}>重新加载</Button>
+      </div>
     </Card>
   );
 }

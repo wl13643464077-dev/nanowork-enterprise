@@ -1,4 +1,7 @@
+import { generate, aiAvailable } from './ai.js';
+
 const PROMPT_VERSION = 'toolbox-template-v1';
+const AI_PROMPT_VERSION = 'toolbox-ai-v1';
 const SOURCE_SYSTEM = 'nanowork';
 
 export const TOOL_DEFINITIONS = Object.freeze({
@@ -512,6 +515,40 @@ function evidenceFor(toolKey) {
     evidence.push({ label: '外部平台实时数据', source: '未联网，待人工补充' });
   }
   return evidence;
+}
+
+// AI 生成通道：配置模型时由对应数字员工真实生成，失败或未配置时自动回退安全模板。
+// 边界与模板一致：不编造事实、不联网、缺失信息标待补充；当前不消耗积分。
+export async function generateToolboxRun(definition, inputs, now = new Date()) {
+  const template = generateToolboxDraft(definition, inputs, now);
+  if (!aiAvailable()) return template;
+  const system = [
+    `你是纳米Work行业版的餐饮数字员工「${definition.employeeName}」，正在执行经营工具「${definition.title}」。`,
+    '请输出结构清晰、动作可执行的中文 Markdown 交付草案。',
+    '硬性边界：',
+    '- 不得编造数据、案例、竞品实时信息或个人线索；缺失信息一律标注「待补充」或「待人工核验」。',
+    '- 不承诺经营效果；金额、优惠与对外承诺必须标注需门店负责人确认。',
+    '- 你没有联网检索能力，所有外部事实只能来自用户输入，不得暗示你查询过外部平台。',
+  ].join('\n');
+  const userMsg = [
+    `工具输入摘要：\n${template.inputSummary}`,
+    `原始输入 JSON：\n${JSON.stringify(inputs)}`,
+    `请产出「${definition.title}」的完整交付草案；可参考以下交付结构（可优化重组，不要逐句照抄）：\n${template.resultMd.slice(0, 1200)}`,
+  ].join('\n\n');
+  const r = await generate({
+    kind: `toolbox:${definition.key}`, system, userMsg,
+    fallback: () => template.resultMd, maxTokens: 2500, role: 'sales',
+  });
+  if (r.mode !== 'api') return template;
+  return {
+    ...template,
+    resultMd: r.text,
+    assumptions: [
+      '本次草案由 AI 模型基于表单输入生成，未联网检索；所有结论需人工核验后使用。',
+      ...template.assumptions.filter(item => !item.startsWith('本次使用纳米Work内置安全模板')),
+    ],
+    provenance: { ...template.provenance, mode: 'api', model: r.model, promptVersion: AI_PROMPT_VERSION },
+  };
 }
 
 export function generateToolboxDraft(definition, inputs, now = new Date()) {

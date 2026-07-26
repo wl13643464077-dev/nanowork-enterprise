@@ -1,6 +1,6 @@
 import {
   Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, message, Modal,
-  Select, Skeleton, Space, Switch, Tabs, Tag, Typography,
+  Select, Skeleton, Space, Steps, Switch, Tabs, Tag, Typography,
 } from 'antd';
 import {
   ApartmentOutlined, BookOutlined, CloseCircleOutlined, CodeOutlined,
@@ -426,6 +426,8 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
   const [promptDraft, setPromptDraft] = useState('');
   const [customSkillOpen, setCustomSkillOpen] = useState(false);
   const [lastSnapshot, setLastSnapshot] = useState<Record<string, unknown> | null>(null);
+  // 餐饮域派活后的任务进度（content 域走 runs 列表，restaurant 域走 /marshals/tasks/:id/status）
+  const [restaurantTask, setRestaurantTask] = useState<any>(null);
   const [dispatchImage, setDispatchImage] = useState<{ name: string; dataUrl: string } | null>(null);
   const [dispatchFiles, setDispatchFiles] = useState<UploadedFileRef[]>([]);
   const [runs, setRuns] = useState<EmployeeWorkbenchRun[]>([]);
@@ -636,6 +638,18 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
     }
   };
 
+  // 餐饮任务进度轮询：仅在「生成中」阶段轮询，带可见性门控；到达待审阅/完成/失败即停止
+  useEffect(() => {
+    if (!open || domain !== 'restaurant') return;
+    const taskId = restaurantTask?.id;
+    if (!taskId || restaurantTask?.status !== '生成中') return;
+    const pull = () => api.get(`/marshals/tasks/${taskId}/status`)
+      .then((t: any) => setRestaurantTask((cur: any) => (cur && cur.id === taskId ? { ...cur, ...t } : cur)))
+      .catch(() => {});
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') pull(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [open, domain, restaurantTask?.id, restaurantTask?.status]);
+
   const submitDispatch = async () => {
     if (idx === null || !profile) return;
     const values = await dispatchForm.validateFields();
@@ -655,6 +669,9 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
         : null;
       setLastSnapshot(snapshot);
       const createdRunId = Number(payload.runId ?? payload.taskId);
+      if (domain === 'restaurant' && Number.isSafeInteger(createdRunId) && createdRunId > 0) {
+        setRestaurantTask({ id: createdRunId, status: String(payload.status || '生成中'), stepIndex: 1 });
+      }
       if (domain === 'content' && Number.isSafeInteger(createdRunId) && createdRunId > 0) {
         setActiveRunId(createdRunId);
         setSelectedRun({
@@ -889,6 +906,24 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
               Number.isFinite(lastSnapshot.capabilityCount) && `${lastSnapshot.capabilityCount} 项能力`,
               lastSnapshot.configVersion && '工作配置快照已保存',
             ].filter(Boolean).join(' · ')} />
+        )}
+        {domain === 'restaurant' && restaurantTask && (
+          <Alert showIcon type={restaurantTask.failed ? 'error' : restaurantTask.status === '已完成' ? 'success' : 'info'}
+            message={`本次派活进度 · 任务 #${restaurantTask.id} · ${restaurantTask.status || '生成中'}`}
+            description={<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginTop: 'var(--space-1)' }}>
+              <Steps size="small" current={restaurantTask.failed ? 1 : (restaurantTask.stepIndex ?? 1)}
+                status={restaurantTask.failed ? 'error' : restaurantTask.status === '已完成' ? 'finish' : 'process'}
+                items={(restaurantTask.flow || ['已派发', 'AI生成中', '待审阅', '已完成']).map((step: string) => ({ title: step }))} />
+              <span style={{ fontSize: 'var(--font-1)', color: 'var(--ui-muted)' }}>
+                {restaurantTask.failed
+                  ? '生成失败，预扣积分已全额退回；可调整输入后重新派活。'
+                  : restaurantTask.status === '生成中'
+                    ? '数字员工正在生成，此处每 5 秒自动刷新；也可关闭窗口，完成后会收到站内通知。'
+                    : restaurantTask.status === '待审阅'
+                      ? '产出已生成，等待人工审阅；全文可在「经营洞察 → 员工产出」中查看与穿透。'
+                      : '任务已结束；产出与证据可在「经营洞察 → 员工产出」中随时回看。'}
+              </span>
+            </div>} />
         )}
         {domain === 'content' && (
           <section className="ewb-run-center" aria-label="内容员工近期任务与结果">

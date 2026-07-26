@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Menu, Input, Badge, Avatar, Dropdown, Popover, List, Empty, Tag, Tooltip, Drawer, Tabs, Button, Modal, Alert, message } from 'antd';
 import {
   DashboardOutlined, RobotOutlined, RiseOutlined, CalendarOutlined,
@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
+import { PageSkeleton } from '../components/Kit';
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
 const MENUS = [
@@ -86,10 +87,12 @@ export default function MainLayout() {
 
   useEffect(() => {
     api.get('/sys/notifications').then(setNotifs).catch(() => {});
-    // 60s 轮询：后台生成/员工任务完成的铃铛通知不用等切页或手动点开
-    const timer = setInterval(() => api.get('/sys/notifications').then(setNotifs).catch(() => {}), 60000);
+    // 60s 轮询：带可见性门控（后台标签页不发请求）；依赖为空数组，切页不再重建定时器
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') api.get('/sys/notifications').then(setNotifs).catch(() => {});
+    }, 60000);
     return () => clearInterval(timer);
-  }, [loc.pathname]);
+  }, []);
   useEffect(() => {
     api.get('/auth/me').then((me) => { setCredits(me.credits ?? 0); if (me.modules?.length) setModules(me.modules); }).catch(() => {});
     const onCredits = (e: any) => setCredits(current => e.detail?.balance ?? current);
@@ -149,7 +152,15 @@ export default function MainLayout() {
   };
   useEffect(() => {
     if (!personalFeishuOpen || !personalFeishuBind?.state || personalFeishuStatus !== 'pending') return;
-    const timer = window.setInterval(() => {
+    // 指数退避轮询（1.8s→3s→5s→8s，5 分钟封顶停止），替代固定 1.8s 无上限轮询
+    const DELAYS = [1800, 3000, 5000, 8000];
+    const startedAt = Date.now();
+    let attempt = 0;
+    let timer = 0;
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      if (Date.now() - startedAt > 5 * 60 * 1000) { setPersonalFeishuStatus('expired'); return; }
       api.get(`/sys/feishu/oauth/status?state=${encodeURIComponent(personalFeishuBind.state)}`)
         .then((data: any) => {
           if (data.status === 'bound') {
@@ -157,13 +168,16 @@ export default function MainLayout() {
             setPersonalFeishuBind(null);
             api.get('/sys/feishu/me').then(setPersonalFeishu).catch(() => {});
             message.success(`飞书已绑定${data.receiverName ? `：${data.receiverName}` : ''}`);
-          } else if (['expired', 'error', 'missing'].includes(data.status)) {
-            setPersonalFeishuStatus(data.status);
+            return;
           }
+          if (['expired', 'error', 'missing'].includes(data.status)) { setPersonalFeishuStatus(data.status); return; }
+          attempt += 1;
+          timer = window.setTimeout(tick, DELAYS[Math.min(attempt, DELAYS.length - 1)]);
         })
-        .catch(() => {});
-    }, 1800);
-    return () => window.clearInterval(timer);
+        .catch(() => { timer = window.setTimeout(tick, DELAYS[DELAYS.length - 1]); });
+    };
+    timer = window.setTimeout(tick, DELAYS[0]);
+    return () => { stopped = true; window.clearTimeout(timer); };
   }, [personalFeishuOpen, personalFeishuBind?.state, personalFeishuStatus]);
   const mailNotifs = mailTab === 'all' ? notifs : notifs.filter(n =>
     mailTab === 'approval' ? n.type === 'approval'
@@ -228,7 +242,7 @@ export default function MainLayout() {
                         {NOTIF_LINK[n.type] && <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0 }}>{NOTIF_LINK[n.type].name} ›</Tag>}
                       </div>
                       <div style={{ fontSize: 12, color: '#9aa4b5' }}>{n.body}</div>
-                      <div style={{ fontSize: 10.5, color: '#c2c9d6' }}>{(n.created_at || '').slice(5, 16)}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--ui-muted)' }}>{(n.created_at || '').slice(5, 16)}</div>
                     </div>
                   </List.Item>
                 )} />
@@ -284,7 +298,7 @@ export default function MainLayout() {
           <div className="os-page-head">
             <span className="os-page-title">{menuLabel(current)}</span>
           </div>
-          <div className="os-page-body"><Outlet /></div>
+          <div className="os-page-body"><Suspense fallback={<PageSkeleton />}><Outlet /></Suspense></div>
         </main>
 
         {/* 右侧：老板经营助手 */}
@@ -358,14 +372,14 @@ export default function MainLayout() {
                   {NOTIF_LINK[n.type] && <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0, flexShrink: 0 }}>来源：{NOTIF_LINK[n.type].name} ›</Tag>}
                 </div>
                 <div style={{ fontSize: 12, color: '#9aa4b5', marginTop: 2 }}>{n.body}</div>
-                <div style={{ fontSize: 10.5, color: '#c2c9d6', marginTop: 2 }}>{(n.created_at || '').slice(0, 16)}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--ui-muted)', marginTop: 2 }}>{(n.created_at || '').slice(0, 16)}</div>
               </div>
             </List.Item>
           )} />
       </Drawer>
 
       <Drawer title="❓ 帮助中心" width={420} open={helpOpen} onClose={() => setHelpOpen(false)}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13, color: '#3d4a5f', lineHeight: 1.8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13, color: 'var(--ui-text-2)', lineHeight: 1.8 }}>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>🚀 老板每日10分钟</b><br />
             ① 老板驾驶舱看 KPI 与异常 ② 点开指标穿刺到订单/会员 ③ 把下一步动作派给对应数字员工

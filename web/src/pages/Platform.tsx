@@ -7,7 +7,7 @@ import { api, clearAuth, exportCsv } from '../api/client';
 // 积分流水类型（与企业内一致）
 const KIND_LABEL: Record<string, string> = { text: '文本', image: '生图', video: '生视频', recharge: '充值/调整' };
 const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }));
-import { StatCard, Panel } from '../components/Kit';
+import { StatCard, Panel, ErrorState } from '../components/Kit';
 
 const MOD_NAME: Record<string, string> = {
   dashboard: '总控台', advisor: '老板参谋', marshals: '餐饮数字员工', growth: '增长中心', activities: '活动中心',
@@ -38,12 +38,19 @@ export default function Platform() {
   const [aForm] = Form.useForm();
   const [pForm] = Form.useForm();
 
+  const [loadError, setLoadError] = useState(false);
   const loadAll = () => {
-    api.get('/platform/overview').then(setOv).catch(() => {});
-    api.get('/platform/analytics').then(setAna).catch(() => {});
-    api.get('/platform/tenants').then(setTenants).catch(() => {});
-    api.get('/platform/recharge-orders').then(setOrders).catch(() => {});
-    api.get('/platform/packages').then(setPackages).catch(() => {});
+    setLoadError(false);
+    // 五路数据并发拉取；全部失败视为整页失败，显示错误态而不是"一切正常但没数据"
+    Promise.allSettled([
+      api.get('/platform/overview').then(setOv),
+      api.get('/platform/analytics').then(setAna),
+      api.get('/platform/tenants').then(setTenants),
+      api.get('/platform/recharge-orders').then(setOrders),
+      api.get('/platform/packages').then(setPackages),
+    ]).then(results => {
+      if (results.every(r => r.status === 'rejected')) setLoadError(true);
+    });
   };
   useEffect(() => { loadAll(); }, []);
 
@@ -89,6 +96,7 @@ export default function Platform() {
         </Space>
       </div>
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1400, margin: '0 auto' }}>
+        {loadError && <ErrorState description="平台数据全部拉取失败，页面数据可能为空或过期。" onRetry={loadAll} />}
         <Row gutter={[12, 12]}>
           <Col xs={12} md={6}><StatCard icon={<ShopOutlined />} color="var(--ui-accent)" label="客户企业" value={ov.tenants ?? 0} suffix="家" /></Col>
           <Col xs={12} md={6}><StatCard icon={<AuditOutlined />} color="#f6a02d" label="待开通企业" value={ov.pending ?? 0} suffix="家" onClick={() => setTab('开通管理')} /></Col>

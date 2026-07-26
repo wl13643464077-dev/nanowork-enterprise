@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Row, Col, Table, Tag, Button, Modal, message, Empty, Alert, Segmented } from 'antd';
 import { WalletOutlined, GiftOutlined, ThunderboltOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { api, getUser } from '../api/client';
-import { StatCard, Panel } from '../components/Kit';
+import { StatCard, Panel, ErrorState } from '../components/Kit';
 import { Result } from 'antd';
 
 const TAG_COLOR: Record<string, string> = { 体验: 'default', 超值: 'cyan', 热门: 'blue', 推荐: 'orange', 旗舰: 'red' };
@@ -16,10 +16,17 @@ export default function Recharge() {
   const [tab, setTab] = useState('套餐充值');
   const [orderResult, setOrderResult] = useState<any>(null);
 
-  const loadBal = () => api.get('/recharge/balance').then(setBal).catch(() => {});
-  const loadPkgs = () => api.get('/recharge/packages').then(setPackages).catch(() => {});
-  const loadOrders = () => api.get('/recharge/orders').then(setOrders).catch(() => {});
-  useEffect(() => { loadBal(); loadPkgs(); loadOrders(); }, []);
+  const [loadError, setLoadError] = useState(false);
+  const loadBal = () => api.get('/recharge/balance').then(setBal);
+  const loadPkgs = () => api.get('/recharge/packages').then(setPackages);
+  const loadOrders = () => api.get('/recharge/orders').then(setOrders);
+  const loadAll = () => {
+    setLoadError(false);
+    Promise.allSettled([loadBal(), loadPkgs(), loadOrders()]).then(results => {
+      if (results.some(r => r.status === 'rejected')) setLoadError(true);
+    });
+  };
+  useEffect(() => { loadAll(); }, []);
 
   const buy = (pkg: any) => {
     Modal.confirm({
@@ -33,7 +40,7 @@ export default function Recharge() {
       onOk: async () => {
         // 下单期间 Modal.confirm 会自动在「确认下单」按钮上显示 loading（onOk 返回 Promise）
         const res = await api.post('/recharge/orders', { packageId: pkg.id });
-        setOrderResult(res); loadOrders();
+        setOrderResult(res); loadOrders().catch(() => {});
       },
     });
   };
@@ -46,6 +53,7 @@ export default function Recharge() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {loadError && <ErrorState description="部分充值数据拉取失败，余额或订单可能显示不全。" onRetry={loadAll} />}
       {/* 余额概览 */}
       <Row gutter={[12, 12]}>
         <Col xs={24} md={8}><StatCard icon={<WalletOutlined />} color="var(--ui-accent)" label="企业积分余额"
@@ -95,7 +103,7 @@ export default function Recharge() {
               { title: '状态', dataIndex: 'status', width: 90, render: (v: string) => <Tag color={v === '已支付' ? 'green' : v === '待支付' ? 'gold' : 'default'}>{v}</Tag> },
               { title: '时间', dataIndex: 'created_at', width: 150, render: (v: string) => <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{v}</span> },
               { title: '操作', width: 70, render: (_: any, r: any) => r.status === '待支付'
-                ? <a onClick={() => api.post(`/recharge/orders/${r.id}/cancel`, {}).then(() => { message.success('已取消'); loadOrders(); })}>取消</a>
+                ? <a onClick={() => api.post(`/recharge/orders/${r.id}/cancel`, {}).then(() => { message.success('已取消'); loadOrders().catch(() => {}); })}>取消</a>
                 : <CheckCircleOutlined style={{ color: '#22c4a8' }} /> },
             ]} />
         </Panel>
@@ -119,7 +127,7 @@ export default function Recharge() {
       )}
 
       {/* 下单成功：收款指引 */}
-      <Modal open={!!orderResult} footer={[<Button key="ok" type="primary" onClick={() => { setOrderResult(null); loadBal(); }}>我知道了</Button>]}
+      <Modal open={!!orderResult} footer={[<Button key="ok" type="primary" onClick={() => { setOrderResult(null); loadBal().catch(() => {}); }}>我知道了</Button>]}
         onCancel={() => setOrderResult(null)} title="订单已提交，请完成支付">
         {orderResult && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>

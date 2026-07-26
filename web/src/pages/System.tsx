@@ -282,6 +282,7 @@ export default function System() {
   useEffect(() => {
     if (!feishuQr || !feishuBind?.state || feishuBindStatus !== 'pending') return;
     const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
       api.get(`/sys/feishu/oauth/status?state=${encodeURIComponent(feishuBind.state)}`)
         .then((d: any) => {
           if (d.status === 'bound') {
@@ -323,7 +324,7 @@ export default function System() {
       }
       if (canBackup) loadBackups();
     });
-    const timer = setInterval(loadStatus, 30000);
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') loadStatus(); }, 30000);
     return () => {
       cancelled = true;
       clearInterval(timer);

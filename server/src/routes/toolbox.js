@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db, q } from '../db.js';
 import { logOp, safeJsonParse } from '../util.js';
 import {
-  generateToolboxDraft,
+  generateToolboxRun,
   ToolboxValidationError,
   validateToolRunPayload,
 } from '../engines/toolbox.js';
@@ -82,7 +82,7 @@ r.get('/runs/:id', (req, res) => {
   }
 });
 
-r.post('/runs', (req, res, next) => {
+r.post('/runs', async (req, res, next) => {
   let input;
   try {
     input = validateToolRunPayload(req.body);
@@ -95,7 +95,7 @@ r.post('/runs', (req, res, next) => {
     const specialist = q.get(`SELECT id,employee_idx,person,name FROM specialists WHERE employee_idx=? LIMIT 1`,
       input.definition.employeeIdx);
     const employeeName = specialist?.person || input.definition.employeeName;
-    const draft = generateToolboxDraft(input.definition, input.inputs);
+    const draft = await generateToolboxRun(input.definition, input.inputs);
     const inputJson = JSON.stringify(input.inputs);
     const assumptionsJson = JSON.stringify(draft.assumptions);
     const evidenceJson = JSON.stringify(draft.evidence);
@@ -130,7 +130,9 @@ r.post('/runs', (req, res, next) => {
     logOp(req.user, '经营工具箱', '运行工具并回流数据', `${input.definition.key}#${runId}`);
     res.status(201).json({
       run: toRun(row),
-      message: `${input.definition.title}已生成模板草案，结果已保存到工具运行记录`,
+      message: draft.provenance.mode === 'api'
+        ? `${input.definition.title}已由数字员工生成，结果已保存到工具运行记录`
+        : `${input.definition.title}已生成模板草案，结果已保存到工具运行记录`,
     });
   } catch (error) {
     next(error);
