@@ -285,6 +285,40 @@ export default function Activities() {
       .finally(() => setBatchSubmitting(false));
   };
 
+  // 导出当前活动列表（含战果与ROI）
+  const [exportingActs, setExportingActs] = useState(false);
+  const exportActs = async () => {
+    if (!acts.length) { message.warning('暂无可导出的活动'); return; }
+    setExportingActs(true);
+    try {
+      const XLSX = await loadXlsx();
+      const sheetRows = acts.map((a: any) => ({
+        活动名: a.title || '',
+        类型: activityTypeLabel(a.type),
+        状态: a.status || '',
+        日期: a.date || '',
+        地点: a.location || '',
+        负责人: a.owner || '',
+        邀约: a.invited ?? 0,
+        报名: a.signed_up ?? 0,
+        到场: a.arrived ?? 0,
+        成交: a.converted ?? 0,
+        成交额: a.revenue ?? 0,
+        成本: a.cost ?? 0,
+        ROI: Number(a.cost) > 0 ? Math.round(((a.revenue || 0) / a.cost) * 10) / 10 : '',
+        满意度: a.satisfaction || '',
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), '活动列表');
+      XLSX.writeFile(wb, `活动列表-${dayjs().format('YYYY-MM-DD')}.xlsx`);
+      message.success(`已导出 ${acts.length} 场活动`);
+    } catch {
+      message.error('活动列表导出失败，请稍后重试');
+    } finally {
+      setExportingActs(false);
+    }
+  };
+
   const loadStats = () => api.get('/activities/stats').then(setStats);
   const load = () =>
     api.get('/activities').then((list: any[]) => {
@@ -702,6 +736,7 @@ export default function Activities() {
             {/* 活动日历 */}
             <Panel title="活动日历"
               extra={<Space>
+                <Button size="small" icon={<DownloadOutlined />} loading={exportingActs} onClick={exportActs}>导出 Excel</Button>
                 <Button size="small" icon={<RobotOutlined />} onClick={openStudio}>AI活动策划室</Button>
                 <Button size="small" onClick={openCalSync}>📅 关联飞书日历</Button>
                 <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建活动</Button>

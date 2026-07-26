@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth, fmtMoney, notifyCredits } from '../api/client';
+import { stageColor, gradeColor } from '../components/Kit';
 import { Markdown } from '../components/Markdown';
 import { useQuery, QueryStatus } from '../hooks/useQuery';
 import type { DashboardSummary, DashboardBriefing, Lead, ContentItem } from '../api/types';
@@ -20,7 +21,6 @@ const TABS = [
   { key: 'content', label: '内容', icon: <ExperimentOutlined />, mod: 'content' },
   { key: 'me', label: '我的', icon: <UserOutlined />, mod: null },
 ];
-const STAGE_COLOR: Record<string, string> = { 新线索: 'default', 已沟通: 'blue', 已邀约: 'cyan', 已到店: 'orange', 已成交: 'green', 复购: 'purple', 已流失: 'red' };
 
 export default function Mobile() {
   const nav = useNavigate();
@@ -45,11 +45,13 @@ export default function Mobile() {
         {tab === 'me' && <MMe user={user} nav={nav} />}
       </div>
 
-      {/* 底部 TabBar */}
-      <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480,
+      {/* 底部 TabBar（role=tablist + 键盘可达） */}
+      <div role="tablist" aria-label="底部导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480,
         background: 'var(--ui-surface)', borderTop: '1px solid var(--ui-border)', display: 'flex', height: 60, zIndex: 20 }}>
         {tabs.map(t => (
-          <div key={t.key} onClick={() => setTab(t.key)}
+          <div key={t.key} role="tab" aria-selected={tab === t.key} tabIndex={0}
+            onClick={() => setTab(t.key)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(t.key); } }}
             style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
               color: tab === t.key ? 'var(--ui-accent)' : 'var(--ui-muted)', cursor: 'pointer' }}>
             <span style={{ fontSize: 19 }}>{t.icon}</span>
@@ -172,9 +174,9 @@ function MCustomers() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <span style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</span>
-                <Tag color={r.grade === 'A' ? 'red' : r.grade === 'B' ? 'orange' : 'default'} style={{ marginLeft: 6, fontSize: 10 }}>{r.grade}类</Tag>
+                <Tag color={gradeColor[r.grade] || 'default'} style={{ marginLeft: 6, fontSize: 10 }}>{r.grade}类</Tag>
               </div>
-              <Tag color={STAGE_COLOR[r.stage] || 'default'} style={{ margin: 0 }}>{r.stage}</Tag>
+              <Tag color={stageColor[r.stage] || 'default'} style={{ margin: 0 }}>{r.stage}</Tag>
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 4 }}>{r.identity_tag || '—'} · {r.interest || '暂无兴趣点'} · 评分{r.score}</div>
           </Card>
