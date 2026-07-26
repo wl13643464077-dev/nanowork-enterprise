@@ -47,7 +47,8 @@ const DEFAULT_CONFIG = {
   month_revenue_target: 500000,
   year_revenue_target: 6000000,
   personal_month_target: 200000,
-  avg_deal_amount: 8000,
+  // 餐饮客单价初始建议值（按业态自行调整：快餐 20-40 / 茶饮 15-30 / 正餐 80-150 / 火锅 100-200）
+  avg_deal_amount: 120,
   month_targets: { leads: 900, conversionRate: 8, repurchaseRate: 25, partnerActive: 60, contentPerDay: 10 },
   funnel_baseline: { 已沟通: 70, 已邀约: 45, 已到店: 60, 已成交: 35 },
   activity_baseline: { inviteSign: 35, signArrive: 70, arriveDeal: 25, referral: 30, roi: 2.0 },

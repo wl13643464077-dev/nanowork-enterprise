@@ -1,0 +1,544 @@
+/* =====================================================================
+   AuthShell —— Login / Register / Pending 三页共享的认证外壳
+   设计原则（2026 基准）：
+   - 背景：多层 radial-gradient mesh 色团，12-18s ease-in-out 慢速漂移，
+     仅 transform/opacity（GPU 合成），无 canvas、无 O(n²) 计算
+   - 进场：0-800ms 分层编排（品牌 → 标题 → 副文案 → 卡片），
+     translateY(12px) + opacity + blur(4px)→0，统一 --ease-out
+   - 玻璃卡片：0.66-0.72 透明度让 backdrop-blur 真正可见 + 边缘内高光
+   - 全部颜色引用 theme.css 变量，明暗双主题原生支持
+   - prefers-reduced-motion：mesh 停在静态帧，进场退化为纯淡入
+   ===================================================================== */
+
+.au-shell {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  background: var(--auth-bg);
+  color: var(--ui-text);
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+.au-shell.au-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.22fr) minmax(400px, 0.78fr);
+  /* 行高 = max(视口, 内容)：两列由 stretch 对齐撑满，不在子列上写 min-height（会把 grid 行撑出额外空间） */
+  grid-template-rows: minmax(100%, auto);
+}
+.au-shell.au-center {
+  display: grid;
+  place-items: center;
+  padding: var(--space-7) var(--space-4);
+}
+
+/* ---- 跳转链接（无障碍） ---- */
+.au-skip {
+  position: fixed;
+  left: var(--space-4);
+  top: -60px;
+  z-index: 20;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+  box-shadow: var(--shadow-2);
+  transition: top var(--dur-base) var(--ease-out);
+}
+.au-skip:focus {
+  top: var(--space-4);
+}
+
+/* ---- mesh 背景：4 个色团 + 缓慢漂移 ---- */
+.au-mesh {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.au-blob {
+  position: absolute;
+  border-radius: 50%;
+  will-change: transform;
+}
+.au-blob-a {
+  width: 62vw;
+  height: 62vw;
+  left: -16vw;
+  top: -22vw;
+  background: radial-gradient(circle, var(--auth-blob-1), transparent 62%);
+  animation: au-drift-a 16s var(--ease-out) infinite alternate;
+}
+.au-blob-b {
+  width: 52vw;
+  height: 52vw;
+  right: -14vw;
+  bottom: -18vw;
+  background: radial-gradient(circle, var(--auth-blob-2), transparent 62%);
+  animation: au-drift-b 18s ease-in-out infinite alternate;
+}
+.au-blob-c {
+  width: 36vw;
+  height: 36vw;
+  right: 16vw;
+  top: -12vw;
+  background: radial-gradient(circle, var(--auth-blob-3), transparent 64%);
+  animation: au-drift-c 14s ease-in-out infinite alternate;
+}
+.au-blob-d {
+  width: 30vw;
+  height: 30vw;
+  left: 30vw;
+  bottom: -14vw;
+  background: radial-gradient(circle, var(--auth-blob-4), transparent 64%);
+  animation: au-drift-b 20s ease-in-out infinite alternate-reverse;
+}
+@keyframes au-drift-a {
+  to {
+    transform: translate(6vw, 5vh) scale(1.08);
+  }
+}
+@keyframes au-drift-b {
+  to {
+    transform: translate(-5vw, -4vh) scale(1.06);
+  }
+}
+@keyframes au-drift-c {
+  to {
+    transform: translate(-4vw, 6vh) scale(1.1);
+  }
+}
+
+/* ---- 品牌几何：与 logo 同语言的六边形描边（一次性 draw-in） ---- */
+.au-hex {
+  position: absolute;
+  right: -120px;
+  top: 14%;
+  width: 420px;
+  height: 460px;
+  color: var(--auth-hex-line);
+  pointer-events: none;
+}
+.au-hex path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-dasharray: 1360;
+  stroke-dashoffset: 1360;
+  animation: au-draw 1.4s var(--ease-out) 0.2s forwards;
+}
+@keyframes au-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ---- 进场编排 ---- */
+.au-enter {
+  opacity: 0;
+  animation: au-enter 0.7s var(--ease-out) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes au-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+/* ---- 左侧叙事列（split 布局） ---- */
+.au-story {
+  position: relative;
+  z-index: 2;
+  padding: var(--space-7) clamp(42px, 7vw, 104px) 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+/* 矮视口下压缩叙事列，保证闭环卡完整可见 */
+@media (max-height: 880px) {
+  .au-copy {
+    margin: 3vh 0 3vh;
+  }
+  .au-copy h1 {
+    font-size: clamp(32px, 3.4vw, 46px);
+  }
+}
+.au-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.au-brand img {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+.au-brand-name {
+  font-size: var(--font-6);
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.au-brand-name span {
+  margin-left: var(--space-2);
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--ui-border-strong);
+  font-size: var(--font-3);
+  font-weight: 600;
+  color: var(--ui-primary);
+}
+.au-brand-sub {
+  margin-top: 2px;
+  font-size: var(--font-1);
+  letter-spacing: 1.6px;
+  color: var(--ui-muted);
+}
+.au-copy {
+  max-width: 720px;
+  margin: 5vh 0 4vh;
+}
+.au-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-primary);
+  font-size: var(--font-2);
+  letter-spacing: 1.6px;
+}
+.au-eyebrow i {
+  width: 32px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ui-primary);
+}
+.au-copy h1 {
+  max-width: 680px;
+  margin: var(--space-5) 0 var(--space-5);
+  font-size: clamp(36px, 4.2vw, 58px);
+  line-height: 1.12;
+  letter-spacing: -0.5px;
+  font-weight: 700;
+  color: var(--ui-text);
+  text-wrap: balance;
+}
+.au-copy > p {
+  max-width: 600px;
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-4);
+  line-height: 1.85;
+  text-wrap: pretty;
+}
+.au-industry {
+  margin-top: var(--space-6);
+  color: var(--ui-muted);
+  font-size: var(--font-2);
+}
+.au-industry b {
+  color: var(--ui-primary);
+  font-weight: 650;
+}
+
+/* ---- 经营闭环流程条（真实产品流程，不含编造数字） ---- */
+.au-loop {
+  max-width: 640px;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--auth-card-border);
+  border-radius: var(--radius-lg);
+  background: var(--auth-card-bg);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: var(--shadow-2), inset 0 1px var(--auth-card-inset);
+}
+.au-loop-title {
+  font-size: var(--font-1);
+  letter-spacing: 1.2px;
+  color: var(--ui-muted);
+}
+.au-loop-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  flex-wrap: wrap;
+}
+.au-loop-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.au-loop-step strong {
+  font-size: var(--font-3);
+  font-weight: 650;
+  color: var(--ui-text);
+}
+.au-loop-step small {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+}
+.au-loop-arrow {
+  color: var(--ui-primary);
+  opacity: 0.55;
+  flex: none;
+}
+
+/* ---- 右侧认证面板 ---- */
+.au-panel {
+  position: relative;
+  z-index: 3;
+  padding: var(--space-6) clamp(28px, 4vw, 64px);
+  display: grid;
+  place-items: center;
+}
+.au-split .au-panel {
+  border-left: 1px solid var(--ui-border);
+}
+
+/* ---- 玻璃认证卡（三页统一规格） ---- */
+.au-card {
+  position: relative;
+  width: min(100%, 430px);
+  padding: var(--space-7) var(--space-7) var(--space-6);
+  border: 1px solid var(--auth-card-border);
+  border-radius: var(--radius-lg);
+  background: var(--auth-card-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow: var(--auth-card-shadow), inset 0 1px var(--auth-card-inset);
+}
+.au-center .au-card {
+  width: min(100%, 480px);
+}
+.au-kicker {
+  display: inline-flex;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+  font-size: var(--font-1);
+  font-weight: 650;
+  letter-spacing: 1.2px;
+}
+.au-card h2 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--font-6);
+  line-height: 1.25;
+  letter-spacing: -0.5px;
+  color: var(--ui-text);
+}
+.au-card-sub {
+  margin: 0 0 var(--space-6);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.7;
+}
+
+/* antd 表单统一规格：输入框 48px / 圆角 md / 主题化背景 */
+.au-card .ant-form-item {
+  margin-bottom: var(--space-5);
+}
+.au-card .ant-form-item-label {
+  padding-bottom: var(--space-1);
+}
+.au-card .ant-form-item-label > label {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+.au-card .ant-input-affix-wrapper,
+.au-card .ant-input {
+  border-radius: var(--radius-md);
+}
+.au-card .ant-input-affix-wrapper {
+  height: 48px;
+  padding-inline: var(--space-3);
+  background: var(--auth-input-bg);
+  transition:
+    border-color var(--dur-base),
+    box-shadow var(--dur-base),
+    background var(--dur-base);
+}
+.au-card .ant-input-prefix {
+  margin-right: var(--space-2);
+  color: var(--ui-muted);
+}
+.au-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 var(--space-5);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+.au-form-row .ant-checkbox-wrapper {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+.au-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ui-primary);
+  cursor: pointer;
+  font: inherit;
+}
+.au-link:hover {
+  color: var(--ui-primary-strong);
+}
+
+/* 主按钮：三页唯一渐变规格 */
+.au-card .au-submit {
+  height: 48px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--ui-accent), var(--ui-primary-strong));
+  box-shadow: var(--shadow-2);
+  font-size: var(--font-3);
+  font-weight: 650;
+  letter-spacing: 0.6px;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    filter var(--dur-fast);
+}
+.au-card .au-submit:hover {
+  filter: brightness(1.06);
+}
+.au-card .au-submit:active {
+  transform: translateY(1px) scale(0.995);
+}
+
+.au-foot-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+.au-trust {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--ui-border);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+.au-trust span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.au-trust svg {
+  color: var(--ui-primary);
+}
+
+/* ---- 页脚 ---- */
+.au-pagefoot {
+  position: fixed;
+  z-index: 5;
+  left: 0;
+  right: 0;
+  bottom: var(--space-4);
+  text-align: center;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  letter-spacing: 0.4px;
+  pointer-events: none;
+  opacity: 0.75;
+}
+/* split 布局下页脚只占右侧认证列（约 39% 宽），不压左侧闭环卡 */
+.au-split .au-pagefoot {
+  left: 61%;
+}
+
+/* ---- 响应式（统一断点：1024 / 640） ---- */
+@media (max-width: 1024px) {
+  .au-shell.au-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+  }
+  .au-story {
+    padding: var(--space-7) var(--space-6) var(--space-5);
+  }
+  .au-copy {
+    margin: 4vh 0 3vh;
+  }
+  .au-hex {
+    display: none;
+  }
+  .au-panel {
+    min-height: auto;
+    padding: var(--space-5) var(--space-6) 88px;
+  }
+  .au-split .au-panel {
+    border-left: none;
+  }
+  .au-pagefoot,
+  .au-split .au-pagefoot {
+    position: static;
+    left: auto;
+    padding: 0 var(--space-4) var(--space-6);
+    margin-top: calc(-1 * var(--space-6));
+  }
+}
+@media (max-width: 640px) {
+  .au-story {
+    padding: var(--space-5) var(--space-4) var(--space-4);
+  }
+  .au-brand img {
+    width: 46px;
+    height: 46px;
+  }
+  .au-brand-name {
+    font-size: var(--font-5);
+  }
+  .au-copy h1 {
+    font-size: var(--font-7);
+  }
+  .au-copy > p {
+    font-size: var(--font-3);
+  }
+  .au-loop-steps {
+    gap: var(--space-1);
+  }
+  .au-panel {
+    padding: var(--space-4) var(--space-3) 80px;
+  }
+  .au-card {
+    padding: var(--space-6) var(--space-5) var(--space-5);
+  }
+}
+
+/* ---- 降级动效 ---- */
+@media (prefers-reduced-motion: reduce) {
+  .au-blob,
+  .au-hex path {
+    animation: none;
+  }
+  .au-hex path {
+    stroke-dashoffset: 0;
+  }
+  .au-enter {
+    animation: au-fade 0.4s ease both;
+    animation-delay: 0ms;
+  }
+  @keyframes au-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}

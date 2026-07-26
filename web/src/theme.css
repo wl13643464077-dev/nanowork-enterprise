@@ -1,3 +1,71 @@
+/* =====================================================================
+   设计 Token 层（2026-07 升级迭代引入）
+   规则：业务代码禁止硬编码颜色 / 字号 / 圆角 / 阴影，一律引用本文件变量。
+   基准：8px 网格；圆角 3 档；字号 7 档（最小 12px，正文 ≥13px）；
+         语义色每种含义仅 1 个；品牌色占界面面积 ≤10%。
+   ===================================================================== */
+:root {
+  /* 间距 —— 8px 网格 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* 圆角 —— 3 档（对齐 docs/DESIGN.md 外层卡片规范） */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* 字号 —— 7 档；禁止小数字号与 <12px 正文 */
+  --font-1: 12px;
+  --font-2: 13px;
+  --font-3: 14px;
+  --font-4: 16px;
+  --font-5: 20px;
+  --font-6: 24px;
+  --font-7: 32px;
+
+  /* 阴影 —— 带蓝灰调，禁纯黑 */
+  --shadow-1: 0 1px 2px rgba(20, 48, 82, 0.06);
+  --shadow-2: 0 4px 14px rgba(20, 48, 82, 0.08);
+  --shadow-3: 0 12px 32px rgba(20, 48, 82, 0.12);
+
+  /* 动效 —— 位移克制、统一缓动 */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 中性灰阶 5 级 */
+  --gray-1: #f8fafd;
+  --gray-2: #edf3fa;
+  --gray-3: #dfe7f1;
+  --gray-4: #7b8da3;
+  --gray-5: #18263a;
+
+  /* 语义色 —— 每种含义只保留一个值 */
+  --ok: #16a34a;
+  --warn: #f6a02d;
+  --danger: #f25b6b;
+  --info: #1769d2;
+
+  /* 层级 */
+  --z-drawer: 1000;
+  --z-modal: 1050;
+  --z-toast: 1100;
+
+  /* 断点（供 JS 读取；CSS @media 请统一使用同值：640/820/1024/1280/1536） */
+  --bp-sm: 640px;
+  --bp-md: 820px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+  --bp-2xl: 1536px;
+}
+
 :root,
 :root[data-theme='nano'],
 :root[data-theme='light'] {
@@ -18,6 +86,19 @@
   --ui-on-primary: #ffffff;
   --ui-accent: #2c76dc;
   --ui-warning-surface: #fff7e8;
+
+  /* 认证页（Login/Register/Pending）mesh 背景与玻璃卡片 */
+  --auth-bg: #eff4fb;
+  --auth-blob-1: rgba(44, 118, 220, 0.2);
+  --auth-blob-2: rgba(103, 168, 246, 0.18);
+  --auth-blob-3: rgba(52, 199, 158, 0.1);
+  --auth-blob-4: rgba(139, 116, 246, 0.1);
+  --auth-hex-line: rgba(44, 118, 220, 0.16);
+  --auth-card-bg: rgba(255, 255, 255, 0.72);
+  --auth-card-border: rgba(255, 255, 255, 0.72);
+  --auth-card-inset: rgba(255, 255, 255, 0.65);
+  --auth-card-shadow: 0 28px 80px rgba(13, 51, 98, 0.16);
+  --auth-input-bg: rgba(255, 255, 255, 0.72);
 }
 
 :root[data-theme='midnight'] {
@@ -38,6 +119,18 @@
   --ui-on-primary: #06182b;
   --ui-accent: #67a8f6;
   --ui-warning-surface: #2b2518;
+
+  --auth-bg: #061527;
+  --auth-blob-1: rgba(44, 118, 220, 0.3);
+  --auth-blob-2: rgba(23, 105, 210, 0.24);
+  --auth-blob-3: rgba(52, 199, 158, 0.12);
+  --auth-blob-4: rgba(120, 98, 255, 0.16);
+  --auth-hex-line: rgba(103, 168, 246, 0.2);
+  --auth-card-bg: rgba(13, 31, 54, 0.66);
+  --auth-card-border: rgba(137, 184, 238, 0.22);
+  --auth-card-inset: rgba(255, 255, 255, 0.08);
+  --auth-card-shadow: 0 34px 90px rgba(0, 8, 19, 0.5);
+  --auth-input-bg: rgba(7, 21, 37, 0.5);
 }
 
 html, body, #root { margin: 0; min-height: 100%; background: var(--ui-bg); }
@@ -68,11 +161,17 @@ button, input, textarea, select { letter-spacing: 0; }
 
 :root[data-theme='nano'] .ant-alert-info,
 :root[data-theme='light'] .ant-alert-info {
-  background: #f5f5f5;
-  border-color: #d9d9d9;
+  background: var(--gray-1);
+  border-color: var(--gray-3);
 }
 
 :root[data-theme='nano'] .ant-alert-info .ant-alert-icon,
 :root[data-theme='light'] .ant-alert-info .ant-alert-icon {
-  color: #171717;
+  color: var(--gray-5);
+}
+
+/* 全局键盘焦点可见性（无障碍基线） */
+:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 2px;
 }

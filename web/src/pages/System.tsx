@@ -763,7 +763,9 @@ export default function System() {
         {kbCat === '员工产出' && <Alert type="info" showIcon style={{ marginBottom: 10 }}
           message="知识资产闭环：员工产出被「采纳」后自动沉淀到本库，AI 后续回答可随时抽取调度；同时已登记为知识资产。" />}
         {canEditKb && <Alert type="success" showIcon style={{ marginBottom: 10 }}
-          message={<span>支持上传 <b>Word/Excel/PDF/TXT/MD/CSV</b>（自动提取正文入库）与 <b>图片</b>（AI识图自动转写为知识要点，按角色模型计费）；附件可随时预览下载，提取内容可再编辑。<br/><b style={{ color: '#16a34a' }}>🔍 已启用 AI 向量语义检索（RAG）</b>：上传/录入的文档自动向量化，8个餐饮分部与老板参谋按「语义相关性」精准召回最相关内容，而非简单关键词匹配——知识库越大越准。</span>} />}
+          message={<span>支持上传 <b>Word/Excel/PDF/TXT/MD/CSV</b>（自动提取正文入库）与 <b>图片</b>（AI识图自动转写为知识要点，按角色模型计费）；附件可随时预览下载，提取内容可再编辑。<br/>{ai.available
+            ? <><b style={{ color: 'var(--ok)' }}>已启用 AI 语义检索</b>：上传/录入的文档自动向量化，8个餐饮分部与老板参谋按「语义相关性」召回相关内容。</>
+            : <><b style={{ color: 'var(--warn)' }}>当前为关键词/热度检索（降级模式）</b>：未配置 AI 密钥，暂不做语义向量召回；配置密钥后自动启用语义检索。</>}</span>} />}
         <Table size="small" rowKey="id" dataSource={kbDocs}
           pagination={{ pageSize: 10, hideOnSinglePage: true, size: 'small' }}
           columns={[

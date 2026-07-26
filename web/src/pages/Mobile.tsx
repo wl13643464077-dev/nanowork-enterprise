@@ -76,7 +76,7 @@ function Stat({ icon, color, label, value, suffix }: any) {
 }
 
 const CORE_WORKSPACES = [
-  { key: 'employees', title: '餐饮数字员工', description: '查看 60 名岗位员工与当前状态', path: '/employees', icon: <AppstoreOutlined />, color: '#1769e0' },
+  { key: 'employees', title: '餐饮数字员工', description: '查看岗位数字员工与当前状态', path: '/employees', icon: <AppstoreOutlined />, color: '#1769e0' },
   { key: 'toolbox', title: '经营工具箱', description: '按经营场景调用实战工具', path: '/toolbox', icon: <ToolOutlined />, color: '#0f9f89' },
   { key: 'content', title: '内容生产仓', description: '进入选题、生产与内容管理', path: '/content', icon: <ExperimentOutlined />, color: '#7a5bd8' },
   { key: 'analysis', title: '经营分析', description: '查看门店数据与经营洞察', path: '/analysis', icon: <BarChartOutlined />, color: '#d27b20' },

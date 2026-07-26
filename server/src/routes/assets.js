@@ -12,9 +12,6 @@ const countOf = (sql, ...params) => q.get(sql, ...params)?.n || 0;
 const clean = (v, fallback = '') => String(v ?? fallback).trim();
 const num = (v, fallback = 0) => Number.isFinite(Number(v)) ? Number(v) : fallback;
 
-function defaultValue(category) {
-  return ({ 内容资产: 180, 知识资产: 260, 客户资产: 500, 数据资产: 320, 品牌资产: 800 }[category] || 200);
-}
 
 function placeholders(values) {
   return values.map(() => '?').join(',');
@@ -460,7 +457,8 @@ r.post('/import', (req, res) => {
     const category = VALID_CATEGORIES.has(categoryInput) ? categoryInput : '数据资产';
     const statusInput = clean(row.status || row.状态);
     const status = VALID_STATUSES.has(statusInput) ? statusInput : '使用中';
-    const value = Math.max(0, num(row.value ?? row.估值 ?? row.价值, defaultValue(category)));
+    // 未填估值记 0（进入「信息不完整资产」清单等待人工补录），不按分类编造默认估值混入资产总值
+    const value = Math.max(0, num(row.value ?? row.估值 ?? row.价值, 0));
     const useCount = Math.max(0, Math.round(num(row.use_count ?? row.调用次数, 0)));
     const owner = clean(row.owner || row.归属 || req.user.name, req.user.name);
     const url = clean(row.url || row.link || row.链接);

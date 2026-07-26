@@ -570,8 +570,7 @@ r.get('/insights', (req, res) => {
   const h = healthScore();
   const { bottleneck } = funnel();
   const extra = [];
-  // 机会洞察：复购节点、A类客户、合伙人带单（增长机会洞察 FR-ANA）
-  const fest = q.get(`SELECT 1`); // 占位
+  // 机会洞察：A类客户、团餐路径、漏斗卡点（增长机会洞察 FR-ANA）
   const scope = userScopeClause(req.user, 'owner_id');
   const aCount = q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ${curTenant()} AND grade='A' AND stage NOT IN ('已成交','复购','已流失')${scope.sql}`, ...scope.params)?.n || 0;
   if (aCount >= 5) extra.push({ dimension: '成交机会', issue: `当前有 ${aCount} 个A类高意向客户待跟进`, suggestion: '逐一核对顾客需求、预算、到店时间和未解决顾虑；价格、优惠与外部承诺由有权限的负责人确认' });

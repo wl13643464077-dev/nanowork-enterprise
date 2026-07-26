@@ -656,7 +656,7 @@ r.get('/goals-drill', (req, res) => {
     FROM users u WHERE u.tenant_id = ${curTenant()} AND (u.role IN ('sales') OR u.dept LIKE '%销售%')${personalScope.sql} ORDER BY actual DESC`, ...personalParams);
   // 缺口反推（与作战计划引擎同口径）
   const gapAmount = Math.max(0, monthTarget - monthActual);
-  const avgDeal = getTenantConfig('avg_deal_amount', 8000);
+  const avgDeal = getTenantConfig('avg_deal_amount', 120);
   const daysLeft = Math.max(1, 30 - new Date().getDate());
   const needDealsPerDay = Math.ceil(gapAmount / avgDeal / daysLeft);
   const inviteTarget = Math.max(3, Math.ceil(needDealsPerDay / 0.25 / 0.6));

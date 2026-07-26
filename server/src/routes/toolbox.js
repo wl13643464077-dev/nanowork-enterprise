@@ -130,7 +130,7 @@ r.post('/runs', (req, res, next) => {
     logOp(req.user, '经营工具箱', '运行工具并回流数据', `${input.definition.key}#${runId}`);
     res.status(201).json({
       run: toRun(row),
-      message: `${input.definition.title}已生成安全模板草案，结果已回流经营数据`,
+      message: `${input.definition.title}已生成模板草案，结果已保存到工具运行记录`,
     });
   } catch (error) {
     next(error);

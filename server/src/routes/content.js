@@ -1529,7 +1529,7 @@ r.get('/summary', (req, res) => {
   const cnt = (type) => q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()} AND created_at >= ? AND type = ?${scope.sql}`, m, type, ...scope.params)?.n || 0;
   const total = q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()} AND created_at >= ?${scope.sql}`, m, ...scope.params)?.n || 0;
   res.json({
-    total, image: cnt('AI图片'), video: cnt('短视频脚本'), ppt: cnt('AIPPT'), audio: cnt('AI音频'),
+    total, image: cnt('AI图片'), video: cnt('短视频脚本'), ppt: cnt('AIPPT'),
     aiMode: aiAvailable() ? 'api' : 'template',
   });
 });

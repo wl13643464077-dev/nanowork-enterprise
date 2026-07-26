@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   FileTextOutlined, PictureOutlined, VideoCameraOutlined, FundProjectionScreenOutlined,
-  AudioOutlined, ThunderboltOutlined, BulbOutlined, RobotOutlined, CopyOutlined,
+  ThunderboltOutlined, BulbOutlined, RobotOutlined, CopyOutlined,
   SendOutlined, FolderOpenOutlined, AppstoreOutlined, CloudUploadOutlined, SaveOutlined,
   MessageOutlined, TeamOutlined, CommentOutlined, ShopOutlined, GiftOutlined,
   FolderOutlined, PlayCircleOutlined, FireOutlined, ClockCircleOutlined, RightOutlined,
@@ -31,7 +31,8 @@ const COPY_TYPE_LABELS: Record<string, string> = {
   合伙人每日素材包: '员工每日素材包',
 };
 const contentTypeLabel = (type?: string) => COPY_TYPE_LABELS[type || ''] || type || '-';
-const MEDIA_TABS = ['AI图片', 'AI视频', 'AIPPT', 'AI音频'];
+// 「AI音频」后端无实现（无 generate-audio 接口），2026-07 升级中移除纯装饰入口；待真实 TTS 能力落地后再恢复
+const MEDIA_TABS = ['AI图片', 'AI视频', 'AIPPT'];
 const LIB_TABS = ['素材库', '模板库'];
 const BRANDS = ['门店品牌', '招牌菜系列', '企业团餐'];
 const STATUSES = ['草稿', '待审核', '可使用', '已发布', '已驳回'];
@@ -65,14 +66,12 @@ const TYPE_META: Record<string, { icon: any; color: string }> = {
   'AI图片': { icon: <PictureOutlined />, color: '#22c4a8' },
   'AI视频': { icon: <PlayCircleOutlined />, color: '#70757a' },
   'AIPPT': { icon: <FundProjectionScreenOutlined />, color: '#f6a02d' },
-  'AI音频': { icon: <AudioOutlined />, color: '#f25b6b' },
 };
 const TABS = [
   { key: 'AI文案', icon: <FileTextOutlined /> },
   { key: 'AI图片', icon: <PictureOutlined /> },
   { key: 'AI视频', icon: <VideoCameraOutlined /> },
   { key: 'AIPPT', icon: <FundProjectionScreenOutlined /> },
-  { key: 'AI音频', icon: <AudioOutlined /> },
   { key: '素材库', icon: <FolderOpenOutlined /> },
   { key: '模板库', icon: <AppstoreOutlined /> },
 ];
@@ -1565,8 +1564,6 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
           value={summary.video ?? '-'} suffix="支" onClick={() => switchTab('AI视频')} /></Col>
         <Col flex="1 1 176px" style={{ minWidth: 0 }}><StatCard icon={<FundProjectionScreenOutlined />} color="#f6a02d" label="AIPPT"
           value={summary.ppt ?? '-'} suffix="份" onClick={() => switchTab('AIPPT')} /></Col>
-        <Col flex="1 1 176px" style={{ minWidth: 0 }}><StatCard icon={<AudioOutlined />} color="#f25b6b" label="AI音频"
-          value={summary.audio ?? '-'} suffix="条" onClick={() => switchTab('AI音频')} /></Col>
       </Row>
 
       {/* 创作类型 Tabs */}

@@ -1049,7 +1049,7 @@ r.get('/config', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
     year_revenue_target: getTenantConfig('year_revenue_target', 6000000),
     month_revenue_target: getTenantConfig('month_revenue_target', 500000),
     personal_month_target: getTenantConfig('personal_month_target', 200000),
-    avg_deal_amount: getTenantConfig('avg_deal_amount', 8000),
+    avg_deal_amount: getTenantConfig('avg_deal_amount', 120),
     month_targets: getTenantConfig('month_targets', {}),
     funnel_baseline: getTenantConfig('funnel_baseline', {}),
     activity_baseline: getTenantConfig('activity_baseline', {}),
