@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Row, Col, Table, Tag, Button, Modal, message, Empty, Alert, Segmented } from 'antd';
-import { WalletOutlined, GiftOutlined, ThunderboltOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Row, Col, Table, Tag, Button, Modal, message, Empty, Alert, Segmented, QRCode, Radio, Spin } from 'antd';
+import { WalletOutlined, GiftOutlined, ThunderboltOutlined, CheckCircleOutlined, WechatOutlined, AlipayCircleOutlined } from '@ant-design/icons';
 import { api, getUser } from '../api/client';
 import { StatCard, Panel } from '../components/Kit';
 import { Result } from 'antd';
@@ -15,13 +15,59 @@ export default function Recharge() {
   const [orders, setOrders] = useState<any[]>([]);
   const [tab, setTab] = useState('套餐充值');
   const [orderResult, setOrderResult] = useState<any>(null);
+  // 在线支付通道（后端已配置微信/支付宝时非空；为空保持对公转账旧流程）
+  const [channels, setChannels] = useState<any[]>([]);
+  const [pickPkg, setPickPkg] = useState<any>(null);          // 通道选择弹窗中的套餐
+  const [payChannel, setPayChannel] = useState<string>('');
+  const [placing, setPlacing] = useState(false);
+  const [payOrder, setPayOrder] = useState<any>(null);        // {orderNo, qrUrl, channel, channelName, package}
+  const [payStatus, setPayStatus] = useState<string>('待支付');
 
   const loadBal = () => api.get('/recharge/balance').then(setBal).catch(() => {});
   const loadPkgs = () => api.get('/recharge/packages').then(setPackages).catch(() => {});
   const loadOrders = () => api.get('/recharge/orders').then(setOrders).catch(() => {});
-  useEffect(() => { loadBal(); loadPkgs(); loadOrders(); }, []);
+  useEffect(() => {
+    loadBal(); loadPkgs(); loadOrders();
+    api.get('/recharge/channels').then((r: any) => {
+      const list = Array.isArray(r?.channels) ? r.channels : [];
+      setChannels(list);
+      if (list.length) setPayChannel(list[0].channel);
+    }).catch(() => {});
+  }, []);
+
+  // 扫码支付轮询：每 3 秒查一次订单状态（页面不可见时暂停，省流量也防后台空转）
+  useEffect(() => {
+    if (!payOrder || payStatus === '已支付') return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      api.get(`/recharge/orders/${payOrder.orderNo}/status`).then((s: any) => {
+        if (s.status === '已支付') {
+          setPayStatus('已支付');
+          message.success('支付成功，积分已到账');
+          loadBal(); loadOrders();
+        } else if (s.status === '已取消') {
+          setPayStatus('已取消');
+        }
+      }).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [payOrder, payStatus]);
+
+  // 在线扫码下单（已配置支付通道）
+  const placeOnlineOrder = async () => {
+    if (!pickPkg || !payChannel) return;
+    setPlacing(true);
+    try {
+      const res = await api.post('/recharge/orders', { packageId: pickPkg.id, channel: payChannel });
+      setPickPkg(null);
+      setPayStatus('待支付');
+      setPayOrder(res);
+      loadOrders();
+    } catch { /* api 层已提示错误 */ } finally { setPlacing(false); }
+  };
 
   const buy = (pkg: any) => {
+    if (channels.length) { setPickPkg(pkg); return; }
     Modal.confirm({
       title: `确认下单：${pkg.name}`,
       content: <div style={{ fontSize: 13, lineHeight: 2 }}>
@@ -117,6 +163,58 @@ export default function Recharge() {
             ]} />
         </Panel>
       )}
+
+      {/* 在线支付：通道选择（仅后端已配置支付通道时进入） */}
+      <Modal open={!!pickPkg} title={pickPkg ? `确认下单：${pickPkg.name}` : ''}
+        okText="下单并生成收款码" cancelText="取消" confirmLoading={placing}
+        onOk={placeOnlineOrder} onCancel={() => setPickPkg(null)}>
+        {pickPkg && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
+            <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: '12px 14px', lineHeight: 2 }}>
+              支付金额 <b style={{ color: '#f25b6b' }}>¥{pickPkg.price_yuan}</b><br />
+              到账积分 <b style={{ color: 'var(--ui-accent)' }}>{pickPkg.total_credits.toLocaleString()}</b>（含赠送 {pickPkg.bonus_credits.toLocaleString()}）<br />
+              <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>{estUse(pickPkg.total_credits)}</span>
+            </div>
+            <div>
+              <div style={{ marginBottom: 8, color: 'var(--ui-muted)' }}>选择支付方式</div>
+              <Radio.Group value={payChannel} onChange={e => setPayChannel(e.target.value)} buttonStyle="solid">
+                {channels.map((c: any) => (
+                  <Radio.Button key={c.channel} value={c.channel}>
+                    {c.channel === 'wechat' ? <WechatOutlined style={{ color: '#09bb07', marginRight: 6 }} /> : <AlipayCircleOutlined style={{ color: '#1677ff', marginRight: 6 }} />}
+                    {c.name}
+                  </Radio.Button>
+                ))}
+              </Radio.Group>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* 在线支付：扫码 + 状态轮询（每3秒；支付成功自动刷新余额） */}
+      <Modal open={!!payOrder} title={payStatus === '已支付' ? '支付成功' : `请使用${payOrder?.channelName || ''}扫码支付`}
+        onCancel={() => { setPayOrder(null); loadOrders(); }} maskClosable={false}
+        footer={[<Button key="close" onClick={() => { setPayOrder(null); loadOrders(); }}>{payStatus === '已支付' ? '完成' : '暂不支付，关闭'}</Button>]}>
+        {payOrder && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+            {payStatus === '已支付' ? (
+              <Result status="success" title="积分已到账" style={{ padding: 12 }}
+                subTitle={`${payOrder.package?.name}（${payOrder.package?.total_credits?.toLocaleString()} 积分）已充入企业积分池`} />
+            ) : (
+              <>
+                <QRCode value={payOrder.qrUrl || '-'} size={200} status={payStatus === '已取消' ? 'expired' : 'active'} />
+                <div style={{ fontSize: 13, color: 'var(--ui-text)' }}>
+                  订单 <b style={{ fontFamily: 'monospace' }}>{payOrder.orderNo}</b>　金额 <b style={{ color: '#f25b6b' }}>¥{payOrder.package?.price_yuan}</b>
+                </div>
+                {payStatus === '已取消'
+                  ? <Alert type="warning" showIcon message="订单已取消，二维码失效" />
+                  : <div style={{ fontSize: 12, color: 'var(--ui-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Spin size="small" /> 等待支付中，支付成功后积分自动到账（二维码30分钟内有效）
+                  </div>}
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* 下单成功：收款指引 */}
       <Modal open={!!orderResult} footer={[<Button key="ok" type="primary" onClick={() => { setOrderResult(null); loadBal(); }}>我知道了</Button>]}
