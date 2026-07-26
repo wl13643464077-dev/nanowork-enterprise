@@ -1,0 +1,36 @@
+{
+  "name": "commercial-self-intro-project",
+  "version": "2026.07.26-full-v3",
+  "package_type": "private-development",
+  "built_at": "2026-07-26T12:00:00+00:00",
+  "skill_id": "commercial-self-intro",
+  "technique_coverage": "64/64",
+  "module_counts": {
+    "F": 17,
+    "D": 24,
+    "E": 11,
+    "L": 12
+  },
+  "long_image": {
+    "width": 1080,
+    "height": 7736,
+    "format": "PNG"
+  },
+  "contains_private_sources": false,
+  "portable_release": "commercial-self-intro-portable-20260726-v4",
+  "trigger": "$commercial-self-intro",
+  "changes_v2": [
+    "persona layer: wanglei-persona-spec-v2 (five-layer AI persona) supersedes user-style-and-business-os.md as persona entry",
+    "new skill references: persona-spec-template.md, intake-questionnaire.md, structured-output-spec.md",
+    "SKILL.md wired to load new references by task"
+  ],
+  "private_sources_note": "公开仓库检出不含04-private-sources私有文件，清单见04-private-sources/PRIVATE-FILES.md",
+  "changes_v3": [
+    "landed in public git repo with explicit private-source boundary (PRIVATE-FILES.md; verify_project.py supports private_sources=absent)",
+    "golden samples for 5 scenarios (DY/VX/SQ/BIZ/JB, fictional demo subject) + validate_golden_samples.py regression gate",
+    "Swen long image converted to data template: persona-data.json + template + build_long_image.py, byte-identical rebuild verified",
+    "re-rendered long image on Linux (1080x7733, Noto CJK) with QR decode PASS; original deliverable untouched",
+    "user-style-and-business-os.md archived locally; persona-spec.json export + persona-drift-check-v1 kit delivered privately",
+    "example.md VX-15-V1 copy fixed into the 15s length band and synced with golden sample"
+  ]
+}

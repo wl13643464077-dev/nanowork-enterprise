@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "subject": "张敏",
+    "disclaimer": "演示人物，非真实用户；仅用于结构与纪律的回归测试",
+    "scenario_code": "SQ",
+    "scenario": "私域加好友欢迎语",
+    "package_version": "2026.07.26-golden-v1",
+    "generated_at": "2026-07-26",
+    "skill_version": "commercial-self-intro"
+  },
+  "positioning": {
+    "core_label": "把儿童营养变成每天能执行的一日三餐",
+    "discarded_identities": ["资历很多的泛营养专家", "上来就推课的销售"],
+    "listener": {
+      "who": "刚通过好友申请、还在观望的宝妈",
+      "state": "一对一私聊，警惕被推销",
+      "language": ["孩子不好好吃饭", "最头疼的一餐"]
+    },
+    "ideal_reaction": "主动说出孩子年龄和最头疼的一餐"
+  },
+  "truth_ledger": [
+    {"claim": "8年母婴营养经验", "grade": "B", "action_before_public": "确认起算口径"},
+    {"claim": "注册营养师证书", "grade": "B", "action_before_public": "核对证书准确名称"},
+    {"claim": "服务3000个家庭", "grade": "B", "action_before_public": "确认统计口径与授权"},
+    {"claim": "具体前后案例", "grade": "D", "priority_score": 6, "evidence_action": "翻客户反馈截图并请求匿名授权"}
+  ],
+  "technique_card": [
+    {"id": "F02", "page": "7-10", "why": "从自我陈述转向对方今天能得到什么", "effect": "欢迎语先给帮助再谈身份"},
+    {"id": "F07", "page": "31-33", "why": "私域是长期关系，本人要能持续兑现这套说法", "effect": "语气保持本人能日常维持的分寸"},
+    {"id": "F10", "page": "41-44", "why": "定位为'不卖焦虑的执行派'的非比较式角色", "effect": "不贬低同行、不制造恐慌"},
+    {"id": "D02", "page": "61", "why": "理想反应是对方主动描述问题", "effect": "CTA是低压力的开放邀请"},
+    {"id": "D03", "page": "61-62", "why": "只希望被'想要做法'的宝妈选择", "effect": "明确不服务只想囤知识的人群"},
+    {"id": "D06", "page": "65-67", "why": "受益型一句话：从'不知道做什么'到'今天能做'", "effect": "首句给出A到B的变化"},
+    {"id": "D10", "page": "72", "why": "只对这一位刚加好友的宝妈写", "effect": "带上加好友的具体来由"},
+    {"id": "D14", "page": "76", "why": "欢迎语是约定：说了'先给一个小调整'就要真给", "effect": "承诺范围收敛到可兑现动作"},
+    {"id": "D24", "page": "117-120", "why": "不用营养学术语", "effect": "全文口语"},
+    {"id": "E01", "page": "91-93", "why": "先营造无压力气氛再进入正题", "effect": "开头交代来由并给对方台阶"},
+    {"id": "E08", "page": "104-105", "why": "对方不回复不等于认可或拒绝", "effect": "预设静默分支，不追问轰炸"},
+    {"id": "L04", "page": "116-120", "why": "用报告-联络-讨论维持关系", "effect": "给出'朋友圈会常发做法'的低频保持"},
+    {"id": "L05", "page": "121-122", "why": "后发制人：先听对方问题再介绍", "effect": "把话语权先交给对方"},
+    {"id": "L07", "page": "125-126", "why": "回复率低时请求具体反馈", "effect": "定义迭代入口"},
+    {"id": "L12", "page": "134", "why": "让欢迎语吸引同路人", "effect": "筛选而不是转化所有人"}
+  ],
+  "content_loop": {
+    "listener": "刚通过好友申请、警惕被推销的宝妈",
+    "outcome": "不用学理论，今天就拿到一个能执行的三餐小调整",
+    "ownable_proof": "8年母婴营养经验，B级事实，表述带口径",
+    "prompt_next_step": "说出孩子年龄和最头疼的一餐"
+  },
+  "versions": [
+    {
+      "version_id": "SQ-WEL-V1",
+      "scenario": "私域加好友欢迎语",
+      "role": "recommended",
+      "copy": "你好，我是张敏，做母婴营养8年。看到你在群里问孩子吃饭的事，就加了你。我平时帮妈妈们把营养建议变成每天能做的三餐，不卖焦虑。方便的话，说说孩子年龄和最头疼的一餐，我先给你一个能直接用的小调整；不方便也没关系，我朋友圈会常发做法。",
+      "target_seconds": null,
+      "estimated_seconds": null,
+      "delivery_cues": ["发送后不追问", "对方回复问题后先复述再给动作"],
+      "cta": "说说孩子年龄和最头疼的一餐",
+      "ab_variable": null
+    },
+    {
+      "version_id": "SQ-WEL-V1B",
+      "scenario": "私域加好友欢迎语",
+      "role": "alternative",
+      "copy": "你好，我是张敏，做母婴营养8年。看到你在群里问孩子吃饭的事，就加了你。我平时帮妈妈们把营养建议变成每天能做的三餐，不卖焦虑。我先把这周发过的三份挑食三餐清单发你，用得上再聊；不用回复也没关系。",
+      "target_seconds": null,
+      "estimated_seconds": null,
+      "delivery_cues": ["附带清单要真实存在再发送"],
+      "cta": "查看三份挑食三餐清单",
+      "ab_variable": "cta"
+    }
+  ],
+  "compliance": {
+    "risk_words_removed": ["调理体质"],
+    "pending_verification": ["3000家庭统计口径"],
+    "privacy_notes": ["不询问孩子健康隐私之外的信息", "聊天内容不截图外发"]
+  },
+  "score": {
+    "total": 86,
+    "weakest_dimension": "证据可信度",
+    "top_evidence_to_collect": [
+      "一个有前后对比的匿名喂养案例（含授权）",
+      "真实存在的三餐清单资料包",
+      "已服务家庭的可授权反馈截图"
+    ]
+  }
+}

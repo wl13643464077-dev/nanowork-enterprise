@@ -1,0 +1,16 @@
+{
+  "package": "commercial-self-intro-portable",
+  "version": "2026.07.10-v3",
+  "skill": "commercial-self-intro",
+  "display_name": "商业自我介绍",
+  "default_install_root": "~/.agents/skills",
+  "method_coverage": {
+    "foundation": 17,
+    "design": 24,
+    "expression": 11,
+    "learning": 12,
+    "total": 64
+  },
+  "source_pdf_included": false,
+  "optional_python_dependency": "pypdf"
+}

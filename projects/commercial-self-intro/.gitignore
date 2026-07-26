@@ -1,0 +1,5 @@
+# 私有资料永不入库（本仓库公开）：原书PDF有版权，商业认知/人格规格属个人私有
+04-private-sources/book/
+04-private-sources/business-cognition/
+__pycache__/
+*.pyc

@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "subject": "张敏",
+    "disclaimer": "演示人物，非真实用户；仅用于结构与纪律的回归测试",
+    "scenario_code": "JB",
+    "scenario": "嘉宾主持人口播介绍",
+    "package_version": "2026.07.26-golden-v1",
+    "generated_at": "2026-07-26",
+    "skill_version": "commercial-self-intro"
+  },
+  "positioning": {
+    "core_label": "把儿童营养变成每天能执行的一日三餐",
+    "discarded_identities": ["头衔很长的泛专家"],
+    "listener": {
+      "who": "亲子社区讲座现场的家长听众",
+      "state": "等待开场，注意力尚未聚焦",
+      "language": ["不好好吃饭", "怎么做", "能执行"]
+    },
+    "ideal_reaction": "带着'今晚这顿饭怎么做'的问题听完分享"
+  },
+  "truth_ledger": [
+    {"claim": "8年母婴营养经验", "grade": "B", "action_before_public": "确认起算口径"},
+    {"claim": "注册营养师证书", "grade": "B", "action_before_public": "核对证书准确名称"},
+    {"claim": "服务3000个家庭", "grade": "B", "action_before_public": "确认统计口径与授权，主持稿用'三千个家庭'口径"},
+    {"claim": "具体前后案例", "grade": "D", "priority_score": 6, "evidence_action": "翻客户反馈截图并请求匿名授权"}
+  ],
+  "technique_card": [
+    {"id": "F01", "page": "4-5", "why": "主持稿要立一个可复述的价值标签", "effect": "听众能转述'教你今天三餐怎么做的人'"},
+    {"id": "F04", "page": "18-24", "why": "用工作中可量化的部分支撑标签", "effect": "年限与家庭数进入口播"},
+    {"id": "D02", "page": "61", "why": "理想反应是带着问题听分享", "effect": "口播结尾把问题抛给听众"},
+    {"id": "D03", "page": "61-62", "why": "对被喂养问题困扰的家长说", "effect": "不面向无孩听众铺垫"},
+    {"id": "D04", "page": "62,85", "why": "只讲'能执行的三餐'一个核心", "effect": "头衔只保留一个"},
+    {"id": "D05", "page": "63-64", "why": "准备50字口播与100字简介两种长度", "effect": "口播与书面简介分开交付"},
+    {"id": "D08", "page": "67-70", "why": "用悬念或反差让听众想听下去", "effect": "备选版用问题开场"},
+    {"id": "D20", "page": "83-84", "why": "回答'为什么值得听接下来的内容'", "effect": "口播围绕听众收益组织"},
+    {"id": "D24", "page": "117-120", "why": "口播零术语", "effect": "全部用家长语言"},
+    {"id": "E01", "page": "91-93", "why": "口播先把气氛聚拢再交棒", "effect": "第一句制造共同处境"},
+    {"id": "E03", "page": "94-95", "why": "念稿时下巴、视野的姿势提示", "effect": "delivery cues 包含姿势项"},
+    {"id": "E05", "page": "99", "why": "尊重全场时间，口播不超时", "effect": "限定在15秒级别"},
+    {"id": "E09", "page": "106-107", "why": "观察听众对哪句有反应", "effect": "为下一场修改提供依据"},
+    {"id": "L01", "page": "112", "why": "上场前真人念一遍计时", "effect": "估算之外再录音验证"},
+    {"id": "L07", "page": "125-126", "why": "主办方反馈冷时请求具体意见", "effect": "定义复盘动作"}
+  ],
+  "content_loop": {
+    "listener": "讲座现场被孩子吃饭问题困扰的家长",
+    "outcome": "听完分享，今晚这顿饭就知道怎么做",
+    "ownable_proof": "8年经验、三千个家庭的服务量（B级口径）",
+    "prompt_next_step": "带着'今晚这顿饭怎么做'的问题听完分享"
+  },
+  "versions": [
+    {
+      "version_id": "JB-HOST-V1",
+      "scenario": "嘉宾主持口播",
+      "role": "recommended",
+      "copy": "接下来这位分享人，过去8年帮三千个家庭把孩子不好好吃饭，变成今天知道怎么做。她不讲大理论，只给回家就能执行的三餐方案。掌声有请母婴营养师张敏。",
+      "target_seconds": 15,
+      "estimated_seconds": 17.2,
+      "delivery_cues": ["'掌声有请'前停一拍", "抬头看向听众而不是稿子", "姓名念清楚、放慢"],
+      "cta": "带着问题听完分享",
+      "ab_variable": null
+    },
+    {
+      "version_id": "JB-HOST-V1B",
+      "scenario": "嘉宾主持口播",
+      "role": "alternative",
+      "copy": "如果孩子挑食，今晚这顿饭该怎么做？接下来这位分享人专门回答这个问题。她做母婴营养8年，只给回家就能执行的三餐方案。掌声有请母婴营养师张敏。",
+      "target_seconds": 15,
+      "estimated_seconds": 16.8,
+      "delivery_cues": ["开场问题后停两拍，扫视全场", "姓名念清楚、放慢"],
+      "cta": "带着问题听完分享",
+      "ab_variable": "opening"
+    }
+  ],
+  "compliance": {
+    "risk_words_removed": ["权威专家"],
+    "pending_verification": ["三千个家庭口径需与主办方核对后使用"],
+    "privacy_notes": ["不使用未经授权的机构或客户名称"]
+  },
+  "score": {
+    "total": 86,
+    "weakest_dimension": "证据可信度",
+    "top_evidence_to_collect": [
+      "主办方可核验的服务量口径说明",
+      "一个可公开讲述的匿名案例（含授权）",
+      "过往讲座的现场照片或主办方文字"
+    ]
+  }
+}

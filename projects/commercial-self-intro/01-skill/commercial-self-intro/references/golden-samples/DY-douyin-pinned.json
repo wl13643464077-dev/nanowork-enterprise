@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "subject": "张敏",
+    "disclaimer": "演示人物，非真实用户；仅用于结构与纪律的回归测试",
+    "scenario_code": "DY",
+    "scenario": "抖音置顶视频",
+    "package_version": "2026.07.26-golden-v1",
+    "generated_at": "2026-07-26",
+    "skill_version": "commercial-self-intro"
+  },
+  "positioning": {
+    "core_label": "把儿童营养变成每天能执行的一日三餐",
+    "discarded_identities": ["资历很多的泛营养专家"],
+    "listener": {
+      "who": "刷到视频、担心孩子挑食又没时间研究的宝妈",
+      "state": "快速滑动信息流，前3秒决定去留",
+      "language": ["挑食", "不好好吃饭", "今天三餐怎么做"]
+    },
+    "ideal_reaction": "关注账号并回看主页置顶"
+  },
+  "truth_ledger": [
+    {"claim": "8年母婴营养经验", "grade": "B", "action_before_public": "确认起算口径"},
+    {"claim": "注册营养师证书", "grade": "B", "action_before_public": "核对证书准确名称"},
+    {"claim": "服务3000个家庭", "grade": "B", "action_before_public": "确认统计口径与授权"},
+    {"claim": "具体前后案例", "grade": "D", "priority_score": 6, "evidence_action": "翻客户反馈截图并请求匿名授权"}
+  ],
+  "technique_card": [
+    {"id": "F02", "page": "7-10", "why": "从营养师身份转向宝妈可获得的未来", "effect": "第一句讲听众问题而不是自我头衔"},
+    {"id": "F04", "page": "18-24", "why": "把日常咨询工作提炼成'能执行的三餐'这一可感知价值", "effect": "定位标签来自真实工作而非形容词"},
+    {"id": "D02", "page": "61", "why": "理想反应定为关注并回看置顶", "effect": "CTA收敛为单一动作"},
+    {"id": "D04", "page": "62,85", "why": "只传递'三餐可执行'一个核心", "effect": "删除证书细节等干扰项"},
+    {"id": "D08", "page": "67-70", "why": "用'缺的不是知识'的反常识引发停留", "effect": "开头制造认知缺口"},
+    {"id": "D10", "page": "72", "why": "只对一位被挑食困扰的宝妈说", "effect": "用词全部取自她的语言"},
+    {"id": "D18", "page": "80-82", "why": "未来、证明、行动三句结构", "effect": "决定15秒版骨架"},
+    {"id": "D24", "page": "117-120", "why": "把营养干预等术语翻成日常语言", "effect": "文案零专业术语"},
+    {"id": "E05", "page": "99", "why": "把观众时间当作不可返还成本", "effect": "不用履历热身，直接进入问题"},
+    {"id": "E09", "page": "106-107", "why": "发布后观察评论对哪句话困惑", "effect": "为下一轮单变量修改提供依据"},
+    {"id": "L01", "page": "112", "why": "上线前真人录一遍校时", "effect": "估算之外再加真实录音验证"},
+    {"id": "L07", "page": "125-126", "why": "数据差时请求具体反馈再修改", "effect": "定义低留存时的动作"},
+    {"id": "L10", "page": "132-133", "why": "主页、置顶与日常内容保持同一定位", "effect": "置顶与内容支柱一致"}
+  ],
+  "content_loop": {
+    "listener": "没时间研究、担心孩子挑食的宝妈，正在快速刷信息流",
+    "outcome": "把复杂营养建议变成今天三餐就能执行的动作",
+    "ownable_proof": "8年母婴营养经验与注册营养师证书，均按B级事实谨慎使用",
+    "prompt_next_step": "关注账号，每天获得一个能照做的喂养动作"
+  },
+  "versions": [
+    {
+      "version_id": "DY-15-V1",
+      "scenario": "抖音置顶",
+      "role": "recommended",
+      "copy": "孩子挑食，缺的不是知识，是今天三餐怎么做。我是张敏，做母婴营养8年，把复杂建议变成今天就能执行的三餐。关注我，每天一个能照做的喂养动作。",
+      "target_seconds": 15,
+      "estimated_seconds": 16.1,
+      "delivery_cues": ["第一句说完停半拍", "重音在'今天三餐怎么做'", "看镜头里的一位具体宝妈"],
+      "cta": "关注账号",
+      "ab_variable": null
+    },
+    {
+      "version_id": "DY-15-V1B",
+      "scenario": "抖音置顶",
+      "role": "alternative",
+      "copy": "把孩子三餐理顺，不一定要先学营养知识。我是张敏，做母婴营养8年，把复杂建议变成今天就能执行的三餐。关注我，每天一个能照做的喂养动作。",
+      "target_seconds": 15,
+      "estimated_seconds": 15.8,
+      "delivery_cues": ["开头直接给结果，不设问", "语速放稳，不抢"],
+      "cta": "关注账号",
+      "ab_variable": "opening"
+    }
+  ],
+  "compliance": {
+    "risk_words_removed": ["改善体质"],
+    "pending_verification": ["3000家庭统计口径"],
+    "privacy_notes": ["联系方式未经同意不展示"]
+  },
+  "score": {
+    "total": 87,
+    "weakest_dimension": "证据可信度",
+    "top_evidence_to_collect": [
+      "一个有前后对比的匿名喂养案例（含授权）",
+      "注册营养师证书的准确名称与编号口径",
+      "3000个家庭的统计口径说明"
+    ]
+  }
+}

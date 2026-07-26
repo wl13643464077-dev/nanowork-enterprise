@@ -1,0 +1,4 @@
+interface:
+  display_name: "商业自我介绍"
+  short_description: "融合整本方法，生成可表达、可成交、可练习迭代的多场景介绍"
+  default_prompt: "使用 $commercial-self-intro，按整本《自我介绍的技术》的方法库，根据我的简短背景和用途生成、练习并迭代商业级自我介绍与展示方案。"

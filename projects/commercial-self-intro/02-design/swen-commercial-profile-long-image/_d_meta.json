@@ -1,0 +1,24 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "斯文商业介绍长图": {
+      "versions": [
+        {
+          "path": "Swen-Commercial-Profile-Long-Image.html",
+          "createdAt": "2026-07-10T05:09:29.277Z",
+          "status": "needs-review",
+          "subtitle": "1080px企业AI效率顾问商业介绍",
+          "viewport": {
+            "width": 1080,
+            "height": 7736
+          },
+          "section": "Commercial Profile"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-07-10T05:09:29.279Z",
+  "updatedAt": "2026-07-10T05:09:29.279Z"
+}

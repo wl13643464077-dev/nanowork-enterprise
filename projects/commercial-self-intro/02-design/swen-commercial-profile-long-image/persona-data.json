@@ -1,0 +1,97 @@
+{
+  "_readme": "斯文商业介绍长图的数据源。字段按 persona-spec 五层结构映射（见 source_mapping），修改文案只改本文件，然后运行 build_long_image.py 重建 HTML。*_html 字段允许受控内联标记（<br />、<span class=\"marker\">）。",
+  "source_mapping": {
+    "hero.name_cn / hero.name_en / hero.role_label / hero.meta": "persona-spec L0_identity（B级，公开前需可出示证明物）",
+    "hero.tagline / positioning.title / positioning.lead_html": "persona-spec L0_identity.定位一句话 + L1_judgment 结论句式",
+    "metrics / credentials": "persona-spec L3_evidence（B级主张，公开前动作见 truth_notes）",
+    "impact / services / process": "persona-spec L1_judgment（方法论与交付结构）",
+    "field_photos": "persona-spec L3_evidence 活动证明物（真实照片）",
+    "cta / contact / qr": "persona-spec L4_context 当前合作入口（月度复核）",
+    "legal": "Truth Ledger 边界声明"
+  },
+  "truth_notes": [
+    {"claim": "10年人力资源与组织管理经验", "grade": "B", "action_before_public": "确认起算口径"},
+    {"claim": "1000+累计服务学员与企业人员", "grade": "B", "action_before_public": "确认统计口径"},
+    {"claim": "3条交付线（培训、智能体、视觉内容）", "grade": "B", "action_before_public": "与当前业务保持同步"},
+    {"claim": "大尚科技联合创始人 / 中南大学硕士 / 人工智能训练师", "grade": "B", "action_before_public": "用可出示证明物的准确头衔口径"}
+  ],
+  "page_title": "斯文 Swen｜商业介绍长图",
+  "hero": {
+    "photo": "assets/hero.png",
+    "photo_alt": "斯文 Swen 肖像",
+    "topline_left": "AI Efficiency Consultant",
+    "topline_index": "01 / Profile",
+    "role_label": "懂组织的企业AI效率顾问",
+    "name_cn": "斯文",
+    "name_en": "SWEN",
+    "tagline": "把AI从一堂课，放进岗位、流程和结果里。",
+    "meta": ["大尚科技联合创始人", "中南大学硕士", "人工智能训练师"]
+  },
+  "positioning": {
+    "kicker": "02 / Why Swen",
+    "title": "企业需要的，不是再学一批工具。",
+    "lead_html": "真正的难点，是判断<span class=\"marker\">哪些岗位先改、哪些流程能自动化、哪些经验值得沉淀</span>。斯文从组织、岗位和业务结果出发，把复杂的AI讲清楚、拆明白，再放进真实工作。",
+    "metrics": [
+      {"value": "10年", "label_html": "人力资源与<br />组织管理经验"},
+      {"value": "1000+", "label_html": "累计服务学员<br />与企业人员"},
+      {"value": "3条", "label_html": "培训、智能体<br />与视觉内容交付"}
+    ],
+    "credentials": ["企业AI培训", "办公提效", "知识库应用", "智能体搭建", "飞书业务场景"]
+  },
+  "impact": {
+    "kicker": "03 / Business Outcomes",
+    "title": "让AI进入企业工作的四个层级",
+    "items": [
+      {"title": "岗位提效", "text": "把方案、PPT、数据、报告、会议纪要等高频工作，变成岗位可复用的方法与模板。"},
+      {"title": "流程优化", "text": "梳理重复动作、信息流转与协作节点，让AI进入项目、客户、教务和运营流程。"},
+      {"title": "知识沉淀", "text": "把零散文档与专家经验转成可查询、可追问、可持续维护的企业知识库。"},
+      {"title": "智能体协同", "text": "围绕客服、销售、内容和数据场景，设计能上线、能运营的数字员工与工作流。"}
+    ]
+  },
+  "services": {
+    "kicker": "04 / Core Services",
+    "title": "从认知到交付，不让培训停在“听懂”",
+    "items": [
+      {
+        "title": "企业AI定制培训",
+        "text": "面向管理层、全员及具体岗位，从前期调研、课程定制到现场实操，围绕真实业务任务组织学习。",
+        "deliverables": ["岗位AI落地清单", "提示词模板库", "工具手册", "实战作品"]
+      },
+      {
+        "title": "知识库与智能体定制",
+        "text": "从需求诊断、价值排序到方案、开发和部署，把高价值场景做成客服、销售、知识问答和自动化工作流。",
+        "deliverables": ["企业知识库", "销售助手", "智能客服", "数据机器人"]
+      },
+      {
+        "title": "AI视觉内容制作",
+        "text": "由白墨 BLANK INK 团队完成品牌广告、AI短剧、产品展示、数字人口播与创意动画的全流程制作。",
+        "deliverables": ["TVC品牌广告", "AI短剧", "产品视频", "数字人口播"]
+      }
+    ]
+  },
+  "field": {
+    "kicker": "05 / In The Field",
+    "title": "不是讲完就走，而是让人现场动手",
+    "photos": [
+      {"variant": "primary", "src": "assets/training-1.png", "alt": "企业AI实战培训现场", "caption": "企业AI实战培训｜从工具演示进入业务任务"},
+      {"variant": "portrait", "src": "assets/training-3.png", "alt": "斯文现场授课", "caption": "现场授课与实操辅导"},
+      {"variant": "speaker", "src": "assets/event-2.png", "alt": "斯文线下活动分享", "caption": "线下活动分享与行业交流"}
+    ],
+    "note": "课程与项目围绕真实岗位任务展开，配套模板、工具和交付物，帮助团队把一次学习转化为可以继续使用的组织资产。"
+  },
+  "process": {
+    "kicker": "06 / Cooperation",
+    "title": "六步合作流程",
+    "steps": ["初步沟通", "企业调研", "方案定制", "合同签约", "项目交付", "持续服务"]
+  },
+  "cta": {
+    "kicker": "Start With One Real Task",
+    "title": "带着一个真实岗位问题来聊。",
+    "text": "先找到最重复、最耗时、最依赖个人经验的一项工作，再判断AI应该从哪里进入。",
+    "contact_lines": ["斯文 Swen｜企业AI效率顾问", "微信：Ccai0553", "公众号：Cc.ai笔记"],
+    "qr_src": "assets/wechat-qr-clean.png",
+    "qr_alt": "斯文微信二维码",
+    "qr_label_html": "扫码添加微信<br />备注“AI咨询”"
+  },
+  "legal": "本长图依据斯文公开业务资料整理。涉及平台合作、项目数据、客户关系与服务期限的具体口径，以本人确认及正式授权材料为准。"
+}

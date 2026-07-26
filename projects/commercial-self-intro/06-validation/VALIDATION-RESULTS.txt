@@ -1,0 +1,84 @@
+Commercial Self Intro Project Validation
+validated_at=2026-07-26T19:18:04+08:00
+package_version=2026.07.26-full-v1
+
+[project-pre-manifest]
+required_files=10
+required_files=PASS
+book_technique_coverage=64/64
+module_counts=F17,D24,E11,L12
+page_markers=64/64
+cross_reference_files=11
+result=PASS
+long_image_dimensions=1080x7736
+design_local_assets=5
+design_integrity=PASS
+project_integrity=PASS
+
+[skill-quick-validate]
+Skill is valid!
+
+[python-ast]
+python_ast_files=5
+python_ast=PASS
+
+[node-syntax]
+node_files=2
+node_syntax=PASS
+
+[qr-decode]
+qr_count=1
+qr_value=https://u.wechat.com/ME6suk1r7jEwAW_M_VcXhlc?s=0
+qr_slice_y=6800
+qr_decode=PASS
+
+[source-book-search]
+pdf_search_hits=1
+pdf_search=PASS
+
+[nested-portable-release]
+package_files=23
+package_integrity=PASS
+powershell_parser=PASS
+
+PRE_PACKAGE_VALIDATION=PASS
+
+========================================
+Commercial Self Intro Project Validation (v3)
+validated_at=2026-07-26T12:40:00+00:00
+package_version=2026.07.26-full-v3
+environment=linux-public-checkout (no 04-private-sources)
+
+[project]
+private_sources=absent
+required_files=9 PASS
+book_technique_coverage=64/64
+golden_samples=5 (DY,VX,SQ,BIZ,JB)
+golden_regression=PASS (negative-injection test confirmed failing samples are caught)
+design_integrity=PASS
+
+[long-image-template]
+template_build=IN-SYNC (build_long_image.py --check: byte-identical to shipped HTML)
+
+[long-image-render-linux]
+renderer=Playwright 1.62 + Chromium 1194 + Noto Sans CJK
+output=02-design/swen-commercial-profile-long-image/Swen-Commercial-Profile-Long-Image-20260726-v2.png
+dimensions=1080x7733 (original Windows render: 1080x7736; 3px font-metric delta)
+overflow=none broken_images=none console_errors=none
+qr_count=1
+qr_value=https://u.wechat.com/ME6suk1r7jEwAW_M_VcXhlc?s=0
+qr_decode=PASS (both new render and original deliverable)
+
+[portable-release-v4]
+package=commercial-self-intro-portable-20260726-v4
+package_files=33
+package_integrity=PASS (in place AND after unzip from empty dir)
+install_test=PASS (install.sh --destination <empty dir>; skill tree deployed, coverage re-validated)
+zip_sha256=f1d45586aa9829acac5803bced295f9b4413440668c0d562192b438839532f55 (read back: OK)
+
+[not-run]
+quick_validate.py (Codex skill-creator unavailable in this environment)
+powershell_parser for install.ps1 (pwsh unavailable on this Linux runner)
+pdf_search (book PDF excluded from public checkout by policy)
+
+PRE_PACKAGE_VALIDATION=PASS
