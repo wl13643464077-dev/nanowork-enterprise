@@ -7,10 +7,11 @@ import {
   AimOutlined, CheckCircleOutlined, AuditOutlined, AlertOutlined, StarOutlined,
   ThunderboltOutlined, ReloadOutlined, SendOutlined, PlusOutlined, PlayCircleOutlined,
   CheckOutlined, CloseOutlined, TrophyOutlined, FormOutlined, TeamOutlined,
-  LockOutlined, EditOutlined, UploadOutlined, PaperClipOutlined, DeleteOutlined,
+  LockOutlined, EditOutlined, UploadOutlined, PaperClipOutlined, DeleteOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api, fmtMoney, fmtWan, getUser } from '../api/client';
+import { loadXlsx } from '../utils/xlsx';
 import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
 import { CHART_COLORS } from '../components/Charts';
@@ -426,6 +427,36 @@ export default function Execution() {
       .finally(() => setSavingCheckin(false));
   });
 
+  // 导出任务看板全部任务（本页数据量最大、最有沉淀价值的一张表）
+  const [exportingTasks, setExportingTasks] = useState(false);
+  const exportTasks = async () => {
+    if (!tasks.length) { message.warning('暂无可导出的任务'); return; }
+    setExportingTasks(true);
+    try {
+      const XLSX = await loadXlsx();
+      const sheetRows = tasks.map((t: any) => ({
+        任务名: t.title || '',
+        类型: t.type || '',
+        状态: t.status || '',
+        优先级: t.priority || '',
+        负责人: t.assignee || '未分配',
+        截止时间: t.due_at || '',
+        来源: t.source || '',
+        风险: t.risk ? '是' : '否',
+        创建时间: t.created_at || '',
+        完成时间: t.done_at || '',
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), '任务清单');
+      XLSX.writeFile(wb, `任务清单-${dayjs().format('YYYY-MM-DD')}.xlsx`);
+      message.success(`已导出 ${tasks.length} 项任务`);
+    } catch {
+      message.error('任务清单导出失败，请稍后重试');
+    } finally {
+      setExportingTasks(false);
+    }
+  };
+
   const yest = plan?.yesterday || {};
   const activeToday = partners.filter(p => p.active_today).length;
   const renderPlanRollupCard = (key: 'yesterday' | 'week' | 'month', title: string, color: string) => {
@@ -648,6 +679,7 @@ export default function Execution() {
       {/* 第三行：任务看板 */}
       <Panel title="任务看板"
         extra={<Space size={6}>
+          <Button size="small" icon={<DownloadOutlined />} loading={exportingTasks} onClick={exportTasks}>导出 Excel</Button>
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>新建任务</Button>
         </Space>}>
         <Row gutter={[12, 12]}>

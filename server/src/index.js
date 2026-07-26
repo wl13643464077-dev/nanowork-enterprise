@@ -33,6 +33,7 @@ import systemRoutes from './routes/system.js';
 import agentRoutes from './routes/agents.js';
 import fileRoutes from './routes/files.js';
 import dataIntakeRoutes from './routes/dataintake.js';
+import metaRoutes from './routes/meta.js';
 import { uploadAccessGuard } from './engines/upload-access.js';
 import { createAiGuard } from './ai-limits.js';
 
@@ -208,6 +209,7 @@ app.get('/api/public/feishu/oauth/callback', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/platform', authMiddleware, platformRoutes);          // 平台超管（跨租户运维，内部 requireRole）
 app.use('/api/recharge', authMiddleware, tenantScope, rechargeRoutes);          // 充值中心（登录即可，含余额/套餐/下单）
+app.use('/api/meta', authMiddleware, tenantScope, metaRoutes);
 app.use('/api/dashboard', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), dashboardRoutes);
 app.use('/api/growth', authMiddleware, tenantScope, tenantGate, moduleGuard('growth'), growthRoutes);
 app.use('/api/content', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), mediaReviewRoutes, aiGuard('content'), contentRoutes);

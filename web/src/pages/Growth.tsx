@@ -20,7 +20,8 @@ const { Paragraph } = Typography;
 const STAGES = ['新线索', '已沟通', '已邀约', '已到店', '已成交', '复购', '已流失'];
 const GRADES = ['A', 'B', 'C'];
 const SOURCES = ['短视频', '朋友圈', '社群', '转介绍', '主题试吃', '到店', '合作伙伴推荐'];
-const IDENTITIES = ['企业主', '高管', '个体创业者', '普通消费者'];
+// 身份标签兜底值：GET /api/meta/enums 拉取失败时回退，避免下拉框为空
+const DEFAULT_IDENTITIES = ['企业主', '高管', '个体创业者', '普通消费者'];
 const BUDGETS = ['高', '中', '低', '未知'];
 const budgetColor: Record<string, string> = { 高: 'red', 中: 'orange', 低: 'default', 未知: 'default' };
 
@@ -143,6 +144,16 @@ export default function Growth() {
   const [keyStage, setKeyStage] = useState<string | undefined>();
   const [keyBudget, setKeyBudget] = useState<string | undefined>();
   const [keySort, setKeySort] = useState('scoreDesc');
+  // 身份标签单源化：挂载时从 /api/meta/enums 取一次，失败回退本地默认值（client 已自动提示错误）
+  const [identities, setIdentities] = useState<string[]>(DEFAULT_IDENTITIES);
+  const [exportingLeads, setExportingLeads] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/meta/enums')
+      .then((d: any) => { if (!cancelled && Array.isArray(d?.identities) && d.identities.length) setIdentities(d.identities); })
+      .catch(() => { /* 拉取失败保持 DEFAULT_IDENTITIES，页面不 crash */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const LEAD_HEADER_MAP: Record<string, string> = {
     '姓名': 'name', '客户姓名': 'name', '客户': 'name', '名称': 'name', name: 'name',
@@ -193,7 +204,7 @@ export default function Growth() {
         phone: cellText(o.phone),
         wechat: cellText(o.wechat),
         source: pickOption(o.source, SOURCES, '到店'),
-        identity_tag: pickOption(o.identity_tag, IDENTITIES, '普通消费者'),
+        identity_tag: pickOption(o.identity_tag, identities, '普通消费者'),
         interest: cellText(o.interest),
         budget_level: pickOption(o.budget_level, BUDGETS, '未知'),
         stage: pickOption(o.stage, STAGES, '新线索'),
@@ -268,6 +279,41 @@ export default function Growth() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exportRows), '本月已沟通客户');
     XLSX.writeFile(wb, `本月已沟通客户-${followReport.month || new Date().toISOString().slice(0, 7)}.xlsx`);
+  };
+  // 导出当前筛选条件下的完整客户列表（后端单页上限100，按页拉全；电话保持后端脱敏原样）
+  const exportLeads = async () => {
+    setExportingLeads(true);
+    try {
+      const base = { stage: fStage || '', grade: fGrade || '', source: fSource || '', followStatus: fFollowStatus || '', kw, sort };
+      const all: any[] = [];
+      for (let p = 1; p <= 50; p++) {
+        const params = new URLSearchParams({ ...base, page: String(p), size: '100' });
+        const d: any = await api.get(`/growth/leads?${params.toString()}`);
+        const batch = d.rows || [];
+        all.push(...batch);
+        if (!batch.length || all.length >= (d.total || 0)) break;
+      }
+      if (!all.length) { message.warning('当前筛选条件下没有可导出的客户'); return; }
+      const XLSX = await loadXlsx();
+      const sheetRows = all.map((r: any) => ({
+        姓名: r.name || '',
+        电话: r.phone || '',
+        阶段: r.stage || '',
+        等级: r.grade || '',
+        身份: r.identity_tag || '',
+        归属: r.owner_name || '',
+        最近跟进: fmtTime(r.last_follow_at) || '',
+        下次跟进: r.next_follow_at ? `${String(r.next_follow_at).slice(0, 10)}${r.next_action ? ` ${r.next_action}` : ''}` : '',
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), '客户列表');
+      XLSX.writeFile(wb, `客户列表-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      message.success(`已导出 ${all.length} 条客户`);
+    } catch {
+      message.error('客户列表导出失败，请稍后重试');
+    } finally {
+      setExportingLeads(false);
+    }
   };
 
   // ===== loaders =====
@@ -1110,6 +1156,7 @@ export default function Growth() {
         <Col xs={24} lg={15}>
           <Panel title="客户线索台账"
             extra={<Space>
+              <Button size="small" icon={<DownloadOutlined />} loading={exportingLeads} onClick={exportLeads}>导出 Excel</Button>
               <Button size="small" icon={<InboxOutlined />} onClick={openBatch}>批量导入线索</Button>
               <Button size="small" icon={<UploadOutlined />} onClick={() => { reportForm.resetFields(); setReportOpen(true); }}>今日数据上报</Button>
               <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openAdd}>新增线索</Button>
@@ -1285,7 +1332,7 @@ export default function Growth() {
             <Col span={12}><Form.Item name="source" label="来源渠道">
               <Select allowClear placeholder="选择来源" options={SOURCES.map(s => ({ value: s, label: s }))} /></Form.Item></Col>
             <Col span={12}><Form.Item name="identity_tag" label="身份">
-              <Select allowClear placeholder="选择身份" options={IDENTITIES.map(s => ({ value: s, label: s }))} /></Form.Item></Col>
+              <Select allowClear placeholder="选择身份" options={identities.map(s => ({ value: s, label: s }))} /></Form.Item></Col>
             <Col span={12}><Form.Item name="budget_level" label="预算等级">
               <Select allowClear placeholder="选择预算" options={BUDGETS.map(s => ({ value: s, label: s }))} /></Form.Item></Col>
             <Col span={12}><Form.Item name="interest" label="意向产品"><Input placeholder="如 招牌菜预订 / 企业团餐" /></Form.Item></Col>
