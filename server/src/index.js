@@ -12,6 +12,7 @@ import { authMiddleware, csrfOriginGuard, hashPassword } from './util.js';
 import { platformSuperPasswordStrengthError } from './security-config.js';
 import adminRoutes from './routes/admin.js';
 import rechargeRoutes from './routes/recharge.js';
+import rechargeNotifyRoutes from './routes/recharge-notify.js';
 import platformRoutes from './routes/platform.js';
 import { runScheduledJobs } from './engines/scheduler.js';
 import authRoutes from './routes/auth.js';
@@ -84,6 +85,7 @@ app.use((_req, res, next) => {
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
   next();
 });
+app.use('/api/recharge/notify', rechargeNotifyRoutes); // 支付网关回调：免登录、验签即鉴权；须在全局 json 解析之前挂载（微信验签需要 raw body）
 app.use(express.json({ limit: '32mb' }));
 
 // 为长耗时 AI 请求提供统一追踪和取消：浏览器断开后立即终止上游调用，避免继续计费和占用连接。
