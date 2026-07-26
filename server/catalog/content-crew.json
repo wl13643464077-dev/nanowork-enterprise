@@ -1,0 +1,2757 @@
+{
+  "schemaVersion": "paihuo-content-crew.v2",
+  "source": {
+    "kind": "manually-curated-static-catalog",
+    "authority": "Paihuo live content registry",
+    "referenceProject": "派活AI",
+    "referencePath": "app/skills/registry.py",
+    "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+    "note": "Static metadata only. This catalog does not execute or import the legacy runtime.",
+    "profilePolicy": "Full declarative profiles; no legacy runtime import or database dependency."
+  },
+  "department": {
+    "key": "content",
+    "name": "内容生产部",
+    "emoji": "🎬",
+    "kind": "single-station-content-warehouse",
+    "employeeTotal": 10
+  },
+  "moduleGroups": [
+    {
+      "key": "content_intelligence",
+      "name": "选题与情报",
+      "members": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "key": "content_writing",
+      "name": "文案与风格",
+      "members": [
+        3,
+        4
+      ]
+    },
+    {
+      "key": "content_visual",
+      "name": "视觉与演绎",
+      "members": [
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "key": "content_distribution",
+      "name": "分发与复盘",
+      "members": [
+        8,
+        9
+      ]
+    }
+  ],
+  "qualityGate": {
+    "key": "quality_gate",
+    "name": "审查官",
+    "group": "合规审查部",
+    "emoji": "🛡️",
+    "employee": false,
+    "countedInEmployeeTotal": false,
+    "description": "发布前规则与风险审查服务；不是可派活的内容员工，不占员工编号。"
+  },
+  "employees": [
+    {
+      "idx": 0,
+      "key": "trend",
+      "person": null,
+      "name": "趋势官",
+      "group": "热点雷达部",
+      "moduleGroup": "content_intelligence",
+      "skill": "Horizon",
+      "emoji": "📡",
+      "color": "#f4a261",
+      "duty": "热点趋势简报 + 5 个候选选题",
+      "intro": "趋势官负责观察市场变化、行业动态与内容风向，帮助您从纷杂信息中发现值得关注的话题和传播机会。适合在日常选题、热点借势或内容规划前参与，为团队提供更及时、更有方向感的选题参考。",
+      "approval": "pick",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "热榜扫描",
+          "emoji": "🔥",
+          "desc": "逐个刷勾选渠道的热搜/热榜,提取与账号相关的信号",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "走势判断",
+          "emoji": "📈",
+          "desc": "判断话题在升温期还是见顶期,只推荐还有红利的",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "人设匹配筛选",
+          "emoji": "🎯",
+          "desc": "热点先过人设关:不贴合账号定位的再热也不报",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "同行选题监测",
+          "emoji": "👀",
+          "desc": "看同赛道账号最近在做什么题,找空位和差异化",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "节点借势",
+          "emoji": "📅",
+          "desc": "结合近期节日/发布会/大事件日历,提前埋借势选题",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "briefing",
+        "channel_scan",
+        "topics"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 0,
+        "expectedSkillCount": 12,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位1 · 趋势官(对应开源 Skill:Horizon 每日热点趋势简报)\n职责:结合今天({today})的真实热点趋势与老板的账号人设,产出趋势简报和 5 个候选选题。\n【你的检索渠道矩阵(老板指定,必须逐个覆盖)】{channels}\n要求:对上面每个渠道都做针对性检索(善用\"渠道名+方向关键词\"、site: 限定、榜单页直查),\n每个渠道至少 1 次检索;渠道之间交叉印证热度,不要凭空编造热点。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"briefing\": \"今日趋势简报,markdown,200-400字,含你检索到的真实热点\",\n \"channel_scan\": [{\"channel\": \"渠道名\", \"finding\": \"该渠道扫到的热点/信号,60字内,没有就写'无明显信号'\"}],\n \"topics\": [\n   {\"title\": \"选题标题\", \"angle\": \"切入角度\", \"hook\": \"开头钩子一句话\",\n     \"reason\": \"推荐理由(结合人设与热度)\", \"heat\": \"预估热度 高/中/低\",\n     \"evidence\": \"热度证据:来自哪些渠道\"}\n ]  // 恰好 5 个,按推荐度排序\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「趋势官」(部门:热点雷达部)。\n岗位职责:热点趋势简报 + 5 个候选选题。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "today": "今天日期",
+        "channels": "启用的检索渠道(工作配置里勾选)"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "老板Brief",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_trend",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": true,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "热点趋势简报 + 5 个候选选题",
+          "keys": [
+            "briefing",
+            "channel_scan",
+            "topics"
+          ],
+          "primaryArtifact": "json"
+        },
+        "approval": {
+          "code": "pick",
+          "description": "产出多个候选，由老板挑选后放行"
+        },
+        "handoff": {
+          "target": "工位2·情报员",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "inherit",
+          "imageModel": "inherit",
+          "approval": "pick",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "channel_matrix",
+          "catalog": [
+            "微博热搜",
+            "抖音热点",
+            "小红书热门",
+            "知乎热榜",
+            "B站热门",
+            "百度热搜",
+            "今日头条",
+            "36氪/虎嗅",
+            "少数派/爱范儿",
+            "X(Twitter)趋势",
+            "Google News",
+            "Product Hunt/HackerNews"
+          ],
+          "defaults": [
+            "微博热搜",
+            "抖音热点",
+            "小红书热门",
+            "知乎热榜",
+            "百度热搜",
+            "36氪/虎嗅"
+          ],
+          "legacyOverride": [
+            "微博热搜",
+            "抖音热点",
+            "小红书热门",
+            "知乎热榜",
+            "B站热门",
+            "百度热搜",
+            "今日头条",
+            "36氪/虎嗅",
+            "少数派/爱范儿",
+            "X(Twitter)趋势",
+            "Google News",
+            "Product Hunt/HackerNews"
+          ]
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "briefing",
+          "channel_scan",
+          "topics"
+        ],
+        "contract": "{\n \"briefing\": \"今日趋势简报,markdown,200-400字,含你检索到的真实热点\",\n \"channel_scan\": [{\"channel\": \"渠道名\", \"finding\": \"该渠道扫到的热点/信号,60字内,没有就写'无明显信号'\"}],\n \"topics\": [\n   {\"title\": \"选题标题\", \"angle\": \"切入角度\", \"hook\": \"开头钩子一句话\",\n     \"reason\": \"推荐理由(结合人设与热度)\", \"heat\": \"预估热度 高/中/低\",\n     \"evidence\": \"热度证据:来自哪些渠道\"}\n ]  // 恰好 5 个,按推荐度排序\n}",
+        "primaryArtifact": "json"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "trend_research",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_trend",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 0,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 1,
+      "key": "research",
+      "person": null,
+      "name": "情报员",
+      "group": "情报检索部",
+      "moduleGroup": "content_intelligence",
+      "skill": "Agent-Reach",
+      "emoji": "🔎",
+      "color": "#4cc9f0",
+      "duty": "搜集素材、事实与观点",
+      "intro": "情报员擅长围绕具体选题查找公开资料、核实关键信息并整理事实依据，为后续创作提供可靠的信息基础。适合用于行业调研、案例搜集、数据核查和观点补充，让内容更加扎实可信。",
+      "approval": "auto",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "新闻检索",
+          "emoji": "📰",
+          "desc": "权威媒体+门户报道,交叉验证事实与时间线",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "报告挖掘",
+          "emoji": "📊",
+          "desc": "行业报告/白皮书/券商研报里挖数据和结论",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "海外情报",
+          "emoji": "🌍",
+          "desc": "英文关键词检索外媒/论坛,拿国内还没传开的信息差",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "舆情侦查",
+          "emoji": "💬",
+          "desc": "知乎/微博/小红书评论区,收集真实用户声音与争议点",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "官方数据核查",
+          "emoji": "🏛️",
+          "desc": "统计局/公司财报/官网公告,数据必须找到原始出处",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "学术溯源",
+          "emoji": "🎓",
+          "desc": "论文/arXiv 检索,涉及科学结论时找一手研究",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "summary",
+        "facts",
+        "data_points",
+        "viewpoints",
+        "source_coverage",
+        "sources"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 1,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位2 · 情报员(对应开源 Skill:Agent-Reach 全网素材检索)\n【选定选题】{topic}\n职责:围绕选题用 WebSearch/WebFetch 搜集国内外素材:核心事实、数据、多方观点、可引用来源。\n【你的情报源矩阵(老板指定,尽量逐类覆盖)】{channels}\n要求:按情报源类型分别检索(如\"选题关键词+报告\"、\"选题关键词+data/statistics\" 英文检索、\n知乎/公众号定向检索),至少 4 次检索;信息必须可溯源,不许编造数据。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"素材包摘要,100字\",\n \"facts\": [\"核心事实,每条附来源名\"],\n \"data_points\": [\"关键数据,每条附来源名\"],\n \"viewpoints\": [\"不同立场的观点\"],\n \"source_coverage\": [{\"channel\": \"情报源类型\", \"got\": \"找到了什么,40字内\"}],\n \"sources\": [{\"title\": \"来源标题\", \"url\": \"链接\"}]\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「情报员」(部门:情报检索部)。\n岗位职责:搜集素材、事实与观点。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "topic": "选定选题(含角度/钩子)",
+        "channels": "启用的情报源(工作配置里勾选)"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位1·趋势官产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_research",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": true,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "搜集素材、事实与观点",
+          "keys": [
+            "summary",
+            "facts",
+            "data_points",
+            "viewpoints",
+            "source_coverage",
+            "sources"
+          ],
+          "primaryArtifact": "json"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "质量自查后自动放行"
+        },
+        "handoff": {
+          "target": "工位3·拆解师",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "inherit",
+          "imageModel": "inherit",
+          "approval": "auto",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "channel_matrix",
+          "catalog": [
+            "权威媒体报道",
+            "行业报告/白皮书",
+            "知乎深度回答",
+            "公众号长文",
+            "官方数据/统计局",
+            "学术论文/arXiv",
+            "海外媒体(英文源)",
+            "竞品/同行动态",
+            "播客/访谈实录",
+            "电商评论区(真实用户声音)"
+          ],
+          "defaults": [
+            "权威媒体报道",
+            "行业报告/白皮书",
+            "知乎深度回答",
+            "官方数据/统计局",
+            "海外媒体(英文源)"
+          ],
+          "legacyOverride": null
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "summary",
+          "facts",
+          "data_points",
+          "viewpoints",
+          "source_coverage",
+          "sources"
+        ],
+        "contract": "{\n \"summary\": \"素材包摘要,100字\",\n \"facts\": [\"核心事实,每条附来源名\"],\n \"data_points\": [\"关键数据,每条附来源名\"],\n \"viewpoints\": [\"不同立场的观点\"],\n \"source_coverage\": [{\"channel\": \"情报源类型\", \"got\": \"找到了什么,40字内\"}],\n \"sources\": [{\"title\": \"来源标题\", \"url\": \"链接\"}]\n}",
+        "primaryArtifact": "json"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "evidence_research",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_research",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 1,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 2,
+      "key": "benchmark",
+      "person": null,
+      "name": "拆解师",
+      "group": "爆款研究部",
+      "moduleGroup": "content_intelligence",
+      "skill": "MediaCrawler(采集)",
+      "emoji": "🧩",
+      "color": "#e76f51",
+      "duty": "采集拆解同题爆款与评论",
+      "intro": "拆解师关注同类优质内容、热门表达和受众反馈，帮助团队理解什么样的内容更容易被看见和接受。适合在正式创作前寻找参考方向，提炼值得借鉴的亮点，并减少低效试错。",
+      "approval": "auto",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "同题爆款检索",
+          "emoji": "🔍",
+          "desc": "全网找同选题下的高热内容,按平台分别采样",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "标题钩子拆解",
+          "emoji": "🪝",
+          "desc": "拆爆款标题的公式:数字/悬念/身份代入/反常识",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "结构情绪分析",
+          "emoji": "🎢",
+          "desc": "拆内容结构与情绪曲线:哪里铺垫哪里爆点",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "评论区洞察",
+          "emoji": "🗣️",
+          "desc": "从高赞评论反推受众真实爽点与槽点",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "账号打法画像",
+          "emoji": "🧬",
+          "desc": "拆对标账号的更新节奏/人设策略/变现路径",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "benchmarks",
+        "comment_insights",
+        "user_language",
+        "takeaways"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 2,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位3 · 拆解师(对应开源 Skill:MediaCrawler 爆款采集拆解。\n V1 适配层用联网检索近似替代平台爬虫;商业授权闭环后切换为真实采集)\n【选定选题】{topic}\n【素材包摘要】{summary}\n【老板指定的对标账号/爆款(优先拆解这些;为空则自行检索同题高热内容)】\n{targets}\n【老板要求的拆解维度(每个对标都按这些维度拆)】{dimensions}\n职责:检索并拆解同选题下的高热内容:逐维度拆透,给出可复制的打法。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"benchmarks\": [{\"title\": \"对标内容标题\", \"platform\": \"平台\", \"account\": \"账号名(知道就填)\",\n                  \"dimensions\": {\"维度名\": \"该维度的拆解结论\"}, \"why_hot\": \"为什么火\"}],  // 3-5 个\n \"comment_insights\": [\"评论区/受众情绪洞察\"],\n \"user_language\": [\"目标用户的原生表达/黑话\"],\n \"takeaways\": [\"给撰稿人的可执行建议\"]\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「拆解师」(部门:爆款研究部)。\n岗位职责:采集拆解同题爆款与评论。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "topic": "选定选题",
+        "summary": "情报员素材包摘要",
+        "targets": "老板指定的对标账号/链接",
+        "dimensions": "拆解维度(工作配置里定义)"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位2·情报员产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_benchmark",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": true,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "采集拆解同题爆款与评论",
+          "keys": [
+            "benchmarks",
+            "comment_insights",
+            "user_language",
+            "takeaways"
+          ],
+          "primaryArtifact": "json"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "质量自查后自动放行"
+        },
+        "handoff": {
+          "target": "工位4·撰稿人",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "inherit",
+          "imageModel": "inherit",
+          "approval": "auto",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "benchmark_matrix",
+          "defaults": {
+            "targets": [],
+            "dimensions": [
+              "选题角度",
+              "标题/钩子",
+              "内容结构",
+              "情绪曲线",
+              "封面与视觉",
+              "评论区洞察"
+            ]
+          },
+          "legacyOverride": {}
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "benchmarks",
+          "comment_insights",
+          "user_language",
+          "takeaways"
+        ],
+        "contract": "{\n \"benchmarks\": [{\"title\": \"对标内容标题\", \"platform\": \"平台\", \"account\": \"账号名(知道就填)\",\n                  \"dimensions\": {\"维度名\": \"该维度的拆解结论\"}, \"why_hot\": \"为什么火\"}],  // 3-5 个\n \"comment_insights\": [\"评论区/受众情绪洞察\"],\n \"user_language\": [\"目标用户的原生表达/黑话\"],\n \"takeaways\": [\"给撰稿人的可执行建议\"]\n}",
+        "primaryArtifact": "json"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "benchmark_analysis",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_benchmark",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 2,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 3,
+      "key": "draft",
+      "person": null,
+      "name": "撰稿人",
+      "group": "文案创作部",
+      "moduleGroup": "content_writing",
+      "skill": "Auto-Redbook-Skills",
+      "emoji": "✍️",
+      "color": "#ffd166",
+      "duty": "文案初稿 + 配图建议",
+      "intro": "撰稿人负责把选题、资料和业务诉求转化为结构清晰、读起来顺畅的内容初稿。无论是品牌表达、知识分享还是产品内容，TA都能帮助您快速形成一份可以继续修改或直接使用的文字底稿。",
+      "approval": "review",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "钩子开头",
+          "emoji": "🪝",
+          "desc": "前3秒/前两行必须抓人:悬念、反差、利益点直给",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "事实织入",
+          "emoji": "🧵",
+          "desc": "素材包的数据事实自然织进正文,拒绝空话",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "平台文体适配",
+          "emoji": "📱",
+          "desc": "按目标平台规格写:字数/分段/emoji/标签习惯",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "标签策略",
+          "emoji": "#️⃣",
+          "desc": "大词+精准词+长尾词组合,5-8个话题标签",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "配图点位规划",
+          "emoji": "🖼️",
+          "desc": "写作同时规划哪里需要配图、配什么",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "title_candidates",
+        "body",
+        "tags",
+        "image_plan"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 3,
+        "expectedSkillCount": 5,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位4 · 撰稿人(对应开源 Skill:Auto-Redbook-Skills,V1 只用其文案生成职责)\n【选定选题】{topic}\n【素材包】{research}\n【对标报告】{benchmark}\n职责:写出初稿。要求:开头 3 秒钩子;信息密度高,用素材包里的真实事实与数据;\n结构借鉴对标报告;符合目标平台文体(小红书≤1000字带emoji,公众号可长文)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"title_candidates\": [\"标题1\", \"标题2\", \"标题3\"],\n \"body\": \"正文 markdown(按首选平台文体)\",\n \"tags\": [\"话题标签,不带#号,5-8个\"],\n \"image_plan\": [{\"slot\": \"配图点位如'开头'\", \"desc\": \"画面描述\"}]  // 2-4 个\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「撰稿人」(部门:文案创作部)。\n岗位职责:文案初稿 + 配图建议。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "topic": "选定选题",
+        "research": "情报员素材包 JSON",
+        "benchmark": "拆解师对标报告 JSON"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位3·拆解师产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_draft",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "文案初稿 + 配图建议",
+          "keys": [
+            "title_candidates",
+            "body",
+            "tags",
+            "image_plan"
+          ],
+          "primaryArtifact": "markdown"
+        },
+        "approval": {
+          "code": "review",
+          "description": "产出后由老板审批再放行"
+        },
+        "handoff": {
+          "target": "工位5·文风师",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "inherit",
+          "approval": "review",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "standard",
+          "defaults": {
+            "useRequiredCapabilities": true,
+            "useEnabledSkills": true
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "title_candidates",
+          "body",
+          "tags",
+          "image_plan"
+        ],
+        "contract": "{\n \"title_candidates\": [\"标题1\", \"标题2\", \"标题3\"],\n \"body\": \"正文 markdown(按首选平台文体)\",\n \"tags\": [\"话题标签,不带#号,5-8个\"],\n \"image_plan\": [{\"slot\": \"配图点位如'开头'\", \"desc\": \"画面描述\"}]  // 2-4 个\n}",
+        "primaryArtifact": "markdown"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "copy",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_draft",
+            "newProjectStatus": "single_station"
+          },
+          {
+            "kind": "dailyPack",
+            "primary": false,
+            "addon": true,
+            "legacyHandler": "run_draft",
+            "newProjectStatus": "single_station"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 3,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 4,
+      "key": "style",
+      "person": null,
+      "name": "文风师",
+      "group": "风格工坊",
+      "moduleGroup": "content_writing",
+      "skill": "nuwa-skill",
+      "emoji": "🎭",
+      "color": "#cdb4db",
+      "duty": "按人设档案风格化改写",
+      "intro": "文风师负责让内容更贴近账号本人和品牌语气，使表达保持统一、自然并具有辨识度。适合需要强化个人风格、品牌调性或长期账号一致性的内容，让作品更像“您自己说出来的话”。",
+      "approval": "auto",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "口头禅移植",
+          "emoji": "💬",
+          "desc": "把人设档案的口头禅/句式习惯自然融进正文",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "节奏改写",
+          "emoji": "🥁",
+          "desc": "长短句节奏调成本人惯有的呼吸感",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "红线校准",
+          "emoji": "🚧",
+          "desc": "对照人设禁忌逐条排查,越界内容改写或删除",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "标题风格化",
+          "emoji": "✨",
+          "desc": "标题也要像本人起的,不能一股AI味",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "body",
+        "title_candidates",
+        "consistency_note"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 4,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位5 · 文风师(对应开源 Skill:nuwa-skill 人设文风固定)\n【初稿标题】{title}\n【初稿正文】\n{draft_body}\n【老板历史作品节选(文风依据)】\n{corpus}\n职责:在不改动事实与结构的前提下,把初稿改写成老板本人的语气:句式、口头禅、\n节奏、价值观边界都要贴合人设档案。改动要克制,以\"像本人写的\"为唯一标准。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"body\": \"风格化定稿正文 markdown\",\n \"title_candidates\": [\"风格化后的标题1\", \"标题2\", \"标题3\"],\n \"consistency_note\": \"与历史文风的一致性说明,60字内\"\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「文风师」(部门:风格工坊)。\n岗位职责:按人设档案风格化改写。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "初稿标题",
+        "draft_body": "撰稿人初稿正文",
+        "corpus": "老板历史作品节选"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位4·撰稿人产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_style",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "按人设档案风格化改写",
+          "keys": [
+            "body",
+            "title_candidates",
+            "consistency_note"
+          ],
+          "primaryArtifact": "markdown"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "质量自查后自动放行"
+        },
+        "handoff": {
+          "target": "工位6·多媒体师",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "inherit",
+          "approval": "auto",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "standard",
+          "defaults": {
+            "useRequiredCapabilities": true,
+            "useEnabledSkills": true
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "body",
+          "title_candidates",
+          "consistency_note"
+        ],
+        "contract": "{\n \"body\": \"风格化定稿正文 markdown\",\n \"title_candidates\": [\"风格化后的标题1\", \"标题2\", \"标题3\"],\n \"consistency_note\": \"与历史文风的一致性说明,60字内\"\n}",
+        "primaryArtifact": "markdown"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "style_rewrite",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_style",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 4,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 5,
+      "key": "media",
+      "person": null,
+      "name": "多媒体师",
+      "group": "视觉工厂",
+      "moduleGroup": "content_visual",
+      "skill": "Generative-Media-Skills",
+      "emoji": "🎬",
+      "color": "#90be6d",
+      "duty": "生成正文配图(V1:SVG 信息图)",
+      "intro": "多媒体师为内容准备合适的视觉素材，让文字信息更直观，也更适合不同平台展示。TA可以围绕内容主题补充画面表达，帮助作品提升完整度、阅读体验和视觉吸引力。",
+      "approval": "pick",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "信息图设计",
+          "emoji": "📐",
+          "desc": "把核心信息做成层次分明的SVG信息图",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "数据可视化",
+          "emoji": "📊",
+          "desc": "有数据时优先图表化:对比/趋势/占比",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "视觉统一",
+          "emoji": "🎨",
+          "desc": "同一工单配图统一色系与设计语言",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "多平台尺寸",
+          "emoji": "📱",
+          "desc": "按各目标平台规格出对应比例的版本",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "images"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 5,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位6 · 多媒体师(对应开源 Skill:Generative-Media-Skills。\n V1 未接 muapi.ai 付费生图,用精美 SVG 信息图/插画本地渲染,零成本;接入后可切换 AI 生图)\n【定稿标题】{title}\n【配图点位】{plan}\n【目标平台与规格】\n{platform_specs}\n【正文】\n{body}\n职责:为每个配图点位设计 SVG 配图。默认竖版 3:4(viewBox 0 0 1080 1440);\n若目标平台含抖音/视频号,再为\"最重要的 1 个点位\"额外出 1 张 9:16(viewBox 0 0 1080 1920)\n的竖屏版(platform 字段标注);若含B站/公众号,再出 1 张横版主图(按其规格)。\n要求:现代扁平设计,高级配色(每张一个主色系),大字号中文关键信息上图,层次分明。\nSVG 里文字用系统字体,不引用外部资源。总数控制在 3-6 张。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"images\": [{\"slot\": \"点位\", \"desc\": \"画面说明\", \"platform\": \"通用 或 具体平台名\",\n              \"svg\": \"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1440' ...>完整SVG</svg>\"}]\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「多媒体师」(部门:视觉工厂)。\n岗位职责:生成正文配图(V1:SVG 信息图)。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "定稿标题",
+        "plan": "配图点位 JSON",
+        "body": "定稿正文(截断)",
+        "platform_specs": "目标平台与视觉规格"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位5·文风师产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_media",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "生成正文配图(V1:SVG 信息图)",
+          "keys": [
+            "images"
+          ],
+          "primaryArtifact": "images"
+        },
+        "approval": {
+          "code": "pick",
+          "description": "产出多个候选，由老板挑选后放行"
+        },
+        "handoff": {
+          "target": "工位7·封面师",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "gpt-image-2",
+          "approval": "pick",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "platform_specs",
+          "defaults": {
+            "小红书": {
+              "emoji": "📕",
+              "body": "≤1000字,emoji 分段,口语化,标签带#",
+              "cover": "1080×1440(3:4 竖版)",
+              "cw": 1080,
+              "ch": 1440,
+              "url": "https://creator.xiaohongshu.com/publish/publish"
+            },
+            "公众号": {
+              "emoji": "💬",
+              "body": "完整长文,小标题分节,结尾引导关注",
+              "cover": "900×383(2.35:1 头图)",
+              "cw": 900,
+              "ch": 383,
+              "url": "https://mp.weixin.qq.com/"
+            },
+            "抖音": {
+              "emoji": "🎵",
+              "body": "30-60秒口播脚本,口语化,前3秒钩子",
+              "cover": "1080×1920(9:16 竖版)",
+              "cw": 1080,
+              "ch": 1920,
+              "url": "https://creator.douyin.com/creator-micro/content/upload"
+            },
+            "视频号": {
+              "emoji": "📹",
+              "body": "30-60秒口播脚本,更稳重,适配熟人转发",
+              "cover": "1080×1260(6:7 竖版)",
+              "cw": 1080,
+              "ch": 1260,
+              "url": "https://channels.weixin.qq.com/platform/post/create"
+            },
+            "B站": {
+              "emoji": "📺",
+              "body": "视频简介+置顶评论,可长,玩梗但信息密度高",
+              "cover": "1146×717(16:10 横版)",
+              "cw": 1146,
+              "ch": 717,
+              "url": "https://member.bilibili.com/platform/upload/video/frame"
+            },
+            "微博": {
+              "emoji": "🐘",
+              "body": "≤2000字,话题#带两侧#,金句前置",
+              "cover": "1080×1080(1:1 方图)",
+              "cw": 1080,
+              "ch": 1080,
+              "url": "https://weibo.com/"
+            }
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "images"
+        ],
+        "contract": "{\n \"images\": [{\"slot\": \"点位\", \"desc\": \"画面说明\", \"platform\": \"通用 或 具体平台名\",\n              \"svg\": \"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1440' ...>完整SVG</svg>\"}]\n}",
+        "primaryArtifact": "images"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "image",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_media",
+            "newProjectStatus": "single_station"
+          },
+          {
+            "kind": "video",
+            "primary": false,
+            "addon": true,
+            "legacyHandler": null,
+            "newProjectStatus": "single_station"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 5,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 6,
+      "key": "cover",
+      "person": null,
+      "name": "封面师",
+      "group": "封面设计部",
+      "moduleGroup": "content_visual",
+      "skill": "guizang-social-card-skill",
+      "emoji": "🖼️",
+      "color": "#f28cb1",
+      "duty": "封面卡片 ×3 多风格备选",
+      "intro": "封面师负责为内容设计醒目、清晰并符合主题的封面方向，帮助作品在信息流中建立更好的第一印象。适合需要提升点击意愿、统一视觉风格或针对不同平台准备封面的任务。",
+      "approval": "pick",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "大字报冲击风",
+          "emoji": "🈲",
+          "desc": "超大字号+高对比,信息一秒击中",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "杂志留白风",
+          "emoji": "📖",
+          "desc": "克制排版+大量留白,高级感路线",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "高饱和活力风",
+          "emoji": "🌈",
+          "desc": "鲜艳撞色+几何装饰,年轻化路线",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "平台规格适配",
+          "emoji": "📏",
+          "desc": "每个平台按自己的封面尺寸精确出图",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "covers"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 6,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位7 · 封面师(对应开源 Skill:guizang-social-card-skill 封面图文卡片,\n 纯 HTML/CSS 本地渲染,零成本)\n【定稿标题】{title}\n【视觉规范】{visual}\n【目标平台与封面规格(每个平台按自己的尺寸出)】\n{platform_specs}\n职责:为每个目标平台各做 1 张专属尺寸的封面卡片(html 的 body 即卡片,width/height\n精确等于该平台封面像素);若只有 1 个目标平台,则为它做 3 张风格迥异的备选\n(①大字报冲击风 ②杂志留白高级风 ③高饱和活力风)。每张都是完整独立 HTML 文档:\n内联全部 CSS,大标题上卡,可加副标题/角标/装饰几何元素,同一工单视觉语言要统一。\n不引用任何外部资源(字体用系统字体栈)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"covers\": [{\"style\": \"风格名\", \"platform\": \"平台名\", \"size\": \"如1080×1440\",\n              \"html\": \"<!DOCTYPE html><html>...完整HTML...\"}]\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「封面师」(部门:封面设计部)。\n岗位职责:封面卡片 ×3 多风格备选。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "定稿标题",
+        "visual": "人设视觉规范",
+        "platform_specs": "目标平台与封面规格"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位6·多媒体师产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_cover",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "封面卡片 ×3 多风格备选",
+          "keys": [
+            "covers"
+          ],
+          "primaryArtifact": "covers"
+        },
+        "approval": {
+          "code": "pick",
+          "description": "产出多个候选，由老板挑选后放行"
+        },
+        "handoff": {
+          "target": "工位8·演绎师",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "gpt-image-2",
+          "approval": "pick",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "platform_specs",
+          "defaults": {
+            "小红书": {
+              "emoji": "📕",
+              "body": "≤1000字,emoji 分段,口语化,标签带#",
+              "cover": "1080×1440(3:4 竖版)",
+              "cw": 1080,
+              "ch": 1440,
+              "url": "https://creator.xiaohongshu.com/publish/publish"
+            },
+            "公众号": {
+              "emoji": "💬",
+              "body": "完整长文,小标题分节,结尾引导关注",
+              "cover": "900×383(2.35:1 头图)",
+              "cw": 900,
+              "ch": 383,
+              "url": "https://mp.weixin.qq.com/"
+            },
+            "抖音": {
+              "emoji": "🎵",
+              "body": "30-60秒口播脚本,口语化,前3秒钩子",
+              "cover": "1080×1920(9:16 竖版)",
+              "cw": 1080,
+              "ch": 1920,
+              "url": "https://creator.douyin.com/creator-micro/content/upload"
+            },
+            "视频号": {
+              "emoji": "📹",
+              "body": "30-60秒口播脚本,更稳重,适配熟人转发",
+              "cover": "1080×1260(6:7 竖版)",
+              "cw": 1080,
+              "ch": 1260,
+              "url": "https://channels.weixin.qq.com/platform/post/create"
+            },
+            "B站": {
+              "emoji": "📺",
+              "body": "视频简介+置顶评论,可长,玩梗但信息密度高",
+              "cover": "1146×717(16:10 横版)",
+              "cw": 1146,
+              "ch": 717,
+              "url": "https://member.bilibili.com/platform/upload/video/frame"
+            },
+            "微博": {
+              "emoji": "🐘",
+              "body": "≤2000字,话题#带两侧#,金句前置",
+              "cover": "1080×1080(1:1 方图)",
+              "cw": 1080,
+              "ch": 1080,
+              "url": "https://weibo.com/"
+            }
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "covers"
+        ],
+        "contract": "{\n \"covers\": [{\"style\": \"风格名\", \"platform\": \"平台名\", \"size\": \"如1080×1440\",\n              \"html\": \"<!DOCTYPE html><html>...完整HTML...\"}]\n}",
+        "primaryArtifact": "covers"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "cover",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_cover",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 6,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 7,
+      "key": "deck",
+      "person": null,
+      "name": "演绎师",
+      "group": "互动演绎部",
+      "moduleGroup": "content_visual",
+      "skill": "huashu-design",
+      "emoji": "📽️",
+      "color": "#43aa8b",
+      "duty": "HTML 演绎稿(按需启用)",
+      "intro": "演绎师将内容整理成更适合讲解、展示和互动阅读的形式，方便直接用于沟通与传播。适合把较长或较复杂的信息变成清楚易懂的演示内容，让观点更容易被客户和团队理解。",
+      "approval": "auto",
+      "optional": true,
+      "capabilities": [
+        {
+          "name": "信息长页",
+          "emoji": "📜",
+          "desc": "纵向滚动的图文长页,适合教程干货",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "横滑卡片",
+          "emoji": "🃏",
+          "desc": "横滑分页卡片,适合要点清单",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "交互组件",
+          "emoji": "🖱️",
+          "desc": "折叠/切换/进度等轻交互增强表达",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "移动端适配",
+          "emoji": "📲",
+          "desc": "手机上打开必须完美,优先竖屏体验",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "summary",
+        "html"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 7,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位8 · 演绎师(对应开源 Skill:huashu-design,HTML 是通用设计媒介)\n【定稿标题】{title}\n【定稿正文】\n{body}\n职责:把内容做成一页精美的交互式 HTML 演绎稿(信息图长页或横滑卡片式),\n适合知识/教程类内容分享。完整独立 HTML,内联 CSS/JS,不引外部资源,移动端自适应。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"演绎稿说明,50字\",\n \"html\": \"<!DOCTYPE html>...完整HTML...\"\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「演绎师」(部门:互动演绎部)。\n岗位职责:HTML 演绎稿(按需启用)。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "定稿标题",
+        "body": "定稿正文(截断)"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位7·封面师产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_deck",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "HTML 演绎稿(按需启用)",
+          "keys": [
+            "summary",
+            "html"
+          ],
+          "primaryArtifact": "html"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "质量自查后自动放行"
+        },
+        "handoff": {
+          "target": "工位9·分发官",
+          "optional": true,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "inherit",
+          "approval": "auto",
+          "optional": true,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "standard",
+          "defaults": {
+            "useRequiredCapabilities": true,
+            "useEnabledSkills": true
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "summary",
+          "html"
+        ],
+        "contract": "{\n \"summary\": \"演绎稿说明,50字\",\n \"html\": \"<!DOCTYPE html>...完整HTML...\"\n}",
+        "primaryArtifact": "html"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "html",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_deck",
+            "newProjectStatus": "catalog_only"
+          },
+          {
+            "kind": "ppt",
+            "primary": false,
+            "addon": true,
+            "legacyHandler": null,
+            "newProjectStatus": "single_station"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 7,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 8,
+      "key": "publish",
+      "person": null,
+      "name": "分发官",
+      "group": "发行调度部",
+      "moduleGroup": "content_distribution",
+      "skill": "social-auto-upload",
+      "emoji": "🚀",
+      "color": "#577590",
+      "duty": "多平台适配 + 发布终审",
+      "intro": "分发官负责让内容成品更好地适配不同平台和发布场景，帮助团队在发布前完成必要的整理与确认。适合需要一稿多用、跨平台发布或统一安排内容节奏的任务。",
+      "approval": "force",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "平台文体转换",
+          "emoji": "🔄",
+          "desc": "同一内容按每个平台的文体规格出专属版",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "发布时机策略",
+          "emoji": "⏰",
+          "desc": "按平台流量高峰给出最佳发布时间",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "操作清单",
+          "emoji": "✅",
+          "desc": "每平台后台的具体操作步骤,照着点就能发",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "风险预警",
+          "emoji": "⚠️",
+          "desc": "提示该平台的限流词/敏感区/常见坑",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "versions",
+        "publish_plan"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 8,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位9 · 分发官(对应开源 Skill:social-auto-upload 多平台发布。\n V1 未托管真实平台账号,产出\"各平台完整发布包\",老板一键复制/打包上传;\n 绑定平台 Cookie 后可切换为真实自动发布)\n【定稿标题】{title}\n【话题标签】{tags}\n【目标平台与文体规格】\n{platform_specs}\n【定稿正文】\n{body}\n职责:为每个目标平台产出一个\"拿来即发\"的完整发布包:适配标题、适配正文、\n标签、最佳发布时间、发布操作清单(该平台后台里要点什么/填什么/避什么坑)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"versions\": [{\"platform\": \"平台名\", \"title\": \"适配标题\", \"body\": \"适配正文\",\n               \"tags\": [\"标签\"], \"best_time\": \"该平台最佳发布时间,如'工作日 12:00-13:00'\",\n               \"checklist\": [\"发布操作清单,2-4条,具体到该平台后台\"],\n               \"note\": \"发布注意事项一句话\"}],\n \"publish_plan\": \"全平台发布节奏建议(先发哪个/间隔多久),60字\"\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「分发官」(部门:发行调度部)。\n岗位职责:多平台适配 + 发布终审。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "定稿标题",
+        "tags": "话题标签",
+        "body": "定稿正文",
+        "platform_specs": "目标平台与文体规格"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位8·演绎师产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_publish",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "多平台适配 + 发布终审",
+          "keys": [
+            "versions",
+            "publish_plan"
+          ],
+          "primaryArtifact": "publish_packages"
+        },
+        "approval": {
+          "code": "force",
+          "description": "强制终审，任何模式都必须等待老板确认"
+        },
+        "handoff": {
+          "target": "工位10·复盘官",
+          "optional": false,
+          "qualityGateBefore": true
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "gpt-5.5",
+          "imageModel": "inherit",
+          "approval": "force",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "platform_specs",
+          "defaults": {
+            "小红书": {
+              "emoji": "📕",
+              "body": "≤1000字,emoji 分段,口语化,标签带#",
+              "cover": "1080×1440(3:4 竖版)",
+              "cw": 1080,
+              "ch": 1440,
+              "url": "https://creator.xiaohongshu.com/publish/publish"
+            },
+            "公众号": {
+              "emoji": "💬",
+              "body": "完整长文,小标题分节,结尾引导关注",
+              "cover": "900×383(2.35:1 头图)",
+              "cw": 900,
+              "ch": 383,
+              "url": "https://mp.weixin.qq.com/"
+            },
+            "抖音": {
+              "emoji": "🎵",
+              "body": "30-60秒口播脚本,口语化,前3秒钩子",
+              "cover": "1080×1920(9:16 竖版)",
+              "cw": 1080,
+              "ch": 1920,
+              "url": "https://creator.douyin.com/creator-micro/content/upload"
+            },
+            "视频号": {
+              "emoji": "📹",
+              "body": "30-60秒口播脚本,更稳重,适配熟人转发",
+              "cover": "1080×1260(6:7 竖版)",
+              "cw": 1080,
+              "ch": 1260,
+              "url": "https://channels.weixin.qq.com/platform/post/create"
+            },
+            "B站": {
+              "emoji": "📺",
+              "body": "视频简介+置顶评论,可长,玩梗但信息密度高",
+              "cover": "1146×717(16:10 横版)",
+              "cw": 1146,
+              "ch": 717,
+              "url": "https://member.bilibili.com/platform/upload/video/frame"
+            },
+            "微博": {
+              "emoji": "🐘",
+              "body": "≤2000字,话题#带两侧#,金句前置",
+              "cover": "1080×1080(1:1 方图)",
+              "cw": 1080,
+              "ch": 1080,
+              "url": "https://weibo.com/"
+            }
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "versions",
+          "publish_plan"
+        ],
+        "contract": "{\n \"versions\": [{\"platform\": \"平台名\", \"title\": \"适配标题\", \"body\": \"适配正文\",\n               \"tags\": [\"标签\"], \"best_time\": \"该平台最佳发布时间,如'工作日 12:00-13:00'\",\n               \"checklist\": [\"发布操作清单,2-4条,具体到该平台后台\"],\n               \"note\": \"发布注意事项一句话\"}],\n \"publish_plan\": \"全平台发布节奏建议(先发哪个/间隔多久),60字\"\n}",
+        "primaryArtifact": "publish_packages"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "publish_package",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_publish",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 8,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    },
+    {
+      "idx": 9,
+      "key": "retro",
+      "person": null,
+      "name": "复盘官",
+      "group": "数据复盘部",
+      "moduleGroup": "content_distribution",
+      "skill": "MediaCrawler(反馈)",
+      "emoji": "📊",
+      "color": "#9b5de5",
+      "duty": "发布后数据复盘回流",
+      "intro": "复盘官关注内容发布后的表现、反馈和变化，帮助团队看清哪些做法有效、哪些地方需要调整。适合用于阶段总结和持续优化，让下一轮内容生产更有依据、更少重复踩坑。",
+      "approval": "auto",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "指标计划",
+          "emoji": "📋",
+          "desc": "T+1/3/7 各看什么指标,达标线定多少",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "预测性复盘",
+          "emoji": "🔮",
+          "desc": "发布前预判哪里会好、哪里可能拖后腿",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "选题回流",
+          "emoji": "♻️",
+          "desc": "从本次内容衍生下次选题,回流选题库",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        },
+        {
+          "name": "经验沉淀",
+          "emoji": "📚",
+          "desc": "把可复用的经验写回人设档案与知识库",
+          "required": true,
+          "enabled": true,
+          "locked": true
+        }
+      ],
+      "outputKeys": [
+        "report",
+        "next_topics",
+        "profile_updates"
+      ],
+      "skillProfile": {
+        "catalog": "employee-skills.json",
+        "employeeIdx": 9,
+        "expectedSkillCount": 6,
+        "verificationStatus": "legacy_unverified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "build_prompt",
+        "assemblyOrder": [
+          "boss_brief_and_persona",
+          "required_capabilities",
+          "tenant_company_profile",
+          "tenant_knowledge",
+          "enabled_skill_cards",
+          "role_template"
+        ],
+        "template": "【你的岗位】工位10 · 复盘官(对应开源 Skill:MediaCrawler 反馈采集。\n V1 未接真实平台数据回流,产出\"发布后复盘计划+预测性复盘\";接入采集后切换为 T+1/3/7 真实数据)\n【已交付内容】《{title}》\n{body}\n职责:①给出 T+1/T+3/T+7 各要看什么指标、达标线是多少;②基于内容质量做预测性复盘\n(哪里可能好、哪里可能拖后腿);③给下次的 3 个选题建议(回流选题库)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"report\": \"复盘报告 markdown(含指标计划与预测性分析)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"理由\"}],\n \"profile_updates\": [\"建议写回人设档案的经验,如无则空数组\"]\n}"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "solo_prompt",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「复盘官」(部门:数据复盘部)。\n岗位职责:发布后数据复盘回流。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "placeholders": {
+          "required_capabilities": "全部必备硬能力",
+          "enabled_skills": "启用中的历史或后续学习技能",
+          "tenant_company_profile_and_knowledge": "当前租户企业档案与知识沉淀",
+          "direction": "任务内容",
+          "industry": "行业/赛道",
+          "material": "补充材料",
+          "feedback": "上一版反馈",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "title": "交付标题",
+        "body": "交付正文(截断)"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "工位9·分发官产出",
+          "context": [
+            "老板Brief",
+            "账号人设档案",
+            "企业档案",
+            "公司知识沉淀",
+            "返工意见"
+          ]
+        },
+        "execution": {
+          "handler": "run_retro",
+          "capabilities": "逐项运用全部必备硬能力，缺一不可",
+          "skills": "启用技能自动注入工作提示词",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "发布后数据复盘回流",
+          "keys": [
+            "report",
+            "next_topics",
+            "profile_updates"
+          ],
+          "primaryArtifact": "markdown"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "质量自查后自动放行"
+        },
+        "handoff": {
+          "target": "交付包与知识沉淀",
+          "optional": false,
+          "qualityGateBefore": false
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "legacy_unverified",
+          "textModel": "deepseek-v4-flash",
+          "imageModel": "inherit",
+          "approval": "auto",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "kind": "standard",
+          "defaults": {
+            "useRequiredCapabilities": true,
+            "useEnabledSkills": true
+          }
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {
+            "key": "direction",
+            "label": "任务内容",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "industry",
+            "label": "行业",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "material",
+            "label": "材料",
+            "type": "textarea_upload",
+            "required": false,
+            "accept": [
+              ".txt",
+              ".md",
+              ".csv",
+              ".json",
+              ".pdf",
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp"
+            ]
+          },
+          {
+            "key": "length",
+            "label": "篇幅",
+            "type": "select",
+            "required": true,
+            "default": "std",
+            "options": [
+              {
+                "value": "lite",
+                "label": "精简"
+              },
+              {
+                "value": "std",
+                "label": "标准"
+              },
+              {
+                "value": "full",
+                "label": "详尽"
+              }
+            ]
+          }
+        ],
+        "result": {
+          "format": "markdown",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": [
+          "report",
+          "next_topics",
+          "profile_updates"
+        ],
+        "contract": "{\n \"report\": \"复盘报告 markdown(含指标计划与预测性分析)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"理由\"}],\n \"profile_updates\": [\"建议写回人设档案的经验,如无则空数组\"]\n}",
+        "primaryArtifact": "markdown"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "静态完整岗位能力不等于新项目已接通十工位自动流水线",
+        "connectors": [
+          {
+            "kind": "performance_retro",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "run_retro",
+            "newProjectStatus": "catalog_only"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "派活AI",
+        "referencePath": "app/skills/registry.py",
+        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "legacyIdx": 9,
+        "snapshotDate": "2026-07-23"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。"
+      }
+    }
+  ]
+}

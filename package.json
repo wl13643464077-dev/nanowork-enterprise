@@ -1,0 +1,26 @@
+{
+  "name": "nanowork-industry",
+  "version": "0.1.0",
+  "description": "纳米Work行业版：面向实体门店老板的经营数据、餐饮数字员工与工具闭环工作台",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "npm --prefix server start",
+    "dev": "npm --prefix web run dev",
+    "test": "npm --prefix server test",
+    "typecheck": "npm --prefix web run typecheck",
+    "build": "npm --prefix web run build",
+    "check:isolation": "node scripts/check-isolation.mjs",
+    "accept:runtime": "node scripts/accept-runtime.mjs",
+    "verify": "npm run test && npm run typecheck && npm run check:isolation && npm run build"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

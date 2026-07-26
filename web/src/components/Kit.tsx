@@ -1,0 +1,59 @@
+import React from 'react';
+import { Card, Tag } from 'antd';
+import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+
+// KPI 统计卡（对照UI：左icon色块 + 数值 + 环比chip）
+export function StatCard({ icon, color, label, value, suffix, trend, trendLabel, onClick }: {
+  icon: React.ReactNode; color: string; label: string; value: React.ReactNode;
+  suffix?: string; trend?: number | null; trendLabel?: string; onClick?: () => void;
+}) {
+  return (
+    <Card size="small" hoverable={!!onClick} onClick={onClick}
+      styles={{ body: { padding: '14px 16px' } }} style={{ borderRadius: 10, height: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `color-mix(in srgb, ${color} 10%, transparent)`, color, fontSize: 18, flexShrink: 0,
+        }}>{icon}</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ color: 'var(--ui-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{label}</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 21, fontWeight: 700, color: 'var(--ui-text)', whiteSpace: 'nowrap' }}>{value}</span>
+            {suffix && <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{suffix}</span>}
+            {trend !== undefined && trend !== null && (
+              <span style={{ fontSize: 11, color: trend >= 0 ? '#16a34a' : '#ef4444', whiteSpace: 'nowrap' }}>
+                {trend >= 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />} {Math.abs(trend)}%{trendLabel ? ` ${trendLabel}` : ''}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+export function Panel({ title, extra, children, style, bodyStyle }: {
+  title?: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode;
+  style?: React.CSSProperties; bodyStyle?: React.CSSProperties;
+}) {
+  return (
+    <Card size="small" style={{ borderRadius: 10, height: '100%', ...style }}
+      styles={{ body: { padding: 16, ...bodyStyle } }}>
+      {(title || extra) && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px 12px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--ui-text)', flexShrink: 0, whiteSpace: 'nowrap' }}>{title}</div>
+          <div style={{ flex: extra ? '1 1 240px' : undefined, minWidth: 0, maxWidth: '100%', overflowX: 'auto', textAlign: 'right' }}>{extra}</div>
+        </div>
+      )}
+      {children}
+    </Card>
+  );
+}
+
+export const gradeColor: Record<string, string> = { A: 'red', B: 'orange', C: 'default' };
+export const stageColor: Record<string, string> = {
+  '新线索': 'blue', '已沟通': 'cyan', '已邀约': 'purple', '已到店': 'orange',
+  '已成交': 'green', '复购': 'magenta', '已流失': 'default',
+};
+export const StageTag = ({ stage }: { stage: string }) => <Tag color={stageColor[stage] || 'default'}>{stage}</Tag>;
+export const GradeTag = ({ grade }: { grade: string }) => <Tag color={gradeColor[grade] || 'default'}>{grade}级</Tag>;

@@ -1,0 +1,1221 @@
+import { Router } from 'express';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { db, q, getConfig, setConfig, getTenantConfig, setTenantConfig, DB_PATH, backupDatabase, curTenant, getTenant, promptOverride, mergeMarshal } from '../db.js';
+import { hashPassword, logOp, requireRole, notify } from '../util.js';
+import { getTokenUsage, aiAvailable } from '../engines/ai.js';
+import { getRules } from '../engines/risk.js';
+import { embedDoc } from '../engines/rag.js';
+import { canAccessOwner, roleListAllows, userScopeClause } from '../engines/access.js';
+import { decodeBase64File, MAX_FILE_BYTES } from '../engines/filehub.js';
+import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, restoreDeletedRecord, tableRows } from '../engines/deletion.js';
+import { loadRestaurantCatalog } from '../catalog/restaurant.js';
+import { ensureContentAsset } from '../engines/content-assets.js';
+
+const r = Router();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const KB_UPLOAD_ROOT = path.join(__dirname, '..', '..', 'data', 'uploads', 'kb');
+const KB_ROLE_SET = new Set(['boss', 'ops_director', 'admin', 'sales', 'partner']);
+const USER_ROLE_SET = new Set(['boss', 'ops_director', 'manager', 'admin', 'sales', 'partner']);
+const USER_STATUS_SET = new Set(['启用', '停用']);
+const USER_MODULE_SET = new Set(['dashboard', 'advisor', 'marshals', 'growth', 'activities', 'content', 'execution', 'analysis', 'assets', 'system']);
+const TENANT_ADMIN_ROLES = new Set(['boss', 'admin']);
+const RESTAURANT_CATALOG = loadRestaurantCatalog();
+const RESTAURANT_DEPARTMENTS = RESTAURANT_CATALOG.groups.map((group, index) => ({
+  code: `M-${String(index + 1).padStart(2, '0')}`,
+  name: group.name,
+  employeeCount: group.members.length,
+}));
+
+function requirePlatformOperator(req, res, next) {
+  const allowed = req.user.role === 'platform_super' || (curTenant() === 1 && ['boss', 'admin'].includes(req.user.role));
+  if (!allowed) return res.status(403).json({ error: '整库备份仅平台总部运维人员可操作' });
+  next();
+}
+
+function databaseBackupMeta(file) {
+  const base = path.basename(DB_PATH, path.extname(DB_PATH)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(file).match(new RegExp(`^${base}\\.backup\\.(\\d+)\\.sqlite$`));
+  return match ? { timestamp: Number(match[1]) } : null;
+}
+
+function normalizedUserModules(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.length > USER_MODULE_SET.size) throw Object.assign(new Error('模块权限格式不正确'), { status: 400 });
+  const modules = [...new Set(value.map(item => String(item).trim()))];
+  if (modules.some(item => !USER_MODULE_SET.has(item))) throw Object.assign(new Error('模块权限包含无效值'), { status: 400 });
+  return modules.length ? JSON.stringify(modules) : null;
+}
+
+function normalizedUserName(value) {
+  if (typeof value !== 'string') throw Object.assign(new Error('姓名格式不正确'), { status: 400 });
+  const name = value.trim();
+  if (!name || name.length > 60) throw Object.assign(new Error('姓名长度必须为1到60字'), { status: 400 });
+  return name;
+}
+
+function userDependencyCounts(tenantId, userId) {
+  return {
+    contents: Number(q.get(
+      'SELECT COUNT(*) n FROM contents WHERE tenant_id=? AND creator_id=?',
+      tenantId,
+      userId,
+    )?.n || 0),
+    tasks: Number(q.get(
+      'SELECT COUNT(*) n FROM tasks WHERE tenant_id=? AND assignee_id=?',
+      tenantId,
+      userId,
+    )?.n || 0),
+    approvals: Number(q.get(
+      `SELECT COUNT(*) n FROM approvals
+        WHERE tenant_id=? AND (submitter_id=? OR reviewer_id=?)`,
+      tenantId,
+      userId,
+      userId,
+    )?.n || 0),
+    automationRules: Number(q.get(
+      'SELECT COUNT(*) n FROM content_automation_rules WHERE tenant_id=? AND created_by=?',
+      tenantId,
+      userId,
+    )?.n || 0),
+    automationRuns: Number(q.get(
+      `SELECT COUNT(*) n FROM content_automation_runs
+        WHERE tenant_id=? AND (
+          initiated_by=?
+          OR rule_id IN (
+            SELECT id FROM content_automation_rules WHERE tenant_id=? AND created_by=?
+          )
+        )`,
+      tenantId,
+      userId,
+      tenantId,
+      userId,
+    )?.n || 0),
+  };
+}
+
+function userDisableError(message, status) {
+  return Object.assign(new Error(message), { status });
+}
+
+function validManagerId(raw, tid, targetId = null) {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+  const managerId = Number(raw);
+  if (!Number.isInteger(managerId) || managerId <= 0 || managerId === Number(targetId)) {
+    throw Object.assign(new Error('直属上级不正确'), { status: 400 });
+  }
+  const manager = q.get(`SELECT id FROM users WHERE tenant_id=? AND id=? AND role IN ('boss','ops_director','manager','admin')`, tid, managerId);
+  if (!manager) throw Object.assign(new Error('直属上级必须是当前企业的老板/经理/管理员'), { status: 400 });
+  if (targetId) {
+    const cycle = q.get(`WITH RECURSIVE managers(id,manager_id) AS (
+      SELECT id,manager_id FROM users WHERE tenant_id=? AND id=?
+      UNION ALL
+      SELECT u.id,u.manager_id FROM users u JOIN managers m ON u.id=m.manager_id WHERE u.tenant_id=?
+    ) SELECT id FROM managers WHERE id=? LIMIT 1`, tid, managerId, tid, Number(targetId));
+    if (cycle) throw Object.assign(new Error('直属上级关系不能形成循环'), { status: 400 });
+  }
+  return managerId;
+}
+
+function configuredKbCategories() {
+  const categories = getTenantConfig('kb_categories', DEFAULT_KB_CATS);
+  return Array.isArray(categories) && categories.length ? categories : DEFAULT_KB_CATS;
+}
+
+function normalizedKbRoleJson(value, label) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.length > KB_ROLE_SET.size) throw Object.assign(new Error(`${label}格式不正确`), { status: 400 });
+  const roles = [...new Set(value.map(role => String(role).trim()))];
+  if (roles.some(role => !KB_ROLE_SET.has(role))) throw Object.assign(new Error(`${label}包含无效角色`), { status: 400 });
+  return roles.length ? JSON.stringify(roles) : null;
+}
+
+function normalizedKbText(value, label, max, { required = false } = {}) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw Object.assign(new Error(`${label}必须是文本`), { status: 400 });
+  const text = value.trim();
+  if (required && !text) throw Object.assign(new Error(`${label}必填`), { status: 400 });
+  if (text.length > max) throw Object.assign(new Error(`${label}最长${max}字`), { status: 400 });
+  return text;
+}
+
+function normalizedKbCategory(value, { required = false } = {}) {
+  const category = normalizedKbText(value, '知识分类', 60, { required });
+  if (category !== undefined && category && !configuredKbCategories().includes(category)) {
+    throw Object.assign(new Error('请选择本企业已配置的知识库分类'), { status: 400 });
+  }
+  return category;
+}
+
+function parsePayload(v, fallback = {}) {
+  if (!v) return fallback;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return fallback; }
+}
+
+function planSummary(plan = {}) {
+  const flow = Array.isArray(plan.flow) ? plan.flow.length : 0;
+  const materials = Array.isArray(plan.materials) ? plan.materials.length : 0;
+  const sop = Array.isArray(plan.sop) ? plan.sop.length : 0;
+  return `流程${flow}项 / 物料${materials}项 / SOP${sop}项`;
+}
+
+function levelLabel(level) {
+  return level === 'boss' ? '老板终审' : level === 'ops_director' ? '运营总监初审' : '审批';
+}
+
+function notifyRoleUsers(roles, type, title, body) {
+  const list = roles.map(() => '?').join(',');
+  const users = q.all(`SELECT id FROM users WHERE tenant_id=${curTenant()} AND role IN (${list})`, ...roles);
+  for (const u of users) notify(u.id, type, title, body);
+}
+
+function safeChecklist(raw) {
+  const arr = parsePayload(raw, []);
+  return Array.isArray(arr) ? arr.map((x, idx) => (typeof x === 'object' && x ? x : { item: String(x || `事项${idx + 1}`), done: false })) : [];
+}
+
+function checklistItemLabel(item, idx = 0) {
+  return String(item?.item || item?.title || item?.name || `待确认事项${idx + 1}`);
+}
+
+function immediateTransaction(work) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw error;
+  }
+}
+
+function markApprovalDecision(approval, user, pass, reason) {
+  const changed = q.run(`UPDATE approvals SET status=?,reviewer_id=?,reason=?,decided_at=datetime('now','localtime')
+    WHERE tenant_id=? AND id=? AND status='待审核'`, pass ? '已通过' : '已驳回', user.id, reason || null, curTenant(), approval.id);
+  if (!changed.changes) throw Object.assign(new Error('该审批已被其他人处理，请刷新列表'), { status: 409 });
+}
+
+// ===== 审批中心（CTRL-04 横切）=====
+r.get('/approvals', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  const { status = '待审核' } = req.query;
+  res.json(q.all(`SELECT a.*, u.name submitter, ru.name reviewer FROM approvals a
+    LEFT JOIN users u ON u.id = a.submitter_id LEFT JOIN users ru ON ru.id = a.reviewer_id
+    WHERE a.tenant_id = ${curTenant()} AND a.status = ? ORDER BY a.created_at DESC LIMIT 50`, status));
+});
+r.post('/approvals/:id/decide', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  const a = q.get(`SELECT * FROM approvals WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id);
+  if (!a) return res.status(404).json({ error: '审批不存在' });
+  if (a.status !== '待审核') return res.status(400).json({ error: '该审批已处理' });
+  const { pass, reason } = req.body || {};
+  if (a.approval_level === 'boss' && req.user.role !== 'boss') {
+    return res.status(403).json({ error: '该内容配置为老板审核，必须由老板处理' });
+  }
+  // 高风险终审仅老板（PRD §2.4 初审总监/终审老板）
+  if (a.risk_level === 'high' && req.user.role !== 'boss')
+    return res.status(403).json({ error: '高风险事项需老板终审' });
+  if (!pass && !reason) return res.status(400).json({ error: '驳回必须填写理由' });
+  if (a.target_type === 'activity_checklist') {
+    const payload = parsePayload(a.payload, {});
+    const act = q.get(`SELECT * FROM activities WHERE tenant_id=${curTenant()} AND id=?`, a.target_id);
+    if (!act) return res.status(404).json({ error: '活动不存在' });
+    const checklist = safeChecklist(act.checklist);
+    const idx = Number(payload.checklistIndex);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= checklist.length) return res.status(400).json({ error: '待确认事项不存在' });
+    const item = { ...checklist[idx] };
+    const label = checklistItemLabel(item, idx);
+    if (payload.item && String(payload.item) !== label) return res.status(409).json({ error: '待确认事项已被修改或调整顺序，请重新提交审批' });
+
+    if (!pass) {
+      item.done = false;
+      item.approvalStatus = '已驳回';
+      item.rejectedBy = { id: req.user.id, name: req.user.name, role: req.user.role };
+      item.rejectedAt = new Date().toISOString();
+      item.rejectReason = reason || '';
+      checklist[idx] = item;
+      immediateTransaction(() => {
+        markApprovalDecision(a, req.user, pass, reason);
+        q.run('UPDATE activities SET checklist = ? WHERE tenant_id=? AND id = ?', JSON.stringify(checklist), curTenant(), act.id);
+        if (a.submitter_id) notify(a.submitter_id, '活动审批', `待确认事项被驳回：${act.title}`, `事项：${label}；驳回人：${req.user.name}；原因：${reason || '-'}`);
+        notifyRoleUsers(['boss', 'ops_director', 'admin'], '活动审批', `待确认事项已驳回：${act.title}`, `${label}；${req.user.name} 驳回：${reason || '-'}`);
+      });
+      const tid = curTenant();
+      setImmediate(() => import('../engines/feishu.js').then(({ pushFeishuToManagers }) => pushFeishuToManagers({
+        title: '待确认事项审批驳回',
+        lines: [`**${act.title}**`, `事项：${label}`, `审批节点：${levelLabel(a.approval_level)}`, `处理人：${req.user.name}`, `驳回理由：${reason || '-'}`],
+        url: requestBaseUrl(req) + '/system',
+      }, tid)).catch(() => {}));
+      logOp(req.user, '审批中心', '待确认事项驳回', `${act.title} / ${label}`);
+      return res.json({ ok: true, message: '已驳回，提交人可调整后重新提交' });
+    }
+
+    if (a.approval_level === 'ops_director' && req.user.role !== 'boss') {
+      const nextPayload = {
+        ...payload,
+        item: label,
+        opsReviewer: { id: req.user.id, name: req.user.name, role: req.user.role },
+      };
+      const next = immediateTransaction(() => {
+        markApprovalDecision(a, req.user, pass, reason);
+        const inserted = q.run(`INSERT INTO approvals(target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,approval_level,parent_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        'activity_checklist', act.id, `待确认事项老板终审：${act.title} / ${label}`,
+        `运营总监初审已通过；事项：${label}；通过老板终审后自动标记完成并同步管理层。`,
+        'high', JSON.stringify(['ACTIVITY_CHECKLIST_FINAL_REVIEW']), '待审核',
+        a.submitter_id || req.user.id, JSON.stringify(nextPayload), 'boss', a.id);
+        item.approvalStatus = '总审中';
+        item.opsApprovedBy = { id: req.user.id, name: req.user.name, role: req.user.role };
+        item.opsApprovedAt = new Date().toISOString();
+        item.approvalId = inserted.lastInsertRowid;
+        checklist[idx] = item;
+        q.run('UPDATE activities SET checklist = ? WHERE tenant_id=? AND id = ?', JSON.stringify(checklist), curTenant(), act.id);
+        notifyRoleUsers(['boss'], '活动审批', `待确认事项待老板终审：${act.title}`, `${req.user.name} 已通过初审；事项：${label}`);
+        return inserted;
+      });
+      const tid = curTenant();
+      setImmediate(() => import('../engines/feishu.js').then(({ pushFeishuToManagers }) => pushFeishuToManagers({
+        title: '待确认事项待老板终审',
+        lines: [`**${act.title}**`, `事项：${label}`, `初审人：${req.user.name}`, '老板终审通过后，系统会自动标记完成并同步给管理层。'],
+        url: requestBaseUrl(req) + '/system',
+      }, tid)).catch(() => {}));
+      logOp(req.user, '审批中心', '待确认事项初审通过', `${act.title} / ${label}`);
+      return res.json({ ok: true, nextApprovalId: next.lastInsertRowid, message: '初审已通过，已转老板终审' });
+    }
+
+    item.done = true;
+    item.approvalStatus = '已通过';
+    item.approvedBy = { id: req.user.id, name: req.user.name, role: req.user.role };
+    item.approvedAt = new Date().toISOString();
+    item.completedAt = item.approvedAt;
+    checklist[idx] = item;
+    immediateTransaction(() => {
+      markApprovalDecision(a, req.user, pass, reason);
+      q.run('UPDATE activities SET checklist = ? WHERE tenant_id=? AND id = ?', JSON.stringify(checklist), curTenant(), act.id);
+      if (a.submitter_id) notify(a.submitter_id, '活动审批', `待确认事项终审通过：${act.title}`, `事项「${label}」已自动标记完成。`);
+      notifyRoleUsers(['boss', 'ops_director', 'admin'], '活动审批', `待确认事项终审通过：${act.title}`, `事项「${label}」已完成；终审人：${req.user.name}。`);
+    });
+    const tid = curTenant();
+    setImmediate(() => import('../engines/feishu.js').then(({ pushFeishuToManagers }) => pushFeishuToManagers({
+      title: '待确认事项终审通过',
+      lines: [`**${act.title}**`, `事项：${label}`, `终审人：${req.user.name}`, '结果：已自动标记完成，并同步给管理层。'],
+      url: requestBaseUrl(req) + '/activities',
+    }, tid)).catch(() => {}));
+    logOp(req.user, '审批中心', '待确认事项终审通过', `${act.title} / ${label}`);
+    return res.json({ ok: true, message: '终审已通过，事项已完成并同步管理层提醒' });
+  }
+  if (a.target_type === 'activity_plan') {
+    const payload = parsePayload(a.payload, {});
+    const act = q.get(`SELECT * FROM activities WHERE tenant_id=${curTenant()} AND id=?`, a.target_id);
+    if (!act) return res.status(404).json({ error: '活动不存在' });
+    const currentPlan = parsePayload(act.plan, {});
+    const plan = payload.plan || currentPlan;
+    if (payload.plan && JSON.stringify(payload.plan) !== JSON.stringify(currentPlan)) {
+      return res.status(409).json({ error: '活动方案在提交审批后已被修改，请重新提交，系统未批准旧稿' });
+    }
+    if (!pass) {
+      immediateTransaction(() => {
+        markApprovalDecision(a, req.user, pass, reason);
+        q.run(`UPDATE activities SET plan_status='已驳回',plan_approval_id=? WHERE tenant_id=? AND id=?`, a.id, curTenant(), act.id);
+        if (a.submitter_id) notify(a.submitter_id, '活动审批', `活动策划被驳回：${act.title}`, reason || '请修改后重新提交');
+        notifyRoleUsers(['boss', 'ops_director', 'admin'], '活动审批', `活动策划已驳回：${act.title}`, `${req.user.name} 驳回：${reason || '-'}`);
+      });
+      const tid = curTenant();
+      setImmediate(() => import('../engines/feishu.js').then(({ pushFeishuToManagers }) => pushFeishuToManagers({
+        title: '活动策划审批驳回',
+        lines: [`**${act.title}**`, `审批节点：${levelLabel(a.approval_level)}`, `处理人：${req.user.name}`, `驳回理由：${reason || '-'}`],
+        url: requestBaseUrl(req) + '/system',
+      }, tid)).catch(() => {}));
+      logOp(req.user, '审批中心', '活动策划驳回', a.title);
+      return res.json({ ok: true, message: '已驳回，提交人可修改后重新提交' });
+    }
+    if (a.approval_level === 'ops_director' && req.user.role !== 'boss') {
+      const next = immediateTransaction(() => {
+        markApprovalDecision(a, req.user, pass, reason);
+        const inserted = q.run(`INSERT INTO approvals(target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,approval_level,parent_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        'activity_plan', act.id, `活动策划老板终审：${act.title}`,
+        `运营总监初审已通过；${planSummary(plan)}`, 'high', JSON.stringify(['ACTIVITY_PLAN_FINAL_REVIEW']),
+        '待审核', a.submitter_id || req.user.id, JSON.stringify(payload), 'boss', a.id);
+        q.run(`UPDATE activities SET plan_status='总审中',plan_approval_id=? WHERE tenant_id=? AND id=?`, inserted.lastInsertRowid, curTenant(), act.id);
+        notifyRoleUsers(['boss'], '活动审批', `活动策划待老板终审：${act.title}`, `${req.user.name} 已通过初审，等待老板终审。${planSummary(plan)}`);
+        return inserted;
+      });
+      const tid = curTenant();
+      setImmediate(() => import('../engines/feishu.js').then(({ pushFeishuToManagers }) => pushFeishuToManagers({
+        title: '活动策划待老板终审',
+        lines: [`**${act.title}**`, `初审人：${req.user.name}`, `日期：${act.date || '-'} ｜ 地点：${act.location || '-'}`, `方案摘要：${planSummary(plan)}`, '老板终审通过后，系统会自动创建/更新飞书日历并推送给管理层。'],
+        url: requestBaseUrl(req) + '/system',
+      }, tid)).catch(() => {}));
+      logOp(req.user, '审批中心', '活动策划初审通过', a.title);
+      return res.json({ ok: true, nextApprovalId: next.lastInsertRowid, message: '初审已通过，已转老板终审' });
+    }
+    immediateTransaction(() => {
+      markApprovalDecision(a, req.user, pass, reason);
+      q.run(`UPDATE activities SET plan=?,plan_status='已通过',plan_approved_at=datetime('now','localtime'),plan_approval_id=?,
+        status=CASE WHEN status='策划中' THEN '筹备中' ELSE status END WHERE tenant_id=? AND id=?`, JSON.stringify(plan), a.id, curTenant(), act.id);
+      notifyRoleUsers(['boss', 'ops_director', 'admin'], '活动审批', `活动策划终审通过：${act.title}`, '已自动同步到飞书日历，并推送给管理层。');
+    });
+    const updated = q.get(`SELECT * FROM activities WHERE tenant_id=${curTenant()} AND id=?`, act.id);
+    const tid = curTenant();
+    const actor = { id: req.user.id, name: req.user.name, role: req.user.role };
+    setImmediate(() => import('../engines/feishu.js').then(({ syncActivityLifecycleToFeishu }) =>
+      syncActivityLifecycleToFeishu(updated, { tid, actor, action: 'approved', url: requestBaseUrl(req) + '/activities' })).catch(() => {}));
+    logOp(req.user, '审批中心', '活动策划终审通过并同步日历', a.title);
+    return res.json({ ok: true, message: '终审已通过，已开始同步飞书日历和管理层提醒' });
+  }
+  if (a.target_type === 'content') {
+    const content = q.get(`SELECT id,type,title,body,topic,creator_id,effect_views,effect_leads
+      FROM contents WHERE tenant_id=? AND id=?`, curTenant(), a.target_id);
+    if (!content) return res.status(404).json({ error: '待审批内容不存在' });
+    immediateTransaction(() => {
+      markApprovalDecision(a, req.user, pass, reason);
+      q.run(`UPDATE contents SET status=? WHERE tenant_id=? AND id=?`, pass ? '可使用' : '已驳回', curTenant(), a.target_id);
+      if (pass) {
+        ensureContentAsset({ ...content, status: '可使用' }, {
+          creatorId: content.creator_id,
+          note: `内容审批通过后登记；approval#${a.id}；未执行对外发布。`,
+        });
+      }
+    });
+    // 审批通过 → 补录知识库（风控闭环：待审核内容不入库，过审才沉淀）
+    if (pass) {
+      import('../engines/kbsync.js').then(({ syncContentToKb }) => syncContentToKb({
+        ...content,
+        contentId: content.id,
+      })).catch(() => {});
+    }
+  } else immediateTransaction(() => markApprovalDecision(a, req.user, pass, reason));
+  logOp(req.user, '审批中心', pass ? '审批通过' : '审批驳回', a.title);
+  res.json({ ok: true });
+});
+
+// ===== 知识库（KB-01~04）=====
+r.get('/kb', (req, res) => {
+  const { category } = req.query;
+  let where = ''; const params = [];
+  if (category) { where = 'AND category = ?'; params.push(category); }
+  let rows = q.scopedAll('kb_docs', `${where} ORDER BY category, ref_count DESC`, ...params); // 作用域包装自动追加 tenant_id 过滤（BE-C2）
+  // 查看权限（FR-SYS-09）：visible_roles 为空=全员可见；老板/管理员/总监（管理者）全见
+  if (!['boss', 'admin', 'ops_director'].includes(req.user.role)) {
+    rows = rows.filter(d => {
+      return roleListAllows(d.visible_roles, req.user.role);
+    });
+  }
+  res.json(rows);
+});
+
+// 知识库分类管理（每家企业自定义自己的分类体系；未改则用平台推荐默认）
+const DEFAULT_KB_CATS = ['品牌资料', '招商政策', '产品资料', '话术案例', '客户画像', '数据规范', '员工产出'];
+r.get('/kb/categories', (req, res) => {
+  res.json(getTenantConfig('kb_categories', DEFAULT_KB_CATS));
+});
+r.post('/kb/categories', requireRole('boss', 'admin'), (req, res) => {
+  const { name } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: '分类名必填' });
+  const cats = getTenantConfig('kb_categories', DEFAULT_KB_CATS);   // 首次自定义从平台默认起步，不会丢掉默认分类
+  const n = String(name).trim();
+  if (n.length > 60) return res.status(400).json({ error: '分类名最长60字' });
+  if (!Array.isArray(cats) || cats.length >= 50) return res.status(400).json({ error: '知识库分类最多50个' });
+  if (cats.includes(n)) return res.status(400).json({ error: '分类已存在' });
+  cats.splice(Math.max(0, cats.indexOf('员工产出')), 0, n); // 插在员工产出前
+  setTenantConfig('kb_categories', cats);
+  logOp(req.user, '系统管理', '新增知识库分类', n);
+  res.json(cats);
+});
+r.post('/kb', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  let category; let title; let body;
+  try {
+    category = normalizedKbCategory(req.body?.category, { required: true });
+    title = normalizedKbText(req.body?.title, '知识标题', 200, { required: true });
+    body = normalizedKbText(req.body?.body, '知识内容', 60000, { required: true });
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  let result;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    result = q.run('INSERT INTO kb_docs(category,title,body) VALUES(?,?,?)', category, title, body);
+    q.run('INSERT INTO biz_assets(name,category,value,status,owner,source_type,source_id,creator_id,note) VALUES(?,?,?,?,?,?,?,?,?)',
+      title, '知识资产', 5000, '使用中', '知识库', 'kb', result.lastInsertRowid, req.user.id,
+      `知识库手动新增：${req.user.name || '管理员'}录入「${category}」`);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    return res.status(500).json({ error: '知识入库失败，本次未保存任何数据' });
+  }
+  embedDoc(result.lastInsertRowid, title, body);
+  logOp(req.user, '系统管理', '新增知识库', title);
+  res.json({ id: result.lastInsertRowid });
+});
+r.put('/kb/:id', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  // 租户隔离：先确认该文档属于本企业，杜绝凭外部 id 改到别家知识库（跨租户写）
+  const own = q.get(`SELECT id FROM kb_docs WHERE tenant_id = ${curTenant()} AND id=?`, req.params.id);
+  if (!own) return res.status(404).json({ error: '知识库文档不存在' });
+  let title; let body; let category; let visibleRoles; let callableRoles;
+  try {
+    title = normalizedKbText(req.body?.title, '知识标题', 200, { required: true });
+    body = normalizedKbText(req.body?.body, '知识内容', 60000, { required: true });
+    category = normalizedKbCategory(req.body?.category, { required: true });
+    visibleRoles = normalizedKbRoleJson(req.body?.visible_roles, '可见权限');
+    callableRoles = normalizedKbRoleJson(req.body?.callable_roles, 'AI调用权限');
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  if (req.body?.enabled !== undefined && typeof req.body.enabled !== 'boolean' && ![0, 1].includes(req.body.enabled)) {
+    return res.status(400).json({ error: '启用状态格式不正确' });
+  }
+  const sets = []; const values = [];
+  const add = (sql, value) => { sets.push(sql); values.push(value); };
+  if (visibleRoles !== undefined) add('visible_roles=?', visibleRoles);
+  if (callableRoles !== undefined) add('callable_roles=?', callableRoles);
+  if (category !== undefined) add('category=?', category);
+  if (title !== undefined) add('title=?', title);
+  if (body !== undefined) add('body=?', body);
+  if (req.body?.enabled !== undefined) add('enabled=?', req.body.enabled ? 1 : 0);
+  if (title !== undefined || body !== undefined) sets.push(`version=version+1`, `updated_at=datetime('now','localtime')`);
+  if (sets.length) {
+    try {
+      db.exec('BEGIN IMMEDIATE');
+      q.run(`UPDATE kb_docs SET ${sets.join(',')} WHERE tenant_id=? AND id=?`, ...values, curTenant(), req.params.id);
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+      return res.status(500).json({ error: '知识更新失败，本次修改已撤销' });
+    }
+  }
+  const updated = q.get(`SELECT * FROM kb_docs WHERE tenant_id = ${curTenant()} AND id=?`, req.params.id);
+  if (title !== undefined || body !== undefined) embedDoc(updated.id, updated.title, updated.body);
+  res.json(updated);
+});
+
+function kbAssetRows(doc) {
+  return q.all(`SELECT DISTINCT a.* FROM biz_assets a WHERE a.tenant_id=? AND (
+      (a.source_type='kb' AND a.source_id=?)
+      OR (a.source_type='uploaded_file' AND EXISTS (
+        SELECT 1 FROM uploaded_files f WHERE f.tenant_id=a.tenant_id AND f.id=a.source_id AND f.file_url=?
+      ))
+      OR (a.source_type='artifact' AND EXISTS (
+        SELECT 1 FROM generated_artifacts g WHERE g.tenant_id=a.tenant_id AND g.id=a.source_id AND (g.kb_doc_id=? OR g.file_url=?)
+      ))
+    ) ORDER BY a.id`, curTenant(), doc.id, doc.file_path, doc.id, doc.file_path);
+}
+
+function kbDeletePolicy(req, doc) {
+  const asset = kbAssetRows(doc).at(-1);
+  const creatorId = asset?.creator_id || null;
+  const critical = Number(doc.enabled || 0) === 1 || Number(doc.ref_count || 0) > 0 || doc.category === '员工产出';
+  if (critical) return {
+    allowed: isBossLike(req.user),
+    requiredRole: 'boss',
+    reason: '已启用/已被引用的知识库会影响AI回答，需老板/管理员删除',
+  };
+  if (isBossLike(req.user)) return { allowed: true, requiredRole: 'boss', reason: '老板/管理员删除知识库' };
+  if (isManagerLike(req.user) && (!creatorId || canAccessOwner(req.user, creatorId))) {
+    return { allowed: true, requiredRole: 'manager', reason: '管理层删除待启用知识库' };
+  }
+  const ownPending = creatorId && Number(creatorId) === Number(req.user.id);
+  return {
+    allowed: ownPending,
+    requiredRole: ownPending ? 'self' : 'manager',
+    reason: ownPending ? '本人撤回待启用上传资料' : '该知识库不属于本人，需管理层处理',
+  };
+}
+
+r.delete('/kb/:id', (req, res) => {
+  const d = q.get(`SELECT * FROM kb_docs WHERE tenant_id = ${curTenant()} AND id=?`, req.params.id);
+  if (!d) return res.status(404).json({ error: '知识库文档不存在' });
+  const policy = kbDeletePolicy(req, d);
+  if (!policy.allowed) return deletionDenied(res, policy.requiredRole, policy.reason);
+  const assetRows = kbAssetRows(d);
+  const assetIds = assetRows.map(x => x.id);
+  const chunkRows = q.all(`SELECT kc.* FROM kb_chunks kc
+    JOIN kb_docs kd ON kd.id=kc.doc_id
+    WHERE kd.tenant_id=? AND kd.id=? ORDER BY kc.id`, curTenant(), d.id);
+  const children = {
+    kb_chunks: chunkRows,
+    biz_assets: assetRows,
+    asset_flows: assetIds.length ? q.all(`SELECT * FROM asset_flows WHERE tenant_id=? AND asset_id IN (${assetIds.map(() => '?').join(',')})`, curTenant(), ...assetIds) : [],
+  };
+  const archiveId = archiveAndDelete(req, {
+    entityType: 'kb_doc',
+    entityId: d.id,
+    table: 'kb_docs',
+    row: d,
+    children,
+    module: '系统管理',
+    title: d.title,
+    summary: `${d.category || '-'}；启用=${d.enabled ? '是' : '否'}；引用${d.ref_count || 0}次${d.file_name ? `；附件=${d.file_name}` : ''}`,
+    requiredRole: policy.requiredRole,
+    reason: req.body?.reason || policy.reason,
+  }, () => {
+    if (assetIds.length) {
+      q.run(`DELETE FROM asset_flows WHERE tenant_id=? AND asset_id IN (${assetIds.map(() => '?').join(',')})`, curTenant(), ...assetIds);
+      q.run(`DELETE FROM biz_assets WHERE tenant_id=? AND id IN (${assetIds.map(() => '?').join(',')})`, curTenant(), ...assetIds);
+    }
+    q.run(`UPDATE generated_artifacts SET kb_doc_id=NULL,status='可用',updated_at=datetime('now','localtime')
+      WHERE tenant_id=? AND kb_doc_id=?`, curTenant(), d.id);
+    q.run(`DELETE FROM kb_chunks WHERE doc_id IN (
+      SELECT id FROM kb_docs WHERE tenant_id=? AND id=?
+    )`, curTenant(), d.id);
+    deleteList('kb_docs', 'id=?', d.id);
+  });
+  logOp(req.user, '系统管理', '删除知识库入回收站', `${d.title} / archive#${archiveId}`);
+  res.json({ ok: true, archiveId, message: '已删除并进入回收站，老板/管理员可恢复' });
+});
+// ===== 知识库文件上传（FR-SYS-08：文档/图片，自动提取内容；图片走AI识图）=====
+r.post('/kb/upload', async (req, res) => { // 全员可上传：员工/合伙人上传自动「待启用」，管理员审核后进入AI引用
+  let storedPath = '';
+  let transactionOpen = false;
+  let persisted = false;
+  try {
+    if (typeof req.body?.name !== 'string' || typeof req.body?.b64 !== 'string') {
+      return res.status(400).json({ error: '文件名与文件内容必须是文本' });
+    }
+    const name = req.body.name.trim();
+    const category = typeof req.body?.category === 'string' ? req.body.category.trim() : '品牌资料';
+    const b64 = req.body.b64;
+    if (!name || !b64) return res.status(400).json({ error: '文件名与文件内容必填' });
+    if (name.length > 200) return res.status(400).json({ error: '文件名最长200字' });
+    const categories = getTenantConfig('kb_categories', DEFAULT_KB_CATS);
+    if (!category || category.length > 60 || !categories.includes(category)) return res.status(400).json({ error: '请选择本企业已配置的知识库分类' });
+    const ext = String(name.split('.').pop() || '').toLowerCase();
+    const { extractText, IMAGE_EXTS, ALLOWED_EXTS } = await import('../engines/extract.js');
+    if (!ALLOWED_EXTS.includes(ext)) return res.status(400).json({ error: `不支持的格式 .${ext}（支持：docx/xlsx/pdf/txt/md/csv/json/png/jpg/webp）` });
+    const buf = decodeBase64File(b64, MAX_FILE_BYTES);
+    // 租户独立目录 + 强随机文件名，避免同名同毫秒上传互相覆盖。
+    const dir = path.join(KB_UPLOAD_ROOT, String(curTenant()));
+    fs.mkdirSync(dir, { recursive: true });
+    const safeName = path.basename(name).replace(/[^\w.\u4e00-\u9fa5-]/g, '_').slice(0, 140) || `upload.${ext}`;
+    const safe = `${Date.now()}-${crypto.randomBytes(5).toString('hex')}-${safeName}`;
+    storedPath = path.join(dir, safe);
+    fs.writeFileSync(storedPath, buf, { flag: 'wx' });
+    const fileUrl = `/uploads/kb/${curTenant()}/${encodeURIComponent(safe)}`;
+
+    let body = ''; let extractMode = ''; let extractionReady = false;
+    if (IMAGE_EXTS.includes(ext)) {
+      // 图片 → vision 模型识图生成知识要点（真实计费）
+      try {
+        const { precheckByRole, charge } = await import('../engines/credits.js');
+        precheckByRole(req.user.id, 'text', req.user.role);
+        const yunwu = await import('../engines/yunwu.js');
+        const out = await yunwu.chat({
+          model: yunwu.routing().vision,
+          system: '你是餐饮企业知识库管理员。请把这张图片转写为可供AI引用的知识条目：①一句话说明图片是什么 ②逐条提取图中的关键信息（文字、数据、流程、菜品、价格表等，尽量完整）③适用场景 ④需要负责人核验的内容。不得补写图片中不存在的数据，直接输出内容。',
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: `文件名：${name}，知识分类：${category}。请提取图片内容。` },
+            { type: 'image_url', image_url: { url: `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}` } },
+          ] }],
+          maxTokens: 1200,
+        });
+        const bill = charge({ userId: req.user.id, feature: '知识库·图片识别入库', kind: 'text', model: out.model,
+          usage: { inputTokens: out.inputTokens, outputTokens: out.outputTokens }, aiMode: 'api' });
+        body = String(out.text || '').trim() ? `【图片附件】${name}\n${out.text}` : '';
+        extractionReady = !!body;
+        extractMode = `AI识图（${out.model}，扣${bill.credits}积分）`;
+        res.locals = { billing: bill };
+      } catch (e) {
+        body = '';
+        extractMode = '图片已存档·识图待重试';
+      }
+    } else {
+      const text = extractText(buf, ext);
+      if (text && text.trim()) { body = text.trim(); extractionReady = true; extractMode = '自动提取正文'; }
+      else { body = ''; extractMode = '仅存档（未识别正文）'; }
+    }
+
+    const title = name.replace(/\.[^.]+$/, '');
+    const normalizeRoles = (value, label) => {
+      if (value === undefined || value === null) return null;
+      if (!Array.isArray(value) || value.length > KB_ROLE_SET.size) throw Object.assign(new Error(`${label}格式不正确`), { status: 400 });
+      const roles = [...new Set(value.map(role => String(role).trim()))];
+      if (roles.some(role => !KB_ROLE_SET.has(role))) throw Object.assign(new Error(`${label}包含无效角色`), { status: 400 });
+      return roles.length ? JSON.stringify(roles) : null;
+    };
+    const vr = normalizeRoles(req.body.visibleRoles, '可见权限');
+    const cr = normalizeRoles(req.body.callableRoles, 'AI调用权限');
+    const isManager = ['boss', 'ops_director', 'admin'].includes(req.user.role);
+    const enabled = isManager && extractionReady ? 1 : 0; // 无可读正文时不得进入AI引用
+    db.exec('BEGIN IMMEDIATE');
+    transactionOpen = true;
+    const result = q.run('INSERT INTO kb_docs(category,title,body,enabled,file_path,file_type,file_name,visible_roles,callable_roles) VALUES(?,?,?,?,?,?,?,?,?)',
+      category, title, body, enabled, fileUrl, ext, name, vr, cr);
+    q.run('INSERT INTO biz_assets(name,category,value,status,owner,source_type,source_id,creator_id,url,note) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      title, '知识资产', 5000, '使用中', '知识库', 'kb', result.lastInsertRowid, req.user.id, fileUrl,
+      `知识库文件上传：${name}；提取方式=${extractMode}；上传人=${req.user.name || '-'}`);
+    db.exec('COMMIT');
+    transactionOpen = false;
+    persisted = true;
+    if (extractionReady) {
+      try { embedDoc(result.lastInsertRowid, title, body); } catch { /* 文档已入库，向量可稍后重建 */ }
+    }
+    if (!isManager) {
+      const mgrs = q.all(`SELECT id FROM users WHERE tenant_id = ${curTenant()} AND role IN ('boss','ops_director','admin')`);
+      for (const u of mgrs) notify(u.id, '知识库', `员工上传知识待审：${title}`, `${req.user.name} 上传「${name}」到「${category}」，启用后才会被AI引用`);
+    }
+    logOp(req.user, '系统管理', '上传知识库文件', `${name}（${extractMode}）`);
+    res.json({ id: result.lastInsertRowid, title, body, fileUrl, fileType: ext, extractMode, enabled, billing: res.locals?.billing });
+  } catch (e) {
+    if (transactionOpen) {
+      try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    }
+    if (storedPath && !persisted) {
+      try { fs.rmSync(storedPath, { force: true }); } catch { /* best-effort orphan cleanup */ }
+    }
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// 资料缺口检测（FR-SYS-04 降级提示）
+r.get('/kb/gaps', (req, res) => {
+  const cats = DEFAULT_KB_CATS.filter(c => c !== '员工产出');
+  res.json(cats.map(c => ({
+    category: c,
+    docs: q.get(`SELECT COUNT(*) n FROM kb_docs WHERE tenant_id = ${curTenant()} AND category=? AND enabled=1`, c)?.n || 0,
+  })).filter(x => x.docs === 0).map(x => ({ ...x, hint: `上传「${x.category}」资料可解锁该领域AI精准模式，当前为通用模板模式` })));
+});
+
+const KB_INIT_DOCS = (tenant) => [
+  {
+    category: '品牌资料', title: '企业与品牌基础档案（系统初始化）',
+    body: `# 企业与品牌基础档案\n\n- 企业名称：${tenant?.name || '待补充'}\n- 联系人：${tenant?.contact_name || '待补充'}\n- 当前套餐：${tenant?.plan || '标准版'}\n- 品牌主张：待企业负责人确认\n- 门店定位：待企业负责人确认\n\n## 待企业补充\n- 品牌故事、门店类型、核心菜品、目标客群、服务范围、创始人表达风格、禁用表述。`,
+  },
+  {
+    category: '招商政策', title: '门店合作与渠道政策录入框架（系统初始化）',
+    body: '# 门店合作与渠道政策\n\n## 必填信息\n- 适用合作：企业团餐、外卖平台、供应商、联名活动、加盟或连锁合作（按实际业务勾选）。\n- 合作条件、服务范围、双方职责、价格审批、结算方式、退出机制。\n- 折扣、返利、收益、区域授权等数字必须来自已生效的书面文件。\n\n## 风控边界\n未经审批不得承诺收益、保本、固定效果或独家权益，不得用口头表述替代正式合同。',
+  },
+  {
+    category: '产品资料', title: '产品与服务资料录入框架（系统初始化）',
+    body: '# 菜单与服务资料\n\n请按每项补充：菜品或套餐名称、规格、主要食材、过敏原、适用场景、真实卖点、标准话术、可搭配方案、可售时段和禁用表述。\n\n价格、库存、食安与营养信息不得由通用模板推测，引用时以门店当日记录和负责人确认为准。',
+  },
+  {
+    category: '话术案例', title: '销售沟通与跟进SOP（系统初始化）',
+    body: '# 顾客沟通与跟进SOP\n\n1. 首次沟通：先确认用餐人数、时间、口味、预算和过敏信息，不急于承诺。\n2. 预约到店：给出可核验的营业时间、位置和预订方式。\n3. 异议处理：先确认真实顾虑，再提供基于菜单与门店政策的选择。\n4. 用餐后跟进：征得同意后收集反馈，登记改进项；不编造顾客证言。\n5. 所有价格、优惠、库存和对外话术须人工确认后发送。',
+  },
+  {
+    category: '客户画像', title: '客户画像字段与分层口径（系统初始化）',
+    body: '# 客户画像与分层\n\n## 核心字段\n姓名、联系方式、公司/行业、身份标签、来源渠道、意向产品、预算等级、当前阶段、关键顾虑、决策人、下一步动作、负责人。\n\n## 分层原则\n- A类：需求明确、决策链清楚、近期有行动窗口。\n- B类：有需求但时间或条件未成熟。\n- C类：信息不足或长期培育。\n\n敏感个人信息仅按权限查看，不直接写入公开知识条目。',
+  },
+  {
+    category: '数据规范', title: '经营数据口径与录入规范（系统初始化）',
+    body: '# 经营数据口径\n\n- 新增线索：本周期首次进入系统且有合法来源的有效顾客或企业客户。\n- 邀约：已发出明确时间、地点或预约方式的邀请。\n- 到店/到场：顾客实际完成线下到店或线上活动参与。\n- 成交：已形成有效订单或确认回款。\n- 复购：历史成交顾客再次下单。\n- 活跃会员：周期内有到店、下单、反馈或经同意的互动记录。\n\n所有数据应有负责人、时间和来源；禁止重复累计，不得用内容产出推断真实成交。',
+  },
+  {
+    category: '员工产出', title: '餐饮数字员工能力与调用地图（系统初始化）',
+    body: `# 餐饮数字员工能力地图\n\n${RESTAURANT_DEPARTMENTS.map(item => `${item.code} ${item.name}：${item.employeeCount} 位数字员工`).join('；')}。\n\n当前权威目录共 8 个分部、60 名餐饮数字员工。提问或派活时请说明门店现状、目标、约束、可核验输入和期望交付格式；食安、价格、财务、隐私与外部动作必须由负责人复核。`,
+  },
+];
+
+r.get('/kb/readiness', (req, res) => {
+  const docs = q.all(`SELECT category,COUNT(*) total,SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) enabled
+    FROM kb_docs WHERE tenant_id=? GROUP BY category`, curTenant());
+  const byCat = new Map(docs.map(x => [x.category, x]));
+  const categories = DEFAULT_KB_CATS.map(category => {
+    const row = byCat.get(category) || { total: 0, enabled: 0 };
+    return {
+      category, total: Number(row.total || 0), enabled: Number(row.enabled || 0),
+      ready: Number(row.enabled || 0) > 0,
+      hint: Number(row.enabled || 0) > 0 ? '已可供AI调用' : `请上传或录入「${category}」，也可先执行初始化`,
+    };
+  });
+  const ready = categories.filter(x => x.ready).length;
+  res.json({ ready, total: categories.length, percent: Math.round(ready / categories.length * 100), initialized: ready === categories.length, categories });
+});
+
+r.post('/kb/initialize', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  const tenant = getTenant(curTenant()) || {};
+  const docs = KB_INIT_DOCS(tenant);
+  const created = []; const skipped = [];
+  for (const doc of docs) {
+    const existed = q.get(`SELECT id FROM kb_docs WHERE tenant_id=? AND title=?`, curTenant(), doc.title);
+    if (existed) { skipped.push(doc.title); continue; }
+    const out = q.run(`INSERT INTO kb_docs(category,title,body,enabled) VALUES(?,?,?,1)`, doc.category, doc.title, doc.body);
+    embedDoc(out.lastInsertRowid, doc.title, doc.body);
+    q.run(`INSERT INTO biz_assets(name,category,value,status,owner,source_type,source_id,creator_id,note)
+      VALUES(?,?,?,?,?,?,?,?,?)`, doc.title, '知识资产', 1000, '使用中', '知识库初始化', 'kb', out.lastInsertRowid, req.user.id, '系统初始化基础知识，企业可继续编辑完善');
+    created.push({ id: out.lastInsertRowid, category: doc.category, title: doc.title });
+  }
+  logOp(req.user, '系统管理', '初始化知识库', `新增${created.length}条，保留${skipped.length}条已有资料`);
+  res.json({ ok: true, created, skipped, message: `知识库初始化完成：新增${created.length}条，已有${skipped.length}条未覆盖` });
+});
+
+// 保留既有 API 路径以兼容管理页，但允许写入的名称只来自权威餐饮目录。
+const DEPARTMENT_NAMING = RESTAURANT_DEPARTMENTS.map(item => [
+  item.code,
+  item.name,
+  item.name,
+  `权威餐饮目录分部，共 ${item.employeeCount} 位数字员工`,
+]);
+
+r.get('/marshal-naming', (req, res) => {
+  const current = new Map(q.all(`SELECT * FROM marshals WHERE online=1 AND code IN (${RESTAURANT_DEPARTMENTS.map(() => '?').join(',')}) ORDER BY sort`,
+    ...RESTAURANT_DEPARTMENTS.map(item => item.code)).map(m => { const merged = mergeMarshal(m); return [m.code, merged.name]; }));
+  res.json(DEPARTMENT_NAMING.map(([code, original, recommended, reason]) => ({ code, original, current: current.get(code) || original, recommended, reason,
+    changed: (current.get(code) || original) === recommended })));
+});
+
+r.post('/marshal-naming/apply', requireRole('boss', 'admin'), (req, res) => {
+  const validCodes = new Set(DEPARTMENT_NAMING.map(item => item[0]));
+  const requested = Array.isArray(req.body?.codes) && req.body.codes.length ? req.body.codes.map(String) : [...validCodes];
+  if (requested.some(code => !validCodes.has(code))) return res.status(400).json({ error: '只能同步当前餐饮数字员工目录中的8个分部' });
+  const selected = new Set(requested);
+  const applied = [];
+  for (const [code, , recommended] of DEPARTMENT_NAMING) {
+    if (!selected.has(code)) continue;
+    q.run(`INSERT INTO tenant_marshal_overrides(tenant_id,marshal_code,name,updated_at) VALUES(?,?,?,datetime('now','localtime'))
+      ON CONFLICT(tenant_id,marshal_code) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at`, curTenant(), code, recommended);
+    applied.push({ code, name: recommended });
+  }
+  logOp(req.user, '系统管理', '同步餐饮分部命名', applied.map(x => `${x.code}:${x.name}`).join('、'));
+  res.json({ ok: true, applied });
+});
+
+r.get('/marshal-prompts/status', requireRole('boss', 'ops_director', 'admin', 'platform_super'), (req, res) => {
+  res.json(q.all('SELECT code,name,prompt,synced_at FROM marshals ORDER BY sort').map(m => {
+    const merged = mergeMarshal(m);
+    return { code: m.code, name: merged.name, length: String(merged.prompt || '').length, ready: String(merged.prompt || '').length > 1200, syncedAt: m.synced_at };
+  }));
+});
+
+// ===== 提示词模板（PROMPT-01~03 / FR-MAR-06）=====
+r.get('/prompts', requireRole('boss', 'admin', 'platform_super'), (req, res) => {
+  // 全局基线 + 本企业覆盖合并展示
+  res.json(q.all('SELECT * FROM prompts ORDER BY code').map(p => {
+    const ov = promptOverride(p.code);
+    return ov ? { ...p, role_card: ov.role_card ?? p.role_card, output_rule: ov.output_rule ?? p.output_rule, style: ov.style ?? p.style, _overridden: 1 } : p;
+  }));
+});
+r.put('/prompts/:id', requireRole('boss', 'admin', 'platform_super'), (req, res) => { // 老板升级=本企业全员即时生效
+  const { role_card, output_rule, style } = req.body || {};
+  const base = q.get('SELECT code FROM prompts WHERE id = ?', req.params.id);
+  if (!base) return res.status(404).json({ error: '提示词不存在' });
+  const tid = curTenant();
+  const ov = q.get('SELECT * FROM tenant_prompt_overrides WHERE tenant_id=? AND code=?', tid, base.code) || {};
+  q.run(`INSERT INTO tenant_prompt_overrides(tenant_id,code,role_card,output_rule,style,updated_at)
+    VALUES(?,?,?,?,?,datetime('now','localtime'))
+    ON CONFLICT(tenant_id,code) DO UPDATE SET role_card=excluded.role_card,output_rule=excluded.output_rule,style=excluded.style,updated_at=excluded.updated_at`,
+    tid, base.code, role_card ?? ov.role_card ?? null, output_rule ?? ov.output_rule ?? null, style ?? ov.style ?? null);
+  logOp(req.user, '系统管理', '更新提示词(本企业)', base.code);
+  const fresh = q.get('SELECT * FROM prompts WHERE id = ?', req.params.id);
+  const merged = fresh ? { ...fresh, role_card: role_card ?? fresh.role_card, output_rule: output_rule ?? fresh.output_rule, style: style ?? fresh.style, _overridden: 1 } : { ok: true, code: base.code };
+  res.json(merged);
+});
+
+// ===== 用户管理 =====
+// 企业账号管理（仅本租户；含席位配额）
+r.get('/users', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  const tid = curTenant();
+  const t = getTenant(tid) || {};
+  const used = q.get('SELECT COUNT(*) n FROM users WHERE tenant_id = ?', tid)?.n || 0;
+  const scope = userScopeClause(req.user, 'id');
+  res.json({
+    seatLimit: t.seat_limit ?? 5, seatUsed: used,
+    users: q.all(`SELECT id,username,name,role,dept,phone,status,modules,manager_id,last_login_at,created_at
+      FROM users WHERE tenant_id = ? AND role != 'platform_super'${scope.sql} ORDER BY id`, tid, ...scope.params),
+  });
+});
+r.post('/users', requireRole('admin', 'boss'), (req, res) => {
+  const { username, password, name, role, dept, phone, modules, manager_id } = req.body || {};
+  if (!username || !password || !name) return res.status(400).json({ error: '用户名/密码/姓名必填' });
+  const account = String(username).trim();
+  if (!/^[a-zA-Z0-9_.@-]{3,64}$/.test(account)) return res.status(400).json({ error: '用户名须为3到64位字母、数字或 . _ @ -' });
+  if (typeof password !== 'string' || password.length < 8 || password.length > 128) return res.status(400).json({ error: '初始密码须为8到128位' });
+  const userRole = role || 'sales';
+  if (!USER_ROLE_SET.has(userRole)) return res.status(400).json({ error: '账号角色无效' });
+  const tid = curTenant();
+  const t = getTenant(tid) || {};
+  const used = q.get('SELECT COUNT(*) n FROM users WHERE tenant_id = ?', tid)?.n || 0;
+  if (used >= (t.seat_limit ?? 5)) return res.status(400).json({ error: `账号数已达企业上限（${t.seat_limit ?? 5}个），如需扩容请联系平台` });
+  let displayName; let managerId; let normalizedModules;
+  try {
+    displayName = normalizedUserName(name);
+    managerId = validManagerId(manager_id, tid) ?? null;
+    normalizedModules = normalizedUserModules(modules);
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  try {
+    const result = q.run('INSERT INTO users(username,password_hash,name,role,dept,phone,modules,tenant_id,manager_id) VALUES(?,?,?,?,?,?,?,?,?)',
+      account, hashPassword(password), displayName, userRole, String(dept || '').trim().slice(0, 80), String(phone || '').trim().slice(0, 40),
+      normalizedModules ?? null, tid, managerId);
+    logOp(req.user, '系统管理', '新增账号', account);
+    res.json({ id: result.lastInsertRowid });
+  } catch (error) {
+    const duplicate = String(error?.message || '').includes('UNIQUE constraint failed: users.username');
+    res.status(400).json({ error: duplicate ? '用户名已存在' : (error?.message || '新增账号失败') });
+  }
+});
+r.put('/users/:id', requireRole('admin', 'boss'), (req, res) => {
+  const tid = curTenant();
+  const target = q.get('SELECT id, role FROM users WHERE id = ? AND tenant_id = ?', req.params.id, tid);
+  if (!target) return res.status(404).json({ error: '账号不存在或不属于本企业' });
+  if (target.role === 'platform_super') return res.status(403).json({ error: '不可修改平台账号' });
+  const { name, role, dept, status, password, modules, manager_id } = req.body || {};
+  if (role !== undefined && !USER_ROLE_SET.has(role)) return res.status(400).json({ error: '账号角色无效' });
+  if (status !== undefined && !USER_STATUS_SET.has(status)) return res.status(400).json({ error: '账号状态无效' });
+  if (Number(req.params.id) === Number(req.user.id) && (role !== undefined || status === '停用')) {
+    return res.status(400).json({ error: '不能修改当前登录账号的角色或停用状态' });
+  }
+  if (status === '停用') {
+    return res.status(400).json({
+      error: '请使用“停用账号”操作；系统会在同一事务中保留历史归属并停用该账号创建的内容自动任务',
+    });
+  }
+  if (password !== undefined && password !== '' && (typeof password !== 'string' || password.length < 8 || password.length > 128)) {
+    return res.status(400).json({ error: '重置密码须为8到128位' });
+  }
+  let displayName; let normalizedModules; let managerId;
+  try {
+    if (name !== undefined) displayName = normalizedUserName(name);
+    normalizedModules = normalizedUserModules(modules);
+    managerId = validManagerId(manager_id, tid, req.params.id);
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  const updates = []; const values = [];
+  const add = (field, value) => { updates.push(`${field}=?`); values.push(value); };
+  if (name !== undefined) add('name', displayName);
+  if (role !== undefined) add('role', role);
+  if (dept !== undefined) add('dept', String(dept || '').trim().slice(0, 80));
+  if (status !== undefined) add('status', status);
+  if (modules !== undefined) add('modules', normalizedModules);
+  if (manager_id !== undefined) add('manager_id', managerId);
+  if (password) {
+    add('password_hash', hashPassword(password));
+    updates.push('auth_version=COALESCE(auth_version,0)+1');
+  }
+  if (updates.length) q.run(`UPDATE users SET ${updates.join(',')} WHERE id=? AND tenant_id=?`, ...values, req.params.id, tid);
+  logOp(req.user, '系统管理', '修改账号', `user#${req.params.id}`);
+  res.json({ ok: true });
+});
+// 停用账号（软删除）：保留用户主键与全部历史归属，同时关闭其仍启用的内容自动任务。
+r.delete('/users/:id', requireRole('admin', 'boss'), (req, res) => {
+  const tid = curTenant();
+  const targetId = Number(req.params.id);
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+    return res.status(400).json({ error: '账号编号无效' });
+  }
+
+  let inTransaction = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    inTransaction = true;
+    const target = q.get(
+      'SELECT id,name,role,status,auth_version FROM users WHERE id=? AND tenant_id=?',
+      targetId,
+      tid,
+    );
+    if (!target) throw userDisableError('账号不存在或不属于本企业', 404);
+    if (Number(target.id) === Number(req.user.id)) {
+      throw userDisableError('不能停用当前登录账号', 400);
+    }
+    if (target.role === 'platform_super') {
+      throw userDisableError('不可停用平台超级管理员', 403);
+    }
+    if (target.status === '启用' && TENANT_ADMIN_ROLES.has(target.role)) {
+      const enabledAdmins = Number(q.get(
+        `SELECT COUNT(*) n FROM users
+          WHERE tenant_id=? AND status='启用' AND role IN ('boss','admin')`,
+        tid,
+      )?.n || 0);
+      if (enabledAdmins <= 1) {
+        throw userDisableError('不能停用企业最后一个启用的老板/管理员账号', 409);
+      }
+    }
+
+    const alreadyDisabled = target.status === '停用';
+    const dependencyCounts = userDependencyCounts(tid, targetId);
+    if (!alreadyDisabled) {
+      q.run(`UPDATE users
+        SET status='停用',auth_version=COALESCE(auth_version,0)+1
+        WHERE tenant_id=? AND id=? AND status!='停用'`, tid, targetId);
+    }
+    const automationUpdate = q.run(`UPDATE content_automation_rules
+      SET enabled=0,next_run_at=NULL,updated_at=datetime('now','localtime')
+      WHERE tenant_id=? AND created_by=? AND enabled=1`, tid, targetId);
+    const disabledAutomationRules = Number(automationUpdate.changes || 0);
+    db.exec('COMMIT');
+    inTransaction = false;
+
+    logOp(
+      req.user,
+      '系统管理',
+      '停用账号',
+      `user#${targetId}:${target.name || ''};alreadyDisabled=${alreadyDisabled};disabledAutomationRules=${disabledAutomationRules};历史归属保留`,
+    );
+    return res.json({
+      ok: true,
+      userId: targetId,
+      status: '停用',
+      alreadyDisabled,
+      dependencyCounts,
+      disabledAutomationRules,
+      historyPreserved: true,
+      message: alreadyDisabled
+        ? '账号已经停用；用户ID、历史内容、任务、审批和自动化运行记录均保留。'
+        : '账号已停用；用户ID与历史归属均保留，仍启用的内容自动任务已同步停用。',
+    });
+  } catch (error) {
+    if (inTransaction) {
+      try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    }
+    return res.status(error.status || 500).json({
+      error: error.status ? error.message : '停用账号失败，账号与自动任务均未更改',
+    });
+  }
+});
+
+// ===== 日志 =====
+r.get('/logs', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  res.json(q.all(`SELECT * FROM op_logs WHERE tenant_id = ${curTenant()} ORDER BY created_at DESC LIMIT 50`));
+});
+r.get('/login-logs', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  res.json(q.all('SELECT * FROM login_logs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 50', curTenant()));
+});
+
+// ===== 删除留痕 / 回收站 =====
+r.get('/deletions', requireRole('boss', 'admin'), (req, res) => {
+  const { entityType, status } = req.query;
+  let where = `WHERE tenant_id = ${curTenant()}`;
+  const params = [];
+  if (entityType) { where += ' AND entity_type = ?'; params.push(entityType); }
+  if (status === 'restored') where += ' AND restored_at IS NOT NULL';
+  else if (status === 'active') where += ' AND restored_at IS NULL';
+  const rows = q.all(`SELECT id,entity_type,entity_id,module,title,summary,required_role,reason,deleted_by_name,deleted_by_role,restored_by_name,restored_at,created_at
+    FROM deleted_records ${where} ORDER BY id DESC LIMIT 200`, ...params);
+  res.json(rows);
+});
+
+r.get('/deletions/:id', requireRole('boss', 'admin'), (req, res) => {
+  const row = q.get(`SELECT * FROM deleted_records WHERE tenant_id = ${curTenant()} AND id=?`, req.params.id);
+  if (!row) return res.status(404).json({ error: '删除记录不存在' });
+  res.json({
+    ...row,
+    snapshot: parsePayload(row.snapshot, {}),
+    child_snapshot: parsePayload(row.child_snapshot, {}),
+  });
+});
+
+r.post('/deletions/:id/restore', requireRole('boss', 'admin'), (req, res) => {
+  const row = q.get(`SELECT * FROM deleted_records WHERE tenant_id = ${curTenant()} AND id=?`, req.params.id);
+  if (!row) return res.status(404).json({ error: '删除记录不存在' });
+  try {
+    const out = restoreDeletedRecord(row, req.user);
+    logOp(req.user, '系统管理', '恢复删除数据', `${row.entity_type}#${row.entity_id} / archive#${row.id}`);
+    res.json({ ok: true, ...out, message: '已从回收站恢复' });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// ===== 系统状态 =====
+r.get('/status', requireRole('boss', 'ops_director', 'admin', 'platform_super'), (req, res) => {
+  const dbSize = fs.existsSync(DB_PATH) ? Math.round(fs.statSync(DB_PATH).size / 1024) : 0;
+  const mem = process.memoryUsage();
+  const cpu = Math.max(0, Math.min(100, Math.round(os.loadavg()[0] / os.cpus().length * 100)));
+  const memory = Math.max(0, Math.min(100, Math.round((1 - os.freemem() / os.totalmem()) * 100)));
+  const canViewAiDetail = ['boss', 'admin', 'platform_super'].includes(req.user.role);
+  const healthStatus = memory >= 90 || cpu >= 95 ? 'danger' : memory >= 80 || cpu >= 80 ? 'warning' : 'success';
+  const healthLabel = healthStatus === 'danger' ? '高负载' : healthStatus === 'warning' ? '需关注' : '运行正常';
+  const healthReason = healthStatus === 'danger'
+    ? 'CPU或内存已进入高风险区间，请尽快检查服务负载'
+    : healthStatus === 'warning'
+      ? 'CPU或内存偏高，建议关注后续波动'
+      : '核心资源处于安全区间';
+  const usage = getTokenUsage();
+  res.json({
+    users: q.get(`SELECT COUNT(*) n FROM users WHERE tenant_id = ${curTenant()}`)?.n || 0,
+    online: q.get(`SELECT COUNT(DISTINCT username) n FROM login_logs
+      WHERE tenant_id=? AND success=1 AND created_at >= datetime('now','-8 hour','localtime')`, curTenant())?.n || 0,
+    leads: q.get(`SELECT COUNT(*) n FROM leads WHERE tenant_id = ${curTenant()}`)?.n || 0,
+    contents: q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()}`)?.n || 0,
+    dbSizeKB: dbSize,
+    cpu,
+    memory,
+    heapMB: Math.round(mem.heapUsed / 1048576),
+    uptimeMin: Math.round(process.uptime() / 60),
+    healthStatus,
+    healthLabel,
+    healthReason,
+    ai: {
+      available: aiAvailable(),
+      canViewDetail: canViewAiDetail,
+      model: canViewAiDetail ? (process.env.AI_MODEL || 'claude-opus-4-8') : null,
+      usage: canViewAiDetail ? usage : null,
+    },
+  });
+});
+
+// ===== 业务系数配置（FR-SYS-07）=====
+r.get('/config', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  // 业务系数读「本租户覆盖 → 平台默认」，让每家企业看到/调整自己的经营参数（千客千面）
+  res.json({
+    year_revenue_target: getTenantConfig('year_revenue_target', 6000000),
+    month_revenue_target: getTenantConfig('month_revenue_target', 500000),
+    personal_month_target: getTenantConfig('personal_month_target', 200000),
+    avg_deal_amount: getTenantConfig('avg_deal_amount', 8000),
+    month_targets: getTenantConfig('month_targets', {}),
+    funnel_baseline: getTenantConfig('funnel_baseline', {}),
+    activity_baseline: getTenantConfig('activity_baseline', {}),
+    health_weights: getTenantConfig('health_weights', {}),
+    risk_rules: getRules(),
+  });
+});
+// 平台级配置键（影响计费/模型/密钥/全平台）——企业后台不可改，杜绝任一租户老板篡改全平台计费或盗改API密钥
+const PLATFORM_ONLY_CFG = ['billing', 'model_routing', 'yunwu_api_key', 'yunwu_base_url', 'embed_model', 'security'];
+// 业务系数键——按租户存（每家企业自定义，互不影响；未设回退平台默认）
+const TENANT_CFG_KEYS = new Set(['score_weights', 'health_weights', 'month_targets', 'funnel_baseline', 'activity_baseline',
+  'month_revenue_target', 'year_revenue_target', 'personal_month_target', 'avg_deal_amount']);
+r.put('/config', requireRole('boss', 'admin'), (req, res) => {
+  const body = req.body || {};
+  const blocked = Object.keys(body).filter(k => PLATFORM_ONLY_CFG.includes(k));
+  if (blocked.length) return res.status(403).json({ error: `平台级配置（${blocked.join('、')}）仅平台方可修改` });
+  const unknown = Object.keys(body).filter(k => !TENANT_CFG_KEYS.has(k));
+  if (unknown.length) return res.status(400).json({ error: `不支持的配置项：${unknown.join('、')}` });
+  for (const [k, v] of Object.entries(body)) setTenantConfig(k, v);
+  logOp(req.user, '系统管理', '修改配置', Object.keys(body).join(','));
+  res.json({ ok: true });
+});
+
+// ===== 备份（FR-SYS-06）=====
+r.post('/backup', requirePlatformOperator, (req, res) => {
+  try {
+    const dir = path.dirname(DB_PATH);
+    const file = `${path.basename(DB_PATH, path.extname(DB_PATH))}.backup.${Date.now()}.sqlite`;
+    const dest = backupDatabase(path.join(dir, file));
+    const backups = fs.readdirSync(dir).filter(name => databaseBackupMeta(name)).sort().reverse();
+    for (const expired of backups.slice(10)) fs.rmSync(path.join(dir, expired), { force: true });
+    logOp(req.user, '系统管理', '数据备份', file);
+    res.json({ file, sizeKB: Math.round(fs.statSync(dest).size / 1024), integrity: 'ok' });
+  } catch (error) { res.status(500).json({ error: `备份失败：${error.message}` }); }
+});
+r.get('/backups', requirePlatformOperator, (req, res) => {
+  const dir = path.dirname(DB_PATH);
+  const files = fs.readdirSync(dir).filter(f => databaseBackupMeta(f))
+    .map(f => ({ file: f, sizeKB: Math.round(fs.statSync(path.join(dir, f)).size / 1024), at: new Date(databaseBackupMeta(f).timestamp).toLocaleString('zh-CN') }))
+    .sort((a, b) => b.file.localeCompare(a.file)).slice(0, 10);
+  res.json(files);
+});
+
+function requestBaseUrl(req) {
+  const configured = process.env.FEISHU_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || '';
+  if (process.env.NODE_ENV === 'production' && !configured) throw new Error('生产环境必须配置 FEISHU_PUBLIC_BASE_URL，不能使用请求头推导回调地址');
+  const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const xfHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const proto = xfProto || req.protocol || 'http';
+  const host = xfHost || req.get('host');
+  const value = (configured || `${proto}://${host}`).replace(/\/+$/, '');
+  const parsed = new URL(value);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('飞书公网回调地址格式不正确');
+  if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') throw new Error('生产环境飞书公网回调地址必须使用 HTTPS');
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+// ===== 飞书集成（应用机器人单人推送 / 活动日历同步）=====
+r.get('/feishu', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  const { feishuConfig, appReady, appBotReady, feishuManagerSummary } = await import('../engines/feishu.js');
+  const cfg = feishuConfig();
+  const managers = feishuManagerSummary();
+  res.json({
+    enabled: cfg.enabled, mode: 'app', receiverName: cfg.receiverName,
+    receiveIdType: cfg.receiveIdType,
+    receiveId: cfg.receiveId ? cfg.receiveId.slice(0, 8) + '****' : '',
+    appReady: appReady(), appBotReady: appBotReady(), appId: cfg.appId ? cfg.appId.slice(0, 8) + '****' : '',
+    calendarReady: !!cfg.calendarId,
+    managerReceiverCount: managers.count,
+    managerCalendarCount: managers.calendarCount,
+    managerReceivers: managers.recipients,
+  });
+});
+r.get('/feishu/me', async (req, res) => {
+  try {
+    const { appReady: ready, feishuUserSummary } = await import('../engines/feishu.js');
+    res.json({ appReady: ready(), ...feishuUserSummary(req.user.id, curTenant()) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+r.post('/feishu/oauth/start', async (req, res) => {
+  try {
+    const { createOAuthBinding } = await import('../engines/feishu.js');
+    const baseUrl = requestBaseUrl(req);
+    const out = await createOAuthBinding({ tid: curTenant(), user: req.user, baseUrl });
+    logOp(req.user, '系统管理', '发起飞书扫码绑定', out.localMode ? 'localhost' : 'public');
+    res.json(out);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+r.get('/feishu/oauth/status', async (req, res) => {
+  try {
+    const { oauthBindingStatus } = await import('../engines/feishu.js');
+    res.json(oauthBindingStatus(req.query.state, curTenant(), req.user.id));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+r.put('/feishu', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
+  const { enabled, appId, appSecret, receiveId, receiveIdType, receiverName } = req.body || {};
+  const cur = getTenantConfig('feishu', {}) || {};   // 飞书配置按租户存：每家企业自己的应用机器人/凭据/接收人
+  const next = {
+    ...cur,
+    enabled: enabled ?? cur.enabled ?? false,
+    mode: 'app',
+    webhook: '',
+    chatId: '',
+    chatName: '',
+    appId: appId !== undefined && !String(appId).includes('****') ? String(appId).trim() : (cur.appId || ''),
+    appSecret: appSecret !== undefined && appSecret !== '' ? String(appSecret).trim() : (cur.appSecret || ''),
+    receiveId: receiveId !== undefined && !String(receiveId).includes('****') ? String(receiveId).trim() : (cur.receiveId || ''),
+    receiveIdType: receiveIdType || cur.receiveIdType || 'open_id',
+    receiverName: receiverName !== undefined ? String(receiverName).trim() : (cur.receiverName || ''),
+  };
+  const effectiveAppId = next.appId || process.env.FEISHU_APP_ID || '';
+  const effectiveAppSecret = next.appSecret || process.env.FEISHU_APP_SECRET || '';
+  if (next.enabled && (!effectiveAppId || !effectiveAppSecret || !next.receiveId))
+    return res.status(400).json({ error: '启用飞书应用机器人前，请填写 App ID、App Secret 和接收人 ID' });
+  if (!['open_id', 'user_id', 'union_id', 'email'].includes(next.receiveIdType))
+    return res.status(400).json({ error: '接收人 ID 类型仅支持 open_id / user_id / union_id / email' });
+  setTenantConfig('feishu', next);
+  logOp(req.user, '系统管理', '配置飞书应用机器人', next.enabled ? '启用' : '保存');
+  res.json({ ok: true });
+});
+r.post('/feishu/app-bot/bind', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  try {
+    const { bindAppBotTarget } = await import('../engines/feishu.js');
+    const target = await bindAppBotTarget(req.body || {}, curTenant(), req.user);
+    logOp(req.user, '系统管理', '绑定飞书应用机器人', `${target.receiveIdType}:${target.receiverName || target.receiveId}`);
+    res.json({ ok: true, ...target });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+// 旧版群绑定接口保留兼容，但不再读取群列表或绑定群。
+r.get('/feishu/qr', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  const { bindQr, appReady } = await import('../engines/feishu.js');
+  const out = await bindQr();
+  res.json({ ...out, appReady: appReady(), appBotOnly: true });
+});
+r.get('/feishu/chats', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  res.json([]);
+});
+r.post('/feishu/bind', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  return res.status(410).json({ error: '已切换为飞书应用机器人单人绑定，不再支持群绑定' });
+});
+r.get('/feishu/autobind', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  res.json({ bound: false, deprecated: true, chats: 0, message: '已切换为飞书应用机器人单人绑定，无需获取群列表' });
+});
+r.post('/feishu/test', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
+  const { pushFeishuToManagers } = await import('../engines/feishu.js');
+  const out = await pushFeishuToManagers({
+    title: '纳米Work行业版 · 管理层连接测试',
+    lines: ['✅ 飞书应用机器人已接通', `操作人：${req.user.name}`, '后续活动创建/状态变更会同步推送给已绑定的老板与管理层，并自动写入飞书日历提醒'],
+  });
+  if (out.skipped) return res.status(400).json({ error: out.reason || '请先配置并启用飞书应用机器人' });
+  if (!out.ok) return res.status(502).json({ error: `飞书返回异常：${out.error || JSON.stringify(out.resp).slice(0, 160)}` });
+  res.json({ ok: true, sent: out.sent, total: out.total });
+});
+// ===== 通知 =====
+r.get('/notifications', (req, res) => {
+  const size = Math.min(100, Math.max(1, Number.parseInt(req.query.size, 10) || 20));
+  res.json(q.all(`SELECT * FROM notifications
+    WHERE tenant_id=? AND user_id=? ORDER BY id DESC LIMIT ?`, curTenant(), req.user.id, size));
+});
+r.post('/notifications/:id/read', (req, res) => {
+  q.run('UPDATE notifications SET read=1 WHERE tenant_id=? AND id=? AND user_id=?', curTenant(), req.params.id, req.user.id);
+  res.json({ ok: true });
+});
+r.post('/notifications/read', (req, res) => {
+  q.run('UPDATE notifications SET read=1 WHERE tenant_id=? AND user_id=?', curTenant(), req.user.id);
+  res.json({ ok: true });
+});
+
+export default r;
