@@ -10,7 +10,7 @@ import {
   PlusOutlined, EditOutlined, CloudUploadOutlined, SaveOutlined, AlertOutlined, UploadOutlined,
   ThunderboltOutlined, DesktopOutlined, CheckOutlined, CloseOutlined,
   LinkOutlined, CopyOutlined, DeleteOutlined, UndoOutlined, EyeOutlined,
-  InboxOutlined,
+  InboxOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { notifyCredits, api, getUser } from '../api/client';
 import { Panel } from '../components/Kit';
@@ -81,6 +81,20 @@ const displayValue = (value: any): string => {
 };
 const displayList = (value: any): any[] => Array.isArray(value) ? value : value === null || value === undefined || value === '' ? [] : [value];
 const barColor = (p: number) => (p >= 80 ? '#f25b6b' : p >= 60 ? '#f6a02d' : 'var(--ui-accent)');
+
+// 核心数据全挂时的错误态（不展示猜测数据，只给明确错误 + 重试）
+function ErrorState({ error, retrying, onRetry }: { error: string; retrying?: boolean; onRetry: () => void }) {
+  return (
+    <Panel>
+      <div style={{ textAlign: 'center', padding: '36px 0' }}>
+        <AlertOutlined style={{ fontSize: 34, color: '#f25b6b' }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ui-text)', marginTop: 10 }}>系统数据加载失败</div>
+        <div style={{ fontSize: 12.5, color: 'var(--ui-muted)', margin: '6px 0 16px' }}>{error || '网络异常或服务暂不可用'}，已停止展示过期内容，请重试。</div>
+        <Button type="primary" icon={<ReloadOutlined />} loading={retrying} onClick={onRetry}>重新加载</Button>
+      </div>
+    </Panel>
+  );
+}
 
 // 卡片内小指标块
 function MiniStat({ icon, color, label, value, span }: { icon: React.ReactNode; color: string; label: string; value: React.ReactNode; span?: boolean }) {
@@ -262,6 +276,36 @@ export default function System() {
       .then(() => startFeishuScan())
       .finally(() => setFeishuAppSaving(false));
   };
+  // 手动绑定应用机器人接收人（扫码走不通时的兜底：直接填 receive_id）
+  const [feishuManual, setFeishuManual] = useState<any>(null);
+  const [feishuManualSaving, setFeishuManualSaving] = useState(false);
+  const FEISHU_ID_TYPES = [
+    { value: 'open_id', label: 'open_id（推荐）' },
+    { value: 'user_id', label: 'user_id' },
+    { value: 'union_id', label: 'union_id' },
+    { value: 'email', label: '邮箱' },
+  ];
+  const submitFeishuManual = () => {
+    if (!feishuManual?.receiveId?.trim()) { message.warning('请填写飞书接收人 ID'); return; }
+    setFeishuManualSaving(true);
+    api.post('/sys/feishu/app-bot/bind', {
+      receiveId: feishuManual.receiveId.trim(),
+      receiveIdType: feishuManual.receiveIdType || 'open_id',
+      receiverName: String(feishuManual.receiverName || '').trim(),
+    }).then((r: any) => {
+      message.success(`已绑定飞书接收人${r.receiverName ? `：${r.receiverName}` : ''}，并发送了确认卡片`);
+      setFeishuManual(null);
+      setFeishuQr(false);
+      loadFeishu();
+    }).catch(() => {}).finally(() => setFeishuManualSaving(false));
+  };
+  // 打开与应用机器人的飞书会话（后端 /sys/feishu/qr 返回 applink）
+  const openFeishuBot = () => {
+    api.get('/sys/feishu/qr').then((d: any) => {
+      if (d?.applink) window.open(d.applink, '_blank');
+      else message.warning('请先配置飞书 App ID / App Secret 后再打开机器人会话');
+    }).catch(() => {});
+  };
   const [backingUp, setBackingUp] = useState(false);
 
   const loadStatus = () => api.get('/sys/status').then(setStatus).catch(() => {});
@@ -304,26 +348,40 @@ export default function System() {
       if (st === '待审核') setPendingCount(l.length);
     }).catch(() => {});
 
+  // 初始核心数据统一走 allSettled：任一成功则按可用数据渲染；全部失败给明确错误态 + 重试，不再静默吞错
+  const [coreError, setCoreError] = useState('');
+  const [coreLoading, setCoreLoading] = useState(false);
+  const loadCore = () => {
+    setCoreLoading(true);
+    const calls: Promise<any>[] = [
+      api.get('/sys/status').then(setStatus),
+      api.get('/sys/kb/gaps').then(setGaps),
+      api.get('/sys/kb/readiness').then(setKbReadiness),
+      api.get('/sys/prompts').then(setPrompts),
+      api.get('/sys/marshal-naming').then(setMarshalNaming),
+      api.get('/sys/marshal-prompts/status').then(setMarshalPromptStatus),
+      api.get('/sys/approvals?status=待审核').then((l: any[]) => setPendingCount(l.length)),
+      ...(isAdminish ? [
+        api.get('/sys/users').then((d: any) => { setUsers(Array.isArray(d) ? d : (d.users || [])); if (d && !Array.isArray(d)) setSeat({ limit: d.seatLimit, used: d.seatUsed }); }),
+        api.get('/sys/logs').then(setLogs),
+        api.get('/sys/login-logs').then(setLoginLogs),
+        api.get('/sys/config').then(setCfg),
+      ] : []),
+      ...(canBackup ? [api.get('/sys/backups').then(setBackups)] : []),
+    ];
+    return Promise.allSettled(calls).then((results) => {
+      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+      if (results.length && failed.length === results.length) {
+        setCoreError(failed[0]?.reason?.message || '网络异常或服务暂不可用');
+      } else {
+        setCoreError('');
+      }
+    }).finally(() => setCoreLoading(false));
+  };
   useEffect(() => {
     let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      loadStatus();
-      loadGaps();
-      loadKbReadiness();
-      api.get('/sys/prompts').then(setPrompts).catch(() => {});
-      api.get('/sys/marshal-naming').then(setMarshalNaming).catch(() => {});
-      api.get('/sys/marshal-prompts/status').then(setMarshalPromptStatus).catch(() => {});
-      api.get('/sys/approvals?status=待审核').then((l) => setPendingCount(l.length)).catch(() => {});
-      if (isAdminish) {
-        loadUsers();
-        api.get('/sys/logs').then(setLogs).catch(() => {});
-        api.get('/sys/login-logs').then(setLoginLogs).catch(() => {});
-        api.get('/sys/config').then(setCfg).catch(() => {});
-      }
-      if (canBackup) loadBackups();
-    });
-    const timer = setInterval(loadStatus, 30000);
+    queueMicrotask(() => { if (!cancelled) loadCore(); });
+    const timer = setInterval(loadStatus, 30000);   // 容错性轮询：单次失败静默，等下一轮
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -1118,16 +1176,22 @@ export default function System() {
                     api.post('/sys/feishu/test').then((r: any) => message.success(`测试卡片已发送：${r.sent || 0}/${r.total || 0}`)).catch(() => {});
                   }}>发送管理层测试消息</Button>
                   <Button size="small" onClick={openFeishuBind}>扫码添加管理者</Button>
+                  <Button size="small" onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}>手动绑定接收人</Button>
+                  <Button size="small" icon={<LinkOutlined />} onClick={openFeishuBot}>在飞书中打开机器人</Button>
                   <Button size="small" danger onClick={() => {
                     api.put('/sys/feishu', { enabled: false }).then(() => { message.success('已停用飞书同步'); loadFeishu(); });
                   }}>停用</Button>
                 </Space>
+                <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>绑定后，经营提醒与每日经营日报会通过应用机器人推送给已绑定的老板/管理层。</div>
               </div>
             ) : (
               <div style={{ textAlign: 'center', padding: '6px 0 2px' }}>
-                <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 10 }}>接入后：活动自动写入飞书日历 · 老板/管理层单独推送 · 不需要群机器人</div>
+                <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 10 }}>绑定后：经营提醒与每日经营日报推送到管理层飞书 · 活动自动写入飞书日历 · 不需要群机器人</div>
                 <Button type="primary" size="large" icon={<RobotOutlined />} block
                   onClick={openFeishuBind}>扫码绑定飞书</Button>
+                <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 10 }}>
+                  无法扫码？<a onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}>手动填写接收人 ID 绑定</a>
+                </div>
               </div>
             )}
             <Modal open={feishuQr} footer={null} width={500} onCancel={() => setFeishuQr(false)}
@@ -1204,9 +1268,40 @@ export default function System() {
                       {feishuBindStatus === 'error' && '绑定失败，请重新生成二维码再试。'}
                       {feishuBindStatus === 'missing' && '二维码会话不存在，请重新生成。'}
                     </div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
+                      扫码走不通？<a onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}>手动填写接收人 ID 绑定</a>
+                    </div>
                   </>
                 )}
               </div>
+            </Modal>
+            {/* 手动绑定应用机器人接收人（扫码兜底：直接填 receive_id） */}
+            <Modal open={!!feishuManual} width={480} title="手动绑定飞书接收人" okText="确认绑定"
+              confirmLoading={feishuManualSaving}
+              onOk={submitFeishuManual} onCancel={() => setFeishuManual(null)}>
+              {feishuManual && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+                  <Alert type="info" showIcon
+                    message="扫码授权走不通时的兜底方式"
+                    description={<span style={{ fontSize: 12 }}>在飞书开放平台或通讯录 API 中查到接收人的 open_id / user_id / union_id / 邮箱后填入即可。绑定成功会立即发送一张确认卡片；之后经营提醒与每日经营日报会推送给该接收人及已绑定管理层。</span>} />
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>ID 类型</div>
+                    <Select style={{ width: '100%' }} value={feishuManual.receiveIdType} options={FEISHU_ID_TYPES}
+                      onChange={(v) => setFeishuManual({ ...feishuManual, receiveIdType: v })} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>接收人 ID <span style={{ color: '#f25b6b' }}>*</span></div>
+                    <Input placeholder={feishuManual.receiveIdType === 'email' ? 'name@company.com' : 'ou_xxxxxxxxxxxxxxxx'}
+                      value={feishuManual.receiveId}
+                      onChange={(e) => setFeishuManual({ ...feishuManual, receiveId: e.target.value })} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>接收人姓名（选填）</div>
+                    <Input placeholder="便于识别当前绑定对象" maxLength={30} value={feishuManual.receiverName}
+                      onChange={(e) => setFeishuManual({ ...feishuManual, receiverName: e.target.value })} />
+                  </div>
+                </div>
+              )}
             </Modal>
           </Panel>
         </div>
@@ -1235,21 +1330,25 @@ export default function System() {
         </div>
       </Panel>
 
-      {/* 六大区块 Tabs */}
-      <Tabs activeKey={tab} onChange={changeTab} items={[
-        { key: 'overview', label: '系统概览', children: overviewTab },
-        { key: 'data-intake', label: '数据录入中枢', children: isAdminish ? <DataIntake /> : noPermTip },
-        {
-          key: 'approvals',
-          label: pendingCount > 0 ? <Badge size="small" count={pendingCount} offset={[10, -2]}>审批中心</Badge> : '审批中心',
-          children: approvalsTab,
-        },
-        { key: 'kb', label: '知识库', children: kbTab },
-        { key: 'prompts', label: '提示词模板', children: promptsTab },
-        { key: 'users', label: '用户与日志', children: usersTab },
-        { key: 'trash', label: '删除留痕', children: trashTab },
-        { key: 'config', label: '配置与备份', children: configTab },
-      ]} />
+      {/* 六大区块 Tabs（核心数据全部加载失败时给明确错误态 + 重试，不展示空壳数据） */}
+      {coreError ? (
+        <ErrorState error={coreError} retrying={coreLoading} onRetry={loadCore} />
+      ) : (
+        <Tabs activeKey={tab} onChange={changeTab} items={[
+          { key: 'overview', label: '系统概览', children: overviewTab },
+          { key: 'data-intake', label: '数据录入中枢', children: isAdminish ? <DataIntake /> : noPermTip },
+          {
+            key: 'approvals',
+            label: pendingCount > 0 ? <Badge size="small" count={pendingCount} offset={[10, -2]}>审批中心</Badge> : '审批中心',
+            children: approvalsTab,
+          },
+          { key: 'kb', label: '知识库', children: kbTab },
+          { key: 'prompts', label: '提示词模板', children: promptsTab },
+          { key: 'users', label: '用户与日志', children: usersTab },
+          { key: 'trash', label: '删除留痕', children: trashTab },
+          { key: 'config', label: '配置与备份', children: configTab },
+        ]} />
+      )}
 
       {/* 驳回理由 Modal */}
       <Modal title={`驳回审批：${rejectRow?.title || ''}`} open={!!rejectRow} confirmLoading={deciding}
