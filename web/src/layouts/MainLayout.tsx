@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState, type KeyboardEvent } from 'react';
 import { Menu, Input, Badge, Avatar, Dropdown, Popover, List, Empty, Tag, Tooltip, Drawer, Tabs, Button, Modal, Alert, message } from 'antd';
 import {
   DashboardOutlined, RobotOutlined, RiseOutlined, CalendarOutlined,
@@ -8,7 +8,7 @@ import {
   PictureOutlined, MessageOutlined,
   HistoryOutlined, RightOutlined, SendOutlined, SwapOutlined,
   BgColorsOutlined, CheckOutlined, LinkOutlined, SyncOutlined,
-  AppstoreOutlined, ToolOutlined,
+  AppstoreOutlined, ToolOutlined, RocketOutlined, TeamOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
@@ -48,6 +48,18 @@ const KEY_OF_PATH: Record<string, string> = {
   '/activities': 'activities', '/content': 'content', '/execution': 'execution',
   '/analysis': 'analysis', '/assets': 'assets', '/data-intake': 'system', '/system': 'system',
 };
+
+// 无障碍：给非 button 的可点击元素补键盘可达性（role/tabIndex/Enter/Space），不改布局结构
+function pressable(fn: () => void) {
+  return {
+    role: 'button' as const,
+    tabIndex: 0,
+    onClick: fn,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+    },
+  };
+}
 
 function menusFor(modules: string[], role?: string) {
   return MENUS.filter((menu: any) => {
@@ -217,7 +229,8 @@ export default function MainLayout() {
             ],
           }}><Tooltip title="界面主题"><BgColorsOutlined className="os-ic" /></Tooltip></Dropdown>
           <Tooltip title="企业积分余额 · 点击进入充值中心">
-            <span className="os-credit" onClick={() => { if (user?.role === 'boss') nav('/recharge'); }}>
+            <span className="os-credit" aria-label="企业积分余额，点击进入充值中心"
+              {...pressable(() => { if (user?.role === 'boss') nav('/recharge'); })}>
               ◆ {Number(credits).toLocaleString()} 积分
             </span>
           </Tooltip>
@@ -226,9 +239,17 @@ export default function MainLayout() {
               <RobotOutlined /><span className="os-ask-brain-label">问老板参谋</span>
             </button>
           </Tooltip>
-          <Tooltip title="手机版（H5）"><MobileOutlined className="os-ic" onClick={() => nav('/m')} /></Tooltip>
+          <Tooltip title="手机版（H5）">
+            <button type="button" className="os-icon-btn" aria-label="打开手机版（H5）" onClick={() => nav('/m')}>
+              <MobileOutlined className="os-ic" />
+            </button>
+          </Tooltip>
           {['boss', 'admin'].includes(user?.role) && (
-            <Tooltip title="管理后台"><ControlOutlined className="os-ic" onClick={() => (location.href = '/admin')} /></Tooltip>
+            <Tooltip title="管理后台">
+              <button type="button" className="os-icon-btn" aria-label="打开管理后台" onClick={() => (location.href = '/admin')}>
+                <ControlOutlined className="os-ic" />
+              </button>
+            </Tooltip>
           )}
           <Popover trigger="click" placement="bottomRight" content={
             <div style={{ width: 320 }}>
@@ -252,9 +273,17 @@ export default function MainLayout() {
             <Badge count={unread} size="small"><BellOutlined className="os-ic" /></Badge>
           </Popover>
           <Tooltip title="消息中心">
-            <Badge count={unread} size="small"><MailOutlined className="os-ic" onClick={() => { setMailOpen(true); reloadNotifs(100); }} /></Badge>
+            <Badge count={unread} size="small">
+              <button type="button" className="os-icon-btn" aria-label="打开消息中心" onClick={() => { setMailOpen(true); reloadNotifs(100); }}>
+                <MailOutlined className="os-ic" />
+              </button>
+            </Badge>
           </Tooltip>
-          <Tooltip title="帮助中心"><QuestionCircleOutlined className="os-ic" onClick={() => setHelpOpen(true)} /></Tooltip>
+          <Tooltip title="帮助中心">
+            <button type="button" className="os-icon-btn" aria-label="打开帮助中心" onClick={() => setHelpOpen(true)}>
+              <QuestionCircleOutlined className="os-ic" />
+            </button>
+          </Tooltip>
           <Dropdown menu={{
             items: [
               { key: 'switch', icon: <SwapOutlined />, label: `账号：${ROLE_NAME[user?.role] || user?.role}`, disabled: true },
@@ -307,12 +336,14 @@ export default function MainLayout() {
             <>
               <div className="os-right-head">
                 <span><RobotOutlined /> 老板经营助手</span>
-                <RightOutlined className="os-ic-sm" onClick={() => setAiOpen(false)} />
+                <button type="button" className="os-icon-btn" aria-label="收起老板经营助手" onClick={() => setAiOpen(false)}>
+                  <RightOutlined className="os-ic-sm" />
+                </button>
               </div>
               <div className="os-sec">
                 <div className="os-sec-t">今日提醒</div>
                 {notifs.slice(0, 3).map((n: any) => (
-                  <div className="os-rmd" key={n.id} onClick={() => openNotif(n)}>
+                  <div className="os-rmd" key={n.id} {...pressable(() => openNotif(n))}>
                     <span className="os-rmd-dot" />{n.title}
                   </div>
                 ))}
@@ -321,7 +352,7 @@ export default function MainLayout() {
               <div className="os-sec">
                 <div className="os-sec-t">老板待办 <Tag className="os-cnt">{todos.length}</Tag></div>
                 {todos.slice(0, 3).map((n: any) => (
-                  <div className="os-todo" key={n.id} onClick={() => openNotif(n)}>{n.title}</div>
+                  <div className="os-todo" key={n.id} {...pressable(() => openNotif(n))}>{n.title}</div>
                 ))}
                 {todos.length === 0 && <div className="os-empty">暂无待办事项</div>}
               </div>
@@ -354,7 +385,7 @@ export default function MainLayout() {
         </div>
       </footer>
 
-      <Drawer title={<>📨 消息中心 <Tag color="blue">{notifs.length} 条</Tag></>} width={460}
+      <Drawer title={<><MailOutlined /> 消息中心 <Tag color="blue">{notifs.length} 条</Tag></>} width={460}
         open={mailOpen} onClose={() => setMailOpen(false)}
         extra={<Button size="small" onClick={() => api.post('/sys/notifications/read').then(() => reloadNotifs(100))}>全部已读</Button>}>
         <Tabs size="small" activeKey={mailTab} onChange={setMailTab} items={[
@@ -378,22 +409,22 @@ export default function MainLayout() {
           )} />
       </Drawer>
 
-      <Drawer title="❓ 帮助中心" width={420} open={helpOpen} onClose={() => setHelpOpen(false)}>
+      <Drawer title={<><QuestionCircleOutlined /> 帮助中心</>} width={420} open={helpOpen} onClose={() => setHelpOpen(false)}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13, color: 'var(--ui-text-2)', lineHeight: 1.8 }}>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
-            <b>🚀 老板每日10分钟</b><br />
+            <b><RocketOutlined /> 老板每日10分钟</b><br />
             ① 老板驾驶舱看 KPI 与异常 ② 点开指标穿刺到订单/会员 ③ 把下一步动作派给对应数字员工
           </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
-            <b>👥 餐饮数字员工怎么用</b><br />
+            <b><TeamOutlined /> 餐饮数字员工怎么用</b><br />
             按分部或问题关键词找到员工，先看必要输入和交付物，再派活。任务完成后可以审阅、采纳并沉淀到企业知识库。
           </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
-            <b>💰 积分规则</b><br />
+            <b><WalletOutlined /> 积分规则</b><br />
             AI调用按模型计费：员工话术≈1分、老板对话≈11-69分、生图75分。余额不足会被拦截，找管理员充值（管理后台→积分管理）。
           </div>
           <div style={{ background: 'var(--ui-warning-surface)', borderRadius: 10, padding: 14, color: '#8a551d' }}>
-            <b>⚠️ 风控红线</b><br />
+            <b><WarningOutlined /> 风控红线</b><br />
             系统不自动外发任何内容；价格/收益数字AI不填充，命中即进审批。这是合规设计。
           </div>
         </div>
@@ -466,6 +497,10 @@ const STYLES = `
 .os-ask-brain .anticon{font-size:14px}
 .os-ic{font-size:17px; color:var(--ui-text-2); cursor:pointer; transition:color .2s}
 .os-ic:hover{color:var(--g)}
+/* 无障碍：图标点击热区改为真实 button，保持原视觉（无边框透明背景、不加内边距） */
+.os-icon-btn{border:none; background:transparent; padding:0; margin:0; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; color:inherit; font:inherit; line-height:1}
+.os-icon-btn:hover .os-ic,.os-icon-btn:focus-visible .os-ic{color:var(--g)}
+.os-icon-btn:hover .os-ic-sm,.os-icon-btn:focus-visible .os-ic-sm{color:var(--g)}
 .os-user{display:flex; align-items:center; gap:8px; cursor:pointer; flex-shrink:0}
 .os-user-name{font-size:13px; color:var(--ink); white-space:nowrap}
 
@@ -541,7 +576,7 @@ const STYLES = `
   .os-top{height:50px; padding:0 10px; gap:8px}
   .os-brand{gap:6px}
   .os-brand-name{font-size:14px}
-  .os-brand-sub,.os-brand-div,.os-brand-tenant,.os-status,.os-ask-brain,.os-user-name,.os-top-actions .os-ic:nth-of-type(n+2){display:none}
+  .os-brand-sub,.os-brand-div,.os-brand-tenant,.os-status,.os-ask-brain,.os-user-name,.os-top-actions .os-ic:nth-of-type(n+2),.os-top-actions>.os-icon-btn:nth-of-type(n+2){display:none}
   .os-top-actions{gap:9px}
   .os-credit{font-size:11px; padding:3px 8px}
   .os-mid{flex-direction:column; min-height:0}
