@@ -16,6 +16,7 @@ import type {
   EmployeeWorkbenchProfile, EmployeeWorkConfig, EmployeeWorkMethod, WorkConfigField,
 } from '../api/employeeWorkbenchTypes';
 import { Markdown } from './Markdown';
+import EmployeeAvatar from './EmployeeAvatar';
 import { UnifiedFilePicker, type UploadedFileRef } from './UnifiedFilePicker';
 import './EmployeeWorkbench.css';
 
@@ -1301,7 +1302,12 @@ function EmployeeWorkbenchInstance({ open, domain, idx, identityHint, onClose }:
         width="min(1040px, 100vw)" open={open} onClose={onClose}
         destroyOnClose title={titleIdentity ? (
           <div className="ewb-title" style={{ '--ewb-color': identityColor(titleIdentity) || 'var(--ui-primary)' } as CSSProperties}>
-            <span className="ewb-title-avatar">{titleIdentity.emoji || '🧑‍💼'}</span>
+            <span className="ewb-title-avatar">
+              {domain === 'restaurant' && typeof titleIdentity.idx === 'number'
+                ? <EmployeeAvatar idx={titleIdentity.idx} color={identityColor(titleIdentity) || '#2c76dc'}
+                    group={String(titleIdentity.group || '')} size={40} />
+                : (titleIdentity.emoji || '🧑‍💼')}
+            </span>
             <div className="ewb-title-copy">
               <div className="ewb-title-name">
                 <strong>{titleIdentity.person ? `${titleIdentity.person} · ${titleIdentity.name}` : titleIdentity.name}</strong>

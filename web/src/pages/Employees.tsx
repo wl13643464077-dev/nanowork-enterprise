@@ -6,6 +6,7 @@ import {
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { AnimatedNumber } from '../components/Kit';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeWorkbench from '../components/EmployeeWorkbench';
 
 type Employee = {
@@ -23,6 +24,9 @@ type Employee = {
   steps?: string[];
   deliverables?: string[];
   status?: string;
+  currentTask?: string;
+  monthTasks?: number;
+  monthDone?: number;
   marshalId: number;
   specialistId: number;
   extension?: boolean;
@@ -247,34 +251,48 @@ export default function Employees() {
                   openEmployee(employee);
                 }
               }}>
+              {/* 工牌形制：挂绳孔 + 落款 + 工号 */}
+              <i className="badge-slot" aria-hidden="true" />
+              <div className="badge-brand" style={{ '--employee-color': employee.color || '#2c76dc' } as CSSProperties}>
+                <span>纳米Work · 餐饮数字员工</span>
+                <b>№{String(employee.idx).padStart(3, '0')}</b>
+              </div>
               <div className="employee-card-top">
-                <div className="employee-avatar" style={{ '--employee-color': employee.color || '#2c76dc' } as CSSProperties}>
-                  <span>{employee.emoji || '🧑‍💼'}</span>
+                <div className={`employee-portrait${employee.status === '执行中' ? ' working' : ''}`}
+                  style={{ '--employee-color': employee.color || '#2c76dc' } as CSSProperties}>
+                  <EmployeeAvatar idx={employee.idx} color={employee.color || '#2c76dc'} group={employee.group} size={58} />
                 </div>
                 <div className="employee-identity">
                   <div><strong>{employee.person || employee.name}</strong>{employee.extension && <Tag color="blue">扩展</Tag>}</div>
-                  <span>{employee.group}</span>
+                  <span className="employee-title">{employee.name}</span>
+                  <em className="employee-dept">{employee.group}</em>
                 </div>
-                <Tooltip title={employee.status === '执行中'
-                  ? '正在执行任务，完成后会进入待审阅'
-                  : employee.status === '空闲'
-                    ? '当前空闲，可以立即派活'
-                    : employee.status || '运行状态尚未上报'}>
-                  <span className={`employee-live ${employee.status === '执行中' ? 'busy' : employee.status === '空闲' ? 'idle' : 'unknown'}`}>
-                    <i className="dot" aria-hidden="true" />
-                    {employee.status === '执行中'
-                      ? <>执行中<span className="nw-typing"><i /><i /><i /></span></>
-                      : employee.status === '空闲' ? '空闲' : '未知'}
-                  </span>
-                </Tooltip>
               </div>
-              <h2>{employee.name}</h2>
+              <Tooltip title={employee.status === '执行中'
+                ? (employee.currentTask ? `正在执行：${employee.currentTask}` : '正在执行任务，完成后会进入待审阅')
+                : employee.status === '空闲'
+                  ? '在岗待命，可以立即派活'
+                  : employee.status || '运行状态尚未上报'}>
+                <div className={`employee-duty-line ${employee.status === '执行中' ? 'busy' : employee.status === '空闲' ? 'idle' : 'unknown'}`}>
+                  <i className="dot" aria-hidden="true" />
+                  {employee.status === '执行中'
+                    ? <><span className="employee-duty-text">正在执行：{employee.currentTask || '任务生成中'}</span><span className="nw-typing"><i /><i /><i /></span></>
+                    : employee.status === '空闲'
+                      ? <span className="employee-duty-text">在岗待命 · 24 小时可派活</span>
+                      : <span className="employee-duty-text">运行状态待上报</span>}
+                </div>
+              </Tooltip>
               <p>{employee.desc || employee.duty}</p>
+              <div className="employee-kpis">
+                {(employee.monthTasks || 0) > 0
+                  ? <><b>{employee.monthTasks}</b> 单本月接活<span className="employee-kpi-sep" /><b>{employee.monthDone || 0}</b> 单已交付</>
+                  : <span className="employee-kpi-empty">本月还没接到活 · 派第一单给TA</span>}
+              </div>
               <div className="employee-card-foot">
                 <span><FileDoneOutlined /> {(employee.deliverables || []).length
                   ? `${employee.deliverables!.length} 类交付`
                   : '交付清单待同步'}</span>
-                <span className="employee-card-link">完整工作台 <span>→</span></span>
+                <span className="employee-card-link">查看档案 · 派活 <span>→</span></span>
               </div>
             </article>
           ))}
@@ -306,9 +324,35 @@ const STYLES = `
 .employee-hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.4fr) minmax(360px,.75fr);gap:28px;align-items:end;min-height:220px;padding:30px 34px;border-radius:18px;background:radial-gradient(circle at 84% 16%,rgba(83,157,245,.3),transparent 28%),linear-gradient(132deg,#071d36,#0b3a70 62%,#1769d2);box-shadow:0 18px 48px rgba(14,64,122,.16);color:#fff}.employee-hero:after{content:'';position:absolute;right:-70px;bottom:-125px;width:340px;height:340px;border:1px solid rgba(148,197,255,.22);border-radius:50%;box-shadow:0 0 0 50px rgba(128,184,248,.045),0 0 0 100px rgba(128,184,248,.025)}.employee-hero-copy,.employee-hero-stats{position:relative;z-index:1}.employee-kicker{display:flex;align-items:center;gap:7px;color:#9fc9f7;font-size:11px;letter-spacing:1.3px}.employee-hero h1{margin:17px 0 9px;font-size:clamp(27px,3vw,42px);line-height:1.15;letter-spacing:-1.8px;text-wrap:balance}.employee-hero p{max-width:720px;margin:0;color:#b8d3ee;font-size:13px;line-height:1.8}.employee-hero-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;overflow:hidden;border:1px solid rgba(169,211,255,.17);border-radius:14px;background:rgba(4,24,47,.28);backdrop-filter:blur(10px)}.employee-hero-stats div{padding:17px 18px;background:rgba(255,255,255,.035)}.employee-hero-stats strong{display:block;font:680 26px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace}.employee-hero-stats span{display:block;margin-top:5px;color:#9dbddd;font-size:10.5px}
 .employee-toolbar{display:flex;align-items:center;gap:12px;padding:12px 15px;border:1px solid var(--ui-border);border-radius:13px;background:var(--ui-surface)}.employee-search{flex:1;display:flex;align-items:center;gap:8px;max-width:700px;padding:0 12px;border-radius:9px;background:var(--ui-surface-2);color:var(--ui-muted)}.employee-search .ant-input{height:36px;background:transparent}.employee-status-filter{width:150px;flex:0 0 auto}.employee-filter-count{margin-left:auto;color:var(--ui-muted);font-size:11.5px;white-space:nowrap}.employee-filter-count strong{color:var(--ui-primary);font-size:14px}
 .employee-groups{display:flex;gap:7px;overflow-x:auto;padding:2px 1px 4px}.employee-groups button{display:flex;align-items:center;gap:6px;flex:0 0 auto;height:34px;padding:0 11px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface);color:var(--ui-text-2);cursor:pointer;font-size:11.5px;transition:transform .18s,border-color .18s,background .18s,color .18s}.employee-groups button:hover{transform:translateY(-1px);border-color:#8bb6e9;color:var(--ui-primary)}.employee-groups button.active{border-color:#1769d2;background:#1769d2;color:#fff;box-shadow:0 7px 16px rgba(23,105,210,.17)}.employee-groups button i{font-style:normal}.employee-groups button span{min-width:17px;padding:1px 4px;border-radius:4px;background:rgba(127,151,180,.12);font:600 9px ui-monospace,SFMono-Regular,Menlo,monospace}.employee-groups button.active span{background:rgba(255,255,255,.17)}.employee-origin{border-radius:10px!important}
-.employee-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.employee-card{position:relative;min-width:0;min-height:248px;content-visibility:auto;contain-intrinsic-size:auto 248px;padding:16px 15px 14px;border:1px solid var(--ui-border);border-radius:14px;background:var(--ui-surface);box-shadow:0 8px 22px rgba(21,55,93,.045);cursor:pointer;outline:none;transition:transform .22s,border-color .22s,box-shadow .22s}.employee-card:hover,.employee-card:focus-visible{transform:translateY(-3px);border-color:#8db7e8;box-shadow:0 16px 32px rgba(19,79,148,.11)}.employee-card:focus-visible{box-shadow:0 0 0 3px rgba(44,118,220,.18),0 16px 32px rgba(19,79,148,.11)}.employee-card-top{display:flex;align-items:center;gap:10px}.employee-avatar{width:43px;height:43px;display:grid;place-items:center;flex:0 0 auto;border-radius:12px;background:color-mix(in srgb,var(--employee-color) 12%,var(--ui-surface));border:1px solid color-mix(in srgb,var(--employee-color) 23%,transparent)}.employee-avatar span{font-size:21px;filter:drop-shadow(0 3px 6px rgba(20,54,90,.12))}.employee-identity{min-width:0;flex:1}.employee-identity>div{display:flex;align-items:center;gap:4px}.employee-identity strong{overflow:hidden;color:var(--ui-text);font-size:13.5px;text-overflow:ellipsis;white-space:nowrap}.employee-identity .ant-tag{margin:0;font-size:9px;line-height:17px}.employee-identity>span{display:block;margin-top:2px;overflow:hidden;color:var(--ui-muted);font-size:9.8px;text-overflow:ellipsis;white-space:nowrap}.employee-status{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#3ac28e;box-shadow:0 0 0 4px rgba(58,194,142,.1)}.employee-status.busy{background:#e6a23c;box-shadow:0 0 0 4px rgba(230,162,60,.1)}.employee-status.unknown{background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.12)}.employee-card h2{margin:17px 0 7px;color:var(--ui-text);font-size:14px;line-height:1.45}.employee-card p{display:-webkit-box;min-height:62px;margin:0;overflow:hidden;color:var(--ui-text-2);font-size:11.5px;line-height:1.75;-webkit-box-orient:vertical;-webkit-line-clamp:3}.employee-card-foot{position:absolute;left:15px;right:15px;bottom:13px;display:flex;align-items:center;justify-content:space-between;padding-top:11px;border-top:1px solid var(--ui-border);color:var(--ui-muted);font-size:10px}.employee-card-foot span{display:flex;align-items:center;gap:4px}.employee-card-link{color:var(--ui-primary);font-size:10.5px;font-weight:600}.employee-card-link span{display:inline}.employee-card-loading{cursor:default}.employee-card-loading:hover{transform:none}.employee-empty{padding:80px 0}
+.employee-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.employee-card{position:relative;min-width:0;min-height:288px;content-visibility:auto;contain-intrinsic-size:auto 288px;display:flex;flex-direction:column;padding:12px 16px 14px;border:1px solid var(--ui-border);border-radius:14px;background:var(--ui-surface);box-shadow:0 8px 22px rgba(21,55,93,.045);cursor:pointer;outline:none;transition:transform .22s,border-color .22s,box-shadow .22s}.employee-card:hover,.employee-card:focus-visible{transform:translateY(-3px);border-color:#8db7e8;box-shadow:0 16px 32px rgba(19,79,148,.11)}.employee-card:focus-visible{box-shadow:0 0 0 3px rgba(44,118,220,.18),0 16px 32px rgba(19,79,148,.11)}.employee-card-top{display:flex;align-items:center;gap:10px}.employee-avatar{width:43px;height:43px;display:grid;place-items:center;flex:0 0 auto;border-radius:12px;background:color-mix(in srgb,var(--employee-color) 12%,var(--ui-surface));border:1px solid color-mix(in srgb,var(--employee-color) 23%,transparent)}.employee-avatar span{font-size:21px;filter:drop-shadow(0 3px 6px rgba(20,54,90,.12))}.employee-identity{min-width:0;flex:1}.employee-identity>div{display:flex;align-items:center;gap:4px}.employee-identity strong{overflow:hidden;color:var(--ui-text);font-size:13.5px;text-overflow:ellipsis;white-space:nowrap}.employee-identity .ant-tag{margin:0;font-size:9px;line-height:17px}.employee-identity>span{display:block;margin-top:2px;overflow:hidden;color:var(--ui-muted);font-size:9.8px;text-overflow:ellipsis;white-space:nowrap}.employee-status{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#3ac28e;box-shadow:0 0 0 4px rgba(58,194,142,.1)}.employee-status.busy{background:#e6a23c;box-shadow:0 0 0 4px rgba(230,162,60,.1)}.employee-status.unknown{background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.12)}.employee-card h2{margin:17px 0 7px;color:var(--ui-text);font-size:14px;line-height:1.45}.employee-card p{display:-webkit-box;min-height:62px;margin:0;overflow:hidden;color:var(--ui-text-2);font-size:11.5px;line-height:1.75;-webkit-box-orient:vertical;-webkit-line-clamp:3}.employee-card-foot{display:flex;align-items:center;justify-content:space-between;margin-top:9px;padding-top:10px;border-top:1px solid var(--ui-border);color:var(--ui-muted);font-size:11px}.employee-card-foot span{display:flex;align-items:center;gap:4px}.employee-card-link{color:var(--ui-primary);font-size:10.5px;font-weight:600}.employee-card-link span{display:inline}.employee-card-loading{cursor:default}.employee-card-loading:hover{transform:none}.employee-empty{padding:80px 0}
 .employee-drawer-title{display:flex;align-items:center;gap:10px}.employee-drawer-title>span{width:40px;height:40px;display:grid;place-items:center;border-radius:11px;background:#eaf2fc;font-size:21px}.employee-drawer-title strong,.employee-drawer-title small{display:block}.employee-drawer-title strong{font-size:15px}.employee-drawer-title small{margin-top:2px;color:var(--ui-muted);font-size:11px;font-weight:400}.employee-detail{display:flex;flex-direction:column;gap:22px}.employee-detail-banner{padding:18px;border:1px solid #dbe8f7;border-radius:14px;background:linear-gradient(135deg,#f3f8fe,#e9f2fd)}:root[data-theme='midnight'] .employee-detail-banner{border-color:var(--ui-border);background:var(--ui-surface-2)}.employee-detail-banner>div:first-child{color:var(--ui-primary);font-size:11px;font-weight:650}.employee-detail-banner p{margin:10px 0 12px;color:var(--ui-text-2);font-size:12.5px;line-height:1.8}.employee-detail-tags .ant-tag{font-size:10px}.employee-detail section{padding-top:2px}.employee-detail h3{margin:0 0 12px;color:var(--ui-text);font-size:14px}.employee-check-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}.employee-check-list li{display:flex;align-items:flex-start;gap:7px;padding:9px 10px;border-radius:8px;background:var(--ui-surface-2);color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-check-list .anticon{margin-top:2px;color:#36a879}.employee-detail .ant-timeline{margin-top:4px}.employee-detail .ant-timeline-item-content{color:var(--ui-text-2);font-size:11.5px;line-height:1.65}.employee-deliverables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.employee-deliverables>div{display:flex;align-items:flex-start;gap:8px;padding:10px 11px;border:1px solid var(--ui-border);border-radius:9px;color:var(--ui-text-2);font-size:11.5px;line-height:1.55}.employee-deliverables .anticon{margin-top:2px;color:var(--ui-primary)}.employee-section-title{display:flex;align-items:center;justify-content:space-between}.employee-section-title span{color:var(--ui-muted);font-size:10px}.task-done{color:#32ad79}.task-running{color:#2780dc}
 @media(max-width:1500px){.employee-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:1180px){.employee-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.employee-hero{grid-template-columns:1fr}.employee-hero-stats{max-width:520px}}@media(max-width:760px){.employee-hero{min-height:0;padding:24px 20px}.employee-hero-stats{grid-template-columns:repeat(4,1fr)}.employee-hero-stats div{padding:12px 8px}.employee-hero-stats strong{font-size:20px}.employee-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.employee-toolbar{align-items:stretch;flex-direction:column;gap:8px}.employee-status-filter{width:100%}.employee-filter-count{margin:0}.employee-check-list,.employee-deliverables{grid-template-columns:1fr}}@media(max-width:520px){.employee-grid{grid-template-columns:1fr}.employee-card{min-height:220px}.employee-hero-stats{grid-template-columns:repeat(2,1fr)}}
+
+/* ===== 工牌形制（迭代七）：挂绳孔 / 落款工号 / 插画头像 / 拟人化状态 / KPI ===== */
+.badge-slot{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:34px;height:7px;border-radius:999px;background:var(--ui-surface-2);border:1px solid var(--ui-border);box-shadow:inset 0 1px 2px rgba(20,48,82,.1)}
+.badge-brand{display:flex;align-items:center;justify-content:space-between;margin:10px 0 12px;padding-bottom:9px;border-bottom:1px dashed var(--ui-border)}
+.badge-brand span{font-size:10px;letter-spacing:1.1px;color:var(--ui-muted)}
+.badge-brand b{font:650 11px ui-monospace,SFMono-Regular,Menlo,monospace;color:color-mix(in srgb,var(--employee-color) 72%,var(--ui-text));letter-spacing:.5px}
+.employee-portrait{position:relative;border-radius:16px;transition:transform .25s var(--ease-out)}
+.employee-card:hover .employee-portrait{transform:scale(1.05) rotate(-2deg)}
+.employee-portrait.working:after{content:'';position:absolute;inset:-3px;border-radius:19px;border:2px solid color-mix(in srgb,var(--employee-color) 55%,transparent);animation:portrait-ring 1.8s ease-out infinite}
+@keyframes portrait-ring{0%{opacity:.9;transform:scale(.96)}100%{opacity:0;transform:scale(1.1)}}
+.employee-identity strong{font-size:16px}
+.employee-title{display:block;color:var(--ui-text-2);font-size:12px;font-weight:600;margin-top:2px}
+.employee-dept{display:block;font-style:normal;color:var(--ui-muted);font-size:11px;margin-top:1px}
+.employee-duty-line{display:flex;align-items:center;gap:6px;margin:10px 0 8px;padding:5px 10px;border-radius:8px;font-size:11.5px;font-weight:600;min-width:0}
+.employee-duty-line .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.employee-duty-line.idle{color:#2f9e6e;background:rgba(58,194,142,.1)}
+.employee-duty-line.idle .dot{animation:employee-breathe 3.2s ease-in-out infinite}
+.employee-duty-line.busy{color:#b97f1e;background:rgba(230,162,60,.12)}
+.employee-duty-line.busy .dot{animation:employee-pulse 1.6s ease-out infinite}
+.employee-duty-line.unknown{color:var(--ui-muted);background:var(--ui-surface-2)}
+.employee-duty-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.employee-kpis{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:10px;font-size:11.5px;color:var(--ui-text-2)}
+.employee-kpis b{font-size:15px;color:var(--ui-text);font-variant-numeric:tabular-nums}
+.employee-kpi-sep{width:1px;height:12px;background:var(--ui-border)}
+.employee-kpi-empty{color:var(--ui-muted)}
+@media(prefers-reduced-motion:reduce){.employee-portrait.working:after{animation:none;opacity:.5}.employee-card:hover .employee-portrait{transform:none}}
 
 /* ===== 鲜活化（迭代六）：状态芯片 / 忙碌辉光 / 实时动态流 / 分部脉搏 ===== */
 .employee-live{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;flex:0 0 auto;white-space:nowrap}

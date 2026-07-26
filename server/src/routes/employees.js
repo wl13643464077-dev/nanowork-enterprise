@@ -36,6 +36,7 @@ function toEmployee(row) {
     deliverables: Array.isArray(profile.deliverables) ? profile.deliverables : [],
     intro: typeof profile.intro === 'string' ? profile.intro : '',
     status: row.runtime_status,
+    currentTask: typeof row.current_task === 'string' ? row.current_task : '',
     monthTasks: Number(row.month_tasks) || 0,
     monthDone: Number(row.month_done) || 0,
     marshalId: row.marshal_id,
@@ -53,6 +54,7 @@ function visibleEmployees(req) {
       WHERE t.tenant_id=? AND t.specialist_id=s.id
         AND t.status IN ('生成中','执行中')${taskScope.sql}
     ) THEN '执行中' ELSE '空闲' END runtime_status,
+    (SELECT t.title FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.status IN ('生成中','执行中')${taskScope.sql} ORDER BY t.id DESC LIMIT 1) current_task,
     (SELECT COUNT(*) FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.created_at>=?${taskScope.sql}) month_tasks,
     (SELECT COUNT(*) FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.created_at>=? AND t.status='已完成'${taskScope.sql}) month_done,
     m.sort group_sort,m.emoji group_emoji
@@ -61,6 +63,7 @@ function visibleEmployees(req) {
     WHERE m.code IN (${CURRENT_DEPARTMENT_SQL})
       AND s.employee_idx BETWEEN 101 AND 160
     ORDER BY m.sort,s.sort,s.employee_idx`,
+  curTenant(), ...taskScope.params,
   curTenant(), ...taskScope.params,
   curTenant(), monthStart(), ...taskScope.params,
   curTenant(), monthStart(), ...taskScope.params,
