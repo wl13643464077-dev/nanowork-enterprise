@@ -385,6 +385,23 @@ export function initSchema() {
     embedding TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(doc_id);
+  CREATE TABLE IF NOT EXISTS kb_embedding_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    doc_id INTEGER NOT NULL,
+    hold_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'preparing',
+    planned_calls INTEGER NOT NULL,
+    credits_per_call INTEGER NOT NULL,
+    attempted_calls INTEGER NOT NULL DEFAULT 0,
+    persisted_calls INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    started_at TEXT,
+    finished_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_kb_embedding_jobs_recovery
+    ON kb_embedding_jobs(tenant_id,status,created_at);
   CREATE TABLE IF NOT EXISTS prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT UNIQUE, name TEXT, role_card TEXT, output_rule TEXT, style TEXT,
@@ -484,7 +501,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id INTEGER, product TEXT, amount REAL, type TEXT, -- 到店/外卖/团餐/定制
-    region TEXT, channel TEXT,
+    region TEXT, channel TEXT, store_id INTEGER,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
   CREATE TABLE IF NOT EXISTS sys_config (
@@ -533,6 +550,17 @@ export function initSchema() {
     discount REAL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
+  CREATE TABLE IF NOT EXISTS order_item_commits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    order_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    response TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,order_id,idempotency_key)
+  );
   CREATE TABLE IF NOT EXISTS costs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL DEFAULT 1,
@@ -547,6 +575,7 @@ export function initSchema() {
   CREATE INDEX IF NOT EXISTS idx_dishes_tenant_store ON dishes(tenant_id, store_id, status);
   CREATE INDEX IF NOT EXISTS idx_order_items_tenant_order ON order_items(tenant_id, order_id);
   CREATE INDEX IF NOT EXISTS idx_order_items_tenant_dish ON order_items(tenant_id, dish_id);
+  CREATE INDEX IF NOT EXISTS idx_order_item_commits_order ON order_item_commits(tenant_id, order_id);
   CREATE INDEX IF NOT EXISTS idx_costs_tenant_date ON costs(tenant_id, date);
   CREATE INDEX IF NOT EXISTS idx_costs_tenant_store ON costs(tenant_id, store_id, date);
   CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
@@ -574,7 +603,8 @@ const ISOLATED = new Set([
   'deleted_records', 'scheduled_runs', 'notifications', 'tool_runs', 'tool_run_events',
   'employee_workbench_configs', 'content_employee_workbench_configs', 'content_employee_runs',
   'content_automation_rules', 'content_automation_runs', 'content_publish_logs', 'content_material_refs',
-  'stores', 'dishes', 'order_items', 'costs',
+  'kb_embedding_jobs',
+  'stores', 'dishes', 'order_items', 'order_item_commits', 'costs',
   // 注：specialists（数字员工）与 marshals（内部任务分部）一样是全局基础数据，全租户共享同一份编制，
   // 不在隔离集——读取本就应跨租户取全量；如误列入会导致非总部企业看到 0 个专员。
 ]);
@@ -983,6 +1013,25 @@ export function migrateV2() {
     'op_logs', 'notifications', 'specialists']) {
     addCol(t, 'tenant_id', 'INTEGER DEFAULT 1');
   }
+  // 门店订单完整性：订单头明确归属门店；明细批量提交使用独立幂等账本。
+  addCol('orders', 'store_id', 'INTEGER');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS order_item_commits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL DEFAULT 1,
+      order_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      UNIQUE(tenant_id,order_id,idempotency_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_order_item_commits_order
+      ON order_item_commits(tenant_id,order_id);
+    CREATE INDEX IF NOT EXISTS idx_orders_tenant_store_date
+      ON orders(tenant_id,store_id,created_at);
+  `);
   db.prepare(`UPDATE notifications SET tenant_id=COALESCE(
     (SELECT u.tenant_id FROM users u WHERE u.id=notifications.user_id), tenant_id, 1
   )`).run();

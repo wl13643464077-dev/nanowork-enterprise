@@ -1,5 +1,51 @@
 # 更新记录
 
+## 2026-07-30 · 第九轮升级迭代 P1（工程门禁、设计 token 执法、AI 流式与阶段进度）
+
+方案见 `docs/升级迭代方案-2026-07-30.md`。本期只做「地基与快赢」，不改产品边界。
+
+**工程门禁（此前完全没有 CI，61 张表的隔离扫描和 491 个测试全靠手工记得跑）**
+
+- 新增 `.github/workflows/verify.yml`：push/PR 触发，最小权限 + 同 ref 并发取消。
+- `npm run verify` 从 4 道门扩到 8 道：后端测试、typecheck、多租户隔离扫描、**设计 token 落地率**、**前端界面契约**、eslint（零 warning）、prettier、构建。后两项此前存在但没进 verify，靠人记得跑。
+- 新增 `scripts/check-tokens.mjs`：棘轮式（ratchet）门禁，5 项指标只允许改善不允许劣化，`--update` 重锁基线。存量慢慢还，增量当场拦。
+- 新增 `scripts/check-ui-contract.mjs`：源码扫描锁死 DESIGN.md 三条禁止项、来源项目品牌残留、无来源虚假指标、巨型文件行数上限、CSS 模板字符串回归。旧行业术语存量进 `LEGACY_ALLOW` 台账（P4 清理），新文件出现同类问题即失败。
+
+**设计 token 落地（theme.css 早有「禁止硬编码」的规矩，但落地率约 1.5%，等于没有）**
+
+- token 补第三层「组件层」：`--card-pad`/`--table-row-pad`/`--control-h`/`--stat-value` 等，语义层管含义、组件层管一致性。
+- 新增**紧凑密度模式** `[data-density='compact']`：只覆盖组件层 token，门店大屏与老板笔记本用同一套组件，切换是配置不是重设计。
+- 导航深色系收进 `--nav-*` token（此前散落在 MainLayout.css 与 Admin.tsx 模板串里，含 15 处 `!important`），深浅主题各一套。
+- 图表调色板收进 `--chart-1..8` 并补 midnight 深色变体（此前 8 色中 7 个硬编码，浅色板直接压在深底上）；新增 `chartAnimation` 统一图表进场时长与缓动，与 `--dur-*`/`--ease-out` 对齐。
+- 消灭第三套语义色：`Kit.tsx` 的 `#16a34a`/`#ef4444` 改引 `--ok`/`--danger`（`#ef4444` 与 token 里的 `--danger: #f25b6b` 本是两个不同的红）。
+- `Admin.tsx` 内 11 行压缩 CSS 模板字符串迁出为 `Admin.css`（第八轮清零后的回归），字号归入档位、颜色改引 token。
+
+**AI 长任务：接通已有的流式通道，替换裸转圈**
+
+- 新增 `hooks/useStreamingTask`：把阶段进度、逐段增量、通道切换重置、计费联动收成一处，含版本号防竞态与 `fallbackToPost` 降级。
+- 新增 `components/StreamingOutput`：阶段轴 + 逐字正文 + 骨架 + 错误重试，骨架形状与最终正文一致。
+- 新增 `components/TaskProgress`：给结构化产出（无法逐字增量）的端点做阶段化进度。**不显示百分比**——那会是编造的；最后一阶段停留到真实完成，不假装已完成。
+- 驾驶舱「数字员工协同分析」从 `api.post` 改为 `api.stream`：该端点后端早已支持 `stream: true`，此前让老板对着一个转圈干等最长 135 秒。**零后端改动。**
+- 内容生产仓的 `<Spin tip="AI正在处理…">` 换成四阶段进度（需求已提交→检索素材与知识库→AI 生成中→校验与交付）。
+
+**重复代码消灭**
+
+- `RuntimeReadinessMatrix` 抽出为 `components/RuntimeReadiness`：此前 Admin.tsx 与 System.tsx 各持一份近乎逐字相同的 64 行实现，diff 只差标题一个图标。连带 `readinessTag`/`readinessMeta`/`readinessConfigLabel`/`readinessVerificationLabel` 一并收口，columns 补 `useMemo`（此前内联字面量使 antd 内部 diff 失效）。共减 212 行。
+- `ContentFactory.tsx` 拆解第一刀：133 行常量、标签映射与纯函数抽出为 `data/contentFactoryConstants.tsx`，顺带把其中硬编码分类色改为 chart token。文件从 5000 行降到 4888 行，上限同步棘轮下调。
+
+**指标变化（基线 → 当前）**
+
+| 指标 | 之前 | 之后 |
+| --- | --- | --- |
+| 内联 `style={{}}` | 2198 | 2192 |
+| 硬编码 hex 颜色 | 446 | 417 |
+| 硬编码 fontSize | 866 | 852 |
+| 越档字号（非 7 档） | 503 | 496 |
+| token 引用数 | 143 | 218 |
+
+- 验收：后端测试 491/491、typecheck 通过、隔离扫描无高危、token 门禁达标、UI 契约通过、eslint 零 warning、prettier 通过、构建成功。
+- 已知遗留：`test/dashboard-scope.test.mjs` 在全量并行跑时偶发 `auth required`（单跑 8/8 通过，重跑全量 491/491 通过），测试间共享会话状态存在串扰，非本期改动引入，待专项修复。
+
 ## 2026-07-26 · 第八轮升级迭代（部门色系、支付对账关单、样式债清零）
 
 - 部门专属色系：8 个分部按目录顺序分配 8 个低饱和专业色相，员工印章头像与工号随部门换色，扫一眼即可区分部门。

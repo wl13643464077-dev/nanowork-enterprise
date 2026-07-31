@@ -1,10 +1,18 @@
 import { Router } from 'express';
-import { q, curTenant } from '../db.js';
+import { db, q, curTenant } from '../db.js';
 import { logOp, safeJsonArray } from '../util.js';
 import { marshalChat } from '../engines/ai.js';
 import { applyChatRiskControl } from '../engines/risk.js';
 import { recordKbCitations } from '../engines/rag.js';
-import { precheckByRole, charge } from '../engines/credits.js';
+import {
+  precheckByRole,
+  estimateCallCredits,
+  holdCredits,
+  settleHold,
+  releaseHold,
+} from '../engines/credits.js';
+import { routing, textModelFor } from '../engines/yunwu.js';
+import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { directivesFor, skillByKey } from '../engines/skills.js';
 import { attachmentRefsForStorage, rehydrateMessageHistory, resolveRequestedAttachments } from '../engines/filehub.js';
 import { canAccessOwner, userScopeClause } from '../engines/access.js';
@@ -127,18 +135,102 @@ r.post('/:id/chat', async (req, res) => {
     const history = rehydrateMessageHistory(q.all(`SELECT role,content,attachments_json FROM custom_agent_chat_msgs WHERE tenant_id=? AND session_id=?
       AND id < (SELECT MAX(id) FROM custom_agent_chat_msgs WHERE tenant_id=? AND session_id=?) ORDER BY id DESC LIMIT 12`, curTenant(), sid, curTenant(), sid).reverse(), req.user);
     const sess = q.get(`SELECT memory FROM custom_agent_chat_sessions WHERE tenant_id=? AND id=?`, curTenant(), sid) || {};
-    const out = await marshalChat(pseudo, { message: chatText, originalMessage: chatText, history, role: req.user.role, image, skills,
-      attachments: files, memory: sess.memory || '', signal: req.requestSignal });
-    const bill = charge({ userId: req.user.id, feature: `智能体·${a.name}`, kind: 'text', model: out.model, usage: out.usage, aiMode: out.mode });
-    const msg = q.run(`INSERT INTO custom_agent_chat_msgs(session_id,role,content) VALUES(?,?,?)`, sid, 'assistant', out.text);
-    // AI-H1：自定义智能体输出与内容生产仓同口径过风控（标记+进审批）；AI-C2：引用的知识文档落库可溯源
-    const risk = applyChatRiskControl({ targetType: 'custom_agent_msg', targetId: msg.lastInsertRowid, title: `智能体输出：${a.name}`, text: out.text, submitterId: req.user.id });
-    recordKbCitations({ targetType: 'custom_agent_msg', targetId: msg.lastInsertRowid, kb: out.kb });
-    q.run(`UPDATE custom_agent_chat_sessions SET updated_at=datetime('now','localtime') WHERE id=?`, sid);
-    logOp(req.user, '智能体', '智能体对话', a.name);
-    res.json({ sessionId: sid, assistantMessageId: msg.lastInsertRowid, reply: out.text, mode: out.mode, model: out.model, billing: bill, risk, kb: out.kb });
+    const holdModel = image ? routing().vision : textModelFor(req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: `智能体·${a.name}`,
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          sysPrompt,
+          chatText,
+          sess.memory,
+          ...history.map(item => item.content),
+          ...files.map(file => file.content),
+          image || '',
+        ],
+        outputTokens: 1800,
+      }),
+      refType: 'custom_agent_session',
+      refId: Number(sid),
+      note: `自定义智能体#${a.id}会话#${sid}在供应商调用前预授权；助手消息未落库则全额退回。`,
+    });
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: () => marshalChat(pseudo, {
+        message: chatText,
+        originalMessage: chatText,
+        history,
+        role: req.user.role,
+        image,
+        skills,
+        attachments: files,
+        memory: sess.memory || '',
+        signal: req.requestSignal,
+      }),
+      persist: out => withImmediateTransaction(db, () => {
+        const msg = q.run(
+          `INSERT INTO custom_agent_chat_msgs(session_id,role,content) VALUES(?,?,?)`,
+          sid,
+          'assistant',
+          out.text,
+        );
+        // AI-H1：自定义智能体输出与内容生产仓同口径过风控（标记+进审批）；
+        // AI-C2：引用的知识文档与助手消息在同一业务事务内落库，失败即整单退回。
+        const risk = applyChatRiskControl({
+          targetType: 'custom_agent_msg',
+          targetId: msg.lastInsertRowid,
+          title: `智能体输出：${a.name}`,
+          text: out.text,
+          submitterId: req.user.id,
+        });
+        recordKbCitations({
+          targetType: 'custom_agent_msg',
+          targetId: msg.lastInsertRowid,
+          kb: out.kb,
+        });
+        q.run(
+          `UPDATE custom_agent_chat_sessions SET updated_at=datetime('now','localtime') WHERE id=?`,
+          sid,
+        );
+        return { assistantMessageId: Number(msg.lastInsertRowid), risk };
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: out => ({
+        usage: out.usage,
+        model: out.model,
+        aiMode: out.mode,
+        note: '智能体助手消息、风控与引用证据已完成业务落库',
+      }),
+      releaseNote: '智能体生成或助手消息业务落库失败，预授权全额退回',
+    });
+    try {
+      logOp(req.user, '智能体', '智能体对话', a.name);
+    } catch (logError) {
+      console.error('[custom-agent] 操作日志写入失败:', logError?.message);
+    }
+    res.json({
+      sessionId: sid,
+      assistantMessageId: delivered.delivery.assistantMessageId,
+      reply: delivered.output.text,
+      mode: delivered.output.mode,
+      model: delivered.output.model,
+      billing: delivered.billing,
+      risk: delivered.delivery.risk,
+      kb: delivered.output.kb,
+    });
   } catch (e) {
-    if (!req.requestSignal?.aborted && !res.headersSent) res.status(e.status || 500).json({ error: e.message, requestId: req.requestId });
+    if (!req.requestSignal?.aborted && !res.headersSent) {
+      res.status(e.status || 500).json({
+        error: e.message,
+        requestId: req.requestId,
+        ...(e.billing ? { billing: e.billing } : {}),
+      });
+    }
   }
 });
 

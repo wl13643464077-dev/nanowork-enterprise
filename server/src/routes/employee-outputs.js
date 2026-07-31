@@ -125,7 +125,7 @@ function toolRows(req, filters) {
   return q.all(`SELECT
       tr.id, tr.tool_key, tr.tool_title, tr.title, tr.status,
       tr.employee_idx, tr.employee_name, tr.specialist_id,
-      tr.created_by, tr.result_md, tr.created_at,
+      tr.created_by, tr.result_md, tr.provenance_json, tr.created_at,
       u.name operator_name,
       s.key employee_key, s.person employee_person,
       COALESCE(s.group_name,m.name,'经营工具协同') group_name,
@@ -138,29 +138,40 @@ function toolRows(req, filters) {
       AND tr.created_at BETWEEN ? AND ? || ' 23:59:59'
       ${scope.sql}
     ORDER BY tr.created_at DESC, tr.id DESC`, curTenant(), filters.start, filters.end, ...scope.params)
-    .map(row => ({
-      id: Number(row.id),
-      ref: `tool:${row.id}`,
-      source: 'tool',
-      sourceLabel: SOURCE_LABELS.tool,
-      abilityDomain: 'tool',
-      abilityDomainLabel: DOMAIN_LABELS.tool,
-      title: row.title || row.tool_title || '未命名工具运行',
-      status: toolStatusLabel(row.status),
-      outputStatus: toolStatusLabel(row.status),
-      hasOutput: Boolean(row.has_output),
-      createdAt: row.created_at,
-      group: row.group_name || '经营工具协同',
-      employeeIdx: row.employee_idx == null ? null : Number(row.employee_idx),
-      employeeKey: row.employee_key || '',
-      employee: row.employee_name || '未指定数字员工',
-      person: row.employee_person || '',
-      operator: row.operator_name || '-',
-      evidenceKind: row.has_output ? '工具运行结果' : '工具运行状态',
-      evidenceLabel: `工具运行 #${row.id}`,
-      evidenceId: row.id,
-      type: row.tool_title || row.tool_key || '经营工具',
-    }));
+    .map(row => {
+      const provenance = safeJsonParse(row.provenance_json, {});
+      const completed = provenance.completionState === 'completed'
+        || (!provenance.completionState && provenance.mode !== 'template');
+      const hasOutput = completed && Boolean(row.has_output);
+      const status = row.status === 'failed'
+        ? '失败'
+        : completed
+          ? toolStatusLabel(row.status)
+          : '待补材料';
+      return {
+        id: Number(row.id),
+        ref: `tool:${row.id}`,
+        source: 'tool',
+        sourceLabel: SOURCE_LABELS.tool,
+        abilityDomain: 'tool',
+        abilityDomainLabel: DOMAIN_LABELS.tool,
+        title: row.title || row.tool_title || '未命名工具运行',
+        status,
+        outputStatus: status,
+        hasOutput,
+        createdAt: row.created_at,
+        group: row.group_name || '经营工具协同',
+        employeeIdx: row.employee_idx == null ? null : Number(row.employee_idx),
+        employeeKey: row.employee_key || '',
+        employee: row.employee_name || '未指定数字员工',
+        person: row.employee_person || '',
+        operator: row.operator_name || '-',
+        evidenceKind: hasOutput ? '工具运行结果' : completed ? '工具运行状态' : '未完成模板底稿',
+        evidenceLabel: `工具运行 #${row.id}`,
+        evidenceId: row.id,
+        type: row.tool_title || row.tool_key || '经营工具',
+      };
+    });
 }
 
 function contentRows(req, filters) {
@@ -450,6 +461,10 @@ r.get('/drill/task/:id', (req, res) => {
   const safeSkills = canViewPrompt
     ? skills
     : skills.map(({ instructions: _instructions, ...skill }) => skill);
+  const executionEvidence = safeJsonParse(row.employee_web_snapshot, null);
+  const wrappedExecutionEvidence = executionEvidence?.kind === 'restaurant_employee_execution_evidence'
+    ? executionEvidence
+    : null;
   res.set('Cache-Control', 'private, no-store');
   res.json({
     source: 'task',
@@ -488,7 +503,8 @@ r.get('/drill/task/:id', (req, res) => {
         workConfig: safeJsonParse(row.employee_config_snapshot, {}),
         skills: safeSkills,
         inputEvidence: safeJsonParse(row.employee_input_snapshot, null),
-        webEvidence: safeJsonParse(row.employee_web_snapshot, null),
+        webEvidence: wrappedExecutionEvidence ? wrappedExecutionEvidence.web : executionEvidence,
+        outputContract: wrappedExecutionEvidence?.outputContract || null,
       },
     } : null,
     disclaimer: '本页是可追溯的系统运行证据，不把内容产出推断为真实经营成效。',
@@ -515,17 +531,25 @@ r.get('/drill/tool/:id', (req, res) => {
     LEFT JOIN users u ON u.id=tr.created_by AND u.tenant_id=tr.tenant_id
     WHERE tr.tenant_id=? AND tr.id=?${scope.sql}`, curTenant(), id, ...scope.params);
   if (!row) return res.status(404).json({ error: '工具运行记录不存在或无权查看' });
+  const provenance = safeJsonParse(row.provenance_json, {});
+  const completed = provenance.completionState === 'completed'
+    || (!provenance.completionState && provenance.mode !== 'template');
+  const recordStatus = row.status === 'failed'
+    ? '失败'
+    : completed
+      ? toolStatusLabel(row.status)
+      : '待补材料';
   res.set('Cache-Control', 'private, no-store');
   res.json({
     source: 'tool',
     sourceLabel: SOURCE_LABELS.tool,
-    evidenceKind: row.result_md ? '工具运行结果' : '工具运行状态',
+    evidenceKind: completed && row.result_md ? '工具运行结果' : completed ? '工具运行状态' : '未完成模板底稿',
     record: {
       id: row.id,
       title: row.title || row.tool_title,
       type: row.tool_title || row.tool_key,
       toolKey: row.tool_key,
-      status: toolStatusLabel(row.status),
+      status: recordStatus,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       group: row.group_name,
@@ -541,7 +565,7 @@ r.get('/drill/tool/:id', (req, res) => {
       body: row.result_md,
       assumptions: safeJsonParse(row.assumptions_json, []),
       evidence: safeJsonParse(row.evidence_json, []),
-      provenance: safeJsonParse(row.provenance_json, {}),
+      provenance,
     } : null,
     disclaimer: '本页是可追溯的系统运行证据；假设、输入与模板生成结果不等同于真实经营成效。',
   });

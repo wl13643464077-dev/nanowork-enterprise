@@ -13,12 +13,12 @@ process.env.NANOWORK_DB = DBP;
 process.env.NODE_ENV = 'test';
 // 确保初始为“未配置任何通道”
 for (const k of ['WXPAY_MCHID', 'WXPAY_SERIAL_NO', 'WXPAY_PRIVATE_KEY', 'WXPAY_APIV3_KEY', 'WXPAY_APPID',
-  'WXPAY_NOTIFY_URL', 'WXPAY_PLATFORM_CERT', 'ALIPAY_APPID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
+  'WXPAY_NOTIFY_URL', 'WXPAY_PLATFORM_CERT', 'WXPAY_PLATFORM_CERTS', 'ALIPAY_APPID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
   'ALIPAY_NOTIFY_URL', 'ALIPAY_GATEWAY']) delete process.env[k];
 
-const { initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
+const { initSchema, migrateV2, q, db, runWithTenant } = await import('../src/db.js');
 const payment = await import('../src/engines/payment.js');
-const { paymentChannels, createPayment, yuanToFen, fenToYuanStr, _setHttpCall } = payment;
+const { paymentChannels, createPayment, queryPayment, yuanToFen, fenToYuanStr, _setHttpCall } = payment;
 const rechargeRoutes = (await import('../src/routes/recharge.js')).default;
 const notifyRoutes = (await import('../src/routes/recharge-notify.js')).default;
 
@@ -37,21 +37,65 @@ const priPem = (k) => k.privateKey.export({ type: 'pkcs8', format: 'pem' }).toSt
 const pubPem = (k) => k.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const wxMerchant = genKeys();   // 商户 API 私钥（我方签请求）
 const wxPlatform = genKeys();   // 微信平台密钥（平台签回调）
+const wxPlatformNext = genKeys(); // 微信平台轮换后的下一张证书
 const aliMerchant = genKeys();  // 支付宝应用私钥（我方签请求）
 const aliOfficial = genKeys();  // 支付宝官方密钥（支付宝签异步通知）
 const APIV3_KEY = 'x'.repeat(32);
+
+// ===== 支付网关同步应答构造：只在本地用临时平台私钥签名，绝不访问真实通道 =====
+function buildWechatResponse(payload, {
+  status = 200,
+  signKey = wxPlatform.privateKey,
+  serial = 'PLATFORM_SERIAL',
+  timestamp = Math.floor(Date.now() / 1000),
+} = {}) {
+  const text = payload === '' ? '' : JSON.stringify(payload);
+  const signedTimestamp = String(timestamp);
+  const nonce = crypto.randomBytes(8).toString('hex');
+  const signature = crypto.createSign('RSA-SHA256')
+    .update(`${signedTimestamp}\n${nonce}\n${text}\n`, 'utf8')
+    .sign(signKey, 'base64');
+  return {
+    status,
+    text,
+    headers: {
+      'Wechatpay-Timestamp': signedTimestamp,
+      'Wechatpay-Nonce': nonce,
+      'Wechatpay-Signature': signature,
+      'Wechatpay-Serial': serial,
+    },
+  };
+}
+
+function buildAlipayResponse(responseKey, payload, {
+  status = 200,
+  signKey = aliOfficial.privateKey,
+} = {}) {
+  const signedContent = JSON.stringify(payload);
+  const sign = crypto.createSign('RSA-SHA256')
+    .update(signedContent, 'utf8')
+    .sign(signKey, 'base64');
+  return {
+    status,
+    text: `{"${responseKey}":${signedContent},"sign":${JSON.stringify(sign)}}`,
+  };
+}
 
 // ===== 可注入 fake HTTP 层：记录请求，返回固定二维码，绝不出网 =====
 const httpCalls = [];
 _setHttpCall(async (opts) => {
   httpCalls.push(opts);
   if (opts.url.includes('api.mch.weixin.qq.com')) {
-    return { status: 200, text: JSON.stringify({ code_url: 'weixin://wxpay/bizpayurl?pr=FAKE123' }) };
+    return buildWechatResponse({ code_url: 'weixin://wxpay/bizpayurl?pr=FAKE123' });
   }
-  return {
-    status: 200,
-    text: JSON.stringify({ alipay_trade_precreate_response: { code: '10000', msg: 'Success', qr_code: 'https://qr.alipay.com/FAKE456' }, sign: 'fake' }),
-  };
+  const form = new URLSearchParams(String(opts.body || ''));
+  const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+  return buildAlipayResponse('alipay_trade_precreate_response', {
+    code: '10000',
+    msg: 'Success',
+    out_trade_no: orderNo,
+    qr_code: 'https://qr.alipay.com/FAKE456',
+  });
 });
 
 // ===== 测试应用：notify 免登录挂载在 json 解析之前（与 index.js 相同拓扑）=====
@@ -86,7 +130,11 @@ const tenantCredits = () => q.get('SELECT credits FROM tenants WHERE id=?', tena
 const orderLogCount = (orderNo) => q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=? AND note=?`, tenantId, `订单 ${orderNo}`).n;
 
 // ===== 微信回调构造：AES-256-GCM 加密 resource + 平台私钥签名 =====
-function buildWechatNotify(txn, { signKey = wxPlatform.privateKey, timestamp = Math.floor(Date.now() / 1000) } = {}) {
+function buildWechatNotify(txn, {
+  signKey = wxPlatform.privateKey,
+  serial = 'PLATFORM_SERIAL',
+  timestamp = Math.floor(Date.now() / 1000),
+} = {}) {
   const iv = crypto.randomBytes(6).toString('hex'); // 12 字符 nonce
   const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(APIV3_KEY, 'utf8'), Buffer.from(iv, 'utf8'));
   cipher.setAAD(Buffer.from('transaction', 'utf8'));
@@ -98,7 +146,7 @@ function buildWechatNotify(txn, { signKey = wxPlatform.privateKey, timestamp = M
   });
   const nonce = crypto.randomBytes(8).toString('hex');
   const signature = crypto.createSign('RSA-SHA256').update(`${timestamp}\n${nonce}\n${body}\n`, 'utf8').sign(signKey, 'base64');
-  return { body, headers: { 'Content-Type': 'application/json', 'Wechatpay-Timestamp': String(timestamp), 'Wechatpay-Nonce': nonce, 'Wechatpay-Signature': signature, 'Wechatpay-Serial': 'PLATFORM_SERIAL' } };
+  return { body, headers: { 'Content-Type': 'application/json', 'Wechatpay-Timestamp': String(timestamp), 'Wechatpay-Nonce': nonce, 'Wechatpay-Signature': signature, 'Wechatpay-Serial': serial } };
 }
 const postWechatNotify = async ({ body, headers }) => {
   const res = await fetch(`${base}/api/recharge/notify/wechat`, { method: 'POST', headers, body });
@@ -166,6 +214,7 @@ test('配置通道后：微信/支付宝下单生成二维码，请求签名与�
   process.env.WXPAY_APIV3_KEY = APIV3_KEY;
   process.env.WXPAY_APPID = 'wx_test_appid';
   process.env.WXPAY_NOTIFY_URL = 'https://pay.example.com/api/recharge/notify/wechat';
+  process.env.WXPAY_PLATFORM_CERT = pubPem(wxPlatform).replace(/\n/g, '\\n');
   process.env.ALIPAY_APPID = 'ALI_APP_ID_TEST';
   process.env.ALIPAY_PRIVATE_KEY = priPem(aliMerchant);
   process.env.ALIPAY_PUBLIC_KEY = pubPem(aliOfficial);
@@ -358,21 +407,383 @@ const setBothChannelEnvs = () => {
   process.env.ALIPAY_NOTIFY_URL = 'https://demo.example.com/api/recharge/notify/alipay';
 };
 
-function reconcileMock({ aliQuery, wxQuery } = {}) {
+function reconcileMock({
+  aliQuery,
+  wxQuery,
+  aliQuerySignKey = aliOfficial.privateKey,
+  wxQuerySignKey = wxPlatform.privateKey,
+  aliCloseSignKey = aliOfficial.privateKey,
+  wxCloseSignKey = wxPlatform.privateKey,
+  closeFailure = false,
+} = {}) {
   _setHttpCall(async (opts) => {
     const body = String(opts.body || '');
+    if (opts.url.includes('/v3/pay/transactions/out-trade-no/') && opts.url.endsWith('/close')) {
+      if (closeFailure) return { status: 503, text: JSON.stringify({ code: 'SYSTEM_ERROR' }) };
+      return buildWechatResponse('', { status: 204, signKey: wxCloseSignKey });
+    }
     if (opts.url.includes('/v3/pay/transactions/out-trade-no/')) {
-      return { status: 200, text: JSON.stringify(wxQuery || { trade_state: 'NOTPAY' }) };
+      const orderNo = decodeURIComponent(opts.url.match(/out-trade-no\/([^/?]+)/)?.[1] || '');
+      return buildWechatResponse(
+        {
+          appid: process.env.WXPAY_APPID,
+          mchid: process.env.WXPAY_MCHID,
+          out_trade_no: orderNo,
+          ...(wxQuery || { trade_state: 'NOTPAY' }),
+        },
+        { signKey: wxQuerySignKey },
+      );
     }
     if (opts.url.includes('api.mch.weixin.qq.com')) {
-      return { status: 200, text: JSON.stringify({ code_url: 'weixin://wxpay/bizpayurl?pr=RECON' }) };
+      return buildWechatResponse({ code_url: 'weixin://wxpay/bizpayurl?pr=RECON' });
     }
-    if (body.includes('alipay.trade.query')) {
-      return { status: 200, text: JSON.stringify({ alipay_trade_query_response: aliQuery || { code: '40004', sub_code: 'ACQ.TRADE_NOT_EXIST' }, sign: 'fake' }) };
+    const form = new URLSearchParams(body);
+    if (form.get('method') === 'alipay.trade.query') {
+      const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+      const payload = aliQuery || { code: '40004', sub_code: 'ACQ.TRADE_NOT_EXIST' };
+      return buildAlipayResponse(
+        'alipay_trade_query_response',
+        payload.code === '10000' ? { out_trade_no: orderNo, ...payload } : payload,
+        { signKey: aliQuerySignKey },
+      );
     }
-    return { status: 200, text: JSON.stringify({ alipay_trade_precreate_response: { code: '10000', msg: 'Success', qr_code: 'https://qr.alipay.com/RECON' }, sign: 'fake' }) };
+    if (form.get('method') === 'alipay.trade.close') {
+      if (closeFailure) return { status: 503, text: JSON.stringify({ error: 'fake gateway unavailable' }) };
+      const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+      return buildAlipayResponse(
+        'alipay_trade_close_response',
+        { code: '10000', msg: 'Success', out_trade_no: orderNo },
+        { signKey: aliCloseSignKey },
+      );
+    }
+    return buildAlipayResponse(
+      'alipay_trade_precreate_response',
+      {
+        code: '10000',
+        msg: 'Success',
+        out_trade_no: JSON.parse(form.get('biz_content') || '{}').out_trade_no,
+        qr_code: 'https://qr.alipay.com/RECON',
+      },
+    );
   });
 }
+
+test('下单成功响应必须验签：微信/支付宝坏签名二维码均拒绝采用', async () => {
+  setBothChannelEnvs();
+  _setHttpCall(async (opts) => {
+    if (opts.url.includes('api.mch.weixin.qq.com')) {
+      return buildWechatResponse(
+        { code_url: 'weixin://wxpay/bizpayurl?pr=FORGED' },
+        { signKey: aliOfficial.privateKey },
+      );
+    }
+    return buildAlipayResponse(
+      'alipay_trade_precreate_response',
+      { code: '10000', msg: 'Success', qr_code: 'https://qr.alipay.com/FORGED' },
+      { signKey: wxPlatform.privateKey },
+    );
+  });
+  await assert.rejects(
+    () => createPayment('wechat', { orderNo: 'R_FORGED_CREATE_WX', amountYuan: 88.8, subject: '验签测试' }),
+    /验签失败/,
+  );
+  await assert.rejects(
+    () => createPayment('alipay', { orderNo: 'R_FORGED_CREATE_ALI', amountYuan: 88.8, subject: '验签测试' }),
+    /验签失败/,
+  );
+  reconcileMock();
+});
+
+test('支付宝同步应答重复业务节点不得让未签名对象覆盖已验签对象', async () => {
+  setBothChannelEnvs();
+  _setHttpCall(async (opts) => {
+    const form = new URLSearchParams(String(opts.body || ''));
+    const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+    const signedPayload = {
+      code: '10000',
+      msg: 'Success',
+      out_trade_no: orderNo,
+      qr_code: 'https://qr.alipay.com/SAFE_SIGNED',
+    };
+    const signedContent = JSON.stringify(signedPayload);
+    const sign = crypto.createSign('RSA-SHA256')
+      .update(signedContent, 'utf8')
+      .sign(aliOfficial.privateKey, 'base64');
+    const unsignedPayload = {
+      ...signedPayload,
+      qr_code: 'https://attacker.invalid/UNSIGNED',
+    };
+    return {
+      status: 200,
+      text: `{"alipay_trade_precreate_response":${signedContent},`
+        + `"alipay_trade_precreate_response":${JSON.stringify(unsignedPayload)},`
+        + `"sign":${JSON.stringify(sign)}}`,
+    };
+  });
+  await assert.rejects(
+    () => createPayment('alipay', {
+      orderNo: 'R_ALIPAY_DUPLICATE_NODE',
+      amountYuan: 88.8,
+      subject: '重复业务节点防护测试',
+    }),
+    /重复业务响应节点/,
+  );
+  reconcileMock();
+});
+
+test('支付宝预下单成功应答必须绑定请求商户订单号', async () => {
+  setBothChannelEnvs();
+  _setHttpCall(async () => buildAlipayResponse(
+    'alipay_trade_precreate_response',
+    {
+      code: '10000',
+      msg: 'Success',
+      out_trade_no: 'R_ALIPAY_OTHER_ORDER',
+      qr_code: 'https://qr.alipay.com/VALID_SIGN_WRONG_ORDER',
+    },
+  ));
+  await assert.rejects(
+    () => createPayment('alipay', {
+      orderNo: 'R_ALIPAY_EXPECTED_ORDER',
+      amountYuan: 88.8,
+      subject: '订单绑定测试',
+    }),
+    /订单号不匹配/,
+  );
+  reconcileMock();
+});
+
+test('微信同步成功应答即使签名正确，时间戳超窗也拒绝采用', async () => {
+  setBothChannelEnvs();
+  _setHttpCall(async () => buildWechatResponse(
+    { code_url: 'weixin://wxpay/bizpayurl?pr=STALE_SIGNED' },
+    { timestamp: Math.floor(Date.now() / 1000) - 3600 },
+  ));
+  await assert.rejects(
+    () => createPayment('wechat', {
+      orderNo: 'R_WECHAT_STALE_RESPONSE',
+      amountYuan: 88.8,
+      subject: '同步应答防重放测试',
+    }),
+    /时间戳超出5分钟/,
+  );
+  reconcileMock();
+});
+
+test('微信多平台证书按 Wechatpay-Serial 精确轮换，未知序列号在应答和回调均拒绝', async () => {
+  setBothChannelEnvs();
+  delete process.env.WXPAY_PLATFORM_CERT;
+  process.env.WXPAY_PLATFORM_CERTS = JSON.stringify({
+    SERIAL_CURRENT: pubPem(wxPlatform),
+    SERIAL_NEXT: pubPem(wxPlatformNext),
+  });
+  _setHttpCall(async (opts) => {
+    if (opts.url.includes('/v3/pay/transactions/out-trade-no/')) {
+      const orderNo = decodeURIComponent(opts.url.match(/out-trade-no\/([^/?]+)/)?.[1] || '');
+      return buildWechatResponse({
+        appid: process.env.WXPAY_APPID,
+        mchid: process.env.WXPAY_MCHID,
+        out_trade_no: orderNo,
+        trade_state: 'NOTPAY',
+      }, { signKey: wxPlatformNext.privateKey, serial: 'SERIAL_NEXT' });
+    }
+    return buildWechatResponse(
+      { code_url: 'weixin://wxpay/bizpayurl?pr=ROTATED' },
+      { signKey: wxPlatformNext.privateKey, serial: 'SERIAL_NEXT' },
+    );
+  });
+  const created = await createPayment('wechat', {
+    orderNo: 'R_ROTATED_CREATE',
+    amountYuan: 88.8,
+    subject: '证书轮换测试',
+  });
+  assert.equal(created.qrUrl, 'weixin://wxpay/bizpayurl?pr=ROTATED');
+  assert.equal((await queryPayment('wechat', 'R_ROTATED_QUERY')).paid, false);
+
+  _setHttpCall(async () => buildWechatResponse(
+    { code_url: 'weixin://wxpay/bizpayurl?pr=UNKNOWN' },
+    { signKey: wxPlatformNext.privateKey, serial: 'SERIAL_UNKNOWN' },
+  ));
+  await assert.rejects(
+    () => createPayment('wechat', {
+      orderNo: 'R_UNKNOWN_SERIAL',
+      amountYuan: 88.8,
+      subject: '未知证书测试',
+    }),
+    /序列号 SERIAL_UNKNOWN 未配置/,
+  );
+
+  const callbackOrderNo = `R_ROTATED_NOTIFY_${Date.now()}`;
+  q.run(`INSERT INTO recharge_orders(
+    order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel
+  ) VALUES(?,?,?,?,?,?,'待支付',?,'wechat')`,
+  callbackOrderNo, tenantId, pkgId, '标准包88.8', 88.8, 9880, bossId);
+  const before = tenantCredits();
+  const callback = await postWechatNotify(buildWechatNotify({
+    out_trade_no: callbackOrderNo,
+    transaction_id: 'WX_ROTATED_NOTIFY',
+    trade_state: 'SUCCESS',
+    amount: { total: 8880 },
+  }, { signKey: wxPlatformNext.privateKey, serial: 'SERIAL_NEXT' }));
+  assert.equal(callback.status, 200);
+  assert.equal(tenantCredits(), before + 9880);
+
+  const unknownOrderNo = `R_UNKNOWN_NOTIFY_${Date.now()}`;
+  q.run(`INSERT INTO recharge_orders(
+    order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel
+  ) VALUES(?,?,?,?,?,?,'待支付',?,'wechat')`,
+  unknownOrderNo, tenantId, pkgId, '标准包88.8', 88.8, 9880, bossId);
+  const beforeUnknown = tenantCredits();
+  const rejected = await postWechatNotify(buildWechatNotify({
+    out_trade_no: unknownOrderNo,
+    transaction_id: 'WX_UNKNOWN_NOTIFY',
+    trade_state: 'SUCCESS',
+    amount: { total: 8880 },
+  }, { signKey: wxPlatformNext.privateKey, serial: 'SERIAL_UNKNOWN' }));
+  assert.equal(rejected.status, 401);
+  assert.equal(tenantCredits(), beforeUnknown);
+
+  delete process.env.WXPAY_PLATFORM_CERTS;
+  process.env.WXPAY_PLATFORM_CERT = pubPem(wxPlatform);
+  reconcileMock();
+});
+
+test('远端下单成功但本地二维码收尾失败时自动关单，并保留订单与安全审计', async () => {
+  setBothChannelEnvs();
+  const methods = [];
+  _setHttpCall(async (opts) => {
+    const form = new URLSearchParams(String(opts.body || ''));
+    const method = form.get('method');
+    methods.push(method);
+    if (method === 'alipay.trade.precreate') {
+      const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+      return buildAlipayResponse(
+        'alipay_trade_precreate_response',
+        {
+          code: '10000',
+          msg: 'Success',
+          out_trade_no: orderNo,
+          qr_code: 'https://qr.alipay.com/LOCAL_WRITE_FAIL',
+        },
+      );
+    }
+    if (method === 'alipay.trade.close') {
+      const orderNo = JSON.parse(form.get('biz_content') || '{}').out_trade_no;
+      return buildAlipayResponse(
+        'alipay_trade_close_response',
+        { code: '10000', msg: 'Success', out_trade_no: orderNo },
+      );
+    }
+    throw new Error(`unexpected payment method: ${method}`);
+  });
+  db.exec(`CREATE TRIGGER injected_recharge_qr_finalize_failure
+    BEFORE UPDATE OF qr_url ON recharge_orders
+    WHEN NEW.qr_url IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT,'injected recharge qr finalize failure');
+    END`);
+  try {
+    const result = await postJson('/api/recharge/orders', {
+      packageId: pkgId,
+      channel: 'alipay',
+    });
+    assert.equal(result.status, 500);
+    assert.ok(result.json.orderNo);
+    assert.equal(result.json.status, '已取消');
+    assert.equal(result.json.reconciliationRequired, false);
+    assert.deepEqual(methods, ['alipay.trade.precreate', 'alipay.trade.close']);
+    const stored = q.get(
+      'SELECT id,status,qr_url,pay_channel FROM recharge_orders WHERE order_no=?',
+      result.json.orderNo,
+    );
+    assert.ok(stored?.id, '远端调用前必须已有可对账的本地订单');
+    assert.equal(stored.status, '已取消');
+    assert.equal(stored.qr_url, null);
+    assert.equal(stored.pay_channel, 'alipay');
+    assert.equal(q.get(
+      `SELECT COUNT(*) n FROM op_logs
+       WHERE tenant_id=? AND action='在线支付远端成功后本地收尾失败' AND target LIKE ?`,
+      tenantId,
+      `%order=${result.json.orderNo};%`,
+    ).n, 1);
+  } finally {
+    db.exec('DROP TRIGGER IF EXISTS injected_recharge_qr_finalize_failure');
+    reconcileMock();
+  }
+});
+
+test('远端下单成功且本地收尾失败时，若渠道关单也失败则保留待支付并标记待对账', async () => {
+  setBothChannelEnvs();
+  reconcileMock({ closeFailure: true });
+  db.exec(`CREATE TRIGGER injected_recharge_qr_finalize_and_close_failure
+    BEFORE UPDATE OF qr_url ON recharge_orders
+    WHEN NEW.qr_url IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT,'injected recharge qr finalize failure before close failure');
+    END`);
+  try {
+    const result = await postJson('/api/recharge/orders', {
+      packageId: pkgId,
+      channel: 'alipay',
+    });
+    assert.equal(result.status, 500);
+    assert.ok(result.json.orderNo);
+    assert.equal(result.json.status, '待支付');
+    assert.equal(result.json.reconciliationRequired, true);
+    const stored = q.get(
+      'SELECT status,qr_url,pay_channel FROM recharge_orders WHERE order_no=?',
+      result.json.orderNo,
+    );
+    assert.equal(stored.status, '待支付');
+    assert.equal(stored.qr_url, null);
+    assert.equal(stored.pay_channel, 'alipay');
+    assert.equal(q.get(
+      `SELECT COUNT(*) n FROM op_logs
+       WHERE tenant_id=? AND action='在线支付远端成功后本地收尾失败' AND target LIKE ?`,
+      tenantId,
+      `%order=${result.json.orderNo};%close=failed;%reconcile=1%`,
+    ).n, 1);
+  } finally {
+    db.exec('DROP TRIGGER IF EXISTS injected_recharge_qr_finalize_and_close_failure');
+    reconcileMock();
+  }
+});
+
+test('主动查单严格验签：微信/支付宝坏签名均拒绝，不能把伪造应答当作支付结果', async () => {
+  setBothChannelEnvs();
+  reconcileMock({
+    wxQuery: { trade_state: 'SUCCESS', transaction_id: 'FORGED_WX', amount: { total: 8880 } },
+    wxQuerySignKey: aliOfficial.privateKey,
+  });
+  await assert.rejects(() => queryPayment('wechat', 'R_FORGED_WX'), /验签失败/);
+
+  reconcileMock({
+    aliQuery: {
+      code: '10000',
+      msg: 'Success',
+      out_trade_no: 'R_FORGED_ALI',
+      trade_status: 'TRADE_SUCCESS',
+      trade_no: 'FORGED_ALI',
+      total_amount: '88.80',
+    },
+    aliQuerySignKey: wxPlatform.privateKey,
+  });
+  await assert.rejects(() => queryPayment('alipay', 'R_FORGED_ALI'), /验签失败/);
+});
+
+test('微信主动查单金额按订单总额核对，优惠后的付款人实付额不应误判为订单金额', async () => {
+  setBothChannelEnvs();
+  reconcileMock({
+    wxQuery: {
+      trade_state: 'SUCCESS',
+      transaction_id: 'WX_WITH_DISCOUNT',
+      amount: { total: 8880, payer_total: 1, currency: 'CNY', payer_currency: 'CNY' },
+    },
+  });
+  const result = await queryPayment('wechat', 'R_WX_DISCOUNT');
+  assert.equal(result.paid, true);
+  assert.equal(result.paidFen, 8880);
+});
 
 test('主动对账：轮询状态时查得支付宝已支付 → 自动入账一次，重复轮询不重复入账', async () => {
   setBothChannelEnvs();
@@ -410,7 +821,7 @@ test('超时自动关单：二维码过期超过宽限期且网关未支付 → 
   assert.equal(polled.json.status, '已取消');
   // 对公转账订单（无通道）：即使很旧也绝不自动关单
   for (const k of ['WXPAY_MCHID', 'WXPAY_SERIAL_NO', 'WXPAY_PRIVATE_KEY', 'WXPAY_APIV3_KEY', 'WXPAY_APPID',
-    'WXPAY_NOTIFY_URL', 'WXPAY_PLATFORM_CERT', 'ALIPAY_APPID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
+    'WXPAY_NOTIFY_URL', 'WXPAY_PLATFORM_CERT', 'WXPAY_PLATFORM_CERTS', 'ALIPAY_APPID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
     'ALIPAY_NOTIFY_URL']) delete process.env[k];
   const manual = await postJson('/api/recharge/orders', { packageId: pkgId });
   assert.ok(manual.json.orderNo, `下单失败：${JSON.stringify(manual.json)}`);
@@ -418,4 +829,37 @@ test('超时自动关单：二维码过期超过宽限期且网关未支付 → 
   q.run(`UPDATE recharge_orders SET created_at=datetime('now','-3 days') WHERE order_no=?`, manualNo);
   const manualPolled = await getJson(`/api/recharge/orders/${manualNo}/status`);
   assert.equal(manualPolled.json.status, '待支付');
+});
+
+test('本地取消：在线订单必须先关闭渠道交易；远端失败时本地保持待支付', async () => {
+  setBothChannelEnvs();
+  reconcileMock({ closeFailure: true });
+  const created = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' });
+  assert.ok(created.json.id, `下单失败：${JSON.stringify(created.json)}`);
+
+  const cancelled = await postJson(`/api/recharge/orders/${created.json.id}/cancel`);
+  assert.ok(cancelled.status >= 400);
+  assert.equal(q.get('SELECT status FROM recharge_orders WHERE id=?', created.json.id).status, '待支付');
+
+  reconcileMock();
+  const ok = await postJson(`/api/recharge/orders/${created.json.id}/cancel`);
+  assert.equal(ok.status, 200);
+  assert.equal(q.get('SELECT status FROM recharge_orders WHERE id=?', created.json.id).status, '已取消');
+});
+
+test('超时取消：渠道关单失败或应答坏签名时，本地订单不得标为已取消', async () => {
+  setBothChannelEnvs();
+  reconcileMock({ closeFailure: true });
+  const failed = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'wechat' });
+  q.run(`UPDATE recharge_orders SET pay_expire_at=? WHERE order_no=?`,
+    new Date(Date.now() - 10 * 60_000).toISOString(), failed.json.orderNo);
+  const stillPending = await getJson(`/api/recharge/orders/${failed.json.orderNo}/status`);
+  assert.equal(stillPending.json.status, '待支付');
+
+  reconcileMock({ wxCloseSignKey: aliOfficial.privateKey });
+  const forged = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'wechat' });
+  q.run(`UPDATE recharge_orders SET pay_expire_at=? WHERE order_no=?`,
+    new Date(Date.now() - 10 * 60_000).toISOString(), forged.json.orderNo);
+  const stillPendingAfterBadSign = await getJson(`/api/recharge/orders/${forged.json.orderNo}/status`);
+  assert.equal(stillPendingAfterBadSign.json.status, '待支付');
 });

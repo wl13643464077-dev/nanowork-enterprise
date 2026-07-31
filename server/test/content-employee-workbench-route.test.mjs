@@ -64,6 +64,8 @@ const generated = [];
 const billingEvents = [];
 const notificationEvents = [];
 const operationEvents = [];
+const leaseEvents = [];
+const dispatchLifecycleEvents = [];
 const EXPECTED_TASK_TYPES = [
   ['趋势简报', '候选选题', '热点扫描'],
   ['事实资料包', '核验报告', '来源清单'],
@@ -97,11 +99,12 @@ const generateStub = async (args) => {
           platform: '公众号',
           title: '已经人工核验的发布稿',
           body: '正文只引用已经确认的门店事实。',
+          tags: ['经营复盘'],
+          best_time: '工作日 12:00-13:00',
+          checklist: ['复核事实来源', '由有权限的人确认发布'],
+          note: '发布前再次核对账号、时间与链接。',
         }],
-        publish_plan: {
-          order: ['公众号'],
-          review: '发布登记前再次核对账号、时间与链接。',
-        },
+        publish_plan: '先发布公众号，复核反馈后再决定其他平台节奏。',
       }),
       mode: 'api',
       model: 'test-model',
@@ -135,15 +138,20 @@ const generateStub = async (args) => {
 };
 const router = createContentEmployeeWorkbenchRouter({
   generateFn: generateStub,
-  webSearchFn: async query => ({
-    ok: true,
-    note: null,
-    results: [{
-      title: '测试官方来源',
-      url: 'https://example.com/official',
-      snippet: `已核验任务：${query.slice(0, 80)}`,
-    }],
-  }),
+  textModelForFn: () => 'test-default-text-model',
+  webSearchFn: async query => {
+    dispatchLifecycleEvents.push({ action: 'web' });
+    return {
+      ok: true,
+      provider: 'test-search',
+      note: null,
+      results: [{
+        title: '测试官方来源',
+        url: 'https://example.com/official',
+        snippet: `已核验任务：${query.slice(0, 80)}`,
+      }],
+    };
+  },
   scheduleFn: task => scheduled.push(task),
   precheckByRoleFn: (userId, kind, role) => {
     billingEvents.push({ action: 'precheck', userId, kind, role });
@@ -154,6 +162,7 @@ const router = createContentEmployeeWorkbenchRouter({
     return 12;
   },
   holdCreditsFn: args => {
+    dispatchLifecycleEvents.push({ action: 'hold', args });
     const hold = {
       holdId: billingEvents.length + 100,
       logId: billingEvents.length + 200,
@@ -209,12 +218,71 @@ function makeApp() {
         tenant_id: tenantId,
       };
       req.requestSignal = new AbortController().signal;
+      req.aiGuard = {
+        defer: timeoutMs => {
+          const lease = { action: 'defer', timeoutMs, released: false };
+          leaseEvents.push(lease);
+          dispatchLifecycleEvents.push({ action: 'defer', timeoutMs });
+          return () => {
+            if (lease.released) return;
+            lease.released = true;
+            leaseEvents.push({ action: 'release', timeoutMs });
+            dispatchLifecycleEvents.push({ action: 'release', timeoutMs });
+          };
+        },
+      };
       next();
     });
   });
   app.use('/employee-workbench/content', router);
   return app;
 }
+
+test('后台内容员工派活把AI并发租约保持到真实执行终态', async () => {
+  await withServer(async base => {
+    const before = leaseEvents.length;
+    const dispatched = await jsonCall(base, '/employee-workbench/content/3/dispatch', {
+      method: 'POST',
+      tenant: 98,
+      body: {
+        title: '后台租约生命周期验收',
+        type: '文案初稿',
+        requirement: '验证HTTP响应结束后，并发租约仍由后台任务持有。',
+      },
+    });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    const afterResponse = leaseEvents.slice(before);
+    assert.equal(afterResponse.filter(event => event.action === 'defer').length, 1);
+    assert.equal(afterResponse.filter(event => event.action === 'release').length, 0);
+
+    await drainScheduled();
+    const afterTerminal = leaseEvents.slice(before);
+    assert.equal(afterTerminal.filter(event => event.action === 'release').length, 1);
+  });
+});
+
+test('强制联网内容员工先建立可追踪预授权再检索', async () => {
+  await withServer(async base => {
+    const before = dispatchLifecycleEvents.length;
+    const dispatched = await jsonCall(base, '/employee-workbench/content/0/dispatch', {
+      method: 'POST',
+      tenant: 99,
+      body: {
+        title: '先预授权后联网验收',
+        type: '趋势简报',
+        requirement: '检索公开来源并形成有证据的趋势简报。',
+      },
+    });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    const events = dispatchLifecycleEvents.slice(before);
+    const holdIndex = events.findIndex(event => event.action === 'hold');
+    const webIndex = events.findIndex(event => event.action === 'web');
+    assert.ok(holdIndex >= 0 && webIndex > holdIndex);
+    assert.equal(events[holdIndex].args.refType, 'content_employee_run');
+    assert.equal(events[holdIndex].args.refId, dispatched.payload.runId);
+    await drainScheduled();
+  });
+});
 
 async function withServer(fn) {
   const server = makeApp().listen(0, '127.0.0.1');
@@ -306,7 +374,12 @@ test('0-9十名Paihuo内容员工均返回完整统一工作台，能力和岗�
       assert.equal(payload.skillLibrary.required[0].locked, true);
       assert.equal(payload.skillLibrary.historical.length, history.expectedSkillCount);
       assert.ok(payload.skillLibrary.historical.every(item => (
-        item.verificationStatus === 'legacy_unverified' && item.defaultInjected === true
+        item.verificationStatus === 'catalog_contract_verified'
+        && item.legacyVerificationStatus === 'legacy_unverified'
+        && item.verificationLevel === 'catalog_contract_verified'
+        && item.effectValidation === 'requires_live_business_sample'
+        && /^sha256:[a-f0-9]{64}$/u.test(item.contentFingerprint)
+        && item.defaultInjected === true
       )));
       assert.ok(payload.workMethod.inputs.length > 0);
       assert.ok(payload.workMethod.steps.length >= 5);
@@ -649,6 +722,8 @@ test('内容员工单派按最终提示词与附件两段式计费，成功按�
     assert.equal(result.payload.billing.estimatedCredits, 12);
     const beforeRunEvents = billingEvents.slice(billingBefore);
     assert.deepEqual(beforeRunEvents.map(event => event.action), ['precheck', 'estimate', 'hold']);
+    assert.equal(beforeRunEvents[1].args.model, 'test-default-text-model');
+    assert.equal(beforeRunEvents[2].args.model, 'test-default-text-model');
     assert.match(beforeRunEvents[1].args.texts[0], /两段式计费验收/u);
     assert.match(beforeRunEvents[1].args.texts[1], /视觉附件：image\/png/u);
     assert.match(beforeRunEvents[2].args.note, /生成失败全额退回/u);
@@ -667,6 +742,8 @@ test('内容员工单派按最终提示词与附件两段式计费，成功按�
     const settle = billingEvents.slice(billingBefore).find(event => event.action === 'settle');
     assert.deepEqual(settle.args.usage, { inputTokens: 90, outputTokens: 40 });
     assert.equal(settle.args.model, 'test-model');
+    const generatedRun = generated.find(item => item.userMsg.includes('两段式计费验收'));
+    assert.equal(generatedRun.model, 'test-default-text-model');
     assert.ok(notificationEvents.slice(notifyBefore).some(event =>
       event.userId === 31005 && /实扣5积分/u.test(event.body) && /未执行对外发布/u.test(event.body)));
   });
@@ -699,6 +776,41 @@ test('生成成功但结算失败时保留预授权待对账，不误释放也�
     assert.equal(billingEvents.slice(billingBefore).filter(event => event.action === 'settle').length, 1);
     assert.equal(billingEvents.slice(billingBefore).filter(event => event.action === 'release').length, 0);
   });
+});
+
+test('内容员工产物落库失败时不结算并全额释放预授权', async () => {
+  db.exec(`CREATE TRIGGER injected_content_employee_persist_failure
+    BEFORE UPDATE OF status ON content_employee_runs
+    WHEN OLD.title='强制产物落库失败' AND NEW.status='待审阅'
+    BEGIN
+      SELECT RAISE(ABORT,'injected content employee persistence failure');
+    END`);
+  try {
+    await withServer(async base => {
+      const billingBefore = billingEvents.length;
+      const dispatched = await jsonCall(base, '/employee-workbench/content/3/dispatch', {
+        method: 'POST',
+        tenant: 33,
+        body: {
+          title: '强制产物落库失败',
+          type: '文案初稿',
+          requirement: '生成后模拟运行产物落库事务失败。',
+        },
+      });
+      assert.equal(dispatched.response.status, 200);
+      await drainScheduled();
+      const row = q.get(`SELECT status,result_md,snapshot_json FROM content_employee_runs
+        WHERE tenant_id=33 AND id=?`, dispatched.payload.runId);
+      assert.equal(row.status, '失败');
+      assert.equal(row.result_md, null);
+      assert.equal(JSON.parse(row.snapshot_json).billing.state, 'released');
+      const events = billingEvents.slice(billingBefore);
+      assert.equal(events.filter(event => event.action === 'settle').length, 0);
+      assert.equal(events.filter(event => event.action === 'release').length, 1);
+    });
+  } finally {
+    db.exec('DROP TRIGGER IF EXISTS injected_content_employee_persist_failure');
+  }
 });
 
 test('单独派活可携带图片证据，原图只进入本次模型调用且快照仅保存哈希元数据', async () => {

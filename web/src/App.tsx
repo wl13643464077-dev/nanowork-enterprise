@@ -27,6 +27,12 @@ const Mobile = lazy(() => import('./pages/Mobile'));
 function Protected({ children }: { children: JSX.Element }) {
   return getUser() ? children : <Navigate to="/login" replace />;
 }
+// 企业业务壳层：平台超管只使用跨租户平台控制台，不进入任何单企业业务页面。
+function EnterpriseOnly({ children }: { children: JSX.Element }) {
+  const user = getUser();
+  if (!user) return <Navigate to="/login" replace />;
+  return user.role === 'platform_super' ? <Navigate to="/platform" replace /> : children;
+}
 // 平台超管专属
 function PlatformOnly({ children }: { children: JSX.Element }) {
   if (!getUser()) return <Navigate to="/login" replace />;
@@ -66,41 +72,193 @@ function SessionGate({ children }: { children: JSX.Element }) {
   useEffect(() => {
     bootstrapSession().finally(() => setReady(true));
   }, []);
-  if (!ready) return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--ui-bg)' }}><Spin size="large" /></div>;
+  if (!ready)
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--ui-bg)' }}>
+        <Spin size="large" />
+      </div>
+    );
   return children;
 }
 
-const routeFallback = <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--ui-bg)' }}><Spin size="large" /></div>;
+const routeFallback = (
+  <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--ui-bg)' }}>
+    <Spin size="large" />
+  </div>
+);
 
 export default function App() {
   return (
-    <SessionGate><BrowserRouter><Suspense fallback={routeFallback}>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/pending" element={<Protected><Pending /></Protected>} />
-        <Route path="/platform" element={<PlatformOnly><Platform /></PlatformOnly>} />
-        <Route path="/admin" element={<RoleOnly roles={['boss', 'admin', 'platform_super']}><Admin /></RoleOnly>} />
-        <Route path="/m" element={<Protected><Mobile /></Protected>} />
-        <Route element={<Protected><MainLayout /></Protected>}>
-          <Route path="/" element={<ModuleOnly moduleKey="dashboard"><Dashboard /></ModuleOnly>} />
-          <Route path="/advisor" element={<ModuleOnly moduleKey="advisor"><Advisor /></ModuleOnly>} />
-          <Route path="/employees" element={<ModuleOnly moduleKey="marshals"><Employees /></ModuleOnly>} />
-          <Route path="/marshals" element={<ModuleOnly moduleKey="marshals"><Navigate to="/employees" replace /></ModuleOnly>} />
-          <Route path="/toolbox" element={<ModuleOnly moduleKey="content"><Toolbox /></ModuleOnly>} />
-          <Route path="/growth" element={<ModuleOnly moduleKey="growth"><Growth /></ModuleOnly>} />
-          <Route path="/activities" element={<ModuleOnly moduleKey="activities"><Activities /></ModuleOnly>} />
-          <Route path="/content" element={<ModuleOnly moduleKey="content"><ContentFactory /></ModuleOnly>} />
-          <Route path="/execution" element={<ModuleOnly moduleKey="execution"><Execution /></ModuleOnly>} />
-          <Route path="/analysis" element={<ModuleOnly moduleKey="analysis"><Analysis /></ModuleOnly>} />
-          <Route path="/store-data" element={<ModuleOnly moduleKey="analysis"><StoreData /></ModuleOnly>} />
-          <Route path="/assets" element={<ModuleOnly moduleKey="assets"><Assets /></ModuleOnly>} />
-          <Route path="/data-intake" element={<ModuleOnly moduleKey="system"><Navigate to="/system?tab=data-intake" replace /></ModuleOnly>} />
-          <Route path="/system" element={<ModuleOnly moduleKey="system"><System /></ModuleOnly>} />
-          <Route path="/recharge" element={<RoleOnly roles={['boss']}><Recharge /></RoleOnly>} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense></BrowserRouter></SessionGate>
+    <SessionGate>
+      <BrowserRouter>
+        <Suspense fallback={routeFallback}>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route
+              path="/pending"
+              element={
+                <Protected>
+                  <Pending />
+                </Protected>
+              }
+            />
+            <Route
+              path="/platform"
+              element={
+                <PlatformOnly>
+                  <Platform />
+                </PlatformOnly>
+              }
+            />
+            <Route
+              path="/admin"
+              element={
+                <RoleOnly roles={['boss', 'admin']}>
+                  <Admin />
+                </RoleOnly>
+              }
+            />
+            <Route
+              path="/m"
+              element={
+                <EnterpriseOnly>
+                  <Mobile />
+                </EnterpriseOnly>
+              }
+            />
+            <Route
+              element={
+                <EnterpriseOnly>
+                  <MainLayout />
+                </EnterpriseOnly>
+              }
+            >
+              <Route
+                path="/"
+                element={
+                  <ModuleOnly moduleKey="dashboard">
+                    <Dashboard />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/advisor"
+                element={
+                  <ModuleOnly moduleKey="advisor">
+                    <Advisor />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/employees"
+                element={
+                  <ModuleOnly moduleKey="marshals">
+                    <Employees />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/marshals"
+                element={
+                  <ModuleOnly moduleKey="marshals">
+                    <Navigate to="/employees" replace />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/toolbox"
+                element={
+                  <ModuleOnly moduleKey="content">
+                    <Toolbox />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/growth"
+                element={
+                  <ModuleOnly moduleKey="growth">
+                    <Growth />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/activities"
+                element={
+                  <ModuleOnly moduleKey="activities">
+                    <Activities />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/content"
+                element={
+                  <ModuleOnly moduleKey="content">
+                    <ContentFactory />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/execution"
+                element={
+                  <ModuleOnly moduleKey="execution">
+                    <Execution />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/analysis"
+                element={
+                  <ModuleOnly moduleKey="analysis">
+                    <Analysis />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/store-data"
+                element={
+                  <ModuleOnly moduleKey="analysis">
+                    <StoreData />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/assets"
+                element={
+                  <ModuleOnly moduleKey="assets">
+                    <Assets />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/data-intake"
+                element={
+                  <ModuleOnly moduleKey="system">
+                    <Navigate to="/system?tab=data-intake" replace />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/system"
+                element={
+                  <ModuleOnly moduleKey="system">
+                    <System />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/recharge"
+                element={
+                  <RoleOnly roles={['boss']}>
+                    <Recharge />
+                  </RoleOnly>
+                }
+              />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </BrowserRouter>
+    </SessionGate>
   );
 }

@@ -4,7 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, q, curTenant, getTenantConfig } from '../db.js';
 import { logOp, notify } from '../util.js';
-import { precheckByRole, charge } from '../engines/credits.js';
+import {
+  precheck,
+  estimateCallCredits,
+  holdCredits,
+  settleHold,
+  releaseHold,
+} from '../engines/credits.js';
+import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { saveUploadedFile, updateFileExtraction, listFiles, ownedFile, filePublic, isImageExt } from '../engines/filehub.js';
 import { FILE_SKILLS } from '../engines/skillrun.js';
 import * as yunwu from '../engines/yunwu.js';
@@ -36,22 +43,63 @@ r.post('/upload', async (req, res) => {
     let billing = null;
     if (isImageExt(row.ext) && recognize !== false) {
       try {
-        precheckByRole(req.user.id, 'text', req.user.role);
-        const imageMime = row.ext === 'jpg' ? 'jpeg' : row.ext;
-        const out = await yunwu.chat({
-          model: yunwu.routing().vision,
-          system: '你是企业资料识别助手。完整读取图片中的文字、表格、产品、流程和关键数据，按“图片说明、识别内容、可引用字段”输出。不得臆造看不清的信息。',
-          messages: [{ role: 'user', content: [
-            { type: 'text', text: `文件名：${row.name}。请提取这张图片中可供后续对话引用的全部信息。` },
-            { type: 'image_url', image_url: { url: `data:image/${imageMime};base64,${saved.buffer.toString('base64')}` } },
-          ] }],
-          maxTokens: 1600,
+        if (!yunwu.yunwuAvailable()) {
+          throw Object.assign(new Error('识图通道未配置'), { status: 503 });
+        }
+        const holdModel = yunwu.routing().vision;
+        precheck(req.user.id, 'text', holdModel);
+        const hold = holdCredits({
+          userId: req.user.id,
+          feature: '文件中心·图片识别',
+          kind: 'text',
+          model: holdModel,
+          credits: estimateCallCredits({
+            kind: 'text',
+            model: holdModel,
+            texts: [row.name],
+            outputTokens: 1600,
+            // 视觉模型的图片 token 不等于 base64 长度；按文件体积给出保守占扣，
+            // 同时设置上限避免大图在请求线程分配巨量临时字符串。
+            overheadTokens: Math.min(100000, Math.max(6000, Math.ceil(saved.buffer.length / 2))),
+          }),
+          refType: 'uploaded_file_vision',
+          refId: Number(row.id),
+          note: `文件#${row.id}图片识别在供应商调用前预授权；正文未落库则全额退回。`,
         });
-        billing = charge({ userId: req.user.id, feature: '文件中心·图片识别', kind: 'text', model: out.model,
-          usage: { inputTokens: out.inputTokens, outputTokens: out.outputTokens }, aiMode: 'api' });
-        row = updateFileExtraction(row.id, out.text, `AI识图（${out.model}）`);
+        const imageMime = row.ext === 'jpg' ? 'jpeg' : row.ext;
+        const delivered = await executeHeldDelivery({
+          hold,
+          generate: () => yunwu.chat({
+            model: holdModel,
+            system: '你是企业资料识别助手。完整读取图片中的文字、表格、产品、流程和关键数据，按“图片说明、识别内容、可引用字段”输出。不得臆造看不清的信息。',
+            messages: [{ role: 'user', content: [
+              { type: 'text', text: `文件名：${row.name}。请提取这张图片中可供后续对话引用的全部信息。` },
+              { type: 'image_url', image_url: { url: `data:image/${imageMime};base64,${saved.buffer.toString('base64')}` } },
+            ] }],
+            maxTokens: 1600,
+          }),
+          persist: out => withImmediateTransaction(
+            db,
+            () => updateFileExtraction(row.id, out.text, `AI识图（${out.model}）`),
+          ),
+          settle: settleHold,
+          release: releaseHold,
+          settlement: out => ({
+            usage: {
+              inputTokens: out.inputTokens,
+              outputTokens: out.outputTokens,
+            },
+            model: out.model,
+            aiMode: 'api',
+            note: '图片识别正文已完成业务落库',
+          }),
+          releaseNote: '图片识别生成或正文落库失败，预授权全额退回',
+        });
+        billing = delivered.billing;
+        row = delivered.delivery;
       } catch (e) {
         row = updateFileExtraction(row.id, '', '图片已存档·识图待重试');
+        billing = e.billing || null;
       }
     }
     logOp(req.user, '文件中心', '上传并读取文件', `${row.name} / ${row.extract_mode}`);

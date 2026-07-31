@@ -1,0 +1,263 @@
+/* 管理后台外壳样式。
+   原为 Admin.tsx 内的 ADMIN_STYLES 压缩模板字符串（绕开构建管线与样式治理），
+   2026-07-30 迁出为真实 CSS：字号归入 theme.css 档位，颜色改引 token。 */
+
+.admin-shell {
+  display: flex;
+  min-height: 100dvh;
+  background: var(--ui-bg);
+}
+
+/* 侧栏保持深海军蓝（DESIGN.md 布局约束），色值来自 token */
+.admin-sidebar {
+  width: 220px;
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+  user-select: none;
+  color: var(--nav-text);
+  background: linear-gradient(180deg, var(--nav-bg) 0%, var(--nav-bg-2) 100%);
+  border-right: 1px solid var(--nav-border);
+}
+
+.admin-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--nav-divider);
+  margin-bottom: var(--space-3);
+}
+
+.admin-brand img {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 8px 16px rgba(4, 24, 45, 0.18));
+}
+
+.admin-brand-copy {
+  min-width: 0;
+}
+
+.admin-brand-copy > div {
+  font-size: var(--font-3);
+  font-weight: 700;
+  color: var(--nav-text-active);
+  white-space: nowrap;
+}
+
+.admin-brand-copy span {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--font-1);
+  color: var(--nav-text-dim);
+  white-space: nowrap;
+}
+
+.admin-menu {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.admin-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 2px var(--space-3);
+  padding: var(--space-3) 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--nav-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-2);
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.admin-menu-item:hover {
+  background: var(--nav-hover);
+  color: var(--nav-text-active);
+}
+
+.admin-menu-item.active {
+  background: linear-gradient(135deg, var(--nav-active-from), var(--nav-active-to));
+  color: var(--nav-text-active);
+  font-weight: 600;
+  box-shadow: var(--shadow-2);
+}
+
+.admin-sidebar-foot {
+  margin-top: auto;
+  padding: 14px 18px;
+  border-top: 1px solid var(--nav-divider);
+  color: var(--nav-text-dim);
+  font-size: var(--font-1);
+  line-height: 1.8;
+}
+
+.admin-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.admin-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 7px var(--space-5);
+  background: var(--ui-surface);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.admin-topbar-title {
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 600;
+}
+
+.admin-current-user {
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+}
+
+.admin-content {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-5);
+}
+
+.admin-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.admin-catalog-person {
+  min-width: 0;
+  padding: 9px var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+}
+
+.admin-catalog-person b,
+.admin-catalog-person span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-catalog-person b {
+  color: var(--ui-text);
+  font-size: var(--font-1);
+}
+
+.admin-catalog-person span {
+  margin-top: 2px;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+@media (max-width: 820px) {
+  .admin-shell {
+    flex-direction: column;
+  }
+
+  .admin-sidebar {
+    position: relative;
+    width: 100%;
+    height: auto;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--nav-border);
+  }
+
+  .admin-brand {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 9px var(--space-3);
+    border: 0;
+    border-right: 1px solid var(--nav-divider);
+  }
+
+  .admin-brand img {
+    width: 34px;
+    height: 34px;
+  }
+
+  .admin-brand-copy span {
+    display: none;
+  }
+
+  .admin-menu {
+    flex: 0 0 auto;
+    flex-direction: row;
+  }
+
+  .admin-menu-item {
+    flex: 0 0 auto;
+    margin: var(--space-2) 3px;
+    padding: 9px 11px;
+  }
+
+  .admin-sidebar-foot {
+    display: none;
+  }
+
+  .admin-topbar {
+    padding: 7px var(--space-3);
+  }
+
+  .admin-current-user {
+    display: none;
+  }
+
+  .admin-content {
+    padding: var(--space-3);
+  }
+
+  .admin-catalog-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-brand-copy {
+    display: none;
+  }
+
+  .admin-topbar-title {
+    font-size: var(--font-2);
+  }
+
+  .admin-topbar-actions .ant-tag {
+    display: none;
+  }
+}

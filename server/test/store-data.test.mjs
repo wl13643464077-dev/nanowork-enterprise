@@ -60,6 +60,8 @@ let storeOneId;   // 租户一门店
 let storeTwoId;   // 租户二门店
 let dishAId;      // 租户一菜品A
 let dishBId;      // 租户一菜品B
+let itemKeySeq = 0;
+const itemKey = label => `store-items-${label}-${++itemKeySeq}`;
 
 test('KPI 无任何数据时全部返回 null，不编造指标', async () => {
   await withServer(userOne, async base => {
@@ -67,6 +69,8 @@ test('KPI 无任何数据时全部返回 null，不编造指标', async () => {
     assert.equal(response.status, 200);
     assert.equal(body.avgTicket, null);
     assert.equal(body.grossMargin, null);
+    assert.equal(body.operatingMargin, null);
+    assert.equal(body.directFoodCost, null);
     assert.equal(body.breakEven, null);
     assert.equal(body.monthRevenue, null);
     assert.equal(body.monthCost, null);
@@ -192,12 +196,17 @@ test('订单明细：校验订单归属、批量登记与读取', async () => {
     assert.equal(missing.response.status, 404);
     assert.match(missing.body.error, /订单不存在/);
 
-    const badQty = await request(base, `/store-data/orders/${orderOne}/items`, 'POST', { items: [{ dish_id: dishAId, qty: 0 }] });
+    const badQty = await request(base, `/store-data/orders/${orderOne}/items`, 'POST', {
+      idempotencyKey: itemKey('bad-qty'),
+      items: [{ dish_id: dishAId, qty: 0 }],
+    });
     assert.equal(badQty.response.status, 400);
     assert.match(badQty.body.error, /数量/);
 
     // 订单一：酸汤鱼98×1 + 柠檬茶12×1 = 110
+    const orderOneKey = itemKey('order-one');
     const first = await request(base, `/store-data/orders/${orderOne}/items`, 'POST', {
+      idempotencyKey: orderOneKey,
       items: [
         { dish_id: dishAId, qty: 1 },
         { dish_id: dishBId, qty: 1, unit_price: 12 },
@@ -207,9 +216,29 @@ test('订单明细：校验订单归属、批量登记与读取', async () => {
     assert.equal(first.body.created.length, 2);
     assert.equal(first.body.sum, 110);
     assert.equal(first.body.created[0].dish_name_snapshot, '酸汤鱼');
+    assert.equal(first.body.storeId, storeOneId);
+    const replay = await request(base, `/store-data/orders/${orderOne}/items`, 'POST', {
+      idempotencyKey: orderOneKey,
+      items: [
+        { dish_id: dishAId, qty: 1 },
+        { dish_id: dishBId, qty: 1, unit_price: 12 },
+      ],
+    });
+    assert.equal(replay.response.status, 200);
+    assert.equal(replay.body.replayed, true);
+    assert.equal(q.get(
+      'SELECT COUNT(*) n FROM order_items WHERE tenant_id=1 AND order_id=?',
+      orderOne,
+    ).n, 2);
+    const conflictingReplay = await request(base, `/store-data/orders/${orderOne}/items`, 'POST', {
+      idempotencyKey: orderOneKey,
+      items: [{ dish_id: dishAId, qty: 2 }],
+    });
+    assert.equal(conflictingReplay.response.status, 409);
 
     // 订单二：酸汤鱼98×1 − 优惠10 = 88
     const second = await request(base, `/store-data/orders/${orderTwo}/items`, 'POST', {
+      idempotencyKey: itemKey('order-two'),
       items: [{ dish_id: dishAId, qty: 1, discount: 10 }],
     });
     assert.equal(second.response.status, 201);
@@ -219,6 +248,39 @@ test('订单明细：校验订单归属、批量登记与读取', async () => {
     assert.equal(read.response.status, 200);
     assert.equal(read.body.total, 2);
     assert.equal(read.body.sum, 110);
+    assert.equal(q.get('SELECT store_id FROM orders WHERE tenant_id=1 AND id=?', orderOne).store_id, storeOneId);
+
+    const rollbackOrder = Number(runWithTenant(1, () => q.run(
+      `INSERT INTO orders(lead_id,product,amount,type,created_at)
+       VALUES(NULL,'事务回滚验证',10,'到店','2026-09-10 12:00:00')`,
+    ).lastInsertRowid));
+    db.exec(`CREATE TRIGGER injected_order_item_batch_failure
+      BEFORE INSERT ON order_items
+      WHEN NEW.order_id=${rollbackOrder} AND NEW.dish_name_snapshot='第二条失败'
+      BEGIN
+        SELECT RAISE(ABORT,'injected order item persistence failure');
+      END`);
+    try {
+      const failed = await request(base, `/store-data/orders/${rollbackOrder}/items`, 'POST', {
+        idempotencyKey: itemKey('rollback'),
+        store_id: storeOneId,
+        items: [
+          { dish_name_snapshot: '第一条', qty: 1, unit_price: 5 },
+          { dish_name_snapshot: '第二条失败', qty: 1, unit_price: 5 },
+        ],
+      });
+      assert.equal(failed.response.status, 500);
+      assert.equal(q.get(
+        'SELECT COUNT(*) n FROM order_items WHERE tenant_id=1 AND order_id=?',
+        rollbackOrder,
+      ).n, 0);
+      assert.equal(q.get(
+        'SELECT store_id FROM orders WHERE tenant_id=1 AND id=?',
+        rollbackOrder,
+      ).store_id, null);
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS injected_order_item_batch_failure');
+    }
   });
 });
 
@@ -230,12 +292,19 @@ test('KPI 计算：真实客单价 / 菜品TOP / 毛利率 / 盈亏平衡与月�
     assert.equal(body.monthRevenue, 228);
     assert.equal(body.avgTicket, 99);          // 198 / 2
     assert.equal(body.monthCost, 100);         // 60 + 40（六月房租已删）
-    assert.equal(body.grossMargin, 56.1);      // (228-100)/228 = 56.1%
+    assert.equal(body.directFoodCost, 60);
+    assert.equal(body.grossMargin, 73.7);      // (228-60)/228 = 73.7%
+    assert.equal(body.operatingMargin, 56.1);  // (228-100)/228 = 56.1%
     assert.equal(body.breakEven, 228);         // 228/100 = 228%
     assert.equal(body.dishTop[0].name, '酸汤鱼');
     assert.equal(body.dishTop[0].qty, 2);
     assert.equal(body.dishTop[0].amount, 186); // 98 + 88
     assert.equal(body.dishTop.length, 2);
+    const scoped = await request(base, `/store-data/kpi?month=2026-07&store_id=${storeOneId}`);
+    assert.equal(scoped.body.monthRevenue, 198);
+    assert.equal(scoped.body.avgTicket, 99);
+    assert.equal(scoped.body.grossMargin, 69.7);
+    assert.equal(scoped.body.operatingMargin, 49.5);
 
     const badMonth = await request(base, '/store-data/kpi?month=2026-13');
     assert.equal(badMonth.response.status, 400);
@@ -251,6 +320,7 @@ test('KPI 计算：真实客单价 / 菜品TOP / 毛利率 / 盈亏平衡与月�
     assert.equal(body.avgTicket, null);
     assert.equal(body.monthCost, null);
     assert.equal(body.grossMargin, null);
+    assert.equal(body.operatingMargin, null);
     assert.equal(body.breakEven, null);
   });
 });

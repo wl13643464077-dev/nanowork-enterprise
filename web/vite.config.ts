@@ -15,7 +15,7 @@ export default defineConfig({
         // xlsx 走动态 import()，只有用户点导入/导出时才加载
         // 注意：antd 不整体分组——那会把 Table/DatePicker 等原本按路由懒加载的
         // 组件全部拽进启动路径，首屏反而变大；保持 antd 由构建器按共享关系自动拆
-        advancedChunks: {
+        codeSplitting: {
           groups: [
             { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom)[\\/]/ },
             { name: 'vendor-echarts', test: /node_modules[\\/](echarts|zrender)[\\/]/ },

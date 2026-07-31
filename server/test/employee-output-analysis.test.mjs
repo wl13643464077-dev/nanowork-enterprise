@@ -289,6 +289,33 @@ test('能力域筛选与透视生效，来源和能力域保持独立口径', as
   });
 });
 
+test('模板工具底稿标记待补材料，不计入已完成产出', async () => {
+  let draftId;
+  runWithTenant(1, () => {
+    draftId = q.run(`INSERT INTO tool_runs(
+      tool_key,tool_title,title,status,employee_idx,employee_name,specialist_id,created_by,
+      input_json,input_summary,result_md,assumptions_json,evidence_json,provenance_json,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    'hot', '今日必发', '未完成模板工具', 'done', 101, employee.name, employee.id, bossA.id,
+    '{}', '仅模板输入', '# 待补材料模板', '[]', '[]',
+    JSON.stringify({ mode: 'template', completionState: 'draft' }),
+    '2026-07-25 09:00:00', '2026-07-25 09:00:01').lastInsertRowid;
+  });
+  try {
+    await withServer(bossA, async base => {
+      const data = await fetch(`${base}/employee-outputs?start=2026-07-25&end=2026-07-25&source=tool`)
+        .then(response => response.json());
+      assert.equal(data.summary.total, 1);
+      assert.equal(data.summary.withOutput, 0);
+      assert.equal(data.summary.completed, 0);
+      assert.equal(data.rows[0].status, '待补材料');
+      assert.equal(data.rows[0].evidenceKind, '未完成模板底稿');
+    });
+  } finally {
+    runWithTenant(1, () => q.run('DELETE FROM tool_runs WHERE id=?', draftId));
+  }
+});
+
 test('待核验数据集标记来自数据库持久状态，并使用中性真实表述', async () => {
   q.run(`UPDATE tenants SET data_mode='demo' WHERE id=1`);
   try {

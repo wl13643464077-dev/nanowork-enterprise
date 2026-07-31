@@ -23,10 +23,14 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
         rehypePlugins={[[rehypeSanitize, schema]]}
         components={{
           a: ({ href, children }) => (
-            <a href={safeUrl(href)} target="_blank" rel="noopener noreferrer">{children}</a>
+            <a href={safeUrl(href)} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
           ),
         }}
-      >{content}</ReactMarkdown>
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 });

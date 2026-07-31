@@ -185,13 +185,45 @@ function actualRevenueSince(start) {
   return orders || daily;
 }
 
+function goalProgress(record, label, actual) {
+  if (!record) {
+    return {
+      target: 0,
+      rate: null,
+      risk: null,
+      status: 'missing',
+      statusText: `尚未设置${label}经营目标，完成率暂不计算`,
+    };
+  }
+  const target = Math.max(0, Number(record.revenue_target) || 0);
+  if (target === 0) {
+    return {
+      target,
+      rate: null,
+      risk: null,
+      status: 'zero',
+      statusText: `${label}经营目标为0，完成率暂不计算`,
+    };
+  }
+  const rate = pct(actual, target);
+  const risk = rate < 60;
+  return {
+    target,
+    rate,
+    risk,
+    status: rate >= 100 ? 'completed' : risk ? 'at_risk' : 'tracking',
+    statusText: rate >= 100 ? `${label}经营目标已达成` : risk ? `${label}经营目标完成率低于60%，需关注` : `${label}经营目标推进中`,
+  };
+}
+
 r.get('/summary', (req, res) => {
   const m = monthStart();
   const taskScope = userScopeClause(req.user, 'assignee_id');
   const joinedTaskScope = userScopeClause(req.user, 't.assignee_id');
   const leadScope = userScopeClause(req.user, 'owner_id');
-  const goal = q.get(`SELECT * FROM goals WHERE tenant_id = ${curTenant()} AND period = ?`, m.slice(0, 7)) || {};
+  const goal = q.get(`SELECT * FROM goals WHERE tenant_id = ${curTenant()} AND period = ?`, m.slice(0, 7));
   const mAmount = actualRevenueSince(m);
+  const monthlyGoal = goalProgress(goal, '月度', mAmount);
   const weekTotal = q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= date('now','-6 day')${taskScope.sql}`, ...taskScope.params)?.n || 1;
   const weekDone = q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= date('now','-6 day') AND status='已完成'${taskScope.sql}`, ...taskScope.params)?.n || 0;
   const monthTotal = q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= ?${taskScope.sql}`, m, ...taskScope.params)?.n || 0;
@@ -210,7 +242,10 @@ r.get('/summary', (req, res) => {
     + pct(passed, subAll || 1) * 0.25
   );
   res.json({
-    goalRate: pct(mAmount, goal.revenue_target || 1500000),
+    goalRate: monthlyGoal.rate,
+    goalTarget: monthlyGoal.target,
+    goalStatus: monthlyGoal.status,
+    goalStatusText: monthlyGoal.statusText,
     weekTaskRate: pct(weekDone, weekTotal),
     pendingReview: q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND status='待审核'${taskScope.sql}`, ...taskScope.params)?.n || 0,
     riskTasks: q.get(`SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND risk=1 AND status NOT IN ('已完成')${taskScope.sql}`, ...taskScope.params)?.n || 0,
@@ -224,15 +259,14 @@ r.get('/goals', (req, res) => {
   const month = today().slice(0, 7);
   const quarter = `${year}-Q${Math.ceil((+today().slice(5, 7)) / 3)}`;
   const rows = [['年度', year], ['季度', quarter], ['月度', month]].map(([label, period]) => {
-    const g = q.get(`SELECT * FROM goals WHERE tenant_id = ${curTenant()} AND period = ?`, period) || {};
+    const g = q.get(`SELECT * FROM goals WHERE tenant_id = ${curTenant()} AND period = ?`, period);
     let actual = 0;
     if (label === '年度') actual = actualRevenueSince(`${year}-01-01`);
     else if (label === '季度') {
       const qStart = `${year}-${String((Math.ceil((+today().slice(5, 7)) / 3) - 1) * 3 + 1).padStart(2, '0')}-01`;
       actual = actualRevenueSince(qStart);
     } else actual = actualRevenueSince(monthStart());
-    const rate = pct(actual, g.revenue_target || 1);
-    return { label, period, target: g.revenue_target || 0, actual, rate, risk: rate < 80 - 20 };
+    return { label, period, actual, ...goalProgress(g, label, actual) };
   });
   res.json(rows);
 });
@@ -630,15 +664,17 @@ r.get('/drill/:kind', (req, res) => {
   res.status(400).json({ error: '未知钻取类型' });
 });
 
-// ===== 目标三层钻取（经营看板资料包口径：年600万/团队月50万/个人月20万）=====
+// ===== 目标三层钻取（年度/团队月度/个人月度均读取本企业当前配置）=====
 r.get('/goals-drill', (req, res) => {
   const year = today().slice(0, 4);
-  const manager = isManager(req.user);
-  const yearTarget = getTenantConfig('year_revenue_target', 6000000);
-  const monthTarget = getTenantConfig('month_revenue_target', 500000);
-  const personalTarget = getTenantConfig('personal_month_target', 200000);
+  const monthPeriod = today().slice(0, 7);
+  const yearTarget = Math.max(0, Number(getTenantConfig('year_revenue_target', 6000000)) || 0);
+  const monthTarget = Math.max(0, Number(getTenantConfig('month_revenue_target', 500000)) || 0);
+  const personalTarget = Math.max(0, Number(getTenantConfig('personal_month_target', 200000)) || 0);
   const yearActual = actualRevenueSince(`${year}-01-01`);
   const monthActual = actualRevenueSince(monthStart());
+  const yearProgress = goalProgress({ revenue_target: yearTarget }, '年度', yearActual);
+  const monthProgress = goalProgress({ revenue_target: monthTarget }, '月度', monthActual);
   // 年度按月拆解构成
   const hasOrderFacts = q.get(`SELECT COUNT(*) n FROM orders WHERE tenant_id=${curTenant()} AND created_at>=?`, `${year}-01-01`)?.n || 0;
   const byMonth = hasOrderFacts
@@ -655,18 +691,24 @@ r.get('/goals-drill', (req, res) => {
       (SELECT COUNT(*) FROM leads l WHERE l.tenant_id = ${curTenant()} AND l.owner_id = u.id AND l.stage NOT IN ('已成交','复购','已流失')) pipeline
     FROM users u WHERE u.tenant_id = ${curTenant()} AND (u.role IN ('sales') OR u.dept LIKE '%销售%')${personalScope.sql} ORDER BY actual DESC`, ...personalParams);
   // 缺口反推（与作战计划引擎同口径）
-  const gapAmount = Math.max(0, monthTarget - monthActual);
+  const canCalculateGap = monthProgress.rate !== null;
+  const gapAmount = canCalculateGap ? Math.max(0, monthProgress.target - monthActual) : null;
   const avgDeal = getTenantConfig('avg_deal_amount', 120);
   const daysLeft = Math.max(1, 30 - new Date().getDate());
-  const needDealsPerDay = Math.ceil(gapAmount / avgDeal / daysLeft);
-  const inviteTarget = Math.max(3, Math.ceil(needDealsPerDay / 0.25 / 0.6));
+  const needDealsPerDay = canCalculateGap ? Math.ceil(gapAmount / avgDeal / daysLeft) : null;
+  const inviteTarget = canCalculateGap ? Math.max(3, Math.ceil(needDealsPerDay / 0.25 / 0.6)) : null;
   res.json({
-    year: { period: year, target: yearTarget, actual: yearActual, rate: pct(yearActual, yearTarget), byMonth },
-    month: { period: today().slice(0, 7), target: monthTarget, actual: monthActual, rate: pct(monthActual, monthTarget),
+    year: { period: year, actual: yearActual, ...yearProgress, byMonth },
+    month: { period: monthPeriod, actual: monthActual, ...monthProgress,
       gap: gapAmount, daysLeft, needDealsPerDay, inviteTarget, avgDeal },
-    personal: { target: personalTarget, rows: personal.map(p => ({ ...p, rate: pct(p.actual, personalTarget) })) },
+    personal: {
+      target: personalTarget,
+      status: personalTarget > 0 ? 'configured' : 'zero',
+      statusText: personalTarget > 0 ? '个人月度目标来自本企业经营配置' : '个人月度目标为0，完成率暂不计算',
+      rows: personal.map(p => ({ ...p, rate: personalTarget > 0 ? pct(p.actual, personalTarget) : null })),
+    },
     rules: [
-      `目标口径来自本企业当前配置：年度目标${yearTarget}、团队月度目标${monthTarget}、个人月度目标${personalTarget}；调整后需保留负责人和生效日期`,
+      `年度目标：${yearProgress.statusText}；团队月度目标：${monthProgress.statusText}；个人月度目标：${personalTarget > 0 ? personalTarget : '未设置'}。目标调整后需保留负责人和生效日期`,
       '人员编制与目标调整须结合门店产能、营业时段、历史订单和服务质量，不使用固定人均增量承诺',
       '缺口反推中的客单价和转化率必须来自本企业已确认配置或真实历史数据；缺失时仅作待确认估算',
       '门店主题、会员、社区或渠道合作活动均在活动中心逐场设置目标，并以真实报名、到场、订单、收入和成本复盘',

@@ -307,6 +307,8 @@ function requiredPositionSkill(employee) {
 function historicalSkills(profile) {
   return profile.skills.map(skill => ({
     ...clone(skill),
+    legacyVerificationStatus: skill.verificationStatus,
+    verificationStatus: skill.verificationLevel,
     origin: 'legacy_allowlist_snapshot',
     required: false,
     locked: true,
@@ -325,8 +327,8 @@ function buildSkillLibrary(employee, profile) {
     injectionPolicy: {
       requiredPositionSkill: 'always',
       historicalSkills: 'default_on',
-      historicalVerificationStatus: 'legacy_unverified',
-      historicalFactPolicy: '不得作为当前平台事实；使用前必须重新核验时效、适用范围与来源。',
+      historicalVerificationStatus: 'catalog_contract_verified',
+      historicalFactPolicy: '目录完整性与执行注入契约已验证；第三方说法、平台时效和真实业务效果仍须用当前来源与业务样本复核。',
     },
   };
 }
@@ -458,6 +460,10 @@ export function buildContentEmployeeWorkbenchProfile(idx) {
       },
       historicalSkills: {
         schemaVersion: EMPLOYEE_SKILL_CATALOG.schemaVersion,
+        evidenceSchemaVersion: EMPLOYEE_SKILL_CATALOG.verificationEvidence.schemaVersion,
+        verificationLevel: EMPLOYEE_SKILL_CATALOG.verificationEvidence.policy.verificationLevel,
+        proves: clone(EMPLOYEE_SKILL_CATALOG.verificationEvidence.policy.proves),
+        doesNotProve: clone(EMPLOYEE_SKILL_CATALOG.verificationEvidence.policy.doesNotProve),
         profileIdx: skillProfile.idx,
         expectedSkillCount: skillProfile.expectedSkillCount,
         snapshot: clone(EMPLOYEE_SKILL_CATALOG.source.snapshot),
@@ -486,7 +492,8 @@ function requiredSkillLines(skills) {
 function historicalSkillLines(skills) {
   return skills.map((skill, index) => (
     `${index + 1}. ${skill.title}：${skill.detail}`
-    + `（原来源：${skill.source}；状态：${skill.verificationStatus}；`
+    + `（原来源：${skill.source}；目录验证：${skill.verificationLevel}；`
+    + `效果验证：${skill.effectValidation}；`
     + `快照：${skill.sourceSnapshot.date}/${skill.sourceSnapshot.sha256}）`
   ));
 }
@@ -496,7 +503,7 @@ function humanApprovalLines(workbench) {
     `岗位审批模式：${workbench.dispatch.approval.code}｜${workbench.dispatch.approval.description}`,
     '本次输出只作为待人工审阅的岗位交付物，不代表已发布、已执行或已产生外部效果。',
     '对外发布、账号操作、付费投放、采购、合同、法律/监管判断及其他不可逆动作，必须由有权限的人类审批后执行。',
-    '历史待核验技能不得作为当前平台事实；凡依赖时效、平台规则、价格、政策或外部数据的结论，必须重新核验并标明依据。',
+    '历史技能已通过目录完整性与执行注入契约验证，但不等于第三方说法、平台时效或业务效果已验证；相关结论必须重新核验并标明当前依据。',
   ];
 }
 
@@ -532,8 +539,8 @@ export function compileContentEmployeeSoloPrompt(idx, task) {
     '【出厂必备岗位 Skill·不可停用】',
     ...requiredSkillLines(workbench.skillLibrary.required),
     '',
-    '【历史待核验技能·默认注入】',
-    '以下技能来自旧数据库白名单快照，状态统一为 legacy_unverified。它们是待核验工作线索，历史待核验技能不得作为当前平台事实。',
+    '【历史技能·目录与执行注入契约已验证】',
+    '以下技能来自旧数据库白名单快照，已逐项校验岗位绑定、来源快照、内容指纹和离线注入样本；这不证明第三方说法、平台算法、实时效果或业务结果，使用时必须重新核验当前事实。',
     ...historicalSkillLines(workbench.skillLibrary.historical),
     '',
     '【旧版单独派活提示词原文·占位符不展开】',
@@ -669,6 +676,24 @@ function normalizeConnectorWorkConfig(profile, raw) {
     output.timeoutSeconds = value.timeoutSeconds;
   }
   return output;
+}
+
+/**
+ * 将租户保存的内容员工工作配置与该岗位出厂默认值合并，并执行与连接器运行
+ * 相同的白名单、类型和范围校验。自动任务与手动派活必须共用这一口径。
+ */
+export function resolveContentEmployeeWorkConfig(idx, raw = {}) {
+  const profile = buildContentEmployeeWorkbenchProfile(idx);
+  return deepFreeze(normalizeConnectorWorkConfig(profile, raw));
+}
+
+export function contentEmployeeOutputTokenBudget(outputLength) {
+  if (!Object.hasOwn(LENGTH_HINTS, outputLength)) {
+    fail('outputLength必须是lite、std或full');
+  }
+  if (outputLength === 'lite') return 1600;
+  if (outputLength === 'full') return 4000;
+  return 2800;
 }
 
 function normalizeConnectorCustomSkills(raw) {

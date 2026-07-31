@@ -21,7 +21,14 @@ export default function Pending() {
             : `「${u?.tenant?.name || '您的企业'}」已提交注册，正在等待平台审核开通。开通后即可登录使用全部功能，我们会尽快处理。`
         }
         extra={
-          <Button type="primary" className="au-submit" onClick={() => { clearAuth(); nav('/login'); }}>
+          <Button
+            type="primary"
+            className="au-submit"
+            onClick={() => {
+              clearAuth();
+              nav('/login');
+            }}
+          >
             返回登录
           </Button>
         }

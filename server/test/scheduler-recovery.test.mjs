@@ -17,9 +17,14 @@ process.env.SEED_DEMO = 'false';
 
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
 const {
+  recoverStaleAiWorkAcrossTenants,
+  recoverStaleAgentTasks,
   recoverStaleContentAutomationRuns,
+  recoverStaleContentEmployeeRuns,
+  recoverStaleMediaJobs,
   runScheduledJobs,
 } = await import('../src/engines/scheduler.js');
+const { creditTenant, holdCredits, releaseHold } = await import('../src/engines/credits.js');
 
 initSchema();
 migrateV2();
@@ -66,6 +71,20 @@ function finishClaim({ runId, ruleId }) {
     q.run(`UPDATE content_automation_rules SET last_status='成功',last_error=NULL
       WHERE tenant_id=? AND id=?`, 1, ruleId);
   });
+}
+
+function insertContentEmployeeRun({
+  title,
+  resultMd = null,
+  createdAt = '2026-07-23 08:00:00',
+  updatedAt = createdAt,
+}) {
+  return runWithTenant(1, () => Number(q.run(`INSERT INTO content_employee_runs(
+    employee_idx,employee_key,employee_name,employee_group,title,type,requirement,
+    status,result_md,profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
+  ) VALUES(0,'trend','趋势官','热点雷达部',?,'趋势简报','恢复测试',
+    '生成中',?,'2026-07-30','scheduler-recovery-hash','{}',?,?,?)`,
+  title, resultMd, creatorId, createdAt, updatedAt).lastInsertRowid));
 }
 
 test('服务恢复会原子终止超时运行，保留下次计划且同一周期不重跑', async () => {
@@ -144,6 +163,437 @@ test('恢复旧任务不会覆盖同规则较新运行的最终状态', () => {
   assert.equal(rule.last_error, null);
 });
 
+test('恢复无产出的超时内容自动化会原子释放关联预授权，并记录已退款口径', () => {
+  const ruleId = insertRule({
+    name: '占扣恢复规则',
+    nextRunAt: '2026-07-24 12:00:00',
+  });
+  const runId = insertRunning({
+    ruleId,
+    trigger: 'immediate',
+    claimKey: 'stale-held-no-output',
+    startedAt: '2026-07-23 08:00:00',
+  });
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const hold = holdCredits({
+    userId: creatorId,
+    feature: '内容自动化恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 17,
+    refType: 'content_automation_run',
+    refId: runId,
+  });
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 17);
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleContentAutomationRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.runId === runId)?.billingState, 'released');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before);
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', hold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT credits FROM credit_logs WHERE id=?', hold.logId).credits, 0);
+  const run = q.get('SELECT status,snapshot_json FROM content_automation_runs WHERE id=?', runId);
+  assert.equal(run.status, '失败');
+  assert.equal(JSON.parse(run.snapshot_json).billing.state, 'released');
+});
+
+test('恢复已有产物的超时内容自动化保留预授权待对账，不自动退款', () => {
+  const ruleId = insertRule({
+    name: '已有产物待对账规则',
+    nextRunAt: '2026-07-24 13:00:00',
+  });
+  const contentId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO contents(type,title,body,status,creator_id)
+     VALUES('趋势简报','恢复测试产物','已形成的业务产物','待审核',?)`,
+    creatorId,
+  ).lastInsertRowid));
+  const runId = insertRunning({
+    ruleId,
+    trigger: 'immediate',
+    claimKey: 'stale-held-with-output',
+    startedAt: '2026-07-23 08:00:00',
+  });
+  q.run('UPDATE content_automation_runs SET content_id=? WHERE id=?', contentId, runId);
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const hold = holdCredits({
+    userId: creatorId,
+    feature: '内容自动化已有产物恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 19,
+    refType: 'content_automation_run',
+    refId: runId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleContentAutomationRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.runId === runId)?.billingState, 'pending_reconciliation');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 19);
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', hold.holdId).status, 'held');
+  const snapshot = JSON.parse(q.get(
+    'SELECT snapshot_json FROM content_automation_runs WHERE id=?',
+    runId,
+  ).snapshot_json);
+  assert.equal(snapshot.billing.state, 'pending_reconciliation');
+  releaseHold(hold, '测试结束清理待对账占扣');
+});
+
+test('恢复超时数字员工任务：无产出原子退款，有产出保留占扣并恢复到待审阅', () => {
+  const staleAt = '2026-07-23 08:00:00';
+  const noOutputTaskId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,created_by,created_at)
+     VALUES(1,'无产出恢复','经营诊断','恢复测试','生成中',?,?)`,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const noOutputHold = holdCredits({
+    userId: creatorId,
+    feature: '数字员工无产出恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 23,
+    refType: 'agent_task',
+    refId: noOutputTaskId,
+  });
+
+  const contentId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO contents(type,title,body,status,creator_id)
+     VALUES('员工产出','已有产出恢复','可审阅产物','待审核',?)`,
+    creatorId,
+  ).lastInsertRowid));
+  const outputTaskId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,output_id,created_by,created_at)
+     VALUES(1,'已有产出恢复','经营诊断','恢复测试','生成中',?,?,?)`,
+    contentId,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const outputHold = holdCredits({
+    userId: creatorId,
+    feature: '数字员工已有产出恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 29,
+    refType: 'agent_task',
+    refId: outputTaskId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleAgentTasks(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.taskId === noOutputTaskId)?.billingState, 'released');
+  assert.equal(recovered.find(item => item.taskId === outputTaskId)?.billingState, 'pending_reconciliation');
+  assert.equal(q.get('SELECT status FROM agent_tasks WHERE id=?', noOutputTaskId).status, '失败');
+  assert.equal(q.get('SELECT status FROM agent_tasks WHERE id=?', outputTaskId).status, '待审阅');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', noOutputHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', outputHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 29);
+  releaseHold(outputHold, '测试结束清理待对账占扣');
+});
+
+test('恢复超时媒体任务：无交付且无供应商任务号退款；已有产物待对账；视频任务号继续轮询', () => {
+  const staleAt = '2026-07-23 08:00:00';
+  const emptyJobId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
+     VALUES(?,'image','gpt-image-2','无交付恢复','处理中',?)`,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const emptyHold = holdCredits({
+    userId: creatorId,
+    feature: '媒体无交付恢复测试',
+    kind: 'image',
+    model: 'gpt-image-2',
+    credits: 31,
+    refType: 'media_job',
+    refId: emptyJobId,
+  });
+
+  const deliveredJobId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,url,created_at)
+     VALUES(?,'image','gpt-image-2','已有交付恢复','处理中','https://example.invalid/result.png',?)`,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const deliveredHold = holdCredits({
+    userId: creatorId,
+    feature: '媒体已有交付恢复测试',
+    kind: 'image',
+    model: 'gpt-image-2',
+    credits: 37,
+    refType: 'media_job',
+    refId: deliveredJobId,
+  });
+
+  const videoJobId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,task_id,created_at)
+     VALUES(?,'video','kling-video','继续轮询恢复','处理中','provider-task-123',?)`,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const videoHold = holdCredits({
+    userId: creatorId,
+    feature: '媒体视频轮询恢复测试',
+    kind: 'video',
+    model: 'kling-video',
+    credits: 41,
+    refType: 'media_job',
+    refId: videoJobId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.jobId === emptyJobId)?.billingState, 'released');
+  assert.equal(recovered.find(item => item.jobId === deliveredJobId)?.billingState, 'pending_reconciliation');
+  assert.equal(recovered.find(item => item.jobId === videoJobId)?.action, 'continue_provider_polling');
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', emptyJobId).status, '失败');
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', deliveredJobId).status, '成功');
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', videoJobId).status, '处理中');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', emptyHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', deliveredHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', videoHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 37 - 41);
+  releaseHold(deliveredHold, '测试结束清理已有产物待对账占扣');
+  releaseHold(videoHold, '测试结束清理视频轮询占扣');
+});
+
+test('恢复超时内容员工运行：无产物原子退款，有产物保留占扣待对账，活跃运行不受影响', () => {
+  const emptyRunId = insertContentEmployeeRun({ title: '无产物内容员工恢复' });
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const emptyHold = holdCredits({
+    userId: creatorId,
+    feature: '内容员工无产物恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 43,
+    refType: 'content_employee_run',
+    refId: emptyRunId,
+  });
+
+  const deliveredRunId = insertContentEmployeeRun({
+    title: '已有产物内容员工恢复',
+    resultMd: '# 已落库的趋势简报\n\n这是可供人工审阅的业务产物。',
+  });
+  const deliveredHold = holdCredits({
+    userId: creatorId,
+    feature: '内容员工已有产物恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 47,
+    refType: 'content_employee_run',
+    refId: deliveredRunId,
+  });
+  const activeRunId = insertContentEmployeeRun({
+    title: '仍在安全窗口的内容员工运行',
+    createdAt: '2026-07-23 08:00:00',
+    updatedAt: '2026-07-23 09:50:00',
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleContentEmployeeRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.runId === emptyRunId)?.billingState, 'released');
+  assert.equal(
+    recovered.find(item => item.runId === deliveredRunId)?.billingState,
+    'pending_reconciliation',
+  );
+  assert.equal(recovered.some(item => item.runId === activeRunId), false);
+
+  const emptyRun = q.get(
+    'SELECT status,snapshot_json,updated_at FROM content_employee_runs WHERE id=?',
+    emptyRunId,
+  );
+  assert.equal(emptyRun.status, '失败');
+  assert.equal(emptyRun.updated_at, '2026-07-23 10:00:00');
+  assert.equal(JSON.parse(emptyRun.snapshot_json).billing.state, 'released');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', emptyHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT credits FROM credit_logs WHERE id=?', emptyHold.logId).credits, 0);
+
+  const deliveredRun = q.get(
+    'SELECT status,snapshot_json FROM content_employee_runs WHERE id=?',
+    deliveredRunId,
+  );
+  assert.equal(deliveredRun.status, '待审阅');
+  assert.equal(
+    JSON.parse(deliveredRun.snapshot_json).billing.state,
+    'pending_reconciliation',
+  );
+  assert.equal(
+    q.get('SELECT status FROM credit_holds WHERE id=?', deliveredHold.holdId).status,
+    'held',
+  );
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 47);
+  assert.equal(
+    q.get('SELECT status FROM content_employee_runs WHERE id=?', activeRunId).status,
+    '生成中',
+  );
+  releaseHold(deliveredHold, '测试结束清理内容员工已有产物待对账占扣');
+});
+
+test('内容员工运行恢复接入关闭调度器时的启动恢复与每轮统计', async () => {
+  const startupRunId = insertContentEmployeeRun({ title: '关闭调度器启动恢复' });
+  const startupHold = holdCredits({
+    userId: creatorId,
+    feature: '内容员工启动恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 11,
+    refType: 'content_employee_run',
+    refId: startupRunId,
+  });
+  process.env.ENABLE_SCHEDULER = 'false';
+  const startupRecovered = recoverStaleAiWorkAcrossTenants(
+    new Date('2026-07-23T02:00:00.000Z'),
+  );
+  const tenantStartup = startupRecovered.find(item => item.tenantId === 1);
+  assert.equal(tenantStartup.contentEmployeeRuns.length, 1);
+  assert.equal(tenantStartup.contentEmployeeRuns[0].runId, startupRunId);
+  assert.equal(
+    q.get('SELECT status FROM credit_holds WHERE id=?', startupHold.holdId).status,
+    'settled',
+  );
+
+  const tickRunId = insertContentEmployeeRun({ title: '定时轮次恢复统计' });
+  const tickHold = holdCredits({
+    userId: creatorId,
+    feature: '内容员工轮次恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 13,
+    refType: 'content_employee_run',
+    refId: tickRunId,
+  });
+  const tick = runScheduledJobs(new Date('2026-07-23T02:00:00.000Z'), {
+    contentAutomationRunner: async () => assert.fail('本用例不应触发内容自动化供应商调用'),
+  });
+  await tick.pending;
+  assert.equal(
+    tick.results.find(item => item.tenantId === 1).contentEmployeeRunsRecovered,
+    1,
+  );
+  assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', tickRunId).status, '失败');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', tickHold.holdId).status, 'settled');
+});
+
+test('启动恢复覆盖停用租户，单条损坏不阻断同租户其余记录和其他租户', () => {
+  const createRecoveryTenant = ({ name, status, username }) => {
+    const tenantId = Number(q.run(
+      `INSERT INTO tenants(name,status,credits,total_recharged) VALUES(?,?,0,0)`,
+      name,
+      status,
+    ).lastInsertRowid);
+    const userId = Number(q.run(
+      `INSERT INTO users(username,password_hash,name,role,status,tenant_id)
+       VALUES(?,'x',?,'boss','启用',?)`,
+      username,
+      `${name}老板`,
+      tenantId,
+    ).lastInsertRowid);
+    creditTenant({ tenantId, delta: 1000, userId, feature: '恢复完整性专项充值' });
+    return { tenantId, userId };
+  };
+
+  const disabled = createRecoveryTenant({
+    name: '停用恢复企业',
+    status: '已停用',
+    username: 'scheduler-disabled-owner',
+  });
+  const active = createRecoveryTenant({
+    name: '并行恢复企业',
+    status: '已开通',
+    username: 'scheduler-active-owner',
+  });
+  const insertTenantRun = ({ tenantId, userId, title }) => runWithTenant(
+    tenantId,
+    () => Number(q.run(`INSERT INTO content_employee_runs(
+      employee_idx,employee_key,employee_name,employee_group,title,type,requirement,
+      status,result_md,profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
+    ) VALUES(0,'trend','趋势官','热点雷达部',?,'趋势简报','恢复完整性测试',
+      '生成中',NULL,'2026-07-30','recovery-integrity-hash','{}',?,
+      '2026-07-23 08:00:00','2026-07-23 08:00:00')`,
+    title, userId).lastInsertRowid),
+  );
+  const badRunId = insertTenantRun({ ...disabled, title: '损坏记录' });
+  const goodDisabledRunId = insertTenantRun({ ...disabled, title: '停用租户正常记录' });
+  const goodActiveRunId = insertTenantRun({ ...active, title: '其他租户正常记录' });
+  const badHold = holdCredits({
+    userId: disabled.userId,
+    feature: '损坏恢复记录',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 31,
+    refType: 'content_employee_run',
+    refId: badRunId,
+  });
+  const goodDisabledHold = holdCredits({
+    userId: disabled.userId,
+    feature: '停用租户恢复记录',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 37,
+    refType: 'content_employee_run',
+    refId: goodDisabledRunId,
+  });
+  const goodActiveHold = holdCredits({
+    userId: active.userId,
+    feature: '其他租户恢复记录',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 41,
+    refType: 'content_employee_run',
+    refId: goodActiveRunId,
+  });
+  db.exec(`CREATE TRIGGER injected_recovery_record_failure
+    BEFORE UPDATE ON credit_logs
+    WHEN OLD.id=${Number(badHold.logId)}
+    BEGIN
+      SELECT RAISE(ABORT,'injected single-record recovery failure');
+    END`);
+  try {
+    const recovered = recoverStaleAiWorkAcrossTenants(
+      new Date('2026-07-23T02:00:00.000Z'),
+    );
+    const disabledResult = recovered.find(item => item.tenantId === disabled.tenantId);
+    const activeResult = recovered.find(item => item.tenantId === active.tenantId);
+    assert.ok(disabledResult, '停用租户也必须进入启动恢复');
+    assert.ok(activeResult, '其他租户不能被损坏记录阻断');
+    assert.match(
+      disabledResult.contentEmployeeRuns.find(item => item.runId === badRunId)?.error || '',
+      /injected single-record recovery failure/,
+    );
+    assert.equal(
+      disabledResult.contentEmployeeRuns.find(item => item.runId === goodDisabledRunId)?.billingState,
+      'released',
+    );
+    assert.equal(
+      activeResult.contentEmployeeRuns.find(item => item.runId === goodActiveRunId)?.billingState,
+      'released',
+    );
+    assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', badHold.holdId).status, 'held');
+    assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', goodDisabledHold.holdId).status, 'settled');
+    assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', goodActiveHold.holdId).status, 'settled');
+    assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', badRunId).status, '生成中');
+    assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', goodDisabledRunId).status, '失败');
+    assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', goodActiveRunId).status, '失败');
+    for (const tenantId of [disabled.tenantId, active.tenantId]) {
+      const balance = q.get('SELECT credits FROM tenants WHERE id=?', tenantId).credits;
+      const sum = q.get(
+        'SELECT COALESCE(SUM(credits),0) total FROM credit_logs WHERE tenant_id=?',
+        tenantId,
+      ).total;
+      assert.equal(balance, -sum, `租户${tenantId}恢复后账本必须恒等`);
+    }
+  } finally {
+    db.exec('DROP TRIGGER IF EXISTS injected_recovery_record_failure');
+    releaseHold(badHold, '专项测试清理损坏记录');
+  }
+});
+
 test('活跃立即任务阻止并发定时领取，结束后同一计划周期只领取一次', async () => {
   const ruleId = insertRule({
     name: '并发互斥规则',
@@ -186,6 +636,65 @@ test('活跃立即任务阻止并发定时领取，结束后同一计划周期�
   assert.equal(rule.next_run_at, '2026-07-24 10:00:00');
   assert.equal(rule.last_status, '成功');
   assert.equal(rule.last_error, null);
+});
+
+test('撤销租户、创建者或content模块权限会在claim前停用规则且不执行AI不扣费', async () => {
+  runWithTenant(1, () => q.run(`UPDATE content_automation_rules
+    SET enabled=0,next_run_at=NULL WHERE tenant_id=?`, 1));
+  let executions = 0;
+  const runner = async () => { executions += 1; };
+  const verifyRevocation = async ({ name, revoke, restore, reason }) => {
+    const nextRunAt = '2026-07-23 10:00:00';
+    const ruleId = insertRule({ name, nextRunAt });
+    const creditsBefore = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+    revoke();
+    try {
+      const tick = runScheduledJobs(new Date('2026-07-23T02:00:00.000Z'), {
+        contentAutomationRunner: runner,
+      });
+      await tick.pending;
+      assert.ok(tick.contentAutomationDenied.some(item => item.ruleId === ruleId));
+      const rule = q.get(`SELECT enabled,next_run_at,last_status,last_error
+        FROM content_automation_rules WHERE tenant_id=1 AND id=?`, ruleId);
+      assert.equal(rule.enabled, 0);
+      assert.equal(rule.next_run_at, null);
+      assert.equal(rule.last_status, '已停用');
+      assert.match(rule.last_error, reason);
+      const run = q.get(`SELECT status,error,snapshot_json
+        FROM content_automation_runs
+        WHERE tenant_id=1 AND rule_id=? AND trigger='scheduled' AND claim_key=?`,
+      ruleId, nextRunAt);
+      assert.equal(run.status, '失败');
+      assert.match(run.error, reason);
+      assert.equal(JSON.parse(run.snapshot_json).entitlement.allowed, false);
+      assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, creditsBefore);
+      assert.equal(q.get(`SELECT COUNT(*) n FROM credit_holds
+        WHERE tenant_id=1 AND ref_type='content_automation_run'
+          AND ref_id IN (SELECT id FROM content_automation_runs WHERE rule_id=?)`, ruleId).n, 0);
+    } finally {
+      restore();
+    }
+  };
+
+  await verifyRevocation({
+    name: '租户撤权规则',
+    revoke: () => q.run("UPDATE tenants SET status='已停用' WHERE id=1"),
+    restore: () => q.run("UPDATE tenants SET status='已开通' WHERE id=1"),
+    reason: /企业账号未开通或已停用/u,
+  });
+  await verifyRevocation({
+    name: '创建者停用规则',
+    revoke: () => q.run("UPDATE users SET status='停用' WHERE id=?", creatorId),
+    restore: () => q.run("UPDATE users SET status='启用' WHERE id=?", creatorId),
+    reason: /规则创建者账号不存在或已停用/u,
+  });
+  await verifyRevocation({
+    name: '内容模块撤权规则',
+    revoke: () => q.run(`UPDATE users SET modules='["dashboard"]' WHERE id=?`, creatorId),
+    restore: () => q.run('UPDATE users SET modules=NULL WHERE id=?', creatorId),
+    reason: /失去内容生产仓模块权限/u,
+  });
+  assert.equal(executions, 0);
 });
 
 test('上海周一零点边界按本地时间稳定领取，不携带任何发布动作', async () => {

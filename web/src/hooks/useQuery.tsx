@@ -34,12 +34,14 @@ export function useQuery<T = unknown>(
   const [error, setError] = useState('');
   const versionRef = useRef(0);
   const fetcherRef = useRef(fetcher);
-  useEffect(() => { fetcherRef.current = fetcher; }); // 每次渲染后同步最新 fetcher（先于下方 run effect 执行）
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  }); // 每次渲染后同步最新 fetcher（先于下方 run effect 执行）
 
   const depsKey = JSON.stringify(deps);
   const run = useCallback(() => {
     if (!enabled) return;
-    const version = ++versionRef.current;   // 只认最新一次请求的结果
+    const version = ++versionRef.current; // 只认最新一次请求的结果
     setLoading(true);
     setError('');
     const f = fetcherRef.current;
@@ -69,25 +71,46 @@ export function useQuery<T = unknown>(
     }; // 卸载/deps变化：作废在途请求
   }, [run]);
 
-  const empty = !loading && !error && (isEmpty ? (data === undefined || isEmpty(data)) : isBlank(data));
+  const empty = !loading && !error && (isEmpty ? data === undefined || isEmpty(data) : isBlank(data));
   return { data, loading, error, empty, retry: run };
 }
 
 // 四态占位渲染：data 就绪时返回 null，由调用方渲染正文
 export function QueryStatus({ q, emptyText, height = 120 }: { q: Query<any>; emptyText?: string; height?: number }) {
   if (q.loading) {
-    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: height }}><Spin /></div>;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: height }}>
+        <Spin />
+      </div>
+    );
   }
   if (q.error) {
     return (
-      <div style={{ minHeight: height, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+      <div
+        style={{
+          minHeight: height,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+        }}
+      >
         <span style={{ fontSize: 12.5, color: 'var(--ui-muted)' }}>加载失败：{q.error}</span>
-        <Button size="small" onClick={q.retry}>重试</Button>
+        <Button size="small" onClick={q.retry}>
+          重试
+        </Button>
       </div>
     );
   }
   if (q.empty) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ fontSize: 12 }}>{emptyText || '暂无数据'}</span>} style={{ margin: '14px 0' }} />;
+    return (
+      <Empty
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+        description={<span style={{ fontSize: 12 }}>{emptyText || '暂无数据'}</span>}
+        style={{ margin: '14px 0' }}
+      />
+    );
   }
   return null;
 }

@@ -1,5 +1,242 @@
-import { db, q, curTenant } from '../db.js';
+import { db, q, curTenant, getConfig, runWithTenant } from '../db.js';
+import { acquireBackgroundAiLease } from '../ai-limits.js';
+import { holdCredits, releaseHold, settleHold } from './credits.js';
 import { embed } from './yunwu.js';
+
+const positiveInt = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+export function backgroundEmbeddingsEnabled(env = process.env) {
+  return /^(?:1|true|yes|on)$/i.test(
+    String(env?.ENABLE_BACKGROUND_EMBEDDINGS || '').trim(),
+  );
+}
+
+export function backgroundEmbeddingMaxCalls(env = process.env) {
+  return Math.min(16, positiveInt(env?.BACKGROUND_EMBED_MAX_CALLS_PER_DOC, 8));
+}
+
+const backgroundEmbeddingCreditsPerCall = (env = process.env) => (
+  Math.min(100, positiveInt(env?.BACKGROUND_EMBED_CREDITS_PER_CALL, 1))
+);
+
+const backgroundEmbeddingJobTimeoutMs = (env = process.env) => {
+  const parsed = positiveInt(env?.BACKGROUND_EMBED_JOB_TIMEOUT_MS, 60_000);
+  return Math.min(5 * 60_000, Math.max(5_000, parsed));
+};
+
+// 文档保存后的向量化属于真实外部费用，不能无限制 fire-and-forget。
+// 队列同时限制全局等待数、单租户等待数和单租户活跃数；是否启用由显式
+// 环境开关决定，默认关闭。未传 tenantId 的旧调用仍可工作，但只受全局护栏。
+export function createEmbeddingQueue({
+  maxConcurrent = positiveInt(process.env.BACKGROUND_EMBED_MAX_CONCURRENT, 2),
+  maxQueued = positiveInt(process.env.BACKGROUND_EMBED_MAX_QUEUED, 100),
+  maxTenantPending = positiveInt(process.env.BACKGROUND_EMBED_MAX_TENANT_PENDING, 20),
+  maxTenantActive = positiveInt(process.env.BACKGROUND_EMBED_MAX_TENANT_ACTIVE, 1),
+  schedule = queueMicrotask,
+  acquireLease = () => ({ release() {} }),
+  retrySchedule = (callback, delay) => setTimeout(callback, delay),
+  leaseRetryMs = 25,
+  maxWaitMs = positiveInt(process.env.BACKGROUND_EMBED_QUEUE_WAIT_TIMEOUT_MS, 120_000),
+} = {}) {
+  const concurrencyLimit = positiveInt(maxConcurrent, 2);
+  const queueLimit = positiveInt(maxQueued, 100);
+  const tenantPendingLimit = Math.min(
+    positiveInt(maxTenantPending, 20),
+    queueLimit,
+  );
+  const tenantActiveLimit = Math.min(
+    positiveInt(maxTenantActive, 1),
+    concurrencyLimit,
+  );
+  const queueWaitLimit = positiveInt(maxWaitMs, 120_000);
+  const legacyTenant = Symbol('legacy-embedding-queue-tenant');
+  const pending = [];
+  const pendingByTenant = new Map();
+  const activeByTenant = new Map();
+  let active = 0;
+  let leaseRetryHandle = null;
+
+  const increment = (counts, tenantKey) => {
+    counts.set(tenantKey, (counts.get(tenantKey) || 0) + 1);
+  };
+
+  const decrement = (counts, tenantKey) => {
+    const next = (counts.get(tenantKey) || 0) - 1;
+    if (next > 0) counts.set(tenantKey, next);
+    else counts.delete(tenantKey);
+  };
+
+  const activeLimitFor = tenantKey => (
+    tenantKey === legacyTenant ? concurrencyLimit : tenantActiveLimit
+  );
+
+  // 不是简单 shift：若队首租户已达到 active 上限，继续扫描，让其他租户
+  // 使用空闲槽位，避免批量导入的单一租户阻塞后续租户。
+  const nextEligibleIndex = () => pending.findIndex(entry => (
+    (activeByTenant.get(entry.tenantKey) || 0) < activeLimitFor(entry.tenantKey)
+  ));
+
+  const retryWhenLeaseAvailable = () => {
+    if (leaseRetryHandle || !pending.length) return;
+    leaseRetryHandle = retrySchedule(() => {
+      leaseRetryHandle = null;
+      pump();
+    }, Math.max(5, Number(leaseRetryMs) || 25));
+  };
+
+  const pump = () => {
+    const now = Date.now();
+    for (let index = pending.length - 1; index >= 0; index--) {
+      const entry = pending[index];
+      if (now - entry.enqueuedAt < queueWaitLimit) continue;
+      pending.splice(index, 1);
+      decrement(pendingByTenant, entry.tenantKey);
+      entry.complete({
+        ok: false,
+        reason: 'lease_wait_timeout',
+        error: Object.assign(new Error('后台 AI 并发租约等待超时'), { status: 503 }),
+      });
+    }
+    while (active < concurrencyLimit && pending.length) {
+      const index = nextEligibleIndex();
+      if (index < 0) {
+        retryWhenLeaseAvailable();
+        return;
+      }
+      const entry = pending[index];
+      let lease;
+      try {
+        lease = acquireLease({
+          kind: 'background_embedding',
+          tenantId: entry.tenantId,
+        });
+      } catch {
+        retryWhenLeaseAvailable();
+        return;
+      }
+      if (!lease) {
+        retryWhenLeaseAvailable();
+        return;
+      }
+      pending.splice(index, 1);
+      decrement(pendingByTenant, entry.tenantKey);
+      active += 1;
+      increment(activeByTenant, entry.tenantKey);
+      const releaseLease = typeof lease === 'function' ? lease : lease.release?.bind(lease);
+      const finish = () => {
+        try { releaseLease?.(); } finally {
+          active -= 1;
+          decrement(activeByTenant, entry.tenantKey);
+          pump();
+        }
+      };
+      try {
+        schedule(() => {
+          Promise.resolve()
+            .then(entry.job)
+            .then(
+              value => entry.complete({ ok: true, value }),
+              error => entry.complete({ ok: false, error }),
+            )
+            .finally(finish);
+        });
+      } catch (error) {
+        entry.complete({ ok: false, error });
+        finish();
+      }
+    }
+    if (pending.length) retryWhenLeaseAvailable();
+  };
+
+  const tenantKeyFor = tenantId => (
+    tenantId === undefined || tenantId === null || tenantId === ''
+      ? legacyTenant
+      : String(tenantId)
+  );
+
+  const snapshot = () => {
+    const tenantKeys = new Set([...pendingByTenant.keys(), ...activeByTenant.keys()]);
+    const tenants = {};
+    for (const tenantKey of tenantKeys) {
+      const label = tenantKey === legacyTenant ? '__legacy__' : tenantKey;
+      tenants[label] = {
+        queued: pendingByTenant.get(tenantKey) || 0,
+        active: activeByTenant.get(tenantKey) || 0,
+      };
+    }
+    return {
+      queued: pending.length,
+      active,
+      maxConcurrent: concurrencyLimit,
+      maxQueued: queueLimit,
+      maxTenantPending: tenantPendingLimit,
+      maxTenantActive: tenantActiveLimit,
+      tenants,
+    };
+  };
+
+  return {
+    enqueue(job, options = {}) {
+      if (typeof job !== 'function') throw new TypeError('embedding job must be a function');
+      // 兼容 enqueue(job, tenantId) 和 enqueue(job, { tenantId })，旧的
+      // enqueue(job) 归为 __legacy__，不意外破坏已有调用。
+      const tenantId = options && typeof options === 'object'
+        ? options.tenantId
+        : options;
+      const tenantKey = tenantKeyFor(tenantId);
+      const tenantQueued = pendingByTenant.get(tenantKey) || 0;
+      if (tenantKey !== legacyTenant && tenantQueued >= tenantPendingLimit) {
+        return {
+          accepted: false,
+          reason: 'tenant_queue_full',
+          queued: pending.length,
+          active,
+          tenantQueued,
+          tenantActive: activeByTenant.get(tenantKey) || 0,
+        };
+      }
+      if (pending.length >= queueLimit) {
+        return {
+          accepted: false,
+          reason: 'global_queue_full',
+          queued: pending.length,
+          active,
+          tenantQueued,
+          tenantActive: activeByTenant.get(tenantKey) || 0,
+        };
+      }
+      let complete;
+      const completion = new Promise(resolve => { complete = resolve; });
+      pending.push({
+        job,
+        tenantId,
+        tenantKey,
+        complete,
+        enqueuedAt: Date.now(),
+      });
+      increment(pendingByTenant, tenantKey);
+      pump();
+      return {
+        accepted: true,
+        queued: pending.length,
+        active,
+        tenantQueued: pendingByTenant.get(tenantKey) || 0,
+        tenantActive: activeByTenant.get(tenantKey) || 0,
+        completion,
+      };
+    },
+    stats() {
+      return snapshot();
+    },
+  };
+}
+
+const backgroundEmbeddingQueue = createEmbeddingQueue({
+  acquireLease: acquireBackgroundAiLease,
+});
 
 // ===== AI-C2 引用溯源：AI 答案落库时记录引用了哪些知识文档 =====
 // 会诊消息 / 员工对话 / 内容生产仓产出保存后，把本次检索实际注入 prompt 的 doc id/标题/相似度写入
@@ -88,60 +325,473 @@ function liveDoc(id, tenantId, title, body) {
   tenantId, id, title ?? null, body ?? null);
 }
 
-// 重建某文档的块向量。每次写块都在同一条 SQL 内确认文档仍存在且正文未变化，
-// 防止业务事务回滚、内容删除或并发修订后，迟到的异步任务写出孤儿/旧块。
-async function rebuildChunks(id, title, body, tenantId) {
+let embeddingJobTableReady = false;
+function ensureEmbeddingJobTable() {
+  if (embeddingJobTableReady
+    && db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_embedding_jobs'`).get()) return;
+  const exists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_embedding_jobs'`,
+  ).get();
+  if (!exists) throw new Error('kb_embedding_jobs 尚未由中央数据库 schema 初始化');
+  embeddingJobTableReady = true;
+}
+
+function updateEmbeddingJob(tenantId, jobId, fields = {}) {
+  if (!tenantId || !jobId) return;
+  const allowed = new Set([
+    'hold_id',
+    'status',
+    'attempted_calls',
+    'persisted_calls',
+    'last_error',
+    'started_at',
+    'finished_at',
+  ]);
+  const entries = Object.entries(fields).filter(([key]) => allowed.has(key));
+  if (!entries.length) return;
+  db.prepare(`UPDATE kb_embedding_jobs SET ${entries.map(([key]) => `${key}=?`).join(',')}
+    WHERE tenant_id=? AND id=?`).run(
+    ...entries.map(([, value]) => value),
+    tenantId,
+    jobId,
+  );
+}
+
+export function buildEmbeddingPlan(title, body, {
+  maxCalls = backgroundEmbeddingMaxCalls(),
+} = {}) {
+  const callLimit = Math.min(16, positiveInt(maxCalls, 8));
+  const mainText = `${title || ''}\n${String(body || '').slice(0, 4000)}`.trim();
+  if (!mainText) return { mainText: '', chunks: [], callCount: 0 };
+  const possibleChunks = callLimit > 1
+    ? chunkText(body, { maxChunks: callLimit - 1 })
+    : [];
+  // 短文返回一个等同整文的块，不重复调用；长文才增加块向量。
+  const chunks = possibleChunks.length > 1 ? possibleChunks : [];
+  return {
+    mainText,
+    chunks,
+    callCount: 1 + chunks.length,
+  };
+}
+
+// 每次落库都再次确认文档正文没有变化。progress 是后台结算依据：只有真正
+// 持久化成功的向量才计入实扣；上游失败后立即停止，不继续扇出剩余分块。
+async function persistEmbeddingPlan({
+  id,
+  title,
+  body,
+  tenantId,
+  plan,
+  progress,
+  embedFn = embed,
+  signal,
+  jobId = null,
+}) {
   if (!liveDoc(id, tenantId, title, body)) return;
-  q.run(`DELETE FROM kb_chunks
-    WHERE doc_id=? AND EXISTS(
-      SELECT 1 FROM kb_docs WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?
-    )`, id, tenantId, id, title ?? null, body ?? null);
-  const chunks = chunkText(body);
-  if (chunks.length <= 1) return; // 单块=整文向量已覆盖，不重复存
-  for (let i = 0; i < chunks.length; i++) {
-    const vec = await embed(`${title || ''}\n${chunks[i]}`);
-    q.run(`INSERT INTO kb_chunks(doc_id,seq,text,embedding)
-      SELECT ?,?,?,?
-      WHERE EXISTS(
+  progress.attemptedCalls += 1;
+  updateEmbeddingJob(tenantId, jobId, { attempted_calls: progress.attemptedCalls });
+  const mainVector = await embedFn(plan.mainText, undefined, signal);
+  if (!mainVector) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const updated = q.run(`UPDATE kb_docs SET embedding=?
+      WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?`,
+    JSON.stringify(mainVector), tenantId, id, title ?? null, body ?? null);
+    if (!updated.changes) {
+      db.exec('COMMIT');
+      return;
+    }
+    progress.persistedCalls += 1;
+    q.run(`DELETE FROM kb_chunks
+      WHERE doc_id=? AND EXISTS(
         SELECT 1 FROM kb_docs WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?
-      )`,
-    id, i, chunks[i], vec ? JSON.stringify(vec) : null,
-    tenantId, id, title ?? null, body ?? null);
+      )`, id, tenantId, id, title ?? null, body ?? null);
+    updateEmbeddingJob(tenantId, jobId, {
+      persisted_calls: progress.persistedCalls,
+      attempted_calls: progress.attemptedCalls,
+    });
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
+  for (let i = 0; i < plan.chunks.length; i++) {
+    if (signal?.aborted) throw Object.assign(new Error('后台向量任务已超时'), { status: 504 });
+    progress.attemptedCalls += 1;
+    updateEmbeddingJob(tenantId, jobId, { attempted_calls: progress.attemptedCalls });
+    const vector = await embedFn(`${title || ''}\n${plan.chunks[i]}`, undefined, signal);
+    if (!vector) break;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const inserted = q.run(`INSERT INTO kb_chunks(doc_id,seq,text,embedding)
+        SELECT ?,?,?,?
+        WHERE EXISTS(
+          SELECT 1 FROM kb_docs WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?
+        )`,
+      id, i, plan.chunks[i], JSON.stringify(vector),
+      tenantId, id, title ?? null, body ?? null);
+      if (!inserted.changes) {
+        db.exec('COMMIT');
+        break;
+      }
+      progress.persistedCalls += 1;
+      updateEmbeddingJob(tenantId, jobId, {
+        persisted_calls: progress.persistedCalls,
+        attempted_calls: progress.attemptedCalls,
+      });
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch {}
+      throw error;
+    }
   }
 }
 
-// 给某知识库文档异步生成并写入向量（不阻塞主流程；失败静默，检索时自动降级）
-// 同时生成分块向量：长文档按块召回，避免后半段永远检索不到
-export function embedDoc(id, title, body) {
-  const text = `${title || ''}\n${String(body || '').slice(0, 4000)}`.trim();
-  if (!text) return;
-  const tenantId = curTenant();
-  setImmediate(async () => {
-    try {
-      if (!liveDoc(id, tenantId, title, body)) return;
-      const vec = await embed(text);
-      if (vec) {
-        q.run(`UPDATE kb_docs SET embedding=?
-          WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?`,
-        JSON.stringify(vec), tenantId, id, title ?? null, body ?? null);
-      }
-      await rebuildChunks(id, title, body, tenantId);
-    } catch { /* 静默：检索时无向量自动退回热度排序 */ }
+function settleEmbeddingLifecycle({
+  hold,
+  progress,
+  creditsPerCall,
+  model,
+  error = null,
+}) {
+  const actualCredits = progress.persistedCalls * creditsPerCall;
+  try {
+    const settled = actualCredits > 0
+      ? settleHold(hold, {
+        credits: actualCredits,
+        model,
+        note: `知识库后台向量化完成：计划${hold.plannedCalls}次，实际持久化${progress.persistedCalls}次`,
+      })
+      : releaseHold(
+        hold,
+        `知识库后台向量化未形成可用向量${error ? `（${String(error.message || error).slice(0, 80)}）` : ''}，预授权全额退回`,
+      );
+    return {
+      state: actualCredits > 0 ? 'settled' : 'released',
+      heldCredits: hold.credits,
+      chargedCredits: settled?.credits ?? actualCredits,
+      balance: settled?.balance ?? hold.balance,
+    };
+  } catch (billingError) {
+    return {
+      state: 'pending_reconciliation',
+      heldCredits: hold.credits,
+      chargedCredits: null,
+      balance: hold.balance,
+      note: `向量任务终态已确定，但结算失败：${String(billingError.message || billingError).slice(0, 100)}`,
+    };
+  }
+}
+
+async function executeEmbeddingLifecycle({
+  id,
+  title,
+  body,
+  tenantId,
+  plan,
+  hold,
+  creditsPerCall,
+  model,
+  jobId,
+  embedFn = embed,
+  timeoutMs = backgroundEmbeddingJobTimeoutMs(),
+}) {
+  const progress = { attemptedCalls: 0, persistedCalls: 0 };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  let error = null;
+  updateEmbeddingJob(tenantId, jobId, {
+    status: 'running',
+    started_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
   });
+  try {
+    await persistEmbeddingPlan({
+      id, title, body, tenantId, plan, progress, embedFn, signal: controller.signal, jobId,
+    });
+  } catch (caught) {
+    error = caught;
+  } finally {
+    clearTimeout(timer);
+  }
+  const billing = settleEmbeddingLifecycle({
+    hold, progress, creditsPerCall, model, error,
+  });
+  updateEmbeddingJob(tenantId, jobId, {
+    status: billing.state,
+    attempted_calls: progress.attemptedCalls,
+    persisted_calls: progress.persistedCalls,
+    last_error: error ? String(error.message || error).slice(0, 500) : null,
+    finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+  });
+  return {
+    ...progress,
+    error: error ? String(error.message || error).slice(0, 160) : null,
+    billing,
+  };
+}
+
+// 给某知识库文档异步生成并写入向量。兼容旧的三个位置参数；第四参数可传
+// userId 做流水归因。未传用户时按显式 tenantId 在租户层占额，避免系统任务漏计费。
+export function embedDoc(id, title, body, options = {}) {
+  const plan = buildEmbeddingPlan(title, body);
+  if (!plan.mainText || !backgroundEmbeddingsEnabled()) {
+    return { accepted: false, reason: !plan.mainText ? 'empty' : 'disabled' };
+  }
+  const tenantId = curTenant();
+  // 内容生成等调用点可能仍在业务事务内。占额会自行开启原子事务，必须等外层
+  // 提交后再开始；若外层回滚，延迟任务会因 stale_document 安全退出且不占额。
+  if (db.isTransaction) {
+    const completion = new Promise(resolve => {
+      setImmediate(() => {
+        try {
+          const deferred = runWithTenant(
+            tenantId,
+            () => embedDoc(id, title, body, options),
+          );
+          if (deferred?.completion) deferred.completion.then(resolve);
+          else resolve(deferred);
+        } catch (error) {
+          resolve({
+            accepted: false,
+            reason: 'deferred_start_failed',
+            error: String(error.message || error).slice(0, 160),
+          });
+        }
+      });
+    });
+    return {
+      accepted: true,
+      deferred: true,
+      reason: 'after_business_transaction',
+      callsPlanned: plan.callCount,
+      completion,
+    };
+  }
+  if (!liveDoc(id, tenantId, title, body)) {
+    return { accepted: false, reason: 'stale_document' };
+  }
+  const creditsPerCall = backgroundEmbeddingCreditsPerCall();
+  const model = getConfig('embed_model', null) || 'text-embedding-3-small';
+  ensureEmbeddingJobTable();
+  const jobId = Number(db.prepare(`INSERT INTO kb_embedding_jobs(
+    tenant_id,doc_id,status,planned_calls,credits_per_call
+  ) VALUES(?,?,'preparing',?,?)`).run(
+    tenantId,
+    Number(id),
+    plan.callCount,
+    creditsPerCall,
+  ).lastInsertRowid);
+  let hold;
+  try {
+    hold = holdCredits({
+      tenantId,
+      userId: options?.userId ?? null,
+      feature: '知识库后台向量化',
+      kind: 'text',
+      model,
+      credits: plan.callCount * creditsPerCall,
+      refType: 'kb_embedding',
+      refId: jobId,
+      note: `单文档最多${backgroundEmbeddingMaxCalls()}次；本次计划${plan.callCount}次`,
+    });
+    hold.plannedCalls = plan.callCount;
+    updateEmbeddingJob(tenantId, jobId, {
+      hold_id: hold.holdId,
+      status: 'queued',
+    });
+  } catch (error) {
+    updateEmbeddingJob(tenantId, jobId, {
+      status: 'rejected',
+      last_error: String(error.message || error).slice(0, 500),
+      finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    });
+    return {
+      accepted: false,
+      reason: 'billing_hold_failed',
+      status: error.status || 500,
+      error: String(error.message || error).slice(0, 160),
+    };
+  }
+
+  const queued = backgroundEmbeddingQueue.enqueue(() => executeEmbeddingLifecycle({
+    id,
+    title,
+    body,
+    tenantId,
+    plan,
+    hold,
+    creditsPerCall,
+    model,
+    jobId,
+  }), { tenantId });
+  if (!queued.accepted) {
+    const billing = settleEmbeddingLifecycle({
+      hold,
+      progress: { attemptedCalls: 0, persistedCalls: 0 },
+      creditsPerCall,
+      model,
+      error: new Error(queued.reason),
+    });
+    updateEmbeddingJob(tenantId, jobId, {
+      status: billing.state,
+      last_error: queued.reason,
+      finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    });
+    return {
+      ...queued,
+      callsPlanned: plan.callCount,
+      billing,
+    };
+  }
+  // 若调度器自身在任务函数执行前异常，completion 仍会负责释放预授权。
+  const completion = queued.completion.then(outcome => (
+    outcome.ok
+      ? outcome.value
+      : {
+        attemptedCalls: 0,
+        persistedCalls: 0,
+        error: String(outcome.error?.message || outcome.error || 'background_schedule_failed').slice(0, 160),
+        billing: settleEmbeddingLifecycle({
+          hold,
+          progress: { attemptedCalls: 0, persistedCalls: 0 },
+          creditsPerCall,
+          model,
+          error: outcome.error,
+        }),
+      }
+  )).then(result => {
+    updateEmbeddingJob(tenantId, jobId, {
+      status: result.billing?.state || 'pending_reconciliation',
+      last_error: result.error || null,
+      finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    });
+    return result;
+  });
+  return {
+    ...queued,
+    completion,
+    callsPlanned: plan.callCount,
+    billing: {
+      state: 'held',
+      heldCredits: hold.credits,
+      chargedCredits: null,
+      balance: hold.balance,
+    },
+  };
+}
+
+// 启动恢复：只处理超过任务/排队最长生命周期后仍为 held 的向量任务。
+// 无持久化向量时全退；有本次任务的持久化计数且产物仍存在时按实际数结算。
+export function recoverStaleEmbeddingHolds({
+  staleMinutes = positiveInt(process.env.BACKGROUND_EMBED_STALE_MINUTES, 15),
+} = {}) {
+  const holdTable = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_holds'`,
+  ).get();
+  if (!holdTable) return [];
+  ensureEmbeddingJobTable();
+  const age = Math.min(24 * 60, Math.max(5, positiveInt(staleMinutes, 15)));
+  const rows = db.prepare(`SELECT
+      h.id hold_id,h.log_id,h.tenant_id,h.user_id,h.feature,h.kind,h.model,h.held_credits,
+      h.ref_id,j.id job_id,j.doc_id,j.planned_calls,j.credits_per_call,
+      j.attempted_calls,j.persisted_calls
+    FROM credit_holds h
+    LEFT JOIN kb_embedding_jobs j
+      ON j.id=h.ref_id AND j.tenant_id=h.tenant_id
+    WHERE h.ref_type='kb_embedding' AND h.status='held'
+      AND h.created_at <= datetime('now','localtime', ?)
+    ORDER BY h.id`).all(`-${age} minutes`);
+  const recovered = [];
+  for (const row of rows) {
+    const docId = Number(row.doc_id || row.ref_id);
+    const output = db.prepare(`SELECT
+        CASE WHEN d.embedding IS NOT NULL OR EXISTS(
+          SELECT 1 FROM kb_chunks c WHERE c.doc_id=d.id AND c.embedding IS NOT NULL
+        ) THEN 1 ELSE 0 END has_output
+      FROM kb_docs d WHERE d.tenant_id=? AND d.id=?`).get(row.tenant_id, docId);
+    if (!row.job_id && Number(output?.has_output || 0) === 1) {
+      recovered.push({
+        holdId: row.hold_id,
+        jobId: null,
+        tenantId: row.tenant_id,
+        action: 'preserve_untracked_delivery',
+      });
+      continue;
+    }
+    const hasTrackedDelivery = Number(row.persisted_calls || 0) > 0
+      && Number(output?.has_output || 0) === 1;
+    const hold = {
+      holdId: row.hold_id,
+      logId: row.log_id,
+      tenantId: row.tenant_id,
+      userId: row.user_id,
+      feature: row.feature,
+      kind: row.kind,
+      model: row.model,
+      credits: row.held_credits,
+      plannedCalls: row.planned_calls || null,
+      balance: null,
+    };
+    try {
+      const settled = runWithTenant(row.tenant_id, () => (
+        hasTrackedDelivery
+          ? settleHold(hold, {
+            credits: Math.min(
+              row.held_credits,
+              Number(row.persisted_calls) * positiveInt(row.credits_per_call, 1),
+            ),
+            model: row.model,
+            note: `重启恢复：检测到${row.persisted_calls}个已持久化向量，按实际数量结算`,
+          })
+          : releaseHold(hold, '重启恢复：陈旧后台向量任务无可交付产物，预授权全额退回')
+      ));
+      const billingState = hasTrackedDelivery ? 'settled' : 'released';
+      if (row.job_id) {
+        updateEmbeddingJob(row.tenant_id, row.job_id, {
+          status: billingState,
+          last_error: hasTrackedDelivery ? 'restart_reconciled_delivery' : 'restart_released_without_delivery',
+          finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        });
+      }
+      recovered.push({
+        holdId: row.hold_id,
+        jobId: row.job_id || null,
+        tenantId: row.tenant_id,
+        action: billingState,
+        chargedCredits: settled?.credits ?? (hasTrackedDelivery
+          ? Number(row.persisted_calls) * positiveInt(row.credits_per_call, 1)
+          : 0),
+      });
+    } catch (error) {
+      if (row.job_id) {
+        updateEmbeddingJob(row.tenant_id, row.job_id, {
+          status: 'pending_reconciliation',
+          last_error: String(error.message || error).slice(0, 500),
+        });
+      }
+      recovered.push({
+        holdId: row.hold_id,
+        jobId: row.job_id || null,
+        tenantId: row.tenant_id,
+        action: 'pending_reconciliation',
+        error: String(error.message || error).slice(0, 160),
+      });
+    }
+  }
+  return recovered;
 }
 
 // 供 backfill 脚本同步调用（脚本环境无请求上下文）
 export async function embedDocSync(id, title, body) {
-  const text = `${title || ''}\n${String(body || '').slice(0, 4000)}`.trim();
-  if (!text) return false;
+  const plan = buildEmbeddingPlan(title, body);
+  if (!plan.mainText) return false;
   const tenantId = q.get('SELECT tenant_id FROM kb_docs WHERE id=?', id)?.tenant_id;
   if (!tenantId || !liveDoc(id, tenantId, title, body)) return false;
-  const vec = await embed(text);
-  if (vec) {
-    q.run(`UPDATE kb_docs SET embedding=?
-      WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?`,
-    JSON.stringify(vec), tenantId, id, title ?? null, body ?? null);
-  }
-  await rebuildChunks(id, title, body, tenantId);
-  return !!vec;
+  const progress = { attemptedCalls: 0, persistedCalls: 0 };
+  await persistEmbeddingPlan({
+    id, title, body, tenantId, plan, progress,
+  });
+  return progress.persistedCalls > 0;
 }

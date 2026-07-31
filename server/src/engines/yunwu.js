@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from '../db.js';
+import { providerResponseError, sanitizeProviderError } from './provider-errors.js';
 
 // ===== 云雾API服务（OpenAI兼容协议，https://yunwu.ai/v1）=====
 // .env 加载（不引第三方依赖）
@@ -14,10 +15,14 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const KEY = () => getConfig('yunwu_api_key', null) || process.env.YUNWU_API_KEY || ''; // 界面配置优先（客户自助填Key），env兜底
+const legacyStoredKey = () => String(getConfig('yunwu_api_key', null) || '').trim();
+const environmentKey = () => String(process.env.YUNWU_API_KEY || '').trim();
+const KEY = () => environmentKey() || legacyStoredKey();
 const BASE = () => getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1';
 export const yunwuAvailable = () => !!KEY();
 export const maskedKey = () => { const k = KEY(); return k ? `${k.slice(0, 8)}****${k.slice(-4)}` : '（未配置）'; };
+export const yunwuKeySource = () => environmentKey() ? 'environment' : legacyStoredKey() ? 'legacy_db' : 'none';
+export const yunwuApiKey = () => KEY();
 
 // 分层模型路由（PRD V2 §22：老板/管理层/员工 三级，后台接口管理可改）
 const DEFAULT_ROUTING = {
@@ -137,7 +142,7 @@ function timedSignal(timeoutMs, externalSignal) {
 }
 
 function normalizeFetchError(error, timedOut, externalSignal) {
-  if (error?.name !== 'AbortError') return error;
+  if (error?.name !== 'AbortError') return sanitizeProviderError(error, { service: '云雾AI服务' });
   if (externalSignal?.aborted && !timedOut()) {
     return Object.assign(new Error('请求已由客户端取消'), { status: 499 });
   }
@@ -155,10 +160,7 @@ async function post(pathName, body, timeoutMs = 60000, externalSignal) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const error = new Error(data?.error?.message || `yunwu HTTP ${res.status}`);
-      error.status = res.status >= 500 ? 502 : res.status;
-      error.data = data;
-      throw error;
+      throw providerResponseError(res.status, data, { service: '云雾AI服务' });
     }
     return data;
   } catch (error) {
@@ -225,9 +227,7 @@ export async function chatStream({ role, model, system, messages, maxTokens = 20
     });
     if (!res.ok || !res.body) {
       const data = await res.json().catch(() => ({}));
-      const error = new Error(data?.error?.message || `yunwu HTTP ${res.status}`);
-      error.status = res.status >= 500 ? 502 : res.status;
-      throw error;
+      throw providerResponseError(res.status, data, { service: '云雾AI服务' });
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -290,9 +290,7 @@ export async function editImage({ prompt, images = [], image, size = '1024x1024'
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const error = new Error(data?.error?.message || `yunwu HTTP ${res.status}`);
-      error.status = res.status >= 500 ? 502 : res.status;
-      throw error;
+      throw providerResponseError(res.status, data, { service: '云雾AI服务' });
     }
     const item = data.data?.[0] || {};
     usage.images++;
@@ -310,10 +308,7 @@ async function ywJson(url, opts = {}, timeoutMs = 60000, externalSignal) {
     const res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${KEY()}`, ...(opts.headers || {}) }, signal: timed.signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = new Error(data?.base_resp?.status_msg || data?.error?.message || data?.message || data?.msg || `HTTP ${res.status}`);
-      err.status = res.status;
-      err.data = data;
-      throw err;
+      throw providerResponseError(res.status, data, { service: '云雾视频服务' });
     }
     return data;
   } catch (error) {
@@ -321,33 +316,31 @@ async function ywJson(url, opts = {}, timeoutMs = 60000, externalSignal) {
   } finally { timed.clear(); }
 }
 function friendlyVideoError(err, info) {
-  const raw = `${err?.message || ''} ${JSON.stringify(err?.data || {})}`;
-  if (/Audio duration is invalid/i.test(raw)) {
+  if (err?.providerReason === 'audio_duration') {
     const e = new Error(`视频模型「${info.displayName}（${info.shortName}）」需要音频/口播时长参数，当前通用视频表单不能直接生成。请改用 HappyHorse 文生视频或可灵标准视频。`);
     e.status = 400;
     return e;
   }
-  if (err?.status === 404 || /upstream returned non-2xx status:\s*404|HTTP 404/i.test(raw)) {
+  if (err?.providerReason === 'not_found') {
     const e = new Error(`视频模型「${info.displayName}（${info.shortName}）」当前接口路径不可用或账号未开通任务通道。请优先选择 HappyHorse 文生视频（HH-FLOOR/HH-NITRO/HH-STABLE）或可灵标准视频。`);
     e.status = 400;
     return e;
   }
-  if (/unsupported model type/i.test(raw)) {
+  if (err?.providerReason === 'unsupported_model') {
     const e = new Error(`视频模型「${info.displayName}（${info.shortName}）」当前不是云雾可用的视频任务模型，已阻止继续使用。请先切换可灵标准视频或 Wan 图生视频；该模型需等云雾侧开放任务通道后再启用。`);
     e.status = 400;
     return e;
   }
-  if (err?.status === 401 || /token was expected|upstream returned non-2xx status:\s*401|invalid token|unauthorized/i.test(raw)) {
+  if (err?.providerReason === 'auth') {
     const e = new Error(`视频模型「${info.displayName}（${info.shortName}）」上游通道鉴权失败，云雾侧该模型可能暂时没有可用厂商通道。请先切换 HappyHorse 文生视频或 Wan 图生视频重试；如果必须用这个模型，需要在云雾后台确认该模型通道已开通。`);
     e.status = 502;
     return e;
   }
-  return err;
+  return sanitizeProviderError(err, { service: '云雾视频服务' });
 }
 function shouldTryNextVideoEndpoint(err) {
-  const raw = `${err?.message || ''} ${JSON.stringify(err?.data || {})}`;
-  return [404, 405, 500, 502].includes(err?.status) ||
-    /unsupported model type|token was expected|upstream returned non-2xx status:\s*401|invalid token|unauthorized/i.test(raw);
+  return ['not_found', 'unsupported_model', 'auth', 'upstream'].includes(err?.providerReason)
+    || [404, 405, 500, 502].includes(err?.providerStatus);
 }
 function videoUrlFrom(data = {}) {
   return data.url || data.video_url || data.download_url ||
@@ -377,7 +370,9 @@ function normalizeVideoTask(data = {}, model, fallbackTaskId = '') {
     taskId,
     status: failed ? 'Fail' : ready ? 'Success' : (status || 'Processing'),
     ready: ready && !!url,
-    raw: JSON.stringify(data).slice(0, 500),
+    raw: failed
+      ? '视频任务失败，上游未返回可交付结果'
+      : ready ? '视频任务已完成' : '视频任务处理中',
   };
 }
 function videoDefaultsFor(model, images = []) {
@@ -423,7 +418,7 @@ async function submitAliBailianVideoTask({ prompt, model, images = [], signal })
   const data = await ywJson(`${ywRoot()}/alibailian/api/v1/services/aigc/video-generation/video-synthesis`,
     { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DashScope-Async': 'enable' }, body: JSON.stringify(body) }, 60000, signal);
   const task = normalizeVideoTask(data, model);
-  if (!task.taskId) throw new Error('云雾阿里百炼视频任务提交成功但未返回 task_id');
+  if (!task.taskId) throw providerResponseError(502, data, { service: '云雾视频服务' });
   return { ...task, status: task.status || 'queued', raw: task.ready ? task.raw : '任务已提交，视频生成需数分钟，请在列表刷新查看' };
 }
 async function queryAliBailianVideoTask({ taskId, model }) {
@@ -475,7 +470,7 @@ async function submitMiniMaxVideoTask({ prompt, model, images = [], signal }) {
   const sub = await ywJson(`${root}/minimax/v1/video_generation`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 60000, signal);
   const taskId = sub.task_id;
-  if (!taskId) throw new Error(sub.base_resp?.status_msg || 'MiniMax 提交失败');
+  if (!taskId) throw providerResponseError(502, sub, { service: '云雾视频服务' });
   usage.videos++;
   return { model, url: null, taskId, status: 'Processing', ready: false, raw: '任务已提交，视频将在后台继续生成' };
 }
@@ -485,10 +480,10 @@ async function queryMiniMaxVideoTask({ taskId, model }) {
   if (qr.status === 'Success' && qr.file_id) {
     const fr = await ywJson(`${root}/minimax/v1/files/retrieve?file_id=${encodeURIComponent(qr.file_id)}`, {}, 30000);
     const url = fr.file?.download_url || fr.file?.backup_download_url || null;
-    return { model, url, taskId, status: 'Success', ready: !!url, raw: JSON.stringify(qr).slice(0, 500) };
+    return { model, url, taskId, status: 'Success', ready: !!url, raw: '视频任务已完成' };
   }
-  if (qr.status === 'Fail') return { model, url: null, taskId, status: 'Fail', ready: false, raw: JSON.stringify(qr).slice(0, 500) };
-  return { model, url: null, taskId, status: qr.status || 'Processing', ready: false, raw: JSON.stringify(qr).slice(0, 500) };
+  if (qr.status === 'Fail') return { model, url: null, taskId, status: 'Fail', ready: false, raw: '视频任务失败，上游未返回可交付结果' };
+  return { model, url: null, taskId, status: qr.status || 'Processing', ready: false, raw: '视频任务处理中' };
 }
 
 async function summarizeVideoReferences(images, prompt, signal) {

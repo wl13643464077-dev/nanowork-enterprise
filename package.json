@@ -13,8 +13,12 @@
     "typecheck": "npm --prefix web run typecheck",
     "build": "npm --prefix web run build",
     "check:isolation": "node scripts/check-isolation.mjs",
+    "check:tokens": "node scripts/check-tokens.mjs",
+    "check:ui-contract": "node scripts/check-ui-contract.mjs",
+    "lint": "npm --prefix web run lint:strict",
+    "format:check": "npm --prefix web run format:check",
     "accept:runtime": "node scripts/accept-runtime.mjs",
-    "verify": "npm run test && npm run typecheck && npm run check:isolation && npm run build"
+    "verify": "npm run test && npm run typecheck && npm run check:isolation && npm run check:tokens && npm run check:ui-contract && npm run lint && npm run format:check && npm run build"
   },
   "engines": {
     "node": ">=22.12.0"

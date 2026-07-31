@@ -1,6 +1,16 @@
 import { Router } from 'express';
 import { createHash, randomUUID } from 'node:crypto';
-import { db, q, getTenantConfig, setTenantConfig, curTenant, promptOverride, runWithTenant } from '../db.js';
+import {
+  db,
+  q,
+  getTenant,
+  getTenantConfig,
+  modulesFor,
+  setTenantConfig,
+  curTenant,
+  promptOverride,
+  runWithTenant,
+} from '../db.js';
 import { logOp, notify, today, monthStart, pct, pageParams } from '../util.js';
 import { generate, generateContent, aiAvailable, aiChannel, promptFor } from '../engines/ai.js';
 import { applyRiskControl, createApproval, UNTRUSTED_GUARD, wrapUntrusted } from '../engines/risk.js';
@@ -22,10 +32,13 @@ import {
   buildContentEmployeeWorkbenchProfile,
   CONTENT_TASK_TYPES_BY_EMPLOYEE,
   compileContentEmployeeSoloPrompt,
+  contentEmployeeOutputTokenBudget,
   contentEmployeeTaskTypes,
   executeContentDailyPackParts,
+  resolveContentEmployeeWorkConfig,
 } from '../engines/content-employee-workbench.js';
 import { validateContentEmployeeOutputContract } from '../engines/content-output-contract.js';
+import { refsBlock, webSearch } from '../engines/websearch.js';
 import { ensureContentAsset } from '../engines/content-assets.js';
 import { resolveContentApprovalPolicy } from '../engines/content-approval-policy.js';
 import {
@@ -46,6 +59,14 @@ const PUBLISH_VIEWS_MAX = 100_000_000;
 const PUBLISH_LEADS_MAX = 1_000_000;
 const PUBLISH_IDEMPOTENCY_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_MATERIAL_REFERENCES = 6;
+
+function completedContentPredicate(alias = '') {
+  const prefix = alias ? `${alias}.` : '';
+  return `COALESCE(${prefix}ai_mode,'') <> 'template'
+    AND (CASE WHEN json_valid(COALESCE(${prefix}snapshot_json,''))=1
+      THEN COALESCE(json_extract(${prefix}snapshot_json,'$.contract.status'),'')
+      ELSE '' END) NOT IN ('incomplete','draft')`;
+}
 
 function requireContentReady(content, res, action) {
   const status = String(content?.status || '未知');
@@ -679,10 +700,86 @@ function automationManager(req) {
   if (!isManager(req.user)) throw automationError('仅老板或管理人员可管理内容自动化', 403);
 }
 
+function automationRunIdempotencyKey(body) {
+  if (!isPlainObject(body || {})) {
+    throw automationError('立即运行请求体必须是对象');
+  }
+  const extras = Object.keys(body || {}).filter(key => key !== 'idempotencyKey');
+  if (extras.length) {
+    throw automationError(`立即运行包含不支持字段：${extras.join('、')}`);
+  }
+  if (body?.idempotencyKey === undefined) return randomUUID();
+  if (typeof body.idempotencyKey !== 'string'
+    || !PUBLISH_IDEMPOTENCY_KEY_RE.test(body.idempotencyKey.trim())) {
+    throw automationError('立即运行幂等键必须是有效的UUID v4');
+  }
+  return body.idempotencyKey.trim().toLowerCase();
+}
+
 function automationRule(id) {
   const value = Number(id);
   if (!Number.isSafeInteger(value) || value < 1) return null;
   return q.get('SELECT * FROM content_automation_rules WHERE tenant_id=? AND id=?', curTenant(), value) || null;
+}
+
+export function contentAutomationEntitlement({
+  tenantId = curTenant(),
+  creatorId,
+} = {}) {
+  const normalizedTenantId = Number(tenantId);
+  const normalizedCreatorId = Number(creatorId);
+  const tenant = getTenant(normalizedTenantId);
+  if (!tenant || tenant.status !== '已开通') {
+    return {
+      allowed: false,
+      code: 'tenant_not_active',
+      reason: '企业账号未开通或已停用',
+      tenant: tenant || null,
+      creator: null,
+    };
+  }
+  const creator = q.get(`SELECT id,name,role,dept,status,modules,tenant_id FROM users
+    WHERE tenant_id=? AND id=?`, normalizedTenantId, normalizedCreatorId);
+  if (!creator || creator.status !== '启用') {
+    return {
+      allowed: false,
+      code: 'creator_not_active',
+      reason: '规则创建者账号不存在或已停用',
+      tenant,
+      creator: creator || null,
+    };
+  }
+  if (!modulesFor(creator).includes('content')) {
+    return {
+      allowed: false,
+      code: 'creator_content_revoked',
+      reason: '规则创建者已失去内容生产仓模块权限',
+      tenant,
+      creator,
+    };
+  }
+  return {
+    allowed: true,
+    code: 'allowed',
+    reason: null,
+    tenant,
+    creator,
+  };
+}
+
+function automationEntitlementError(entitlement) {
+  const error = automationError(
+    `内容自动化权限复核未通过，规则已自动停用：${entitlement.reason}`,
+    403,
+  );
+  error.code = 'CONTENT_AUTOMATION_ENTITLEMENT_REVOKED';
+  error.disableAutomationRule = true;
+  error.entitlement = {
+    allowed: false,
+    code: entitlement.code,
+    reason: entitlement.reason,
+  };
+  return error;
 }
 
 const AUTOMATION_ARRAY_OUTPUT_KEYS = new Set([
@@ -762,6 +859,7 @@ function automationContractSnapshot(profile, contract) {
     employeeKey: profile.identity.key,
     status: contract.valid ? 'valid' : 'invalid',
     valid: contract.valid,
+    incomplete: false,
     requiresManualRepair: !contract.valid,
     errors: [...contract.errors],
     previewMarkdown: contract.previewMarkdown || '',
@@ -780,9 +878,15 @@ function automationContractSnapshot(profile, contract) {
 
 function publicAutomationContract(contract) {
   if (!isPlainObject(contract) || typeof contract.valid !== 'boolean') return null;
+  const status = contract.status === 'valid'
+    ? 'valid'
+    : contract.status === 'incomplete'
+      ? 'incomplete'
+      : 'invalid';
   return {
-    status: contract.status === 'valid' ? 'valid' : 'invalid',
+    status,
     valid: contract.valid,
+    incomplete: status === 'incomplete' || contract.incomplete === true,
     requiresManualRepair: contract.requiresManualRepair === true,
     errors: Array.isArray(contract.errors) ? contract.errors.map(String) : [],
     previewMarkdown: typeof contract.previewMarkdown === 'string'
@@ -809,25 +913,80 @@ function safeJsonValue(value, fallback) {
   }
 }
 
+function publicAutomationRun(item) {
+  const snapshot = safeJsonValue(item?.snapshot_json, {});
+  return {
+    id: Number(item.id),
+    trigger: item.trigger,
+    scheduledFor: item.scheduled_for || null,
+    status: item.status,
+    contentId: item.content_id == null ? null : Number(item.content_id),
+    initiatedBy: item.initiated_by == null ? null : Number(item.initiated_by),
+    profileVersion: item.profile_version || null,
+    promptHash: item.prompt_hash || null,
+    contract: publicAutomationContract(snapshot.contract),
+    billing: snapshot.billing || null,
+    entitlement: snapshot.entitlement || null,
+    error: item.error || null,
+    startedAt: item.started_at,
+    finishedAt: item.finished_at || null,
+  };
+}
+
+function automationWebEvidence(result, note = null) {
+  const rows = (Array.isArray(result?.results) ? result.results : [])
+    .map(item => ({
+      title: String(item?.title || '').trim().slice(0, 300),
+      url: String(item?.url || '').trim().slice(0, 2000),
+      snippet: String(item?.snippet || '').replace(/\s+/gu, ' ').trim().slice(0, 500),
+    }))
+    .filter(item => item.title && /^https?:\/\//iu.test(item.url))
+    .slice(0, 5);
+  return {
+    required: true,
+    attempted: true,
+    ok: result?.ok === true,
+    verified: result?.ok === true && rows.length > 0,
+    provider: String(result?.provider || '').trim() || null,
+    results: rows,
+    note: String(result?.note || note || '').trim() || null,
+  };
+}
+
 function automationExecution(employee, rule) {
+  const configRow = q.get(`SELECT prompt_override,work_config_json,skills_json,revision
+    FROM content_employee_workbench_configs
+    WHERE tenant_id=? AND employee_idx=?`, curTenant(), employee.idx) || null;
+  const revision = Number(configRow?.revision || 0);
+  const workConfig = resolveContentEmployeeWorkConfig(
+    employee.idx,
+    safeJsonValue(configRow?.work_config_json, {}),
+  );
   const compiled = compileContentEmployeeSoloPrompt(employee.idx, {
     direction: `${rule.content_type}｜${rule.topic}｜生成${rule.content_count}条`,
     industry: '餐饮实体门店',
     material: rule.requirement || '',
     feedback: '本次为自动内容生产；只生成待审核或可使用的系统内容，不执行对外发布。',
-    length: 'std',
+    length: workConfig.outputLength,
   });
-  const configRow = q.get(`SELECT prompt_override,work_config_json,skills_json,revision
-    FROM content_employee_workbench_configs
-    WHERE tenant_id=? AND employee_idx=?`, curTenant(), employee.idx) || null;
-  const revision = Number(configRow?.revision || 0);
-  const workConfig = safeJsonValue(configRow?.work_config_json, {});
   const customSkillsValue = safeJsonValue(configRow?.skills_json, []);
   const customSkills = Array.isArray(customSkillsValue) ? customSkillsValue : [];
   const enabledCustomSkills = customSkills.filter(skill => (
     skill && typeof skill === 'object' && skill.enabled !== false
   ));
   const promptOverride = String(configRow?.prompt_override || '').trim();
+  const webRequired = compiled.snapshot.workMethod?.execution?.webRequired === true;
+  const web = {
+    required: webRequired,
+    attempted: false,
+    ok: false,
+    verified: false,
+    provider: null,
+    results: [],
+    note: webRequired
+      ? '强制联网岗位将在预授权成功后执行检索'
+      : '该岗位不强制联网；本次未触发联网检索',
+  };
   const overlay = [
     '',
     '【本企业自动内容运行覆盖层·只能追加】',
@@ -854,7 +1013,7 @@ function automationExecution(employee, rule) {
     basePromptHash: compiled.promptHash,
     enterpriseOverlay: {
       revision,
-      workConfig,
+      workConfig: structuredClone(workConfig),
       customSkills,
       enabledCustomSkillCount: enabledCustomSkills.length,
       promptOverrideAppended: Boolean(promptOverride),
@@ -870,8 +1029,47 @@ function automationExecution(employee, rule) {
       runTime: rule.run_time,
       externalPublishAllowed: false,
     },
+    web,
   };
-  return { prompt, promptHash, profileVersion, snapshot };
+  return {
+    prompt,
+    promptHash,
+    profileVersion,
+    snapshot,
+    config: structuredClone(workConfig),
+    web,
+  };
+}
+
+async function attachAutomationWebEvidence(execution, employee, rule, webSearchFn) {
+  if (!execution.web.required) return execution;
+  const query = [
+    rule.content_type,
+    rule.topic,
+    rule.requirement,
+    employee.duty,
+    '最新 可核验 来源',
+  ].filter(Boolean).join(' ');
+  let web;
+  try {
+    web = automationWebEvidence(await webSearchFn(query, { max: 5, timeoutMs: 9000 }));
+  } catch (error) {
+    web = automationWebEvidence(
+      null,
+      `联网检索调用失败：${String(error?.message || error).slice(0, 200)}`,
+    );
+  }
+  const prompt = `${execution.prompt}${web.verified
+    ? refsBlock(web.results)
+    : '\n【联网核验状态】本次没有取得可引用证据，禁止生成或声称完成实时研究结论。\n'}`;
+  const promptHash = createHash('sha256').update(prompt, 'utf8').digest('hex');
+  return {
+    ...execution,
+    prompt,
+    promptHash,
+    web,
+    snapshot: { ...execution.snapshot, promptHash, web },
+  };
 }
 
 export async function executeContentAutomationRun({
@@ -880,6 +1078,7 @@ export async function executeContentAutomationRun({
   trigger,
   initiatedBy = null,
   generateFn = generate,
+  webSearchFn = webSearch,
 }) {
   const rule = automationRule(ruleId);
   const run = q.get(`SELECT * FROM content_automation_runs
@@ -901,11 +1100,19 @@ export async function executeContentAutomationRun({
   let execution = null;
   let failureContract = null;
   try {
+    const entitlement = contentAutomationEntitlement({
+      tenantId: curTenant(),
+      creatorId: rule.created_by,
+    });
+    if (!entitlement.allowed) throw automationEntitlementError(entitlement);
     const userId = Number(initiatedBy || rule.created_by);
     user = q.get(`SELECT id,name,role,status,tenant_id FROM users
       WHERE tenant_id=? AND id=?`, curTenant(), userId);
     if (!user || user.status !== '启用') {
       throw automationError('自动化规则的运行账号不存在或已停用', 403);
+    }
+    if (!modulesFor(user).includes('content')) {
+      throw automationError('自动化规则的运行账号已失去内容生产仓模块权限', 403);
     }
     const employee = contentEmployeeByIdx(Number(rule.employee_idx));
     if (!employee) throw automationError('规则绑定的内容员工不存在');
@@ -913,7 +1120,11 @@ export async function executeContentAutomationRun({
     const profile = buildContentEmployeeWorkbenchProfile(employee.idx);
     execution = automationExecution(employee, rule);
     precheckByRole(user.id, 'text', user.role);
-    const holdModel = textModelFor(user.role);
+    const configuredModel = String(execution.config.textModel || '').trim();
+    const holdModel = configuredModel && configuredModel !== 'inherit'
+      ? configuredModel
+      : textModelFor(user.role);
+    const outputTokens = contentEmployeeOutputTokenBudget(execution.config.outputLength);
     hold = holdCredits({
       userId: user.id,
       feature: `内容自动化·${rule.content_type}`,
@@ -922,8 +1133,11 @@ export async function executeContentAutomationRun({
       credits: estimateCallCredits({
         kind: 'text',
         model: holdModel,
-        texts: [execution.prompt],
-        outputTokens: 3000,
+        texts: [
+          execution.prompt,
+          execution.web.required ? '联网证据预留：最多5条，每条包含标题、摘要与链接。'.repeat(80) : '',
+        ],
+        outputTokens,
       }),
       refType: 'content_automation_run',
       refId: Number(runId),
@@ -934,6 +1148,20 @@ export async function executeContentAutomationRun({
       hold,
       note: '自动内容已预授权占扣；完整业务产物事务落库后才结算。',
     });
+    execution = await attachAutomationWebEvidence(execution, employee, rule, webSearchFn);
+    if (execution.web.required && !execution.web.verified) {
+      throw automationError(
+        `内容员工“${employee.name}”联网检索未取得可引用证据，已停止本次执行；${execution.web.note || '请检查检索服务后重试'}`,
+        502,
+      );
+    }
+    const entitlementBeforeGenerate = contentAutomationEntitlement({
+      tenantId: curTenant(),
+      creatorId: rule.created_by,
+    });
+    if (!entitlementBeforeGenerate.allowed) {
+      throw automationEntitlementError(entitlementBeforeGenerate);
+    }
     q.run(`UPDATE content_automation_runs SET snapshot_json=?
       ,profile_version=?,prompt_hash=?
       WHERE tenant_id=? AND id=? AND status='运行中'`,
@@ -952,15 +1180,31 @@ export async function executeContentAutomationRun({
           system: '',
           userMsg: execution.prompt,
           fallback: () => automationSafeDraft(rule, profile),
-          maxTokens: 3000,
+          maxTokens: outputTokens,
           role: user.role,
-          timeoutMs: 85000,
+          model: holdModel,
+          timeoutMs: execution.config.timeoutSeconds * 1000,
         });
         const text = String(out?.text || '').trim();
         if (!text) throw automationError('内容自动化没有返回可保存的文本');
         const contractResult = validateContentEmployeeOutputContract(employee.idx, text);
         const contractSnapshot = automationContractSnapshot(profile, contractResult);
         failureContract = contractSnapshot;
+        if (out?.mode === 'template') {
+          contractSnapshot.status = 'incomplete';
+          contractSnapshot.valid = false;
+          contractSnapshot.incomplete = true;
+          contractSnapshot.requiresManualRepair = true;
+          contractSnapshot.errors = ['当前仅生成模板或契约底稿，未完成真实内容员工执行。'];
+          contractSnapshot.previewMarkdown = contractResult.previewMarkdown || text;
+          contractSnapshot.artifacts = [];
+          const incompleteError = automationError(
+            `内容员工“${employee.name}”仅返回模板底稿，本次执行未完成`,
+            503,
+          );
+          incompleteError.runStatus = '未完成';
+          throw incompleteError;
+        }
         if (!contractResult.valid) {
           throw automationError(
             `内容员工“${employee.name}”输出契约校验未通过：${contractResult.errors.join('；')}`,
@@ -1123,23 +1367,36 @@ export async function executeContentAutomationRun({
       hold = null;
     }
     const message = String(error?.message || error).slice(0, 300);
+    const runStatus = error?.runStatus === '未完成' ? '未完成' : '失败';
+    const storedRunStatus = runStatus === '未完成' ? '失败' : runStatus;
     const failureSnapshot = {
       ...(execution?.snapshot || safeJsonValue(run.snapshot_json, {})),
       ...(failureContract ? { contract: failureContract } : {}),
       ...(error.billing ? { billing: error.billing } : {}),
+      ...(error.entitlement ? { entitlement: error.entitlement } : {}),
     };
-    q.run(`UPDATE content_automation_runs SET status='失败',error=?,snapshot_json=?,
+    q.run(`UPDATE content_automation_runs SET status=?,error=?,snapshot_json=?,
       finished_at=datetime('now','localtime') WHERE tenant_id=? AND id=? AND status='运行中'`,
-    message, JSON.stringify(failureSnapshot), curTenant(), runId);
-    q.run(`UPDATE content_automation_rules SET last_status='失败',last_error=?,
-      last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
-      WHERE tenant_id=? AND id=?`, message, curTenant(), rule.id);
+    storedRunStatus, message, JSON.stringify(failureSnapshot), curTenant(), runId);
+    if (error.disableAutomationRule) {
+      q.run(`UPDATE content_automation_rules
+        SET enabled=0,next_run_at=NULL,last_status='已停用',last_error=?,
+          last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
+        WHERE tenant_id=? AND id=?`,
+      message, curTenant(), rule.id);
+    } else {
+      q.run(`UPDATE content_automation_rules SET last_status=?,last_error=?,
+        last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
+        WHERE tenant_id=? AND id=?`, runStatus, message, curTenant(), rule.id);
+    }
     if (user?.id) {
       try {
-        notify(user.id, 'content', `自动内容「${rule.name}」运行失败`, `${message}；未生成内容，也未执行对外发布。`);
+        notify(user.id, 'content', `自动内容「${rule.name}」${runStatus}`,
+          `${message}；未生成内容，也未执行对外发布。`);
       } catch { /* 运行失败状态已经持久化，通知失败不得掩盖原错误 */ }
       try {
-        logOp(user, '内容生产仓', '自动生成失败', `rule#${rule.id}:${message}`);
+        logOp(user, '内容生产仓', runStatus === '未完成' ? '自动生成未完成' : '自动生成失败',
+          `rule#${rule.id}:${message}`);
       } catch { /* 失败状态已持久化 */ }
     }
     throw error;
@@ -1495,7 +1752,8 @@ r.get('/crew', (req, res) => {
   const contentStats = q.all(`SELECT c.content_employee_idx idx,COUNT(*) outputs,
       MAX(c.created_at) last_created_at
     FROM contents c
-    WHERE c.tenant_id=? AND c.content_employee_idx IS NOT NULL${contentScope.sql}
+    WHERE c.tenant_id=? AND c.content_employee_idx IS NOT NULL
+      AND ${completedContentPredicate('c')}${contentScope.sql}
     GROUP BY c.content_employee_idx`, curTenant(), ...contentScope.params);
   const mediaStats = q.all(`SELECT j.content_employee_idx idx,COUNT(*) media_jobs,
       MAX(j.created_at) last_media_at
@@ -1526,8 +1784,12 @@ r.get('/crew', (req, res) => {
 r.get('/summary', (req, res) => {
   const m = monthStart();
   const scope = userScopeClause(req.user, 'creator_id');
-  const cnt = (type) => q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()} AND created_at >= ? AND type = ?${scope.sql}`, m, type, ...scope.params)?.n || 0;
-  const total = q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()} AND created_at >= ?${scope.sql}`, m, ...scope.params)?.n || 0;
+  const completed = completedContentPredicate();
+  const cnt = (type) => q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()}
+    AND created_at >= ? AND type = ? AND ${completed}${scope.sql}`,
+  m, type, ...scope.params)?.n || 0;
+  const total = q.get(`SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()}
+    AND created_at >= ? AND ${completed}${scope.sql}`, m, ...scope.params)?.n || 0;
   res.json({
     total, image: cnt('AI图片'), video: cnt('短视频脚本'), ppt: cnt('AIPPT'),
     aiMode: aiAvailable() ? 'api' : 'template',
@@ -1707,70 +1969,147 @@ r.get('/automations/:id/runs', (req, res) => {
     automationManager(req);
     const row = automationRule(req.params.id);
     if (!row) return res.status(404).json({ error: '内容自动化规则不存在' });
+    let runId = null;
+    if (req.query.runId !== undefined) {
+      runId = Number(req.query.runId);
+      if (!Number.isSafeInteger(runId) || runId < 1) {
+        throw automationError('runId必须是正整数');
+      }
+    }
     const limit = Math.min(30, Math.max(1, Number.parseInt(String(req.query.limit || 10), 10) || 10));
     const runs = q.all(`SELECT id,trigger,scheduled_for,status,content_id,initiated_by,
       profile_version,prompt_hash,snapshot_json,error,started_at,finished_at
       FROM content_automation_runs WHERE tenant_id=? AND rule_id=?
-      ORDER BY id DESC LIMIT ?`, curTenant(), row.id, limit)
-      .map(item => {
-        const snapshot = safeJsonValue(item.snapshot_json, {});
-        return {
-          id: Number(item.id),
-          trigger: item.trigger,
-          scheduledFor: item.scheduled_for || null,
-          status: item.status,
-          contentId: item.content_id == null ? null : Number(item.content_id),
-          initiatedBy: item.initiated_by == null ? null : Number(item.initiated_by),
-          profileVersion: item.profile_version || null,
-          promptHash: item.prompt_hash || null,
-          contract: publicAutomationContract(snapshot.contract),
-          billing: snapshot.billing || null,
-          error: item.error || null,
-          startedAt: item.started_at,
-          finishedAt: item.finished_at || null,
-        };
-      });
+        ${runId == null ? '' : 'AND id=?'}
+      ORDER BY id DESC LIMIT ?`,
+    curTenant(), row.id, ...(runId == null ? [] : [runId]), limit)
+      .map(publicAutomationRun);
+    if (runId != null && runs.length === 0) {
+      return res.status(404).json({ error: '内容自动化运行记录不存在' });
+    }
     res.set('Cache-Control', 'private, no-store');
-    res.json({ rule: automationRow(row), runs });
+    return res.json({ rule: automationRow(row), runs });
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message });
+    return res.status(error.status || 500).json({ error: error.message });
   }
 });
 
-r.post('/automations/:id/run', async (req, res) => {
+r.post('/automations/:id/run', (req, res) => {
+  let releaseAiLease = null;
   try {
     automationManager(req);
-    const row = automationRule(req.params.id);
-    if (!row) return res.status(404).json({ error: '内容自动化规则不存在' });
-    if (!isPlainObject(req.body || {}) || Object.keys(req.body || {}).length) {
-      throw automationError('立即运行不接受额外参数，请先保存规则配置');
-    }
-    const claimKey = `manual:${req.user.id}:${Date.now()}:${randomUUID()}`;
-    const inserted = q.run(`INSERT INTO content_automation_runs(
-      rule_id,trigger,claim_key,scheduled_for,status,initiated_by
-    ) VALUES(?,'immediate',?,NULL,'运行中',?)`, row.id, claimKey, req.user.id);
-    q.run(`UPDATE content_automation_rules SET last_status='运行中',last_error=NULL,
-      last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
-      WHERE tenant_id=? AND id=?`, curTenant(), row.id);
-    const result = await executeContentAutomationRun({
-      ruleId: row.id,
-      runId: Number(inserted.lastInsertRowid),
-      trigger: 'immediate',
-      initiatedBy: req.user.id,
+    const requestedRuleId = Number(req.params.id);
+    const idempotencyKey = automationRunIdempotencyKey(req.body);
+    const claimKey = `manual:${req.user.id}:${idempotencyKey}`;
+    const claim = withImmediateTransaction(db, () => {
+      const rule = automationRule(requestedRuleId);
+      if (!rule) throw automationError('内容自动化规则不存在', 404);
+      const entitlement = contentAutomationEntitlement({
+        tenantId: curTenant(),
+        creatorId: rule.created_by,
+      });
+      const sameRequest = q.get(`SELECT * FROM content_automation_runs
+        WHERE tenant_id=? AND rule_id=? AND trigger='immediate' AND claim_key=?`,
+      curTenant(), rule.id, claimKey);
+      const active = q.get(`SELECT * FROM content_automation_runs
+        WHERE tenant_id=? AND rule_id=? AND status='运行中'
+        ORDER BY id DESC LIMIT 1`, curTenant(), rule.id);
+      if (!entitlement.allowed) {
+        const error = automationEntitlementError(entitlement);
+        const snapshot = JSON.stringify({ entitlement: error.entitlement });
+        q.run(`UPDATE content_automation_rules
+          SET enabled=0,next_run_at=NULL,last_status='已停用',last_error=?,
+            last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
+          WHERE tenant_id=? AND id=?`,
+        error.message, curTenant(), rule.id);
+        let deniedRun = sameRequest || active;
+        if (!deniedRun) {
+          const inserted = q.run(`INSERT INTO content_automation_runs(
+            rule_id,trigger,claim_key,scheduled_for,status,initiated_by,
+            snapshot_json,error,finished_at
+          ) VALUES(?,'immediate',?,NULL,'失败',?,?,?,datetime('now','localtime'))`,
+          rule.id, claimKey, req.user.id, snapshot, error.message);
+          deniedRun = q.get(`SELECT * FROM content_automation_runs
+            WHERE tenant_id=? AND id=?`, curTenant(), Number(inserted.lastInsertRowid));
+        }
+        return {
+          rule,
+          run: deniedRun,
+          created: false,
+          reused: Boolean(sameRequest || active),
+          denied: true,
+          error,
+        };
+      }
+      if (sameRequest) {
+        return { rule, run: sameRequest, created: false, reused: true, denied: false };
+      }
+      if (active) {
+        return { rule, run: active, created: false, reused: true, denied: false };
+      }
+      const inserted = q.run(`INSERT INTO content_automation_runs(
+        rule_id,trigger,claim_key,scheduled_for,status,initiated_by
+      ) VALUES(?,'immediate',?,NULL,'运行中',?)`, rule.id, claimKey, req.user.id);
+      q.run(`UPDATE content_automation_rules SET last_status='运行中',last_error=NULL,
+        last_run_at=datetime('now','localtime'),updated_at=datetime('now','localtime')
+        WHERE tenant_id=? AND id=?`, curTenant(), rule.id);
+      const run = q.get(`SELECT * FROM content_automation_runs
+        WHERE tenant_id=? AND id=?`, curTenant(), Number(inserted.lastInsertRowid));
+      return { rule, run, created: true, reused: false, denied: false };
     });
-    res.json({
-      ...result,
-      rule: automationRow(automationRule(row.id)),
+    const run = publicAutomationRun(claim.run);
+    if (claim.denied) {
+      res.set('Cache-Control', 'private, no-store');
+      return res.status(403).json({
+        error: claim.error.message,
+        runId: run.id,
+        status: run.status,
+        reused: claim.reused,
+        rule: automationRow(automationRule(claim.rule.id)),
+      });
+    }
+    if (claim.created) {
+      const tenantId = curTenant();
+      const actorId = req.user.id;
+      releaseAiLease = req.aiGuard?.defer?.(12 * 60 * 1000) || null;
+      setImmediate(() => runWithTenant(tenantId, async () => {
+        try {
+          await executeContentAutomationRun({
+            ruleId: claim.rule.id,
+            runId: run.id,
+            trigger: 'immediate',
+            initiatedBy: actorId,
+          });
+        } catch (error) {
+          console.error(`[content-automation] immediate run#${run.id} failed:`,
+            error?.message || error);
+        } finally {
+          releaseAiLease?.();
+        }
+      }));
+    }
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Retry-After', '2');
+    return res.status(run.status === '运行中' ? 202 : 200).json({
+      runId: run.id,
+      status: run.status,
+      queued: run.status === '运行中',
+      reused: claim.reused,
+      pollAfterMs: 2000,
+      pollUrl: `/content/automations/${claim.rule.id}/runs?runId=${run.id}`,
+      rule: automationRow(automationRule(claim.rule.id)),
       boundary: '本次只生成系统内容，未执行发布、账号操作或其他不可逆动作。',
     });
   } catch (error) {
-    if (!req.requestSignal?.aborted && !res.headersSent) {
-      res.status(error.status || 500).json({
+    releaseAiLease?.();
+    if (!res.headersSent) {
+      return res.status(error.status || 500).json({
         error: error.message,
         requestId: req.requestId,
         ...(error.billing ? { billing: error.billing } : {}),
       });
     }
+    return undefined;
   }
 });
 
@@ -1874,6 +2213,7 @@ r.post('/generate', async (req, res) => {
     precheckByRole(req.user.id, 'text', req.user.role);
 
     if (background === true) {
+      let releaseAiLease = null;
       const jobR = q.run(`INSERT INTO media_jobs(
         user_id,kind,model,prompt,status,
         content_employee_idx,content_employee_key,content_employee_name,content_employee_group,content_run_mode,
@@ -1899,6 +2239,9 @@ r.post('/generate', async (req, res) => {
         });
         q.run(`UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?`,
           JSON.stringify(employeeExecutionSnapshot(execution, heldBilling)), curTenant(), backgroundJobId);
+        releaseAiLease = req.aiGuard?.defer?.(
+          Math.max(60_000, Number(execution.config.timeoutSeconds || 120) * 1000 + 60_000),
+        ) || null;
         res.json({
           jobId: backgroundJobId,
           background: true,
@@ -1987,10 +2330,13 @@ r.post('/generate', async (req, res) => {
             } catch (notifyError) {
               console.error('[content background] 失败通知写入异常:', notifyError?.message);
             }
+          } finally {
+            releaseAiLease?.();
           }
         }));
         return;
       } catch (error) {
+        releaseAiLease?.();
         if (hold) {
           try { releaseHold(hold, '后台内容任务入队失败，预授权全额退回'); } catch { /* 留待对账 */ }
           hold = null;

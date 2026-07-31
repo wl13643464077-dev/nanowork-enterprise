@@ -80,7 +80,11 @@
   padding: 18px 22px;
   border-bottom: 1px solid var(--ui-border);
   background:
-    radial-gradient(circle at 90% 0, color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 18%, transparent), transparent 32%),
+    radial-gradient(
+      circle at 90% 0,
+      color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 18%, transparent),
+      transparent 32%
+    ),
     var(--ui-surface);
 }
 
@@ -373,7 +377,11 @@
   border-radius: 9px;
   background: var(--ui-surface-2);
   color: var(--ui-text-2);
-  font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1.65 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -451,7 +459,7 @@
   color: var(--ui-primary);
   font-size: 10.5px;
   font-weight: 760;
-  letter-spacing: .04em;
+  letter-spacing: 0.04em;
 }
 
 .ewb-dispatch-guide-intro strong {
@@ -524,7 +532,7 @@
 
 .ewb-dispatch-examples button:disabled {
   cursor: not-allowed;
-  opacity: .55;
+  opacity: 0.55;
 }
 
 .ewb-dispatch-examples button b {
@@ -577,10 +585,10 @@
 
 .ewb-image-input > label:has(input:disabled) {
   cursor: not-allowed;
-  opacity: .55;
+  opacity: 0.55;
 }
 
-.ewb-image-input input[type="file"] {
+.ewb-image-input input[type='file'] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -591,7 +599,7 @@
 
 .ewb-content-native-fields {
   display: grid;
-  grid-template-columns: minmax(0, .75fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
   gap: 12px;
 }
 
@@ -749,7 +757,10 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color .18s, background .18s, transform .18s;
+  transition:
+    border-color 0.18s,
+    background 0.18s,
+    transform 0.18s;
 }
 
 .ewb-run-list > button:hover,

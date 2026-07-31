@@ -32,11 +32,23 @@ const userId = Number(qRaw.run(
   tenantId,
 ).lastInsertRowid);
 const user = { id: userId, name: '内容路由计费用户', role: 'boss', tenant_id: tenantId };
+const contentLeaseEvents = [];
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use((req, _res, next) => runWithTenant(tenantId, () => {
   req.user = user;
+  req.aiGuard = {
+    defer: timeoutMs => {
+      const lease = { action: 'defer', timeoutMs, released: false };
+      contentLeaseEvents.push(lease);
+      return () => {
+        if (lease.released) return;
+        lease.released = true;
+        contentLeaseEvents.push({ action: 'release', timeoutMs });
+      };
+    },
+  };
   next();
 }));
 app.use('/content', contentRoutes);
@@ -159,6 +171,7 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
 
 test('后台文案在返回jobId前已占扣，终态按模板0分结算且快照可对账', async () => {
   const before = balanceOfTenant(tenantId);
+  const leaseBefore = contentLeaseEvents.length;
   const queued = await post('/content/generate', {
     type: '社群话题',
     topic: '后台两阶段计费验收',
@@ -169,6 +182,7 @@ test('后台文案在返回jobId前已占扣，终态按模板0分结算且快�
   assert.equal(queued.payload.background, true);
   assert.equal(queued.payload.billing.state, 'held');
   assert.ok(queued.payload.billing.heldCredits > 0);
+  assert.equal(contentLeaseEvents.slice(leaseBefore).filter(event => event.action === 'defer').length, 1);
   const immediateJob = db.prepare(
     'SELECT status FROM media_jobs WHERE tenant_id=? AND id=?',
   ).get(tenantId, queued.payload.jobId);
@@ -194,6 +208,7 @@ test('后台文案在返回jobId前已占扣，终态按模板0分结算且快�
   assert.equal(job.credits, 0);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
+  assert.equal(contentLeaseEvents.slice(leaseBefore).filter(event => event.action === 'release').length, 1);
 });
 
 test('日更包三个子任务分别结算并返回逐项可对账账本', async () => {

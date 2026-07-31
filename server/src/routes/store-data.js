@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { q, curTenant } from '../db.js';
+import crypto from 'node:crypto';
+import { db, q, curTenant } from '../db.js';
 import { logOp, today } from '../util.js';
 
 // 餐饮真数据模型（审计报告 P0）：门店 / 菜品 / 订单明细 / 成本 + 真实经营 KPI。
@@ -100,9 +101,10 @@ r.delete('/stores/:id', (req, res) => {
   if (!store) return res.status(404).json({ error: '门店不存在或不属于当前企业' });
   const dishCount = q.scopedCount('dishes', 'AND store_id = ?', store.id);
   const costCount = q.scopedCount('costs', 'AND store_id = ?', store.id);
-  if (dishCount || costCount) {
+  const orderCount = q.scopedCount('orders', 'AND store_id = ?', store.id);
+  if (dishCount || costCount || orderCount) {
     return res.status(400).json({
-      error: `该门店下还有 ${dishCount} 个菜品、${costCount} 条成本记录，请先处理关联数据后再删除门店`,
+      error: `该门店下还有 ${dishCount} 个菜品、${costCount} 条成本记录、${orderCount} 张订单，请先处理关联数据后再删除门店`,
     });
   }
   q.run('DELETE FROM stores WHERE tenant_id = ? AND id = ?', curTenant(), store.id);
@@ -250,9 +252,26 @@ r.post('/orders/:orderId/items', (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : null;
   if (!items || !items.length) return res.status(400).json({ error: '请至少提供一条订单明细' });
   if (items.length > 200) return res.status(400).json({ error: '单次最多登记200条明细' });
+  const idempotencyKey = clean(
+    req.body?.idempotencyKey || req.get('Idempotency-Key'),
+  ).toLowerCase();
+  if (!/^[a-z0-9_-]{8,100}$/.test(idempotencyKey)) {
+    return res.status(400).json({ error: '请提供8到100位的订单明细幂等键' });
+  }
+  const requestedStoreId = req.body?.store_id == null || req.body.store_id === ''
+    ? null
+    : Number(req.body.store_id);
+  const requestedStore = requestedStoreId == null
+    ? null
+    : q.scopedGet('stores', 'AND id = ?', requestedStoreId);
+  if (requestedStoreId != null
+    && (!Number.isInteger(requestedStoreId) || requestedStoreId <= 0 || !requestedStore)) {
+    return res.status(400).json({ error: '订单所属门店不存在或不属于当前企业' });
+  }
 
   // 先整体校验再写入：任何一条不合法都不落库，避免半截明细污染客单价口径
   const prepared = [];
+  const dishStoreIds = new Set();
   for (let i = 0; i < items.length; i++) {
     const item = items[i] || {};
     const rowNo = i + 1;
@@ -260,6 +279,7 @@ r.post('/orders/:orderId/items', (req, res) => {
     if (item.dish_id !== undefined && item.dish_id !== null && item.dish_id !== '') {
       dish = q.scopedGet('dishes', 'AND id = ?', Number(item.dish_id) || 0);
       if (!dish) return res.status(400).json({ error: `第${rowNo}条明细的菜品不存在或不属于当前企业` });
+      dishStoreIds.add(Number(dish.store_id));
     }
     const name = clean(item.dish_name_snapshot) || dish?.name || '';
     if (!name) return res.status(400).json({ error: `第${rowNo}条明细缺少菜品名称（dish_name_snapshot 或有效 dish_id）` });
@@ -281,38 +301,110 @@ r.post('/orders/:orderId/items', (req, res) => {
       amount: round2(qty * unitPrice - discount),
     });
   }
+  if (dishStoreIds.size > 1) {
+    return res.status(400).json({ error: '同一张订单的菜品必须来自同一门店' });
+  }
+  const dishStoreId = dishStoreIds.size ? [...dishStoreIds][0] : null;
+  const targetStoreId = Number(order.store_id || requestedStoreId || dishStoreId || 0);
+  if (!targetStoreId) {
+    return res.status(400).json({ error: '无法确定订单所属门店，请提供 store_id 或选择门店菜品' });
+  }
+  if ((order.store_id && Number(order.store_id) !== targetStoreId)
+    || (requestedStoreId && requestedStoreId !== targetStoreId)
+    || (dishStoreId && dishStoreId !== targetStoreId)) {
+    return res.status(409).json({ error: '订单、指定门店与菜品所属门店不一致' });
+  }
 
-  const created = prepared.map(item => {
-    const ret = q.run(`INSERT INTO order_items(order_id,dish_id,dish_name_snapshot,qty,unit_price,amount,discount)
-      VALUES(?,?,?,?,?,?,?)`,
-      order.id, item.dish_id, item.name, item.qty, item.unitPrice, item.amount, item.discount);
-    return q.scopedGet('order_items', 'AND id = ?', ret.lastInsertRowid);
-  });
-  logOp(req.user, '经营数据', '登记订单明细', `order#${order.id} 共${created.length}条`);
-  res.status(201).json({
-    ok: true,
-    created,
-    sum: round2(created.reduce((s, x) => s + Number(x.amount || 0), 0)),
-  });
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({
+    storeId: targetStoreId,
+    items: prepared,
+  })).digest('hex');
+  const existing = q.get(`SELECT request_hash,response FROM order_item_commits
+    WHERE tenant_id=? AND order_id=? AND idempotency_key=?`,
+  curTenant(), order.id, idempotencyKey);
+  if (existing?.request_hash && existing.request_hash !== requestHash) {
+    return res.status(409).json({ error: '相同幂等键对应了不同订单明细，请生成新的幂等键' });
+  }
+  if (existing?.response) {
+    return res.json({ ...JSON.parse(existing.response), replayed: true });
+  }
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const claimed = q.run(`INSERT OR IGNORE INTO order_item_commits(
+      order_id,user_id,idempotency_key,request_hash
+    ) VALUES(?,?,?,?)`, order.id, req.user.id, idempotencyKey, requestHash);
+    if (!claimed.changes) {
+      const raced = q.get(`SELECT request_hash,response FROM order_item_commits
+        WHERE tenant_id=? AND order_id=? AND idempotency_key=?`,
+      curTenant(), order.id, idempotencyKey);
+      if (raced?.request_hash !== requestHash) {
+        throw Object.assign(new Error('相同幂等键对应了不同订单明细，请生成新的幂等键'), { status: 409 });
+      }
+      if (!raced?.response) {
+        throw Object.assign(new Error('相同订单明细请求正在处理，请稍后重试'), { status: 409 });
+      }
+      db.exec('COMMIT');
+      return res.json({ ...JSON.parse(raced.response), replayed: true });
+    }
+    q.run(`UPDATE orders SET store_id=?
+      WHERE tenant_id=? AND id=? AND (store_id IS NULL OR store_id=?)`,
+    targetStoreId, curTenant(), order.id, targetStoreId);
+    const created = prepared.map(item => {
+      const ret = q.run(`INSERT INTO order_items(order_id,dish_id,dish_name_snapshot,qty,unit_price,amount,discount)
+        VALUES(?,?,?,?,?,?,?)`,
+        order.id, item.dish_id, item.name, item.qty, item.unitPrice, item.amount, item.discount);
+      return q.scopedGet('order_items', 'AND id = ?', ret.lastInsertRowid);
+    });
+    const payload = {
+      ok: true,
+      created,
+      storeId: targetStoreId,
+      sum: round2(created.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
+    };
+    logOp(req.user, '经营数据', '登记订单明细', `order#${order.id} 门店#${targetStoreId} 共${created.length}条`);
+    q.run(`UPDATE order_item_commits SET response=?
+      WHERE tenant_id=? AND order_id=? AND idempotency_key=?`,
+    JSON.stringify(payload), curTenant(), order.id, idempotencyKey);
+    db.exec('COMMIT');
+    res.status(201).json(payload);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    res.status(error.status || 500).json({ error: error.message });
+  }
 });
 
 // ===== 真实经营 KPI（无数据的指标一律 null，绝不编造）=====
 r.get('/kpi', (req, res) => {
   const month = clean(req.query.month) || today().slice(0, 7);
   if (!isMonth(month)) return res.status(400).json({ error: '月份格式应为 YYYY-MM' });
+  const storeId = req.query.store_id == null || req.query.store_id === ''
+    ? null
+    : Number(req.query.store_id);
+  if (storeId != null
+    && (!Number.isInteger(storeId) || storeId <= 0
+      || !q.scopedGet('stores', 'AND id = ?', storeId))) {
+    return res.status(400).json({ error: '门店不存在或不属于当前企业' });
+  }
   const { start, endExclusive } = monthRange(month);
   const T = curTenant();
+  const orderStoreSql = storeId == null ? '' : ' AND store_id = ?';
+  const orderParams = storeId == null ? [] : [storeId];
+  const joinedOrderStoreSql = storeId == null ? '' : ' AND o.store_id = ?';
+  const costStoreSql = storeId == null ? '' : ' AND store_id = ?';
 
   // 营收：订单头口径（orders 是当前唯一真实营收事实表）
   const revenue = q.get(`SELECT COUNT(*) n, COALESCE(SUM(amount),0) a FROM orders
-    WHERE tenant_id = ? AND created_at >= ? AND created_at < ?`, T, start, endExclusive);
+    WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${orderStoreSql}`,
+  T, start, endExclusive, ...orderParams);
   const monthRevenue = revenue?.n > 0 ? round2(revenue.a) : null;
 
   // 真实客单价：只统计有明细的订单，SUM(明细金额)/COUNT(DISTINCT 订单)
   const ticket = q.get(`SELECT COUNT(DISTINCT oi.order_id) orders, COALESCE(SUM(oi.amount),0) amt
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id AND o.tenant_id = oi.tenant_id
-    WHERE oi.tenant_id = ? AND o.created_at >= ? AND o.created_at < ?`, T, start, endExclusive);
+    WHERE oi.tenant_id = ? AND o.created_at >= ? AND o.created_at < ?${joinedOrderStoreSql}`,
+  T, start, endExclusive, ...orderParams);
   const avgTicket = ticket?.orders > 0 ? round2(ticket.amt / ticket.orders) : null;
 
   // 菜品销量 TOP10：按 order_items 聚合（无明细时为空数组）
@@ -320,18 +412,25 @@ r.get('/kpi', (req, res) => {
       SUM(oi.qty) qty, COALESCE(SUM(oi.amount),0) amount
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id AND o.tenant_id = oi.tenant_id
-    WHERE oi.tenant_id = ? AND o.created_at >= ? AND o.created_at < ?
+    WHERE oi.tenant_id = ? AND o.created_at >= ? AND o.created_at < ?${joinedOrderStoreSql}
     GROUP BY oi.dish_id, oi.dish_name_snapshot
-    ORDER BY qty DESC, amount DESC LIMIT 10`, T, start, endExclusive)
+    ORDER BY qty DESC, amount DESC LIMIT 10`, T, start, endExclusive, ...orderParams)
     .map(x => ({ ...x, amount: round2(x.amount) }));
 
-  // 成本：costs 事实表口径
-  const cost = q.get(`SELECT COUNT(*) n, COALESCE(SUM(amount),0) a FROM costs
-    WHERE tenant_id = ? AND date >= ? AND date < ?`, T, start, endExclusive);
-  const monthCost = cost?.n > 0 ? round2(cost.a) : null;
+  // 成本按类别拆分：毛利只扣直接食材成本；全部登记成本另算经营利润率。
+  const costs = q.all(`SELECT category,COUNT(*) n,COALESCE(SUM(amount),0) a FROM costs
+    WHERE tenant_id = ? AND date >= ? AND date < ?${costStoreSql}
+    GROUP BY category`, T, start, endExclusive, ...orderParams);
+  const monthCost = costs.length
+    ? round2(costs.reduce((sum, row) => sum + Number(row.a || 0), 0))
+    : null;
+  const directFoodRow = costs.find(row => row.category === '食材');
+  const directFoodCost = directFoodRow ? round2(directFoodRow.a) : null;
 
-  // 毛利率 =（营收 − ∑成本）/ 营收；盈亏平衡进度 = 营收 / ∑成本（100% 即打平）
-  const grossMargin = monthRevenue !== null && monthRevenue > 0 && monthCost !== null
+  const grossMargin = monthRevenue !== null && monthRevenue > 0 && directFoodCost !== null
+    ? Math.round(((monthRevenue - directFoodCost) / monthRevenue) * 1000) / 10
+    : null;
+  const operatingMargin = monthRevenue !== null && monthRevenue > 0 && monthCost !== null
     ? Math.round(((monthRevenue - monthCost) / monthRevenue) * 1000) / 10
     : null;
   const breakEven = monthRevenue !== null && monthCost !== null && monthCost > 0
@@ -340,13 +439,17 @@ r.get('/kpi', (req, res) => {
 
   res.json({
     month,
+    storeId,
     avgTicket,
     dishTop,
     grossMargin,
+    operatingMargin,
     breakEven,
     monthRevenue,
     monthCost,
-    note: '真实口径：客单价=有明细订单的明细金额合计÷订单数；毛利率=（订单营收−登记成本）÷营收；无对应数据的指标返回 null，不做估算。',
+    directFoodCost,
+    costBreakdown: Object.fromEntries(costs.map(row => [row.category, round2(row.a)])),
+    note: '真实口径：客单价=有明细订单的明细金额合计÷订单数；毛利率=（订单营收−食材直接成本）÷营收；经营利润率=（订单营收−全部登记成本）÷营收；无对应数据的指标返回 null，不做估算。',
   });
 });
 

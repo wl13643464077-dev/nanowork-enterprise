@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { q, db, getTenant, runWithTenant } from '../db.js';
 import { logOp, requireRole, notify } from '../util.js';
 import { balanceOfTenant, creditTenant } from '../engines/credits.js';
-import { paymentChannels, createPayment, queryPayment } from '../engines/payment.js';
+import { paymentChannels, createPayment, queryPayment, closePayment } from '../engines/payment.js';
 
 // 在线支付扩展列（幂等迁移：首次用到时补齐，不改 db.js）
 let payColumnsReady = false;
@@ -71,7 +71,17 @@ export function settlePaidOrder({ orderNo, channelName, tradeNo = '', paidFen })
 }
 
 const r = Router();
-r.use(requireRole('boss', 'admin', 'platform_super'));
+r.use(requireRole('boss', 'admin'));
+
+function safePaymentAudit(user, action, target) {
+  try {
+    logOp(user, '充值中心', action, target);
+    return true;
+  } catch (error) {
+    console.error(`[recharge-audit] ${action} 写入失败：`, error?.message || error);
+    return false;
+  }
+}
 
 // 已配置的在线支付通道（空数组 = 未配置，前端保持对公转账旧流程）
 r.get('/channels', (_req, res) => {
@@ -112,20 +122,100 @@ r.post('/orders', async (req, res) => {
     if (!chosen) {
       return res.status(400).json({ error: `请选择支付方式（${channels.map(c => c.name).join(' / ')}）` });
     }
-    let pay;
+    // 先落本地订单，再请求远端。这样即使网关成功后本地二维码更新失败，
+    // 回调和人工对账仍有可定位的 order_no，不会形成完全不可见的渠道孤儿单。
+    let result;
     try {
+      result = q.run(`INSERT INTO recharge_orders(
+        order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel,pay_method
+      ) VALUES(?,?,?,?,?,?, '待支付', ?,?,?)`,
+      orderNo, tid, pkg.id, pkg.name, pkg.price_yuan, pkg.total_credits, req.user.id,
+      chosen.channel, chosen.name);
+    } catch (error) {
+      console.error(`[recharge] 本地订单预写失败 order=${orderNo}：`, error?.message || error);
+      safePaymentAudit(req.user, '在线支付本地预写失败', `order=${orderNo};channel=${chosen.channel}`);
+      return res.status(500).json({ error: '充值订单创建失败，尚未请求支付渠道，请稍后重试' });
+    }
+
+    let pay = null;
+    let gatewayAttempted = false;
+    let gatewayAccepted = false;
+    try {
+      gatewayAttempted = true;
       pay = await createPayment(chosen.channel, {
         orderNo, amountYuan: pkg.price_yuan, subject: `纳米Work积分充值·${pkg.name}`,
       });
+      gatewayAccepted = true; // createPayment 只会返回验签通过的成功应答
+      const finalized = q.run(`UPDATE recharge_orders
+        SET qr_url=?,pay_expire_at=?
+        WHERE id=? AND tenant_id=? AND order_no=? AND status='待支付'`,
+      pay.qrUrl, pay.expireAt, result.lastInsertRowid, tid, orderNo);
+      if (!finalized.changes) {
+        throw Object.assign(new Error('远端下单成功，但本地订单收尾写入失败'), {
+          status: 500,
+          localFinalizationFailure: true,
+        });
+      }
     } catch (e) {
-      console.error(`[recharge] ${chosen.name}下单失败 order=${orderNo}：`, e?.message || e);
-      return res.status(e?.status && e.status !== 501 ? e.status : 502).json({ error: e?.message || '支付下单失败，请稍后重试' });
+      // 请求已发出后即使收到的是超时/坏签名，也不能断言远端未建单。
+      // 使用相同商户订单号尽最大努力关单；关单成功且验签通过后才本地取消，
+      // 否则保留“待支付”供回调/主动查单/人工对账继续识别。
+      let closeState = gatewayAttempted ? 'failed' : 'not_attempted';
+      let closeError = null;
+      if (gatewayAttempted) {
+        try {
+          await closePayment(chosen.channel, orderNo);
+          closeState = 'closed';
+        } catch (closeFailure) {
+          closeError = closeFailure;
+        }
+      }
+      let localStatus = '待支付';
+      if (closeState === 'closed') {
+        try {
+          q.run(`UPDATE recharge_orders SET status='已取消',qr_url=NULL,pay_expire_at=NULL
+            WHERE id=? AND tenant_id=? AND order_no=? AND status='待支付'`,
+          result.lastInsertRowid, tid, orderNo);
+        } catch (markError) {
+          console.error(`[recharge] 渠道已关单但本地取消标记失败 order=${orderNo}：`, markError?.message || markError);
+        }
+      }
+      // 响应中的本地状态必须以数据库事实为准，不能仅凭“渠道已关单”就宣称
+      // 本地订单也已取消；本地标记失败时继续暴露待对账状态。
+      try {
+        localStatus = String(q.get(
+          'SELECT status FROM recharge_orders WHERE id=? AND tenant_id=? AND order_no=?',
+          result.lastInsertRowid, tid, orderNo,
+        )?.status || '待支付');
+      } catch (statusError) {
+        console.error(`[recharge] 下单失败后读取本地状态失败 order=${orderNo}：`, statusError?.message || statusError);
+      }
+      const reconciliationRequired = closeState !== 'closed' || localStatus !== '已取消';
+      safePaymentAudit(
+        req.user,
+        gatewayAccepted ? '在线支付远端成功后本地收尾失败' : '在线支付下单应答未采用',
+        `order=${orderNo};channel=${chosen.channel};gatewayAccepted=${gatewayAccepted ? 1 : 0};close=${closeState};localStatus=${localStatus};reconcile=${reconciliationRequired ? 1 : 0}`,
+      );
+      console.error(
+        `[recharge] ${chosen.name}下单未完成 order=${orderNo}; gatewayAccepted=${gatewayAccepted}; close=${closeState}：`,
+        e?.message || e,
+        closeError ? `；关单错误：${closeError?.message || closeError}` : '',
+      );
+      const status = gatewayAccepted
+        ? 500
+        : (Number.isInteger(e?.status) && e.status >= 400 && e.status < 600 && e.status !== 501
+          ? e.status
+          : 502);
+      return res.status(status).json({
+        error: gatewayAccepted
+          ? '支付渠道已创建订单，但本地保存失败；系统已执行安全关单或保留待对账，请勿重复支付'
+          : (e?.message || '支付下单失败，请稍后重试'),
+        orderNo,
+        status: localStatus,
+        reconciliationRequired,
+      });
     }
-    const result = q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel,qr_url,pay_expire_at,pay_method)
-      VALUES(?,?,?,?,?,?, '待支付', ?,?,?,?,?)`,
-    orderNo, tid, pkg.id, pkg.name, pkg.price_yuan, pkg.total_credits, req.user.id,
-    chosen.channel, pay.qrUrl, pay.expireAt, chosen.name);
-    logOp(req.user, '充值中心', '提交充值订单', `${pkg.name} ¥${pkg.price_yuan}（${chosen.name}）`);
+    safePaymentAudit(req.user, '提交充值订单', `${pkg.name} ¥${pkg.price_yuan}（${chosen.name}）`);
     return res.json({
       id: result.lastInsertRowid, orderNo, package: pkg,
       qrUrl: pay.qrUrl, channel: chosen.channel, channelName: chosen.name,
@@ -176,13 +266,19 @@ r.get('/orders/:orderNo/status', async (req, res) => {
         console.warn(`[recharge] 订单 ${orderNo} 网关对账查询失败（回调仍为主路径）：`, e?.message || e);
       }
     }
-    // 超时自动关单：二维码过期 + 5 分钟宽限仍未支付
+    // 超时自动关单：二维码过期 + 5 分钟宽限仍未支付。线上订单必须先让
+    // 渠道关单成功且应答验签通过，远端失败时本地继续保持“待支付”。
     if (o.status === '待支付' && o.pay_expire_at && Date.now() > new Date(o.pay_expire_at).getTime() + EXPIRE_GRACE_MS) {
-      const closed = q.run(`UPDATE recharge_orders SET status='已取消' WHERE order_no=? AND tenant_id=? AND status='待支付'`, orderNo, tid);
-      if (closed.changes) {
-        gatewayQueryAt.delete(orderNo);
-        logOp(req.user, '充值中心', '超时自动关单', `order ${orderNo}`);
-        o = fetchOrder();
+      try {
+        await closePayment(o.pay_channel, orderNo);
+        const closed = q.run(`UPDATE recharge_orders SET status='已取消' WHERE order_no=? AND tenant_id=? AND status='待支付'`, orderNo, tid);
+        if (closed.changes) {
+          gatewayQueryAt.delete(orderNo);
+          logOp(req.user, '充值中心', '超时自动关单', `order ${orderNo}`);
+          o = fetchOrder();
+        }
+      } catch (e) {
+        console.warn(`[recharge] 订单 ${orderNo} 渠道关单失败，本地保持待支付：`, e?.message || e);
       }
     }
   }
@@ -198,8 +294,23 @@ r.get('/orders', (req, res) => {
 });
 
 // 取消未支付订单
-r.post('/orders/:id/cancel', (req, res) => {
+r.post('/orders/:id/cancel', async (req, res) => {
   const tid = req.user.tenant_id || 1;
+  const order = q.get(`SELECT id, order_no, status, pay_channel FROM recharge_orders
+    WHERE id=? AND tenant_id=?`, req.params.id, tid);
+  if (!order) return res.status(404).json({ error: '订单不存在' });
+  if (order.status !== '待支付') {
+    return res.status(409).json({ error: `订单当前状态为“${order.status}”，不能取消` });
+  }
+  if (order.pay_channel) {
+    try {
+      await closePayment(order.pay_channel, order.order_no);
+    } catch (e) {
+      console.warn(`[recharge] 用户取消订单 ${order.order_no} 时渠道关单失败，本地保持待支付：`, e?.message || e);
+      const status = Number.isInteger(e?.status) && e.status >= 400 && e.status < 600 ? e.status : 502;
+      return res.status(status).json({ error: '支付渠道关单失败，订单仍保持待支付，请稍后重试' });
+    }
+  }
   const changed = q.run(`UPDATE recharge_orders SET status='已取消' WHERE id=? AND tenant_id=? AND status='待支付'`, req.params.id, tid);
   if (!changed.changes) {
     const existing = q.get('SELECT status FROM recharge_orders WHERE id=? AND tenant_id=?', req.params.id, tid);

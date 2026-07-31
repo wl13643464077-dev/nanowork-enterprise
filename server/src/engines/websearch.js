@@ -3,6 +3,8 @@
 // 兜底 DuckDuckGo HTML 解析（注意：DDG 在中国大陆网络环境通常不可达，正式部署请配置
 // 至少一个商业检索源：BOCHA_API_KEY / TAVILY_API_KEY / SERPER_API_KEY）。
 // 失败安全：超时/网络受限时返回空数组并附 note，不阻塞会诊主流程。
+import { sanitizeProviderError } from './provider-errors.js';
+
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 function strip(html = '') {
@@ -105,8 +107,9 @@ export async function webSearch(query, { max = 5, timeoutMs = 9000 } = {}) {
         return { ok: true, provider: provider.name, results, note: results.length ? null : '检索成功但未命中结果' };
       } catch (e) {
         if (e?.name === 'AbortError') throw e;
-        failures.push(`${provider.name}:${e.message}`);
-        console.warn(`[websearch] ${provider.name} 检索失败（${e.message}），尝试下一检索源`);
+        const safe = sanitizeProviderError(e, { service: `${provider.name}检索服务` });
+        failures.push(`${provider.name}:${safe.message}`);
+        console.warn(`[websearch] ${provider.name} 检索失败（${safe.message}），尝试下一检索源`);
       }
     }
     // 兜底：DDG（无 Key 可用，但国内网络通常不可达）
@@ -116,7 +119,10 @@ export async function webSearch(query, { max = 5, timeoutMs = 9000 } = {}) {
       note: results.length ? null : (failures.length ? `商业检索源失败（${failures.join('；')}），兜底源亦未命中` : '检索成功但未命中结果；建议配置 BOCHA_API_KEY 等商业检索源'),
     };
   } catch (e) {
-    return { ok: false, results: [], note: `联网检索暂不可用（${e.name === 'AbortError' ? '超时' : e.message}），本次按内部数据作答` };
+    const reason = e?.name === 'AbortError'
+      ? '超时'
+      : sanitizeProviderError(e, { service: '联网检索服务' }).message;
+    return { ok: false, results: [], note: `联网检索暂不可用（${reason}），本次按内部数据作答` };
   } finally { clearTimeout(timer); }
 }
 

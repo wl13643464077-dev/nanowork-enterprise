@@ -1,10 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH,
+  validateEmployeeSkillEvidenceCatalog,
+  verifiedEmployeeSkillsFor,
+} from './employee-skills-verification.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const CONTENT_CREW_CATALOG_PATH = path.join(__dirname, '..', '..', 'catalog', 'content-crew.json');
-export const EMPLOYEE_SKILL_CATALOG_PATH = path.join(__dirname, '..', '..', 'catalog', 'employee-skills.json');
+export const EMPLOYEE_SKILL_CATALOG_PATH = EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH;
 
 const EXPECTED_IDENTITIES = [
   [0, 'trend', '趋势官', '热点雷达部'],
@@ -28,6 +33,22 @@ const EXPECTED_SKILL_INDEXES = [
 const ALLOWED_TEXT_MODELS = new Set([null, 'deepseek-v4-flash', 'gpt-5.5']);
 const ALLOWED_IMAGE_MODELS = new Set([null, 'gpt-image-2']);
 const ALLOWED_SETTING_KEYS = new Set(['channels', 'targets', 'dimensions']);
+const ALLOWED_CONNECTOR_MODES = new Set([
+  'verified_input_assist',
+  'local_contract_assist',
+  'employee_generation',
+]);
+const ALLOWED_CONNECTOR_STATUSES = new Set([
+  'requires_live_data',
+  'local_assist_ready',
+  'single_station',
+]);
+const CONNECTOR_STATUS_BY_MODE = Object.freeze({
+  verified_input_assist: 'requires_live_data',
+  local_contract_assist: 'local_assist_ready',
+  employee_generation: 'single_station',
+});
+const ALLOWED_LIVE_DATA_REQUIREMENTS = new Set(['required', 'optional', 'not_required']);
 
 function fail(message) {
   throw new Error(`内容生产仓目录无效：${message}`);
@@ -107,6 +128,7 @@ export function validateContentCrewCatalog(value) {
 
   const idxSet = new Set();
   const keySet = new Set();
+  const connectorKindSet = new Set();
   const groupMembership = new Map();
   let capabilityTotal = 0;
   for (const group of value.moduleGroups) {
@@ -207,10 +229,66 @@ export function validateContentCrewCatalog(value) {
       fail(`员工${idx}.connectorPolicy.connectors不完整`);
     }
     for (const connector of employee.connectorPolicy.connectors) {
+      objectValue(connector, `员工${idx}.connector`);
+      exactKeys(
+        connector,
+        [
+          'kind', 'primary', 'addon', 'legacyHandler', 'newProjectStatus',
+          'status', 'mode', 'requirements', 'executeBoundary',
+        ],
+        `员工${idx}.connector`,
+      );
       nonEmpty(connector?.kind, `员工${idx}.connector.kind`);
       nonEmpty(connector?.newProjectStatus, `员工${idx}.connector.newProjectStatus`);
+      nonEmpty(connector?.status, `员工${idx}.connector.status`);
+      nonEmpty(connector?.mode, `员工${idx}.connector.mode`);
+      nonEmpty(connector?.executeBoundary, `员工${idx}.connector.executeBoundary`);
+      if (connector.legacyHandler !== null
+        && (typeof connector.legacyHandler !== 'string' || !connector.legacyHandler.trim())) {
+        fail(`员工${idx}.connector.${connector.kind}.legacyHandler不正确`);
+      }
       if (typeof connector.primary !== 'boolean' || typeof connector.addon !== 'boolean') {
         fail(`员工${idx}.connector主附状态不完整`);
+      }
+      if (connectorKindSet.has(connector.kind)) fail(`连接器kind重复：${connector.kind}`);
+      connectorKindSet.add(connector.kind);
+      if (connector.newProjectStatus === 'catalog_only' || connector.status === 'catalog_only') {
+        fail(`员工${idx}.connector.${connector.kind}仍是catalog_only占位`);
+      }
+      if (connector.newProjectStatus !== connector.status
+        || !ALLOWED_CONNECTOR_STATUSES.has(connector.status)) {
+        fail(`员工${idx}.connector.${connector.kind}运行状态不一致`);
+      }
+      if (!ALLOWED_CONNECTOR_MODES.has(connector.mode)) {
+        fail(`员工${idx}.connector.${connector.kind}运行模式不正确`);
+      }
+      if (CONNECTOR_STATUS_BY_MODE[connector.mode] !== connector.status) {
+        fail(`员工${idx}.connector.${connector.kind}状态与运行模式不一致`);
+      }
+      objectValue(connector.requirements, `员工${idx}.connector.${connector.kind}.requirements`);
+      exactKeys(
+        connector.requirements,
+        ['inputs', 'liveData', 'credentials', 'humanApproval'],
+        `员工${idx}.connector.${connector.kind}.requirements`,
+      );
+      if (!Array.isArray(connector.requirements.inputs)
+        || !connector.requirements.inputs.length
+        || connector.requirements.inputs.some(input => typeof input !== 'string' || !input.trim())) {
+        fail(`员工${idx}.connector.${connector.kind}.requirements.inputs不完整`);
+      }
+      if (!ALLOWED_LIVE_DATA_REQUIREMENTS.has(connector.requirements.liveData)) {
+        fail(`员工${idx}.connector.${connector.kind}.requirements.liveData不正确`);
+      }
+      if (connector.mode === 'verified_input_assist'
+        && connector.requirements.liveData !== 'required') {
+        fail(`员工${idx}.connector.${connector.kind}必须要求调用方实时数据`);
+      }
+      if (!Array.isArray(connector.requirements.credentials)
+        || connector.requirements.credentials.some(item => typeof item !== 'string' || !item.trim())) {
+        fail(`员工${idx}.connector.${connector.kind}.requirements.credentials不正确`);
+      }
+      if (!APPROVALS.has(connector.requirements.humanApproval)) {
+        fail(`员工${idx}.connector.${connector.kind}.requirements.humanApproval不正确`);
       }
     }
     objectValue(employee.sourceProvenance, `员工${idx}.sourceProvenance`);
@@ -220,6 +298,7 @@ export function validateContentCrewCatalog(value) {
     }
   }
   if (capabilityTotal !== 45) fail(`核心能力总数必须为45，当前${capabilityTotal}`);
+  if (connectorKindSet.size !== 13) fail(`连接器必须恰好13种，当前${connectorKindSet.size}`);
   if (groupMembership.size !== 10 || [...idxSet].some(idx => !groupMembership.has(idx))) fail('模块分组没有完整覆盖10名员工');
   const deck = value.employees[7];
   if (deck.outputSchema.primaryArtifact !== 'html'
@@ -318,15 +397,21 @@ export function validateEmployeeSkillCatalog(value) {
 
 export function loadEmployeeSkillCatalog(catalogPath = EMPLOYEE_SKILL_CATALOG_PATH) {
   try {
-    return validateEmployeeSkillCatalog(JSON.parse(fs.readFileSync(catalogPath, 'utf8')));
+    const source = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    validateEmployeeSkillCatalog(source);
+    return validateEmployeeSkillEvidenceCatalog(source);
   } catch (error) {
-    if (String(error?.message || '').startsWith('内容生产仓目录无效：')) throw error;
+    if (/^(?:内容生产仓目录无效|员工技能验证证据无效)：/u.test(String(error?.message || ''))) throw error;
     throw new Error(`员工技能目录读取失败（${catalogPath}）：${error.message}`);
   }
 }
 
 export const EMPLOYEE_SKILL_CATALOG = loadEmployeeSkillCatalog();
-export const EMPLOYEE_SKILL_PROFILES = EMPLOYEE_SKILL_CATALOG.profiles;
+export const EMPLOYEE_SKILL_RAW_PROFILES = EMPLOYEE_SKILL_CATALOG.profiles;
+export const EMPLOYEE_SKILL_PROFILES = deepFreeze(EMPLOYEE_SKILL_RAW_PROFILES.map(profile => ({
+  ...profile,
+  skills: verifiedEmployeeSkillsFor(EMPLOYEE_SKILL_CATALOG, profile.idx),
+})));
 
 for (const employee of CONTENT_EMPLOYEES) {
   const profile = EMPLOYEE_SKILL_PROFILES.find(candidate => candidate.idx === employee.idx);

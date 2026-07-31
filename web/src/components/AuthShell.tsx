@@ -28,7 +28,14 @@ export function AuthBrand({ compact = false }: { compact?: boolean }) {
 export function TrustMarks() {
   const check = (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-      <path d="M2 6.2 5 9l5-6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M2 6.2 5 9l5-6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
   return (
@@ -53,7 +60,9 @@ export default function AuthShell({
 }) {
   return (
     <main className={`au-shell au-${layout}`}>
-      <a className="au-skip" href="#auth-card">跳到表单</a>
+      <a className="au-skip" href="#auth-card">
+        跳到表单
+      </a>
       <div className="au-mesh" aria-hidden="true">
         <i className="au-blob au-blob-a" />
         <i className="au-blob au-blob-b" />

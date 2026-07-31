@@ -6,11 +6,22 @@ import {
   syncActivityLifecycleToFeishu, pushFeishuToManagers, pushFeishuToUser,
   feishuUserRecipient, icsToken, appReady, appBotReady, feishuManagerSummary, feishuConfig,
 } from '../engines/feishu.js';
-import { precheck, precheckByRole, charge } from '../engines/credits.js';
+import {
+  estimateCallCredits,
+  holdCredits,
+  releaseHold,
+  settleHold,
+} from '../engines/credits.js';
 import { embedDoc } from '../engines/rag.js';
 import { accessibleUserExists, canAccessOwner, userScopeClause } from '../engines/access.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, tableRows } from '../engines/deletion.js';
 import { normalizeActivityPlan } from '../engines/activity-plan.js';
+import { textModelFor } from '../engines/yunwu.js';
+import {
+  executeHeldDelivery,
+  twoPhaseBillingSummary,
+  withImmediateTransaction,
+} from '../engines/two-phase-delivery.js';
 
 const r = Router();
 
@@ -757,20 +768,72 @@ r.post('/:id/checklist/:idx/submit', (req, res) => {
 // AI 活动策划（FR-ACT-02）
 r.post('/:id/plan', async (req, res) => {
   try {
-  const act = ensureActivityAccess(req, res, req.params.id);
-  if (!act) return;
-  precheckByRole(req.user.id, 'text', req.user.role);
-  const { goal = '提升到店与服务转化', audience = '已授权触达的目标顾客', budget = '待确认' } = req.body || {};
-  const { plan, out } = await buildActivityPlan(act, { goal, audience, budget }, req.user.role);
-  const draftBill = immediateTransaction(() => {
-    const billing = charge({ userId: req.user.id, feature: '活动中心·AI策划', kind: 'text', model: out.model, usage: out.usage,
-      aiMode: out.mode, manageTransaction: false });
-    savePlan(act.id, plan, PLAN_DRAFT);
-    logOp(req.user, '活动中心', 'AI策划草稿', act.title);
-    return billing;
-  });
-  return res.json({ plan, mode: out.mode, billing: draftBill, planStatus: PLAN_DRAFT });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+    const act = ensureActivityAccess(req, res, req.params.id);
+    if (!act) return;
+    const {
+      goal = '提升到店与服务转化',
+      audience = '已授权触达的目标顾客',
+      budget = '待确认',
+    } = req.body || {};
+    const holdModel = textModelFor(req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: '活动中心·AI策划',
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          act.title,
+          act.type,
+          act.date,
+          act.target_join,
+          goal,
+          audience,
+          budget,
+        ],
+        outputTokens: 4000,
+      }),
+      note: `活动#${act.id} AI策划在供应商调用前预授权；未交付全额退回。`,
+    });
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: () => buildActivityPlan(
+        act,
+        { goal, audience, budget },
+        req.user.role,
+      ),
+      persist: generated => withImmediateTransaction(db, () => {
+        savePlan(act.id, generated.plan, PLAN_DRAFT);
+        logOp(req.user, '活动中心', 'AI策划草稿', act.title);
+        return {
+          plan: generated.plan,
+          planStatus: PLAN_DRAFT,
+        };
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: generated => ({
+        usage: generated.out.usage,
+        model: generated.out.model,
+        aiMode: generated.out.mode,
+        note: `活动#${act.id} AI策划草稿已完成业务事务落库`,
+      }),
+      releaseNote: `活动#${act.id} AI策划生成或草稿落库失败，预授权全额退回`,
+    });
+    return res.json({
+      plan: delivered.delivery.plan,
+      mode: delivered.output.out.mode,
+      billing: delivered.billing,
+      planStatus: delivered.delivery.planStatus,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
+  }
 });
 
 // 独立AI活动策划室：不要求先建活动，生成结果持久化，刷新/跳转后仍可找回。
@@ -797,20 +860,70 @@ r.post('/plan-drafts/generate', async (req, res) => {
     if (!targetCount) return res.status(400).json({ error: '目标人数必须是1到100万之间的整数' });
     const normalizedDate = date ? normalizedDateTime(date) : null;
     if (date && (!normalizedDate || normalizedDate.includes(' '))) return res.status(400).json({ error: '活动日期格式不正确' });
-    precheckByRole(req.user.id, 'text', req.user.role);
     const act = { title: normalizedTitle, type: normalizeActivityType(type).slice(0, 40), date: normalizedDate || '', target_join: targetCount };
-    const { plan, out } = await buildActivityPlan(act, { goal, audience, budget }, req.user.role);
-    const normalized = normalizeActivityPlan(plan, act.title);
-    const { draft, bill } = immediateTransaction(() => {
-      const billing = charge({ userId: req.user.id, feature: '活动策划室·AI策划', kind: 'text', model: out.model, usage: out.usage,
-        aiMode: out.mode, manageTransaction: false });
-      const inserted = q.run(`INSERT INTO activity_plan_drafts(user_id,title,type,date,goal,audience,budget,target_join,plan,status) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-        req.user.id, act.title, act.type, normalizedDate, String(goal).slice(0, 100), String(audience).slice(0, 200), String(budget).slice(0, 100), targetCount, JSON.stringify(normalized), '草稿');
-      logOp(req.user, '活动中心', '独立生成活动策划', act.title);
-      return { draft: inserted, bill: billing };
+    const holdModel = textModelFor(req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: '活动策划室·AI策划',
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          act.title,
+          act.type,
+          act.date,
+          act.target_join,
+          goal,
+          audience,
+          budget,
+        ],
+        outputTokens: 4000,
+      }),
+      note: `独立活动策划「${act.title}」在供应商调用前预授权；未交付全额退回。`,
     });
-    res.json({ draftId: draft.lastInsertRowid, plan: normalized, mode: out.mode, billing: bill, status: '草稿' });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: () => buildActivityPlan(
+        act,
+        { goal, audience, budget },
+        req.user.role,
+      ),
+      persist: generated => withImmediateTransaction(db, () => {
+        const normalized = normalizeActivityPlan(generated.plan, act.title);
+        const inserted = q.run(`INSERT INTO activity_plan_drafts(user_id,title,type,date,goal,audience,budget,target_join,plan,status) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+          req.user.id, act.title, act.type, normalizedDate, String(goal).slice(0, 100), String(audience).slice(0, 200), String(budget).slice(0, 100), targetCount, JSON.stringify(normalized), '草稿');
+        logOp(req.user, '活动中心', '独立生成活动策划', act.title);
+        return {
+          draftId: Number(inserted.lastInsertRowid),
+          plan: normalized,
+          status: '草稿',
+        };
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: generated => ({
+        usage: generated.out.usage,
+        model: generated.out.model,
+        aiMode: generated.out.mode,
+        note: `独立活动策划「${act.title}」已完成业务事务落库`,
+      }),
+      releaseNote: `独立活动策划「${act.title}」生成或草案落库失败，预授权全额退回`,
+    });
+    res.json({
+      draftId: delivered.delivery.draftId,
+      plan: delivered.delivery.plan,
+      mode: delivered.output.out.mode,
+      billing: delivered.billing,
+      status: delivered.delivery.status,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
+  }
 });
 
 r.put('/plan-drafts/:draftId', (req, res) => {
@@ -1119,48 +1232,128 @@ r.post('/:id/review', async (req, res) => {
     followup: ['按顾客联系授权完成服务回访', '核对订单、履约与顾客反馈', '基于真实收入和成本完成归因复盘'],
   };
 
-  // 当前目录的数据分析部优先为 M-07；能力关键词是目录调整时的兼容兜底。
-  let aiText = null, aiMeta = null;
   try {
-    precheckByRole(req.user.id, 'text', req.user.role);
+    // 当前目录的数据分析部优先为 M-07；能力关键词是目录调整时的兼容兜底。
     const reviewDivision = mergeMarshal(q.get(`SELECT * FROM marshals
       WHERE online=1 AND (code='M-07' OR name LIKE '%数据分析%' OR duty LIKE '%活动复盘%')
       ORDER BY CASE WHEN code='M-07' THEN 0 ELSE 1 END, sort LIMIT 1`));
     if (!reviewDivision) throw Object.assign(new Error('当前餐饮数字员工目录未配置可用的数据分析部'), { status: 503 });
-    const { marshalWork } = await import('../engines/ai.js');
     const baselineSummary = Object.keys(base).length
       ? ACTIVITY_BASELINE_FIELDS.filter(([key]) => Number.isFinite(base[key])).map(([key, label]) => `${label}=${base[key]}`).join('、')
       : '企业未配置活动对照基准，本次不得引用通用行业均值';
-    const out = await marshalWork(reviewDivision, {
-      title: `活动复盘：${act.title}`,
-      type: '活动复盘',
-      requirement: `请对这场活动做深度复盘。活动数据：类型${act.type}，日期${act.date}，目标${act.target_join}人/成交${act.target_deal}单；实际：邀约${act.invited}、报名${act.signed_up}、到场${act.arrived}、成交${act.converted}、收入¥${act.revenue || 0}、成本¥${act.cost || 0}、满意度${act.satisfaction || '-'}。
+    const reviewRequirement = `请对这场活动做深度复盘。活动数据：类型${act.type}，日期${act.date}，目标${act.target_join}人/成交${act.target_deal}单；实际：邀约${act.invited}、报名${act.signed_up}、到场${act.arrived}、成交${act.converted}、收入¥${act.revenue || 0}、成本¥${act.cost || 0}、满意度${act.satisfaction || '-'}。
 实际指标：邀约→报名 ${rates.inviteSign}%、报名→到场 ${rates.signArrive}%、到场→成交 ${rates.arriveDeal}%、ROI ${rates.roi ?? '因缺少有效成本而不可计算'}。
 对照口径：${baselineSummary}。规则诊断已发现的差距：${gaps.join('；') || (Object.keys(base).length ? '已配置指标未发现低于基准项' : '缺少企业基准，暂不判断达标')}。
-请按五段式输出：①这场活动的本质结论 ②最大卡点及证据/未知项 ③下一场活动的3条关键改进（每条带检查标准） ④经顾客授权的会后跟进动作清单（负责人+时限） ⑤食安、隐私、价格与履约风险。不得编造优惠、稀缺名额、顾客证言、行业均值或未发生的转化结果。`,
-    }, req.user.role);
-    const bill = charge({ userId: req.user.id, feature: '活动中心·数据分析复盘', kind: 'text', model: out.model, usage: out.usage, aiMode: out.mode });
-    aiText = out.text; aiMeta = { model: out.model, mode: out.mode, billing: bill, marshal: reviewDivision.name, divisionCode: reviewDivision.code };
-  } catch (e) { aiMeta = { error: e.message }; }
-  review.aiText = aiText; review.aiMeta = aiMeta;
-  review.kbSync = syncReviewToKb({ ...act, status: '已复盘' }, review, req.user);
-
-  q.run(`UPDATE activities SET review = ?, status = '已复盘' WHERE id = ?`, JSON.stringify(review), act.id);
-  notifyManagers('活动复盘', `活动复盘已入库：${act.title}`, `${req.user.name} 已完成复盘，并沉淀到知识库「${review.kbSync.category}」。`, ['boss', 'ops_director', 'admin']);
-  const fbTid = curTenant();
-  setImmediate(() => pushFeishuToManagers({
-    title: '活动复盘已完成并入库',
-    lines: [
-      `**${act.title}**`,
-      `复盘人：${req.user.name}`,
-      `知识库分类：${review.kbSync.category}`,
-      `知识库文档：${review.kbSync.title}`,
-      `后续跟进：${Array.isArray(review.followup) ? review.followup.join('；') : review.followup}`,
-    ],
-    url: appUrl(req, '/system'),
-  }, fbTid).catch(() => {}));
-  logOp(req.user, '活动中心', '数据分析复盘', act.title);
-  res.json(review);
+请按五段式输出：①这场活动的本质结论 ②最大卡点及证据/未知项 ③下一场活动的3条关键改进（每条带检查标准） ④经顾客授权的会后跟进动作清单（负责人+时限） ⑤食安、隐私、价格与履约风险。不得编造优惠、稀缺名额、顾客证言、行业均值或未发生的转化结果。`;
+    const holdModel = textModelFor(req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: '活动中心·数据分析复盘',
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          reviewDivision.name,
+          reviewDivision.duty,
+          reviewDivision.skills,
+          reviewDivision.prompt,
+          reviewRequirement,
+        ],
+        outputTokens: 3500,
+      }),
+      note: `活动#${act.id} 数据分析复盘在供应商调用前预授权；未交付全额退回。`,
+    });
+    const heldBilling = twoPhaseBillingSummary({
+      state: 'held',
+      hold,
+      note: '活动复盘已预授权占扣；AI文本、知识库和活动状态原子落库后才结算。',
+    });
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: async () => {
+        const { marshalWork } = await import('../engines/ai.js');
+        const out = await marshalWork(reviewDivision, {
+          title: `活动复盘：${act.title}`,
+          type: '活动复盘',
+          requirement: reviewRequirement,
+        }, req.user.role);
+        if (!String(out?.text || '').trim()) {
+          throw Object.assign(new Error('数据分析部没有返回可保存的活动复盘'), { status: 502 });
+        }
+        return { out, reviewDivision };
+      },
+      persist: generated => withImmediateTransaction(db, () => {
+        const completedReview = {
+          ...review,
+          aiText: generated.out.text,
+          aiMeta: {
+            model: generated.out.model,
+            mode: generated.out.mode,
+            billing: heldBilling,
+            marshal: generated.reviewDivision.name,
+            divisionCode: generated.reviewDivision.code,
+          },
+        };
+        completedReview.kbSync = syncReviewToKb(
+          { ...act, status: '已复盘' },
+          completedReview,
+          req.user,
+        );
+        q.run(`UPDATE activities SET review = ?, status = '已复盘' WHERE tenant_id=? AND id = ?`,
+          JSON.stringify(completedReview), curTenant(), act.id);
+        notifyManagers(
+          '活动复盘',
+          `活动复盘已入库：${act.title}`,
+          `${req.user.name} 已完成复盘，并沉淀到知识库「${completedReview.kbSync.category}」。`,
+          ['boss', 'ops_director', 'admin'],
+        );
+        logOp(req.user, '活动中心', '数据分析复盘', act.title);
+        return completedReview;
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: generated => ({
+        usage: generated.out.usage,
+        model: generated.out.model,
+        aiMode: generated.out.mode,
+        note: `活动#${act.id} AI复盘、知识库与活动状态已完成业务事务落库`,
+      }),
+      releaseNote: `活动#${act.id} AI复盘生成或业务落库失败，预授权全额退回`,
+      onBillingFinalized: ({ delivery, billing: finalBilling }) => {
+        delivery.aiMeta = {
+          ...delivery.aiMeta,
+          billing: finalBilling,
+        };
+        return withImmediateTransaction(db, () => {
+          q.run(`UPDATE activities SET review=? WHERE tenant_id=? AND id=?`,
+            JSON.stringify(delivery), curTenant(), act.id);
+        });
+      },
+    });
+    const fbTid = curTenant();
+    setImmediate(() => pushFeishuToManagers({
+      title: '活动复盘已完成并入库',
+      lines: [
+        `**${act.title}**`,
+        `复盘人：${req.user.name}`,
+        `知识库分类：${delivered.delivery.kbSync.category}`,
+        `知识库文档：${delivered.delivery.kbSync.title}`,
+        `后续跟进：${Array.isArray(delivered.delivery.followup) ? delivered.delivery.followup.join('；') : delivered.delivery.followup}`,
+      ],
+      url: appUrl(req, '/system'),
+    }, fbTid).catch(() => {}));
+    res.json({
+      ...delivered.delivery,
+      billing: delivered.billing,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
+  }
 });
 
 r.post('/:id/review/sync-kb', (req, res) => {

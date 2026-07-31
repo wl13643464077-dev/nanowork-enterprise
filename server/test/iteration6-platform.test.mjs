@@ -248,7 +248,9 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     const sourceMap = await call(base, '/assets/source-map');
     assert.ok(sourceMap.cards.find(card => card.key === 'operations').count >= 1);
     const executionSummary = await call(base, '/execution/summary');
-    assert.ok(Number.isFinite(executionSummary.goalRate));
+    assert.equal(executionSummary.goalRate, null);
+    assert.equal(executionSummary.goalStatus, 'missing');
+    assert.match(executionSummary.goalStatusText, /尚未设置月度经营目标/);
 
     const invalidDates = await call(base, '/data-intake/commit', 'POST', { batches: [
       { sheet: '非法日期', target: 'daily_ops', rows: [{ data: { date: '2026-07-01garbage', new_leads: 9 } }] },

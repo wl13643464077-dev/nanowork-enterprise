@@ -65,6 +65,18 @@ export type EmployeeSkill = {
   defaultInjected?: boolean;
   currentPlatformFact?: boolean;
   verificationStatus?: string;
+  verificationLevel?: 'catalog_contract_verified' | string;
+  effectValidation?: 'requires_live_business_sample' | string;
+  contentFingerprint?: string;
+  offlineAcceptanceFixture?: {
+    sampleTask?: string;
+    expectedInjection?: Record<string, unknown>;
+  };
+  sourceSnapshot?: {
+    date?: string;
+    sha256?: string;
+    kind?: string;
+  };
 };
 
 export type EmployeeSkillLibrary = {
@@ -355,5 +367,7 @@ export type EmployeeWorkbenchProfile = {
   provenance: EmployeeProvenance;
 };
 
-export type EmployeeWorkbenchIdentityHint = Pick<EmployeeWorkbenchIdentity,
-  'idx' | 'name' | 'person' | 'group' | 'emoji' | 'color' | 'status' | 'duty' | 'intro' | 'extension'>;
+export type EmployeeWorkbenchIdentityHint = Pick<
+  EmployeeWorkbenchIdentity,
+  'idx' | 'name' | 'person' | 'group' | 'emoji' | 'color' | 'status' | 'duty' | 'intro' | 'extension'
+>;

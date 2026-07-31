@@ -15,6 +15,11 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { buildEmployeeExecutionProfile, EMPLOYEE_TASK_TYPES } from '../employee-workbench.js';
+import {
+  executeHeldDelivery,
+  withImmediateTransaction,
+} from '../engines/two-phase-delivery.js';
+import { inspectRestaurantOutputAudit } from '../engines/restaurant-output-contract.js';
 
 const r = Router();
 const TASK_TYPES = new Set(EMPLOYEE_TASK_TYPES);
@@ -104,6 +109,10 @@ function executionSnapshot(task, user = null) {
     if (value == null || value === '') return null;
     return parse(value, label);
   };
+  const executionEvidence = parseOptional(task.employee_web_snapshot, '执行证据');
+  const wrappedEvidence = executionEvidence?.kind === 'restaurant_employee_execution_evidence'
+    ? executionEvidence
+    : null;
   const snapshot = {
     profileVersion: task.employee_profile_version,
     promptHash: task.employee_prompt_hash,
@@ -111,12 +120,37 @@ function executionSnapshot(task, user = null) {
     config: parse(task.employee_config_snapshot, '工作配置'),
     skills: parse(task.employee_skills_snapshot, '技能'),
     inputEvidence: parseOptional(task.employee_input_snapshot, '输入证据'),
-    webEvidence: parseOptional(task.employee_web_snapshot, '联网证据'),
+    webEvidence: wrappedEvidence ? wrappedEvidence.web : executionEvidence,
+    outputContract: wrappedEvidence?.outputContract || null,
   };
   if (!['boss', 'admin', 'platform_super'].includes(user?.role)) {
     snapshot.skills = snapshot.skills.map(({ instructions: _instructions, ...skill }) => skill);
   }
   return snapshot;
+}
+
+function employeeContractAudit(out) {
+  if (!out?.employeeContract) return null;
+  return {
+    valid: out.employeeContract.valid === true,
+    skipped: out.employeeContract.skipped || null,
+    contractId: out.employeeContract.contractId || null,
+    schemaVersion: out.employeeContract.schemaVersion || null,
+    primaryArtifact: out.employeeContract.primaryArtifact || null,
+    artifacts: (out.employeeContract.artifacts || []).map(artifact => ({
+      kind: artifact.kind,
+      primary: artifact.primary === true,
+      filename: artifact.filename,
+      mediaType: artifact.mediaType,
+      employeeIdx: artifact.employeeIdx,
+      employeeKey: artifact.employeeKey,
+      contractId: artifact.contractId,
+      schemaVersion: artifact.schemaVersion,
+      contentSha256: typeof artifact.content === 'string'
+        ? crypto.createHash('sha256').update(artifact.content).digest('hex')
+        : null,
+    })),
+  };
 }
 
 r.get('/overview', (req, res) => {
@@ -244,6 +278,7 @@ r.get('/:id', (req, res) => {
 // 流程可视化状态机：已派发 → 生成中 → 待审阅 → 已完成/已驳回（失败可重试）
 export async function dispatchMarshalTask(req, res) {
   let hold = null; // 两段式记账占扣句柄：派发前占扣，后台生成成功结算实扣、失败全额退回
+  let taskId = null;
   try {
     const m = activeDepartmentById(req.params.id);
     if (!m) return res.status(404).json({ error: '分部不存在或未启用' });
@@ -304,10 +339,9 @@ export async function dispatchMarshalTask(req, res) {
         `本次预估需${estimatedCredits}积分，超过该员工配置的单次积分上限${employeeConfig.maxCost}分；请缩短任务或由管理员调整上限`,
       ), { status: 400 });
     }
-    hold = holdCredits({
-      userId: req.user.id, feature: `员工任务·${m.name}`, kind: 'text', model: holdModel,
-      credits: estimatedCredits,
-    });
+    // 先生成稳定业务 ID，再让 hold 在自己的原子事务里直接绑定该任务。
+    // 即使进程恰好在两步之间退出，也只会留下无扣费的“生成中”任务，
+    // 启动恢复会把它标失败；不会留下无法关联、永久冻结的积分。
     const taskResult = q.run(`INSERT INTO agent_tasks(
       marshal_id,specialist_id,title,type,requirement,status,is_collab,collab_marshals,due_at,created_by,
       employee_profile_version,employee_prompt_hash,employee_capabilities_snapshot,employee_config_snapshot,employee_skills_snapshot,
@@ -325,7 +359,27 @@ export async function dispatchMarshalTask(req, res) {
           attachments: attachmentRefs,
         })
         : null);
-    const taskId = taskResult.lastInsertRowid;
+    taskId = Number(taskResult.lastInsertRowid);
+    try {
+      hold = holdCredits({
+        userId: req.user.id,
+        feature: `员工任务·${m.name}`,
+        kind: 'text',
+        model: holdModel,
+        credits: estimatedCredits,
+        refType: 'agent_task',
+        refId: taskId,
+      });
+    } catch (holdError) {
+      q.run(`DELETE FROM agent_tasks
+        WHERE tenant_id=? AND id=? AND status='生成中' AND output_id IS NULL`,
+      curTenant(), taskId);
+      taskId = null;
+      throw holdError;
+    }
+    const releaseAiLease = req.aiGuard?.defer?.(
+      Math.max(60_000, Number(employeeConfig.timeoutSeconds || 300) * 1000 + 60_000),
+    ) || (() => {});
 
     // 立即返回，AI生成转后台执行——用户可继续做其他工作
     res.json({
@@ -352,73 +406,93 @@ export async function dispatchMarshalTask(req, res) {
     const employeeGenerate = req.app?.locals?.employeeGenerate;
     setImmediate(() => runWithTenant(tenantId, async () => {
       try {
-        const out = await marshalWork(
-          m,
-          { title: taskTitle, type: taskType, requirement: taskRequirement },
-          userRole,
-          {
-            employeeExecution,
-            image: taskImage?.dataUrl || null,
-            attachments: files,
-            webSearchFn: employeeWebSearch,
-            generateFn: employeeGenerate,
-          },
-        );
-        // 结算：按真实用量多退少补；结算失败也按占扣额入账（产出已生成，绝不漏计费）
-        let bill;
         try {
-          bill = settleHold(hold, { usage: out.usage, model: out.model, aiMode: out.mode }) || { credits: hold.credits, balance: hold.balance };
-        } catch (settleError) {
-          console.error('[credits] 员工任务结算失败，保留预授权占扣待人工对账:', settleError?.message);
-          bill = { credits: hold.credits, balance: hold.balance };
-        }
-        const risk = applyRiskControl({ type: taskType, title: taskTitle, body: out.text });
-        const configuredApproval = employeeExecution?.workbench?.workConfig?.approvalMode || 'auto_draft';
-        const configuredReviewRequired = ['owner_review', 'manager_review'].includes(configuredApproval);
-        let contentId;
-        // 不变量：只要内容状态是“待审核”，同一事务内就必须生成一张待审核审批单。
-        // 这样 auto_draft 也只是“自动形成草稿”，不会变成无人可审、又无法提交的孤儿状态。
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          const contentResult = q.run(`INSERT INTO contents(type,title,body,topic,status,risk_flags,risk_level,ai_mode,creator_id,marshal_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?)`, '员工产出', `${m.name}：${taskTitle}`, out.text, taskTitle, '待审核',
-          JSON.stringify(risk.hits), risk.level, out.mode, userId, m.id);
-          contentId = Number(contentResult.lastInsertRowid);
-          recordKbCitations({ targetType: 'content', targetId: contentId, kb: out.kb }); // AI-C2 引用溯源
-          q.run(`UPDATE agent_tasks
-            SET status = '待审阅', output_id = ?, employee_web_snapshot = ?
-            WHERE id = ?`,
-          contentId, JSON.stringify(out.web || null), taskId);
-          createApproval({
-            targetType: 'content',
-            targetId: contentId,
-            title: `${m.name}：${taskTitle}`,
-            summary: out.text,
-            riskLevel: risk.level,
-            rulesHit: [
-              ...risk.hits,
-              'employee_output_review',
-              ...(configuredReviewRequired ? [`employee_approval:${configuredApproval}`] : []),
-            ],
-            submitterId: userId,
+          const delivered = await executeHeldDelivery({
+            hold,
+            generate: () => marshalWork(
+              m,
+              { title: taskTitle, type: taskType, requirement: taskRequirement },
+              userRole,
+              {
+                employeeExecution,
+                image: taskImage?.dataUrl || null,
+                attachments: files,
+                webSearchFn: employeeWebSearch,
+                generateFn: employeeGenerate,
+              },
+            ),
+            persist: out => withImmediateTransaction(db, () => {
+              const risk = applyRiskControl({ type: taskType, title: taskTitle, body: out.text });
+              const configuredApproval = employeeExecution?.workbench?.workConfig?.approvalMode || 'auto_draft';
+              const configuredReviewRequired = ['owner_review', 'manager_review'].includes(configuredApproval);
+              // 不变量：只要内容状态是“待审核”，同一事务内就必须生成一张待审核审批单。
+              // 这样 auto_draft 也只是“自动形成草稿”，不会变成无人可审、又无法提交的孤儿状态。
+            const contentResult = q.run(`INSERT INTO contents(type,title,body,topic,status,risk_flags,risk_level,ai_mode,creator_id,marshal_id)
+              VALUES(?,?,?,?,?,?,?,?,?,?)`, '员工产出', `${m.name}：${taskTitle}`, out.text, taskTitle, '待审核',
+            JSON.stringify(risk.hits), risk.level, out.mode, userId, m.id);
+            const contentId = Number(contentResult.lastInsertRowid);
+            recordKbCitations({ targetType: 'content', targetId: contentId, kb: out.kb }); // AI-C2 引用溯源
+            const executionEvidence = employeeExecution
+              ? {
+                  kind: 'restaurant_employee_execution_evidence',
+                  web: out.web || null,
+                  outputContract: employeeContractAudit(out),
+                }
+              : out.web || null;
+            q.run(`UPDATE agent_tasks
+              SET status = '待审阅', output_id = ?, employee_web_snapshot = ?
+              WHERE id = ?`,
+            contentId, JSON.stringify(executionEvidence), taskId);
+            createApproval({
+              targetType: 'content',
+              targetId: contentId,
+              title: `${m.name}：${taskTitle}`,
+              summary: out.text,
+              riskLevel: risk.level,
+              rulesHit: [
+                ...risk.hits,
+                'employee_output_review',
+                ...(configuredReviewRequired ? [`employee_approval:${configuredApproval}`] : []),
+              ],
+              submitterId: userId,
+            });
+              return { contentId, risk };
+            }),
+            settle: settleHold,
+            release: releaseHold,
+            settlement: out => ({
+              usage: out.usage,
+              model: out.model,
+              aiMode: out.mode,
+              note: `员工任务#${taskId}产出、审批与任务状态已原子落库`,
+            }),
+            releaseNote: `员工任务#${taskId}生成或业务落库失败，预授权全额退回`,
           });
-          db.exec('COMMIT');
-        } catch (persistError) {
-          try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
-          throw persistError;
+          const billingText = delivered.billing.state === 'settled'
+            ? `消耗${delivered.billing.chargedCredits}积分`
+            : '积分结算待对账';
+          notify(userId, 'marshal', `${m.name}已完成「${taskTitle}」`, `产出已生成，等待您审阅（${billingText}）`);
+        } catch (e) {
+          // executeHeldDelivery 已负责释放预授权；这里只记录业务失败状态，避免二次退款。
+          q.run(`UPDATE agent_tasks SET status = '失败' WHERE id = ?`, taskId);
+          const billingText = e.billing?.state === 'released'
+            ? '预扣积分已退回'
+            : '预授权状态待人工对账';
+          notify(userId, 'marshal', `${m.name}任务「${taskTitle}」生成失败`, `${String(e.message).slice(0, 100)}（${billingText}）`);
         }
-        notify(userId, 'marshal', `${m.name}已完成「${taskTitle}」`, `产出已生成，等待您审阅（消耗${bill.credits}积分）`);
-      } catch (e) {
-        // 异步生成失败：全额退回占扣，客户不为失败产出付费
-        try { releaseHold(hold, `员工任务生成失败（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); } catch { /* 释放失败留待人工对账 */ }
-        q.run(`UPDATE agent_tasks SET status = '失败' WHERE id = ?`, taskId);
-        notify(userId, 'marshal', `${m.name}任务「${taskTitle}」生成失败`, `${String(e.message).slice(0, 100)}（预扣积分已退回）`);
+        try { logOp({ id: userId, name: userName }, '餐饮数字员工', '派发任务', `${m.name}:${taskTitle}`); } catch { /* task result is already durable */ }
+      } finally {
+        releaseAiLease();
       }
-      try { logOp({ id: userId, name: userName }, '餐饮数字员工', '派发任务', `${m.name}:${taskTitle}`); } catch { /* task result is already durable */ }
     }));
   } catch (e) {
     // 派发在响应前失败（含占扣后建任务失败）：全额退回占扣；已进入后台的 hold 由后台结算，不会走到这里
     if (hold && !res.headersSent) { try { releaseHold(hold, `任务派发失败（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); } catch { /* 释放失败留待人工对账 */ } }
+    if (taskId && !res.headersSent) {
+      q.run(`UPDATE agent_tasks SET status='失败'
+        WHERE tenant_id=? AND id=? AND status='生成中' AND output_id IS NULL`,
+      curTenant(), taskId);
+    }
     res.status(e.status || 500).json({ error: e.message });
   }
 }
@@ -496,7 +570,6 @@ ${demand}`;
 ${demand}`;
 }
 r.post('/:id/skill-file', async (req, res) => {
-  let hold = null; // 两段式记账占扣句柄：生成前占扣，完成后按真实用量结算多退少补
   try {
     const m = activeDepartmentById(req.params.id);
     if (!m) return res.status(404).json({ error: '分部不存在或未启用' });
@@ -511,42 +584,75 @@ r.post('/:id/skill-file', async (req, res) => {
     const guide = fileSkillGuide(format, fsk.label, demand);
     // 两段式记账（BE-C1）：按实际要发送的指令+附件内容占扣，生成完成后结算多退少补
     const holdModel = textModelFor(req.user.role);
-    hold = holdCredits({
+    const hold = holdCredits({
       userId: req.user.id, feature: `生成${fsk.label}·${m.name}`, kind: 'text', model: holdModel,
       credits: estimateCallCredits({ model: holdModel, texts: [guide, ...files.map(a => String(a.content || '').slice(0, 5000))] }),
     });
-    const out = await marshalChat(m, { message: guide, originalMessage: demand, history: [], role: req.user.role, skills: [format], attachments: files, signal: req.requestSignal });
-    // 产出已生成：从此绝不释放占扣（结算失败也按占扣额入账，宁多勿漏）
-    const settlingHold = hold; hold = null;
-    let bill;
-    try {
-      bill = settleHold(settlingHold, { usage: out.usage, model: out.model, aiMode: out.mode }) || { credits: settlingHold.credits, balance: settlingHold.balance };
-    } catch (settleError) {
-      console.error('[credits] 技能文件结算失败，保留预授权占扣待人工对账:', settleError?.message);
-      bill = { credits: settlingHold.credits, balance: settlingHold.balance };
-    }
-    const buf = await fsk.fn(out.text, demand.slice(0, 30));
-    const tenantDir = path.join(SKILL_UPLOAD_DIR, String(curTenant()));
-    fs.mkdirSync(tenantDir, { recursive: true });
-    const fname = `${fsk.label}_${Date.now()}_${crypto.randomBytes(5).toString('hex')}.${fsk.ext}`;
-    const filePath = path.join(tenantDir, fname);
-    const fileUrl = `/uploads/skills/${curTenant()}/${encodeURIComponent(fname)}`;
-    let artifact;
-    try {
-      fs.writeFileSync(filePath, buf, { flag: 'wx' });
-      artifact = q.run(`INSERT INTO generated_artifacts(user_id,source_type,source_id,title,format,content,file_url,file_name,metadata)
-        VALUES(?,?,?,?,?,?,?,?,?)`, req.user.id, 'marshal_skill', m.id, demand.slice(0, 100), format, out.text, fileUrl, fname,
-      JSON.stringify({ size: buf.length, marshalCode: m.code, marshalName: m.name }));
-    } catch (error) {
-      try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort cleanup */ }
-      throw error;
-    }
-    logOp(req.user, '餐饮数字员工', `生成${fsk.label}`, m.name);
-    res.json({ reply: out.text, fileUrl, fileName: fname, size: buf.length, artifactId: artifact.lastInsertRowid, billing: bill });
+    const tenantId = curTenant();
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: async () => {
+        const out = await marshalChat(m, {
+          message: guide,
+          originalMessage: demand,
+          history: [],
+          role: req.user.role,
+          skills: [format],
+          attachments: files,
+          signal: req.requestSignal,
+        });
+        const buf = await fsk.fn(out.text, demand.slice(0, 30));
+        return { out, buf };
+      },
+      persist: ({ out, buf }) => {
+        const tenantDir = path.join(SKILL_UPLOAD_DIR, String(tenantId));
+        fs.mkdirSync(tenantDir, { recursive: true });
+        const fname = `${fsk.label}_${Date.now()}_${crypto.randomBytes(5).toString('hex')}.${fsk.ext}`;
+        const filePath = path.join(tenantDir, fname);
+        const fileUrl = `/uploads/skills/${tenantId}/${encodeURIComponent(fname)}`;
+        try {
+          fs.writeFileSync(filePath, buf, { flag: 'wx' });
+          return withImmediateTransaction(db, () => {
+            const artifact = q.run(`INSERT INTO generated_artifacts(user_id,source_type,source_id,title,format,content,file_url,file_name,metadata)
+              VALUES(?,?,?,?,?,?,?,?,?)`, req.user.id, 'marshal_skill', m.id, demand.slice(0, 100), format, out.text, fileUrl, fname,
+            JSON.stringify({ size: buf.length, marshalCode: m.code, marshalName: m.name }));
+            logOp(req.user, '餐饮数字员工', `生成${fsk.label}`, m.name);
+            return {
+              fileUrl,
+              fileName: fname,
+              size: buf.length,
+              artifactId: Number(artifact.lastInsertRowid),
+              filePath,
+            };
+          });
+        } catch (error) {
+          try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort cleanup */ }
+          throw error;
+        }
+      },
+      settle: settleHold,
+      release: releaseHold,
+      settlement: ({ out }) => ({
+        usage: out.usage,
+        model: out.model,
+        aiMode: out.mode,
+        note: `${fsk.label}文件与制品记录已完整落库`,
+      }),
+      releaseNote: `${fsk.label}生成、渲染或制品落库失败，预授权全额退回`,
+    });
+    res.json({
+      reply: delivered.output.out.text,
+      fileUrl: delivered.delivery.fileUrl,
+      fileName: delivered.delivery.fileName,
+      size: delivered.delivery.size,
+      artifactId: delivered.delivery.artifactId,
+      billing: delivered.billing,
+    });
   } catch (e) {
-    // 生成前失败：全额退回占扣（产出已生成的路径 hold 已置空，不会误退）
-    if (hold) { try { releaseHold(hold, `技能文件未生成（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); } catch { /* 释放失败留待人工对账 */ } }
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
   }
 });
 
@@ -587,6 +693,7 @@ r.post('/chats/:sid/memory', (req, res) => {
 
 r.post('/:id/chat', async (req, res) => {
   let hold = null; // 两段式记账占扣句柄：开流前占扣，流结束后结算多退少补，失败全额退回
+  let holdManaged = false;
   try {
     const m = activeDepartmentById(req.params.id);
     if (!m) return res.status(404).json({ error: '分部不存在或未启用' });
@@ -639,47 +746,98 @@ r.post('/:id/chat', async (req, res) => {
       }),
     });
 
-    // 流式（SSE）：stream=true 时边生成边推 delta，通道切换推 reset，结束推 done+元数据
+    // SSE 在完整业务产物落库前不向客户端泄露模型正文。这样即使助手消息、风控或引用
+    // 落库失败，本次仍属于“未交付”，可以安全释放预授权。
     const useStream = req.body?.stream === true;
     let sendEvent = null;
     if (useStream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       sendEvent = (obj) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
     }
-    const out = await marshalChat(m, { message: finalMsg || '', originalMessage: chatText, history: hist, role: req.user.role, image, skills: safeSkills,
-      attachments: files, memory: memoryText, signal: req.requestSignal,
-      onDelta: sendEvent ? (t => sendEvent({ delta: t })) : undefined,
-      onReset: sendEvent ? (() => sendEvent({ reset: true })) : undefined });
-    // 产出已生成：从此绝不释放占扣（结算失败也按占扣额入账，宁多勿漏），杜绝"答案已交付却不计费"
-    const settlingHold = hold; hold = null;
-    let bill;
-    try {
-      bill = settleHold(settlingHold, { usage: out.usage, model: out.model, aiMode: out.mode })
-        || { credits: settlingHold.credits, balance: settlingHold.balance };
-    } catch (settleError) {
-      console.error('[credits] 员工对话结算失败，保留预授权占扣待人工对账:', settleError?.message);
-      bill = { credits: settlingHold.credits, balance: settlingHold.balance };
+    holdManaged = true;
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: () => marshalChat(m, {
+        message: finalMsg || '',
+        originalMessage: chatText,
+        history: hist,
+        role: req.user.role,
+        image,
+        skills: safeSkills,
+        attachments: files,
+        memory: memoryText,
+        signal: req.requestSignal,
+      }),
+      persist: out => withImmediateTransaction(db, () => {
+        const msg = q.run('INSERT INTO marshal_chat_msgs(session_id,role,content) VALUES(?,?,?)', sid, 'assistant', out.text);
+        // AI-H1：员工对话输出与内容生产仓同口径过风控（标记+进审批）；AI-C2：引用的知识文档落库可溯源
+        const risk = applyChatRiskControl({
+          targetType: 'marshal_chat_msg',
+          targetId: msg.lastInsertRowid,
+          title: `员工对话输出：${m.name}`,
+          text: out.text,
+          submitterId: req.user.id,
+        });
+        recordKbCitations({ targetType: 'marshal_chat_msg', targetId: msg.lastInsertRowid, kb: out.kb });
+        const latest = q.all(`SELECT role,content FROM marshal_chat_msgs WHERE tenant_id=? AND session_id=? ORDER BY id DESC LIMIT 8`, curTenant(), sid).reverse();
+        const summary = latest.map(x => `${x.role === 'user' ? '用户' : '数字员工'}：${String(x.content || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n').slice(0, 3500);
+        q.run(`UPDATE marshal_chat_sessions SET summary=?,updated_at=datetime('now','localtime') WHERE id=?`, summary, sid);
+        logOp(req.user, '餐饮数字员工', '员工对话', m.name);
+        return {
+          assistantMessageId: Number(msg.lastInsertRowid),
+          risk,
+        };
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: out => ({
+        usage: out.usage,
+        model: out.model,
+        aiMode: out.mode,
+        note: `员工对话会话#${sid}助手消息、风控、引用与摘要已原子落库`,
+      }),
+      releaseNote: `员工对话会话#${sid}生成或业务落库失败，预授权全额退回`,
+    });
+    const payload = {
+      sessionId: sid,
+      assistantMessageId: delivered.delivery.assistantMessageId,
+      reply: delivered.output.text,
+      mode: delivered.output.mode,
+      model: delivered.output.model,
+      billing: delivered.billing,
+      risk: delivered.delivery.risk,
+      kb: delivered.output.kb,
+    };
+    if (sendEvent) {
+      sendEvent({ reset: true });
+      sendEvent({ delta: delivered.output.text });
+      sendEvent({ done: true, ...payload });
+      res.end();
     }
-    const msg = q.run('INSERT INTO marshal_chat_msgs(session_id,role,content) VALUES(?,?,?)', sid, 'assistant', out.text);
-    // AI-H1：员工对话输出与内容生产仓同口径过风控（标记+进审批）；AI-C2：引用的知识文档落库可溯源
-    const risk = applyChatRiskControl({ targetType: 'marshal_chat_msg', targetId: msg.lastInsertRowid, title: `员工对话输出：${m.name}`, text: out.text, submitterId: req.user.id });
-    recordKbCitations({ targetType: 'marshal_chat_msg', targetId: msg.lastInsertRowid, kb: out.kb });
-    const latest = q.all(`SELECT role,content FROM marshal_chat_msgs WHERE tenant_id=? AND session_id=? ORDER BY id DESC LIMIT 8`, curTenant(), sid).reverse();
-    const summary = latest.map(x => `${x.role === 'user' ? '用户' : '数字员工'}：${String(x.content || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n').slice(0, 3500);
-    q.run(`UPDATE marshal_chat_sessions SET summary=?,updated_at=datetime('now','localtime') WHERE id=?`, summary, sid);
-    logOp(req.user, '餐饮数字员工', '员工对话', m.name);
-    const payload = { sessionId: sid, assistantMessageId: msg.lastInsertRowid, reply: out.text, mode: out.mode, model: out.model, billing: bill, risk, kb: out.kb };
-    if (sendEvent) { sendEvent({ done: true, ...payload }); res.end(); }
     else res.json(payload);
   } catch (e) {
-    // 未交付任何产出即失败（含中途取消）：全额退回占扣；已结算的 hold 因幂等保护不会被二次退款
-    if (hold) { try { releaseHold(hold, `员工对话未完成（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); } catch { /* 释放失败留待人工对账 */ } }
+    // executeHeldDelivery 接管后由统一执行器释放；接管前异常才在这里补偿。
+    if (hold && !holdManaged) {
+      try { releaseHold(hold, `员工对话未开始（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); }
+      catch { /* 释放失败留待人工对账 */ }
+    }
     if (req.requestSignal?.aborted) { if (res.headersSent && !res.writableEnded) res.end(); return; }
     if (res.headersSent) { // SSE 已开始：错误以事件下发再关流
-      if (!res.writableEnded) { res.write(`data: ${JSON.stringify({ error: e.message, requestId: req.requestId })}\n\n`); res.end(); }
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({
+          error: e.message,
+          requestId: req.requestId,
+          ...(e.billing ? { billing: e.billing } : {}),
+        })}\n\n`);
+        res.end();
+      }
       return;
     }
-    res.status(e.status || 500).json({ error: e.message, requestId: req.requestId });
+    res.status(e.status || 500).json({
+      error: e.message,
+      requestId: req.requestId,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
   }
 });
 
@@ -689,6 +847,17 @@ r.post('/outputs/:outputId/review', (req, res) => {
   const c = q.get(`SELECT * FROM contents WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.outputId);
   if (!c || !activeDepartmentById(c.marshal_id) || !canAccessOwner(req.user, c.creator_id)) return res.status(404).json({ error: '产出不存在或无权审阅' });
   if (!['adopt', 'reject'].includes(decision)) return res.status(400).json({ error: '请选择采纳或驳回' });
+  const employeeTask = q.get(`SELECT id,employee_profile_version,employee_web_snapshot
+    FROM agent_tasks WHERE tenant_id=? AND output_id=? ORDER BY id DESC LIMIT 1`,
+  curTenant(), c.id);
+  if (decision === 'adopt' && employeeTask?.employee_profile_version) {
+    const audit = inspectRestaurantOutputAudit({
+      employeeProfileVersion: employeeTask.employee_profile_version,
+      aiMode: c.ai_mode,
+      executionEvidence: employeeTask.employee_web_snapshot,
+    });
+    if (!audit.valid) return res.status(409).json({ error: audit.error });
+  }
   if (decision === 'adopt' && ['可使用', '已发布'].includes(c.status)) return res.json({ ok: true, alreadyReviewed: true });
   if (decision === 'reject' && c.status === '已驳回') return res.json({ ok: true, alreadyReviewed: true });
   if (decision === 'adopt') {

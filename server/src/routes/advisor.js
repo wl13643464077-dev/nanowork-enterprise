@@ -12,6 +12,11 @@ import { textModelFor, routing } from '../engines/yunwu.js';
 import { webSearch } from '../engines/websearch.js';
 import { attachmentRefsForStorage, rehydrateMessageHistory, resolveAttachments } from '../engines/filehub.js';
 import { userScopeClause } from '../engines/access.js';
+import {
+  executeHeldDelivery,
+  twoPhaseBillingSummary,
+  withImmediateTransaction,
+} from '../engines/two-phase-delivery.js';
 
 const r = Router();
 
@@ -89,146 +94,397 @@ r.post('/conversations/:id/memory', (req, res) => {
   res.json({ id: out.lastInsertRowid, memory: combined });
 });
 
-r.post('/chat', async (req, res) => {
-  let hold = null; // 两段式记账占扣句柄：开流前占扣，结算多退少补，失败全额退回
-  try {
-  const { conversationId, attachments, fileIds } = req.body || {};
-  if (typeof req.body?.question !== 'string') return res.status(400).json({ error: '问题必须是文本' });
-  const question = req.body.question.trim();
-  if (!question) return res.status(400).json({ error: '问题不能为空' });
-  if (question.length > 12000) return res.status(400).json({ error: '问题最长12000字' });
-  const diagType = typeof req.body?.diagType === 'string' && req.body.diagType.trim()
-    ? req.body.diagType.trim().slice(0, 40) : '经营诊断';
-  const marshalCode = req.body?.marshalCode == null ? '' : String(req.body.marshalCode).trim();
-  if (marshalCode && !/^M-\d{2}$/.test(marshalCode)) return res.status(400).json({ error: '数字员工分部编号格式不正确' });
-  const marshalRow = marshalCode ? q.get('SELECT * FROM marshals WHERE code = ? AND online = 1', marshalCode) : null;
-  if (marshalCode && !marshalRow) return res.status(404).json({ error: '数字员工分部不存在' });
-  const useWeb = req.body?.web === true;
-  const useDeep = req.body?.deep === true;
-  if (conversationId !== undefined && conversationId !== null && conversationId !== '') {
-    const parsed = Number(conversationId);
-    if (!Number.isInteger(parsed) || parsed <= 0) return res.status(400).json({ error: '会话编号格式不正确' });
-  }
-  let cid = Number(conversationId || 0);
-  if (cid) {
-    const sess = q.get(`SELECT id FROM ai_conversations WHERE tenant_id = ${curTenant()} AND user_id = ? AND id = ?`, req.user.id, cid);
-    if (!sess) return res.status(404).json({ error: '会话不存在' });
-  }
-  // 深度思考统一走老板级模型，按老板档预检（费用更高，前端有提示）
-  precheckByRole(req.user.id, 'text', useDeep ? 'boss' : req.user.role);
-  if (!cid) {
-    const result = q.run('INSERT INTO ai_conversations(user_id,title,diag_type) VALUES(?,?,?)',
-      req.user.id, question.slice(0, 24), diagType);
-    cid = result.lastInsertRowid;
-  }
-  if (fileIds !== undefined && !Array.isArray(fileIds)) return res.status(400).json({ error: '文件列表格式不正确' });
-  const requestedFileIds = [...new Set((fileIds || []).map(Number))];
-  if (requestedFileIds.length > 6 || requestedFileIds.some(id => !Number.isInteger(id) || id <= 0)) {
-    return res.status(400).json({ error: '一次最多引用6个有效文件' });
-  }
-  const resolvedFiles = resolveAttachments(requestedFileIds, req.user, 6);
-  if (resolvedFiles.length !== requestedFileIds.length) return res.status(404).json({ error: '部分文件不存在或无权访问' });
-  if (attachments !== undefined && !Array.isArray(attachments)) return res.status(400).json({ error: '附件内容格式不正确' });
-  if ((attachments || []).length > 3) return res.status(400).json({ error: '一次最多提交3个内嵌附件' });
-  const inlineAttachments = (attachments || []).map((attachment, index) => {
-    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
-      throw Object.assign(new Error(`第${index + 1}个附件格式不正确`), { status: 400 });
-    }
-    const name = typeof attachment.name === 'string' ? attachment.name.trim().slice(0, 200) : '';
-    if (!name) throw Object.assign(new Error(`第${index + 1}个附件缺少文件名`), { status: 400 });
-    if (typeof attachment.content !== 'string') {
-      throw Object.assign(new Error(`第${index + 1}个附件内容必须是文本`), { status: 400 });
-    }
-    return { name, content: attachment.content.slice(0, 16000) };
-  });
-  const allAttachments = [...resolvedFiles, ...inlineAttachments].slice(0, 6);
-  const history = rehydrateMessageHistory(q.all(`SELECT role,content,attachments_json FROM ai_messages WHERE tenant_id=? AND conversation_id=? ORDER BY id DESC LIMIT 12`, curTenant(), cid).reverse(), req.user);
-  q.run('INSERT INTO ai_messages(conversation_id,role,content,attachments_json) VALUES(?,?,?,?)', cid, 'user',
-    `${question}${allAttachments.length ? `\n[附件×${allAttachments.length}: ${allAttachments.map(a => a.name).join('、')}]` : ''}${useWeb ? '\n[联网检索已开启]' : ''}${useDeep ? '\n[深度思考已开启]' : ''}`,
-    allAttachments.length ? JSON.stringify(attachmentRefsForStorage(allAttachments)) : null);
-  const s = dataSummary();
-  const recCodes = s.bottleneck === '已成交' ? ['M-05', 'M-07'] : s.bottleneck === '已邀约' || s.bottleneck === '已到店' ? ['M-06', 'M-05'] : ['M-06', 'M-07'];
-  const marshalCatalog = mergeMarshals(q.all('SELECT id,code,name,title,emoji,avatar FROM marshals WHERE online = 1 ORDER BY sort'));
-  const marshalByCode = new Map(marshalCatalog.map(item => [item.code, item]));
-  const recommended = recCodes.map(code => marshalByCode.get(code)).filter(Boolean);
-  // 联网检索（FR-ADV-07）：先检索后会诊，结果作为参考资料注入并随答案返回来源
-  let webRefs = [], webNote = null;
-  if (useWeb) {
-    const sr = await webSearch(`${question} 餐饮门店 行业`);
-    webRefs = sr.results; webNote = sr.note;
-  }
-  // 选择负责人（指定数字员工分部主答，保留 marshalCode 接口字段兼容旧客户端）
-  const marshal = marshalRow ? mergeMarshal(marshalRow) : null;
-  const sess = q.get(`SELECT memory,summary FROM ai_conversations WHERE tenant_id=? AND id=?`, curTenant(), cid) || {};
-  const sharedMemory = q.all(`SELECT content FROM conversation_memories WHERE tenant_id=? AND user_id=? AND scope='advisor' AND (session_id=? OR session_id IS NULL) AND pinned=1 ORDER BY id DESC LIMIT 8`,
-    curTenant(), req.user.id, cid).map(x => x.content).reverse().join('\n');
-  const memoryText = [sess.summary, sess.memory, sharedMemory].filter(Boolean).join('\n');
-  const feature = [marshal ? `老板参谋会诊·${marshal.name}` : '老板参谋诊断', useWeb ? '联网' : null, useDeep ? '深度思考' : null].filter(Boolean).join('·');
-  // 两段式记账（BE-C1/BE-H2）：开流前按"实际将要发送"的上下文（问题+附件+历史+记忆+联网资料）
-  // 占扣保守上限，余额不足在交付任何内容前 402；结算在生成完成后按真实用量多退少补。
-  const holdModel = useDeep ? routing().deepThink : textModelFor(req.user.role);
-  hold = holdCredits({
-    userId: req.user.id, feature, kind: 'text', model: holdModel,
-    credits: estimateCallCredits({
-      model: holdModel, outputTokens: useDeep ? 8000 : 4000,
-      texts: [
-        question,
-        ...allAttachments.map(a => String(a.content || '').slice(0, 4000)), // 与 advisorReply 注入截断一致
-        ...history.map(h => h.content),
-        memoryText.slice(0, 5000),
-        ...webRefs.map(x => `${x.title || ''}${x.snippet || ''}${x.url || ''}`),
-      ],
-    }),
-  });
-  // 流式（SSE）：stream=true 时边生成边推 delta，通道切换推 reset，结束推 done+全部元数据
-  const useStream = req.body?.stream === true;
-  let sendEvent = null;
-  if (useStream) {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    sendEvent = (obj) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
-  }
-  const out = await advisorReply({ diagType, question, dataSummary: s, role: req.user.role, marshal, attachments: allAttachments, webRefs, deep: useDeep,
-    history, memory: memoryText, marshalCatalog, recommendedMarshals: recommended,
-    signal: req.requestSignal,
-    onDelta: sendEvent ? (t => sendEvent({ delta: t })) : undefined,
-    onReset: sendEvent ? (() => sendEvent({ reset: true })) : undefined });
-  // 产出已生成：从此绝不释放占扣（结算失败也按占扣额入账，宁多勿漏），杜绝"答案已交付却不计费"
-  const settlingHold = hold; hold = null;
-  let bill;
-  try {
-    bill = settleHold(settlingHold, { usage: out.usage, model: out.model, aiMode: out.mode })
-      || { credits: settlingHold.credits, balance: settlingHold.balance };
-  } catch (settleError) {
-    console.error('[credits] 会诊结算失败，保留预授权占扣待人工对账:', settleError?.message);
-    bill = { credits: settlingHold.credits, balance: settlingHold.balance };
-  }
-  const assistantText = out.text + (webRefs.length ? `\n\n📎 联网来源：\n${webRefs.map((x, i) => `[${i + 1}] ${x.title} ${x.url}`).join('\n')}` : '');
-  const msgResult = q.run('INSERT INTO ai_messages(conversation_id,role,content) VALUES(?,?,?)', cid, 'assistant', assistantText);
-  // AI-H1：会诊输出与内容生产仓同口径过风控——命中即标记并进审批中心；AI-C2：引用的知识文档落库可溯源
-  const risk = applyChatRiskControl({ targetType: 'ai_message', targetId: msgResult.lastInsertRowid, title: `会诊输出：${question.slice(0, 40)}`, text: out.text, submitterId: req.user.id });
-  recordKbCitations({ targetType: 'ai_message', targetId: msgResult.lastInsertRowid, kb: out.kb });
-  const latest = q.all(`SELECT role,content FROM ai_messages WHERE tenant_id=? AND conversation_id=? ORDER BY id DESC LIMIT 8`, curTenant(), cid).reverse();
-  const summary = latest.map(x => `${x.role === 'user' ? '用户' : 'AI'}：${String(x.content).replace(/\s+/g, ' ').slice(0, 220)}`).join('\n').slice(0, 3500);
-  q.run(`UPDATE ai_conversations SET summary=?,updated_at=datetime('now','localtime') WHERE id=?`, summary, cid);
-  // 推荐数字员工分部：沿用本企业覆盖后的当前命名。
-  logOp(req.user, '老板参谋', '发起会诊', `${diagType}${useWeb ? '+联网' : ''}${useDeep ? '+深思' : ''}`);
-  const payload = { conversationId: cid, assistantMessageId: msgResult.lastInsertRowid, reply: out.text, mode: out.mode, model: out.model, recommended, billing: bill,
-    risk, kb: out.kb, // AI-H1 风控命中标记 + AI-C2 引用溯源/RAG 降级标记（kb.degraded=true 表示本轮检索降级）
-    sources: webRefs, webNote, deep: useDeep,
-    steps: [useWeb ? '联网检索' : null, '问题判断', '智能体调度', useDeep ? '深度推演' : null, '风险提示', '方案生成'].filter(Boolean) };
-  if (sendEvent) { sendEvent({ done: true, ...payload }); res.end(); }
-  else res.json(payload);
-  } catch (e) {
-    // 未交付任何产出即失败（含中途取消）：全额退回占扣；已结算的 hold 因幂等保护不会被二次退款
-    if (hold) { try { releaseHold(hold, `会诊未完成（${String(e?.message || '').slice(0, 60)}），预授权全额退回`); } catch { /* 释放失败留待人工对账 */ } }
-    if (req.requestSignal?.aborted) { if (res.headersSent && !res.writableEnded) res.end(); return; }
-    if (res.headersSent) { // SSE 已开始：错误以事件下发再关流，客户端据此收尾
-      if (!res.writableEnded) { res.write(`data: ${JSON.stringify({ error: e.message, requestId: req.requestId })}\n\n`); res.end(); }
-      return;
-    }
-    res.status(e.status || 500).json({ error: e.message, requestId: req.requestId });
-  }
+const ADVISOR_WEB_RESULT_LIMIT = 5;
+const ADVISOR_WEB_FIELD_LIMITS = Object.freeze({
+  title: 200,
+  snippet: 160,
+  url: 1024,
 });
+// hold 必须先于联网检索，因此按路由真正允许注入的最坏字段长度预留联网上下文；
+// 检索完成后仍会用同一组边界截断，保证实际发送内容不超过预授权口径。
+const ADVISOR_WEB_HOLD_RESERVE = '网'.repeat(
+  ADVISOR_WEB_RESULT_LIMIT * Object.values(ADVISOR_WEB_FIELD_LIMITS)
+    .reduce((total, value) => total + value, 0),
+);
+
+function normalizeAdvisorWebResults(results) {
+  if (!Array.isArray(results)) return [];
+  return results.slice(0, ADVISOR_WEB_RESULT_LIMIT).map(item => ({
+    title: String(item?.title || '').trim().slice(0, ADVISOR_WEB_FIELD_LIMITS.title),
+    snippet: String(item?.snippet || '').replace(/\s+/g, ' ').trim()
+      .slice(0, ADVISOR_WEB_FIELD_LIMITS.snippet),
+    url: String(item?.url || '').trim().slice(0, ADVISOR_WEB_FIELD_LIMITS.url),
+  })).filter(item => item.title && item.url);
+}
+
+const ADVISOR_CHAT_DEPS = Object.freeze({
+  advisorReplyFn: advisorReply,
+  applyChatRiskControlFn: applyChatRiskControl,
+  estimateCallCreditsFn: estimateCallCredits,
+  holdCreditsFn: holdCredits,
+  precheckByRoleFn: precheckByRole,
+  recordKbCitationsFn: recordKbCitations,
+  releaseHoldFn: releaseHold,
+  settleHoldFn: settleHold,
+  webSearchFn: webSearch,
+});
+
+export function createAdvisorChatHandler(overrides = {}) {
+  const deps = { ...ADVISOR_CHAT_DEPS, ...overrides };
+  return async (req, res) => {
+    let hold = null;
+    let sendEvent = null;
+    try {
+      const { conversationId, attachments, fileIds } = req.body || {};
+      if (typeof req.body?.question !== 'string') return res.status(400).json({ error: '问题必须是文本' });
+      const question = req.body.question.trim();
+      if (!question) return res.status(400).json({ error: '问题不能为空' });
+      if (question.length > 12000) return res.status(400).json({ error: '问题最长12000字' });
+      const diagType = typeof req.body?.diagType === 'string' && req.body.diagType.trim()
+        ? req.body.diagType.trim().slice(0, 40) : '经营诊断';
+      const marshalCode = req.body?.marshalCode == null ? '' : String(req.body.marshalCode).trim();
+      if (marshalCode && !/^M-\d{2}$/.test(marshalCode)) return res.status(400).json({ error: '数字员工分部编号格式不正确' });
+      const marshalRow = marshalCode
+        ? q.get('SELECT * FROM marshals WHERE code = ? AND online = 1', marshalCode)
+        : null;
+      if (marshalCode && !marshalRow) return res.status(404).json({ error: '数字员工分部不存在' });
+      const useWeb = req.body?.web === true;
+      const useDeep = req.body?.deep === true;
+      const useStream = req.body?.stream === true;
+
+      if (conversationId !== undefined && conversationId !== null && conversationId !== '') {
+        const parsed = Number(conversationId);
+        if (!Number.isInteger(parsed) || parsed <= 0) return res.status(400).json({ error: '会话编号格式不正确' });
+      }
+      let cid = Number(conversationId || 0);
+      if (cid) {
+        const current = q.get(
+          `SELECT id FROM ai_conversations
+           WHERE tenant_id = ${curTenant()} AND user_id = ? AND id = ?`,
+          req.user.id,
+          cid,
+        );
+        if (!current) return res.status(404).json({ error: '会话不存在' });
+      }
+
+      if (fileIds !== undefined && !Array.isArray(fileIds)) return res.status(400).json({ error: '文件列表格式不正确' });
+      const requestedFileIds = [...new Set((fileIds || []).map(Number))];
+      if (requestedFileIds.length > 6 || requestedFileIds.some(id => !Number.isInteger(id) || id <= 0)) {
+        return res.status(400).json({ error: '一次最多引用6个有效文件' });
+      }
+      const resolvedFiles = resolveAttachments(requestedFileIds, req.user, 6);
+      if (resolvedFiles.length !== requestedFileIds.length) {
+        return res.status(404).json({ error: '部分文件不存在或无权访问' });
+      }
+      if (attachments !== undefined && !Array.isArray(attachments)) {
+        return res.status(400).json({ error: '附件内容格式不正确' });
+      }
+      if ((attachments || []).length > 3) return res.status(400).json({ error: '一次最多提交3个内嵌附件' });
+      const inlineAttachments = (attachments || []).map((attachment, index) => {
+        if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+          throw Object.assign(new Error(`第${index + 1}个附件格式不正确`), { status: 400 });
+        }
+        const name = typeof attachment.name === 'string'
+          ? attachment.name.trim().slice(0, 200)
+          : '';
+        if (!name) throw Object.assign(new Error(`第${index + 1}个附件缺少文件名`), { status: 400 });
+        if (typeof attachment.content !== 'string') {
+          throw Object.assign(new Error(`第${index + 1}个附件内容必须是文本`), { status: 400 });
+        }
+        return { name, content: attachment.content.slice(0, 16000) };
+      });
+      const allAttachments = [...resolvedFiles, ...inlineAttachments].slice(0, 6);
+      const history = cid
+        ? rehydrateMessageHistory(q.all(
+          `SELECT role,content,attachments_json FROM ai_messages
+           WHERE tenant_id=? AND conversation_id=?
+           ORDER BY id DESC LIMIT 12`,
+          curTenant(),
+          cid,
+        ).reverse(), req.user)
+        : [];
+      const sess = cid
+        ? q.get(
+          `SELECT memory,summary FROM ai_conversations
+           WHERE tenant_id=? AND id=?`,
+          curTenant(),
+          cid,
+        ) || {}
+        : {};
+      const sharedMemory = q.all(
+        `SELECT content FROM conversation_memories
+         WHERE tenant_id=? AND user_id=? AND scope='advisor'
+           AND (session_id=? OR session_id IS NULL) AND pinned=1
+         ORDER BY id DESC LIMIT 8`,
+        curTenant(),
+        req.user.id,
+        cid || -1,
+      ).map(item => item.content).reverse().join('\n');
+      const memoryText = [sess.summary, sess.memory, sharedMemory].filter(Boolean).join('\n');
+      const s = dataSummary();
+      const recCodes = s.bottleneck === '已成交'
+        ? ['M-05', 'M-07']
+        : s.bottleneck === '已邀约' || s.bottleneck === '已到店'
+          ? ['M-06', 'M-05']
+          : ['M-06', 'M-07'];
+      const marshalCatalog = mergeMarshals(q.all(
+        'SELECT id,code,name,title,emoji,avatar FROM marshals WHERE online = 1 ORDER BY sort',
+      ));
+      const marshalByCode = new Map(marshalCatalog.map(item => [item.code, item]));
+      const recommended = recCodes.map(code => marshalByCode.get(code)).filter(Boolean);
+      const marshal = marshalRow ? mergeMarshal(marshalRow) : null;
+      const feature = [
+        marshal ? `老板参谋会诊·${marshal.name}` : '老板参谋诊断',
+        useWeb ? '联网' : null,
+        useDeep ? '深度思考' : null,
+      ].filter(Boolean).join('·');
+      const holdModel = useDeep ? routing().deepThink : textModelFor(req.user.role);
+
+      // 所有联网、RAG 和模型供应商调用之前，先按本轮实际上下文与联网最坏边界完成预授权。
+      deps.precheckByRoleFn(req.user.id, 'text', useDeep ? 'boss' : req.user.role);
+      hold = deps.holdCreditsFn({
+        userId: req.user.id,
+        feature,
+        kind: 'text',
+        model: holdModel,
+        credits: deps.estimateCallCreditsFn({
+          model: holdModel,
+          outputTokens: useDeep ? 8000 : 4000,
+          texts: [
+            question,
+            ...allAttachments.map(item => String(item.content || '').slice(0, 4000)),
+            ...history.map(item => item.content),
+            memoryText.slice(0, 5000),
+            useWeb ? ADVISOR_WEB_HOLD_RESERVE : '',
+          ],
+        }),
+        refType: cid ? 'advisor_conversation' : null,
+        refId: cid || null,
+      });
+
+      // 预授权成功后才记录本轮输入；输入事务失败同样属于未交付，外层会全额释放占扣。
+      withImmediateTransaction(db, () => {
+        if (!cid) {
+          const created = q.run(
+            'INSERT INTO ai_conversations(user_id,title,diag_type) VALUES(?,?,?)',
+            req.user.id,
+            question.slice(0, 24),
+            diagType,
+          );
+          cid = Number(created.lastInsertRowid);
+        }
+        q.run(
+          `INSERT INTO ai_messages(conversation_id,role,content,attachments_json)
+           VALUES(?,?,?,?)`,
+          cid,
+          'user',
+          `${question}${allAttachments.length ? `\n[附件×${allAttachments.length}: ${allAttachments.map(item => item.name).join('、')}]` : ''}${useWeb ? '\n[联网检索已开启]' : ''}${useDeep ? '\n[深度思考已开启]' : ''}`,
+          allAttachments.length ? JSON.stringify(attachmentRefsForStorage(allAttachments)) : null,
+        );
+        q.run(
+          `UPDATE credit_holds SET ref_type='advisor_conversation',ref_id=?
+           WHERE tenant_id=? AND id=? AND status='held'`,
+          cid,
+          curTenant(),
+          hold.holdId,
+        );
+      });
+
+      // SSE 仅先建立通道；模型增量在服务端缓冲。助手消息、风控、引用与摘要事务成功前，
+      // 不把正文交付客户端，避免“答案已看见但业务落库失败后退款”。
+      let bufferedText = '';
+      if (useStream) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        sendEvent = object => {
+          if (!res.writableEnded) res.write(`data: ${JSON.stringify(object)}\n\n`);
+        };
+      }
+
+      const deliveryHold = hold;
+      hold = null;
+      const delivered = await executeHeldDelivery({
+        hold: deliveryHold,
+        generate: async () => {
+          let webRefs = [];
+          let webNote = null;
+          if (useWeb) {
+            const search = await deps.webSearchFn(`${question} 餐饮门店 行业`);
+            webRefs = normalizeAdvisorWebResults(search?.results);
+            webNote = search?.note || null;
+          }
+          const output = await deps.advisorReplyFn({
+            diagType,
+            question,
+            dataSummary: s,
+            role: req.user.role,
+            marshal,
+            attachments: allAttachments,
+            webRefs,
+            deep: useDeep,
+            history,
+            memory: memoryText,
+            marshalCatalog,
+            recommendedMarshals: recommended,
+            signal: req.requestSignal,
+            onDelta: useStream ? (text => { bufferedText += String(text || ''); }) : undefined,
+            onReset: useStream ? (() => { bufferedText = ''; }) : undefined,
+          });
+          return { ...output, webRefs, webNote };
+        },
+        persist: output => withImmediateTransaction(db, () => {
+          const assistantText = output.text + (output.webRefs.length
+            ? `\n\n📎 联网来源：\n${output.webRefs.map((item, index) => `[${index + 1}] ${item.title} ${item.url}`).join('\n')}`
+            : '');
+          const message = q.run(
+            'INSERT INTO ai_messages(conversation_id,role,content) VALUES(?,?,?)',
+            cid,
+            'assistant',
+            assistantText,
+          );
+          const assistantMessageId = Number(message.lastInsertRowid);
+          const risk = deps.applyChatRiskControlFn({
+            targetType: 'ai_message',
+            targetId: assistantMessageId,
+            title: `会诊输出：${question.slice(0, 40)}`,
+            text: output.text,
+            submitterId: req.user.id,
+          });
+          deps.recordKbCitationsFn({
+            targetType: 'ai_message',
+            targetId: assistantMessageId,
+            kb: output.kb,
+          });
+          const latest = q.all(
+            `SELECT role,content FROM ai_messages
+             WHERE tenant_id=? AND conversation_id=?
+             ORDER BY id DESC LIMIT 8`,
+            curTenant(),
+            cid,
+          ).reverse();
+          const summary = latest.map(item => `${item.role === 'user' ? '用户' : 'AI'}：${String(item.content).replace(/\s+/g, ' ').slice(0, 220)}`)
+            .join('\n')
+            .slice(0, 3500);
+          q.run(
+            `UPDATE ai_conversations
+             SET summary=?,updated_at=datetime('now','localtime')
+             WHERE tenant_id=? AND id=?`,
+            summary,
+            curTenant(),
+            cid,
+          );
+          q.run(
+            `UPDATE credit_holds SET ref_type='ai_message',ref_id=?
+             WHERE tenant_id=? AND id=? AND status='held'`,
+            assistantMessageId,
+            curTenant(),
+            deliveryHold.holdId,
+          );
+          return { assistantMessageId, risk };
+        }),
+        settle: deps.settleHoldFn,
+        release: deps.releaseHoldFn,
+        settlement: output => ({
+          usage: output.usage,
+          model: output.model,
+          aiMode: output.mode,
+          note: '顾问助手消息、风控、引用证据与会话摘要已完成业务落库',
+        }),
+        releaseNote: '顾问联网、生成或业务产物落库失败，预授权全额退回',
+      });
+
+      // 会诊正文、风控、引用与计费均已完成；审计日志是旁路记录，
+      // 写入异常不能把已交付且已结算的结果伪装成 500。
+      try {
+        logOp(
+          req.user,
+          '老板参谋',
+          '发起会诊',
+          `${diagType}${useWeb ? '+联网' : ''}${useDeep ? '+深思' : ''}`,
+        );
+      } catch (logError) {
+        console.error('[advisor] 会诊操作日志写入失败:', logError?.message);
+      }
+      const payload = {
+        conversationId: cid,
+        assistantMessageId: delivered.delivery.assistantMessageId,
+        reply: delivered.output.text,
+        mode: delivered.output.mode,
+        model: delivered.output.model,
+        recommended,
+        billing: delivered.billing,
+        risk: delivered.delivery.risk,
+        kb: delivered.output.kb,
+        sources: delivered.output.webRefs,
+        webNote: delivered.output.webNote,
+        deep: useDeep,
+        steps: [
+          useWeb ? '联网检索' : null,
+          '问题判断',
+          '智能体调度',
+          useDeep ? '深度推演' : null,
+          '风险提示',
+          '方案生成',
+        ].filter(Boolean),
+      };
+      if (sendEvent) {
+        // 以最终持久化文本为准；供应商的中途分片仅用于保持其流式超时与取消语义。
+        sendEvent({ delta: delivered.output.text || bufferedText });
+        sendEvent({ done: true, ...payload });
+        res.end();
+      } else {
+        res.json(payload);
+      }
+    } catch (error) {
+      let billing = error.billing || null;
+      if (hold) {
+        try {
+          const released = deps.releaseHoldFn(
+            hold,
+            `会诊未完成（${String(error?.message || '').slice(0, 60)}），预授权全额退回`,
+          );
+          billing = twoPhaseBillingSummary({
+            state: 'released',
+            hold,
+            settled: released,
+            note: '本次未形成可交付产物，预授权已全额退回。',
+          });
+        } catch (releaseError) {
+          billing = twoPhaseBillingSummary({
+            state: 'pending_reconciliation',
+            hold,
+            error: releaseError,
+            note: '本次未形成可交付产物，但预授权释放异常，已保留待人工对账。',
+          });
+        }
+        hold = null;
+      }
+      if (req.requestSignal?.aborted) {
+        if (res.headersSent && !res.writableEnded) res.end();
+        return;
+      }
+      const errorPayload = {
+        error: error.message,
+        requestId: req.requestId,
+        ...(billing ? { billing } : {}),
+      };
+      if (res.headersSent) {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+          res.end();
+        }
+        return;
+      }
+      res.status(error.status || 500).json(errorPayload);
+    }
+  };
+}
+
+r.post('/chat', createAdvisorChatHandler());
 
 // 会诊输出的执行动作行解析：匹配「【今日目标】xxx ｜【执行人】xxx ｜【截止】xxx ｜【检查标准】xxx」类结构
 function parseActionLines(text) {

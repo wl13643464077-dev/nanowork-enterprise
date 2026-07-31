@@ -316,7 +316,7 @@ test('正式活动新增和修改拒绝非法日期、人数与金额', async ()
   });
 });
 
-test('AI策划扣费与草稿持久化原子，写入失败不会留下扣费流水', async () => {
+test('AI策划草稿落库失败会释放预授权，仅保留0分审计流水', async () => {
   await withServer({ id: 2, name: '运营总监', role: 'ops_director' }, async base => {
     const before = q.get(`SELECT credits FROM tenants WHERE id=1`).credits;
     const logsBefore = q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1`).n;
@@ -332,7 +332,14 @@ test('AI策划扣费与草稿持久化原子，写入失败不会留下扣费流
       q.run(`DROP TRIGGER IF EXISTS fail_atomic_plan_draft`);
     }
     assert.equal(q.get(`SELECT credits FROM tenants WHERE id=1`).credits, before);
-    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1`).n, logsBefore);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1`).n, logsBefore + 1);
+    const releasedLog = q.get(`SELECT credits,ai_mode,note FROM credit_logs
+      WHERE tenant_id=1 AND feature='活动策划室·AI策划' ORDER BY id DESC LIMIT 1`);
+    assert.equal(releasedLog.credits, 0);
+    assert.match(releasedLog.note, /预授权.*实扣0分/);
+    const releasedHold = q.get(`SELECT status,settled_credits FROM credit_holds
+      WHERE tenant_id=1 AND feature='活动策划室·AI策划' ORDER BY id DESC LIMIT 1`);
+    assert.deepEqual({ ...releasedHold }, { status: 'settled', settled_credits: 0 });
     assert.equal(q.get(`SELECT COUNT(*) n FROM activity_plan_drafts WHERE tenant_id=1 AND title='原子失败策划'`).n, 0);
   });
 });

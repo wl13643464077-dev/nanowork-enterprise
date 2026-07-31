@@ -6,6 +6,10 @@ import { skillByKey, skillFallbackFor } from './skills.js';
 import { roleListAllows } from './access.js';
 import { wrapUntrusted, UNTRUSTED_GUARD } from './risk.js';
 import { employeeTemplateFallback } from '../employee-workbench.js';
+import {
+  renderRestaurantOutputMarkdown,
+  validateRestaurantEmployeeOutputContract,
+} from './restaurant-output-contract.js';
 import { refsBlock, webSearch } from './websearch.js';
 
 // ===== AI 编排服务（PRD V2 §15）：云雾API主通道（按角色分层路由模型）→ Claude备用 → 知识库模板引擎兜底 =====
@@ -765,12 +769,49 @@ export async function marshalWork(marshal, task, role, options = {}) {
     model: configuredModel,
     timeoutMs: Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 85000,
     signal: options.signal,
+    responseSchema: options.employeeExecution?.responseSchema,
   });
+  let employeeContract = null;
+  let employeeOutputText = out.text;
+  if (options.employeeExecution && out.mode === 'api') {
+    const employeeIdx = options.employeeExecution.workbench.identity.idx;
+    const validation = validateRestaurantEmployeeOutputContract(employeeIdx, out.text);
+    if (!validation.valid) {
+      throw Object.assign(new Error(`数字员工输出未通过岗位机器契约：${validation.errors.join('；')}`), {
+        code: 'RESTAURANT_OUTPUT_CONTRACT_INVALID',
+        status: 422,
+        contractErrors: validation.errors,
+      });
+    }
+    employeeContract = {
+      valid: true,
+      contractId: options.employeeExecution.outputContract.contractId,
+      schemaVersion: options.employeeExecution.outputContract.schemaVersion,
+      primaryArtifact: options.employeeExecution.outputContract.primaryArtifact,
+      parsed: validation.parsed,
+      artifacts: validation.artifacts,
+    };
+    // 数据库存储与审批页面继续使用可读 Markdown；原始结构化产出和主产物元数据
+    // 随返回对象保留，且绝不对非法 JSON 做补字段或静默修复。
+    employeeOutputText = renderRestaurantOutputMarkdown(employeeIdx, validation.parsed);
+  } else if (options.employeeExecution) {
+    employeeContract = {
+      valid: false,
+      skipped: 'template_mode',
+      contractId: options.employeeExecution.outputContract.contractId,
+      schemaVersion: options.employeeExecution.outputContract.schemaVersion,
+      primaryArtifact: options.employeeExecution.outputContract.primaryArtifact,
+      parsed: null,
+      artifacts: [],
+    };
+  }
   return {
     ...out,
+    text: employeeOutputText,
     transparentFallback: out.mode === 'template' && !!options.employeeExecution,
     employeeProfileVersion: options.employeeExecution?.snapshot?.profileVersion || null,
     employeePromptHash: options.employeeExecution?.snapshot?.promptHash || null,
+    employeeContract,
     kb: { refs: kb.refs, degraded: kb.degraded, mode: kb.mode },
     web,
   };

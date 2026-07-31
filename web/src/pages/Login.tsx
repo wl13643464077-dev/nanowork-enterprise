@@ -17,7 +17,14 @@ const LOOP_STEPS = [
 
 const StepArrow = () => (
   <svg className="au-loop-arrow" width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
-    <path d="M1 5h14m0 0-4-3.4M15 5l-4 3.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path
+      d="M1 5h14m0 0-4-3.4M15 5l-4 3.4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 
@@ -45,7 +52,10 @@ export default function Login() {
       }
       const status = data.user.tenant?.status;
       if (status && status !== '已开通') {
-        message.warning(status === '待审核' ? '企业账号正在审核中，开通后即可使用' : '企业账号已停用，请联系平台服务人员', 4);
+        message.warning(
+          status === '待审核' ? '企业账号正在审核中，开通后即可使用' : '企业账号已停用，请联系平台服务人员',
+          4,
+        );
         nav('/pending');
         return;
       }
@@ -105,7 +115,12 @@ export default function Login() {
           <Input prefix={<UserOutlined />} placeholder="账号 / 手机号" autoComplete="username" aria-label="账号" />
         </Form.Item>
         <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
-          <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete="current-password" aria-label="密码" />
+          <Input.Password
+            prefix={<LockOutlined />}
+            placeholder="请输入密码"
+            autoComplete="current-password"
+            aria-label="密码"
+          />
         </Form.Item>
         <div className="au-form-row">
           <Form.Item name="remember" valuePropName="checked" noStyle>

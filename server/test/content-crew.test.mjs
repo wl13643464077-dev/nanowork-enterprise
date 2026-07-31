@@ -82,7 +82,7 @@ runWithTenant(1, () => {
     type,title,body,topic,status,ai_mode,creator_id,
     content_employee_idx,content_employee_key,content_employee_name,content_employee_group,content_run_mode,created_at
   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  '朋友圈文案', 'A店单工位文案', 'A店真实留痕的测试文案。', '午市新品', '可使用', 'template', bossA.id,
+  '朋友圈文案', 'A店单工位文案', 'A店真实留痕的测试文案。', '午市新品', '可使用', 'api', bossA.id,
   3, 'draft', '撰稿人', '文案创作部', 'single_station', '2026-07-20 10:00:00').lastInsertRowid;
   mediaA = q.run(`INSERT INTO media_jobs(
     user_id,kind,model,prompt,status,url,
@@ -95,7 +95,7 @@ runWithTenant(2, () => {
     type,title,body,topic,status,ai_mode,creator_id,
     content_employee_idx,content_employee_key,content_employee_name,content_employee_group,content_run_mode,created_at
   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  '朋友圈文案', 'B店私有文案', '不得跨租户读取。', 'B店主题', '可使用', 'template', bossB.id,
+  '朋友圈文案', 'B店私有文案', '不得跨租户读取。', 'B店主题', '可使用', 'api', bossB.id,
   3, 'draft', '撰稿人', '文案创作部', 'single_station', '2026-07-20 11:00:00').lastInsertRowid;
 });
 
@@ -236,22 +236,37 @@ test('数据库迁移为contents与media_jobs增加完整内容员工元数据�
 });
 
 test('GET /content/crew返回目录及当前账号范围内的运行统计', async () => {
-  await withServer(bossA, async base => {
-    const response = await fetch(`${base}/content/crew`);
-    assert.equal(response.status, 200);
-    const data = await response.json();
-    assert.equal(data.department.employeeTotal, 10);
-    assert.match(data.executionBoundary, /不表示十个工位/);
-    assert.equal(data.employees.find(employee => employee.idx === 3).runtime.outputs, 1);
-    assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 1);
-    assert.deepEqual(data.employees.find(employee => employee.idx === 3).taskTypes, ['文案初稿', '标题方案', '配图建议']);
-    assert.deepEqual(data.employees.find(employee => employee.idx === 7).taskTypes, ['HTML演绎稿', '网页演示方案', '交互演绎稿']);
-  });
-  await withServer(bossB, async base => {
-    const data = await fetch(`${base}/content/crew`).then(response => response.json());
-    assert.equal(data.employees.find(employee => employee.idx === 3).runtime.outputs, 1);
-    assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 0);
-  });
+  const templateDraftId = runWithTenant(1, () => Number(q.run(`INSERT INTO contents(
+    type,title,body,topic,status,ai_mode,creator_id,
+    content_employee_idx,content_employee_key,content_employee_name,content_employee_group,
+    content_run_mode,snapshot_json,created_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  '朋友圈文案', '历史模板底稿', '只建立了模板，不是正式产出。', '模板验收', '待审核', 'template', bossA.id,
+  3, 'draft', '撰稿人', '文案创作部', 'single_station',
+  JSON.stringify({ contract: { status: 'incomplete', valid: false } }),
+  '2026-07-20 10:05:00').lastInsertRowid));
+  try {
+    await withServer(bossA, async base => {
+      const response = await fetch(`${base}/content/crew`);
+      assert.equal(response.status, 200);
+      const data = await response.json();
+      assert.equal(data.department.employeeTotal, 10);
+      assert.match(data.executionBoundary, /不表示十个工位/);
+      assert.equal(data.employees.find(employee => employee.idx === 3).runtime.outputs, 1);
+      assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 1);
+      assert.deepEqual(data.employees.find(employee => employee.idx === 3).taskTypes, ['文案初稿', '标题方案', '配图建议']);
+      assert.deepEqual(data.employees.find(employee => employee.idx === 7).taskTypes, ['HTML演绎稿', '网页演示方案', '交互演绎稿']);
+      const summary = await fetch(`${base}/content/summary`).then(result => result.json());
+      assert.equal(summary.total, 1);
+    });
+    await withServer(bossB, async base => {
+      const data = await fetch(`${base}/content/crew`).then(response => response.json());
+      assert.equal(data.employees.find(employee => employee.idx === 3).runtime.outputs, 1);
+      assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 0);
+    });
+  } finally {
+    runWithTenant(1, () => q.run('DELETE FROM contents WHERE id=?', templateDraftId));
+  }
 });
 
 test('内容生成路由严格校验employeeIdx，不在校验失败时调用生成服务', async () => {

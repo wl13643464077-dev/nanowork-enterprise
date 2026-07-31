@@ -178,6 +178,20 @@ test('普通员工驾驶舱不得用全租户日报补齐本人无数据的指�
   }
 });
 
+test('每日经营日报仅管理层可读，普通员工不得读取全租户经营归因', async () => {
+  await withUserServer(sales, async base => {
+    const response = await fetch(`${base}/dashboard/daily-digest`);
+    const data = await response.json();
+    assert.equal(response.status, 403);
+    assert.match(data.error, /无权限/);
+  });
+
+  await withUserServer(boss, async base => {
+    const response = await fetch(`${base}/dashboard/daily-digest`);
+    assert.equal(response.status, 200);
+  });
+});
+
 test('cleanup', () => {
   for (const f of [DBP, DBP + '-wal', DBP + '-shm']) { try { fs.rmSync(f, { force: true }); } catch {} }
 });

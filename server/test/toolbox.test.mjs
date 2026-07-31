@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import http from 'node:http';
 import express from 'express';
 
 const DBP = path.join(os.tmpdir(), `nanowork-toolbox-${process.pid}.db`);
@@ -29,8 +30,11 @@ const userOneId = q.run(`INSERT INTO users(username,password_hash,name,role,stat
   VALUES(?,?,?,?,?,?)`, 'toolbox-one', hashPassword('Secret123!'), '租户一老板', 'boss', '启用', 1).lastInsertRowid;
 const userTwoId = q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
   VALUES(?,?,?,?,?,?)`, 'toolbox-two', hashPassword('Secret123!'), '租户二老板', 'boss', '启用', 2).lastInsertRowid;
+const userPeerId = q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
+  VALUES(?,?,?,?,?,?)`, 'toolbox-peer', hashPassword('Secret123!'), '租户一销售', 'sales', '启用', 1).lastInsertRowid;
 const userOne = { id: Number(userOneId), name: '租户一老板', role: 'boss', tenant_id: 1 };
 const userTwo = { id: Number(userTwoId), name: '租户二老板', role: 'boss', tenant_id: 2 };
+const userPeer = { id: Number(userPeerId), name: '租户一销售', role: 'sales', tenant_id: 1 };
 
 function appFor(user) {
   const app = express();
@@ -91,6 +95,13 @@ test('8个工具键均可持久化，并保存安全模板、来源和一对一�
       assert.equal(result.body.run.provenance.sourceSystem, 'nanowork');
       assert.equal(result.body.run.provenance.promptVersion, 'toolbox-template-v1');
       assert.equal(result.body.run.provenance.confidence, '待人工核验');
+      assert.ok(result.body.run.provenance.employeeSnapshot, '每次工具运行必须锁定完整员工执行快照');
+      assert.equal(result.body.run.provenance.employeeSnapshot.identity.idx, payload.employeeIdx);
+      assert.ok(result.body.run.provenance.employeeSnapshot.capabilities.length > 0);
+      assert.ok(result.body.run.provenance.employeeSnapshot.skills.length > 0);
+      assert.ok(result.body.run.provenance.employeeSnapshot.workMethod.qualityGates.length > 0);
+      assert.ok(result.body.run.provenance.employeeSnapshot.jobProfile.expectedDeliverables.length > 0);
+      assert.match(result.body.run.provenance.employeeSnapshot.systemContext, /完整岗位手册/);
       assert.ok(result.body.run.assumptions.some(item => item.includes('未联网检索')));
       if (toolKey === 'bench' || toolKey === 'leads') {
         assert.match(result.body.run.resultMd, /未联网/);
@@ -162,6 +173,86 @@ test('列表与详情均按当前租户隔离，跨租户ID直查返回404', asy
 
   assert.equal(db.prepare(`SELECT tenant_id FROM tool_runs WHERE id=?`).get(tenantTwoRunId).tenant_id, 2);
   assert.equal(db.prepare(`SELECT tenant_id FROM tool_run_events WHERE run_id=?`).get(tenantTwoRunId).tenant_id, 2);
+});
+
+test('同租户普通员工只能查看自己的工具运行，老板可审计全租户且普通员工看不到完整系统提示词', async () => {
+  await withServer(userPeer, async base => {
+    const before = await request(base, '/toolbox/runs?limit=20');
+    assert.equal(before.response.status, 200);
+    assert.equal(before.body.runs.length, 0, '同租户其他员工创建的运行不得暴露给普通员工');
+
+    const cross = await request(base, `/toolbox/runs/${tenantOneRunId}`);
+    assert.equal(cross.response.status, 404);
+
+    const created = await request(base, '/toolbox/runs', 'POST', {
+      toolKey: 'hot', employeeIdx: 141, title: '销售自己的运行', inputs: VALID_PAYLOADS.hot.inputs,
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.body.run.provenance.employeeSnapshot.identity.idx, 141);
+    assert.equal(created.body.run.provenance.employeeSnapshot.systemContext, undefined,
+      '普通员工响应不得回显完整系统提示词');
+
+    const own = await request(base, '/toolbox/runs?limit=20');
+    assert.deepEqual(own.body.runs.map(item => item.title), ['销售自己的运行']);
+  });
+
+  await withServer(userOne, async base => {
+    const audited = await request(base, '/toolbox/runs?limit=20');
+    assert.ok(audited.body.runs.some(item => item.title === '销售自己的运行'));
+  });
+});
+
+test('工具箱真实AI调用必须先占扣，余额不足不触发上游，成功后按用量结算且不留悬挂占扣', async () => {
+  let upstreamCalls = 0;
+  let capturedBody = null;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBody = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    upstreamCalls += 1;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content: '# 真实工具交付\\n已按完整岗位上下文生成。' } }],
+      usage: { prompt_tokens: 100, completion_tokens: 50 },
+    }));
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  process.env.YUNWU_API_KEY = 'test-toolbox-key';
+  process.env.YUNWU_BASE_URL = `http://127.0.0.1:${upstreamPort}`;
+
+  try {
+    q.run('UPDATE tenants SET credits=0 WHERE id=?', 1);
+    await withServer(userOne, async base => {
+      const denied = await request(base, '/toolbox/runs', 'POST', {
+        toolKey: 'hot', employeeIdx: 141, title: '余额不足不得调用', inputs: VALID_PAYLOADS.hot.inputs,
+      });
+      assert.equal(denied.response.status, 402);
+    });
+    assert.equal(upstreamCalls, 0, '预授权失败后不得发送上游请求');
+
+    q.run('UPDATE tenants SET credits=1000 WHERE id=?', 1);
+    const before = q.get('SELECT credits FROM tenants WHERE id=?', 1).credits;
+    let created;
+    await withServer(userOne, async base => {
+      created = await request(base, '/toolbox/runs', 'POST', {
+        toolKey: 'hot', employeeIdx: 141, title: '真实计费运行', inputs: VALID_PAYLOADS.hot.inputs,
+      });
+      assert.equal(created.response.status, 201, JSON.stringify(created.body));
+    });
+    assert.equal(upstreamCalls, 1);
+    assert.equal(created.body.run.provenance.mode, 'api');
+    assert.equal(created.body.billing.state, 'settled');
+    assert.ok(created.body.billing.chargedCredits > 0);
+    assert.match(capturedBody.messages[0].content, /完整岗位手册/);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_holds WHERE tenant_id=1 AND status='held'`).n, 0);
+    assert.equal(q.get('SELECT credits FROM tenants WHERE id=?', 1).credits, before - created.body.billing.chargedCredits);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1 AND feature='经营工具箱·今日必发' AND ai_mode='api'`).n, 1);
+  } finally {
+    delete process.env.YUNWU_API_KEY;
+    delete process.env.YUNWU_BASE_URL;
+    await new Promise(resolve => upstream.close(resolve));
+  }
 });
 
 test('数据库CHECK约束拒绝第9种工具键', () => {

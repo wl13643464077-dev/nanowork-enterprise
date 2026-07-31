@@ -3,15 +3,30 @@ import * as echarts from 'echarts/core';
 import type { EChartsCoreOption, EChartsType } from 'echarts/core';
 import { BarChart, FunnelChart, LineChart, PieChart, RadarChart } from 'echarts/charts';
 import {
-  AriaComponent, GridComponent, LegendComponent, MarkLineComponent,
-  RadarComponent, TitleComponent, TooltipComponent,
+  AriaComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  RadarComponent,
+  TitleComponent,
+  TooltipComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
 echarts.use([
-  BarChart, FunnelChart, LineChart, PieChart, RadarChart,
-  AriaComponent, GridComponent, LegendComponent, MarkLineComponent,
-  RadarComponent, TitleComponent, TooltipComponent, CanvasRenderer,
+  BarChart,
+  FunnelChart,
+  LineChart,
+  PieChart,
+  RadarChart,
+  AriaComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  RadarComponent,
+  TitleComponent,
+  TooltipComponent,
+  CanvasRenderer,
 ]);
 
 function resolveTheme(value: any): any {
@@ -26,7 +41,15 @@ function resolveTheme(value: any): any {
   return value;
 }
 
-export function Chart({ option, height = 280, onClick }: { option: EChartsCoreOption; height?: number | string; onClick?: (p: any) => void }) {
+export function Chart({
+  option,
+  height = 280,
+  onClick,
+}: {
+  option: EChartsCoreOption;
+  height?: number | string;
+  onClick?: (p: any) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<EChartsType | null>(null);
   const [themeVersion, setThemeVersion] = useState(0);
@@ -38,7 +61,11 @@ export function Chart({ option, height = 280, onClick }: { option: EChartsCoreOp
     ro.observe(ref.current);
     const onTheme = () => setThemeVersion(v => v + 1);
     window.addEventListener('nanowork-theme-change', onTheme);
-    return () => { window.removeEventListener('nanowork-theme-change', onTheme); ro.disconnect(); chart.dispose(); };
+    return () => {
+      window.removeEventListener('nanowork-theme-change', onTheme);
+      ro.disconnect();
+      chart.dispose();
+    };
   }, []);
   useEffect(() => {
     if (!chartRef.current) return;
@@ -51,11 +78,30 @@ export function Chart({ option, height = 280, onClick }: { option: EChartsCoreOp
   return <div ref={ref} style={{ height, width: '100%' }} />;
 }
 
-export const CHART_COLORS = ['var(--ui-accent)', '#22c4a8', '#8a7450', '#f6a02d', '#f25b6b', '#70757a', '#84cc16', '#e879a8'];
+// 分类调色板走 token（resolveTheme 会在 setOption 时解析成实际色值），
+// 因此深浅主题自动各用一套，无需业务代码判断当前主题。
+export const CHART_COLORS = [
+  'var(--chart-1)',
+  'var(--chart-2)',
+  'var(--chart-3)',
+  'var(--chart-4)',
+  'var(--chart-5)',
+  'var(--chart-6)',
+  'var(--chart-7)',
+  'var(--chart-8)',
+];
 
 export const baseGrid = { left: 8, right: 16, top: 32, bottom: 8, containLabel: true };
 export const axisStyle = {
   axisLine: { lineStyle: { color: 'var(--ui-border)' } },
-  axisLabel: { color: 'var(--ui-muted)', fontSize: 11 },
+  axisLabel: { color: 'var(--ui-muted)', fontSize: 12 },
   splitLine: { lineStyle: { color: 'var(--ui-surface-2)' } },
+};
+
+// 图表动效统一口径：与 --dur-slow / --ease-out 对齐，替代 echarts 默认 1000ms 线性进场。
+// 用法：{ ...chartAnimation, series: [...] }
+export const chartAnimation = {
+  animationDuration: 320,
+  animationEasing: 'cubicOut' as const,
+  animationDelay: (idx: number) => idx * 18,
 };

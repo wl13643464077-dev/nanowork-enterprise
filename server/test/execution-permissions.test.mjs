@@ -209,6 +209,63 @@ test('合伙人经营数据：员工无权读取或录入，管理层可录入�
   });
 });
 
+test('经营目标缺失或为0时不伪造完成率，并返回可解释状态', async () => {
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = `${year}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const quarter = `${year}-Q${Math.ceil((now.getMonth() + 1) / 3)}`;
+  q.run(`DELETE FROM goals WHERE tenant_id=1 AND period IN (?,?,?)`, year, quarter, month);
+
+  await withServer(boss, async base => {
+    const missing = await call(base, '/execution/goals');
+    assert.equal(missing.status, 200);
+    assert.equal(missing.json.length, 3);
+    for (const goal of missing.json) {
+      assert.equal(goal.target, 0);
+      assert.equal(goal.rate, null);
+      assert.equal(goal.risk, null);
+      assert.equal(goal.status, 'missing');
+      assert.match(goal.statusText, /尚未设置/);
+    }
+
+    const summary = await call(base, '/execution/summary');
+    assert.equal(summary.status, 200);
+    assert.equal(summary.json.goalRate, null);
+    assert.equal(summary.json.goalStatus, 'missing');
+    assert.match(summary.json.goalStatusText, /尚未设置月度经营目标/);
+
+  });
+
+  q.run(`INSERT INTO goals(period,revenue_target,tenant_id) VALUES(?,?,1)`, month, 0);
+  q.run(`INSERT INTO sys_config(key,value) VALUES('month_revenue_target:1','0')
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
+  await withServer(boss, async base => {
+    const zero = await call(base, '/execution/goals');
+    assert.equal(zero.status, 200);
+    const monthGoal = zero.json.find(item => item.period === month);
+    assert.equal(monthGoal.target, 0);
+    assert.equal(monthGoal.rate, null);
+    assert.equal(monthGoal.risk, null);
+    assert.equal(monthGoal.status, 'zero');
+    assert.match(monthGoal.statusText, /目标为0/);
+
+    const summary = await call(base, '/execution/summary');
+    assert.equal(summary.json.goalRate, null);
+    assert.equal(summary.json.goalStatus, 'zero');
+    assert.match(summary.json.goalStatusText, /目标为0/);
+
+    const drill = await call(base, '/execution/goals-drill');
+    assert.equal(drill.json.month.rate, null);
+    assert.equal(drill.json.month.status, 'zero');
+    assert.equal(drill.json.month.gap, null);
+    assert.equal(drill.json.month.needDealsPerDay, null);
+    assert.equal(drill.json.month.inviteTarget, null);
+  });
+
+  q.run(`DELETE FROM sys_config WHERE key='month_revenue_target:1'`);
+  q.run(`DELETE FROM goals WHERE tenant_id=1 AND period IN (?,?,?)`, year, quarter, month);
+});
+
 test('今日作战计划：四类任务有各自目标拆解依据，员工可查看但不能重新生成', async () => {
   q.run(`INSERT OR REPLACE INTO sys_config(key,value) VALUES('month_revenue_target','500000')`);
   q.run(`INSERT INTO goals(period,revenue_target,tenant_id) VALUES(?,?,1)`, '2026-06', 500000);

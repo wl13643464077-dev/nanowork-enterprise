@@ -1,0 +1,135 @@
+/* AI 长任务输出区。全部尺寸走 theme.css token，随密度模式自动适配。 */
+
+.stream-out {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.stream-out--idle {
+  display: grid;
+  place-items: center;
+  color: var(--ui-muted);
+  font-size: var(--font-2);
+  background: var(--ui-surface-2);
+  border: 1px dashed var(--ui-border);
+  border-radius: var(--radius-md);
+  padding: var(--card-pad);
+}
+
+/* ===== 阶段轴 ===== */
+.stream-stages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stream-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+  transition: color var(--dur-base) var(--ease-out);
+}
+
+.stream-stage-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ui-border-strong);
+  transition:
+    background var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+.stream-stage--done {
+  color: var(--ui-text-2);
+}
+
+.stream-stage--done .stream-stage-dot {
+  background: var(--ok);
+}
+
+.stream-stage--active {
+  color: var(--ui-primary);
+  font-weight: 600;
+}
+
+.stream-stage--active .stream-stage-dot {
+  background: var(--ui-primary);
+  box-shadow: 0 0 0 3px var(--ui-primary-soft);
+  animation: stream-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ===== 正文区 ===== */
+.stream-out-body {
+  background: var(--ui-surface-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  padding: var(--card-pad);
+  font-size: var(--font-2);
+  line-height: 1.8;
+  max-height: 460px;
+  overflow: auto;
+  animation: nw-rise var(--dur-slow) var(--ease-out) both;
+}
+
+/* ===== 错误态 ===== */
+.stream-out--error {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--ui-surface);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  padding: var(--card-pad);
+}
+
+.stream-out-error-icon {
+  color: var(--danger);
+  font-size: var(--font-5);
+}
+
+.stream-out-error-body {
+  flex: 1;
+  min-width: 200px;
+}
+
+.stream-out-error-title {
+  font-weight: 600;
+  color: var(--ui-text);
+  font-size: var(--font-3);
+}
+
+.stream-out-error-desc {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  margin-top: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-stage--active .stream-stage-dot {
+    animation: none;
+  }
+
+  .stream-out-body {
+    animation: none;
+  }
+}

@@ -102,6 +102,30 @@ test('内容员工工作台只对单独派活限流，档案读取与配置接�
   });
 });
 
+test('经营工具箱真实生成入口纳入AI租户限流', async () => {
+  const guard = createAiGuard({ ratePerMinute: 1, burst: 1, maxConcurrent: 8 });
+  await withServer(app => {
+    app.use((req, _res, next) => { req.user = { tenant_id: 1 }; next(); });
+    app.use('/toolbox', guard('toolbox'), (_req, res) => res.json({ ok: true }));
+  }, async base => {
+    assert.equal((await fetch(`${base}/toolbox/runs`)).status, 200, '列表读取不应消耗AI令牌');
+    assert.equal((await fetch(`${base}/toolbox/runs`, { method: 'POST' })).status, 200);
+    assert.equal((await fetch(`${base}/toolbox/runs`, { method: 'POST' })).status, 429);
+  });
+});
+
+test('内容自动化手动执行入口纳入AI租户限流，配置接口不消耗令牌', async () => {
+  const guard = createAiGuard({ ratePerMinute: 1, burst: 1, maxConcurrent: 8 });
+  await withServer(app => {
+    app.use((req, _res, next) => { req.user = { tenant_id: 1 }; next(); });
+    app.use('/content', guard('content'), (_req, res) => res.json({ ok: true }));
+  }, async base => {
+    assert.equal((await fetch(`${base}/content/automations`, { method: 'POST' })).status, 200);
+    assert.equal((await fetch(`${base}/content/automations/42/run`, { method: 'POST' })).status, 200);
+    assert.equal((await fetch(`${base}/content/automations/42/run`, { method: 'POST' })).status, 429);
+  });
+});
+
 test('AI 限流：全局并发信号量占满时返回 429，请求结束后释放', async () => {
   const guard = createAiGuard({ ratePerMinute: 1000, burst: 1000, maxConcurrent: 1 });
   let releaseGate;
@@ -122,6 +146,67 @@ test('AI 限流：全局并发信号量占满时返回 429，请求结束后释�
     assert.equal((await hanging).status, 200);
     await new Promise(resolve => setTimeout(resolve, 50)); // 等 finish 事件释放信号量
     assert.equal((await fetch(`${base}/agents/9/chat`, { method: 'POST' })).status, 200, '释放后应恢复可用');
+  });
+});
+
+test('AI 限流：全局并发拒绝不消耗租户令牌', async () => {
+  const guard = createAiGuard({ ratePerMinute: 1, burst: 1, maxConcurrent: 1 });
+  let releaseGate;
+  const gate = new Promise(resolve => { releaseGate = resolve; });
+  await withServer(app => {
+    app.use((req, _res, next) => { req.user = { tenant_id: Number(req.headers['x-tenant'] || 1) }; next(); });
+    app.use('/agents', guard('agents'), async (req, res) => {
+      if (req.query.hang) await gate;
+      res.json({ ok: true });
+    });
+  }, async base => {
+    const hanging = fetch(`${base}/agents/9/chat?hang=1`, {
+      method: 'POST',
+      headers: { 'x-tenant': '1' },
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const rejected = await fetch(`${base}/agents/9/chat`, {
+      method: 'POST',
+      headers: { 'x-tenant': '2' },
+    });
+    assert.equal(rejected.status, 429);
+    assert.match((await rejected.json()).error, /并发/);
+    releaseGate();
+    assert.equal((await hanging).status, 200);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal((await fetch(`${base}/agents/9/chat`, {
+      method: 'POST',
+      headers: { 'x-tenant': '2' },
+    })).status, 200, '并发拒绝没有消耗租户2的唯一令牌');
+    assert.equal((await fetch(`${base}/agents/9/chat`, {
+      method: 'POST',
+      headers: { 'x-tenant': '2' },
+    })).status, 429, '真正进入处理后才消耗租户2令牌');
+  });
+});
+
+test('AI 限流：异步后台任务可把并发租约延长到真实任务终态', async () => {
+  const guard = createAiGuard({ ratePerMinute: 1000, burst: 1000, maxConcurrent: 1 });
+  let finishBackground;
+  const backgroundGate = new Promise(resolve => { finishBackground = resolve; });
+  await withServer(app => {
+    app.use((req, _res, next) => { req.user = { tenant_id: 1 }; next(); });
+    app.use('/marshals', guard('marshals'), (req, res) => {
+      const releaseAiLease = req.aiGuard.defer();
+      res.status(202).json({ queued: true });
+      setImmediate(async () => {
+        await backgroundGate;
+        releaseAiLease();
+      });
+    });
+  }, async base => {
+    const queued = await fetch(`${base}/marshals/1/tasks`, { method: 'POST' });
+    assert.equal(queued.status, 202);
+    const whileRunning = await fetch(`${base}/marshals/1/tasks`, { method: 'POST' });
+    assert.equal(whileRunning.status, 429, 'HTTP响应结束后后台任务仍运行，并发位不得提前释放');
+    finishBackground();
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal((await fetch(`${base}/marshals/1/tasks`, { method: 'POST' })).status, 202);
   });
 });
 

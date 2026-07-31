@@ -30,6 +30,9 @@ const tenant2 = Number(q.run("INSERT INTO tenants(name,status,credits) VALUES('�
 const tenantBossId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
   VALUES(?,?,?,?,?,?)`, 'security_t2_boss', hashPassword('Commercial-Test-Password-1'), '乙企业老板', 'boss', '启用', tenant2).lastInsertRowid);
 const tenantBoss = q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', tenantBossId);
+const platformSuperId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
+  VALUES(?,?,?,?,?,1)`, 'security_platform_super', hashPassword('Commercial-Test-Password-2'), '平台超管', 'platform_super', '启用').lastInsertRowid);
+const platformSuper = q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', platformSuperId);
 const createdBackups = [];
 
 function makeApp(user) {
@@ -96,6 +99,14 @@ test('充值后台由服务端限制为老板/管理员，普通员工无法读�
   await withServer(hqBoss, async base => {
     const packages = await request(base, '/recharge/packages');
     assert.ok(packages.length > 0);
+  });
+});
+
+test('平台超管只走平台控制台，不得进入企业管理后台或企业充值中心', async () => {
+  await withServer(platformSuper, async base => {
+    await request(base, '/admin/overview', 'GET', undefined, 403);
+    await request(base, '/recharge/packages', 'GET', undefined, 403);
+    await request(base, '/recharge/balance', 'GET', undefined, 403);
   });
 });
 

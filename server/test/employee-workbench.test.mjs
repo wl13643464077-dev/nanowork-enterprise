@@ -18,10 +18,12 @@ const { initSchema, migrateV2, q, runWithTenant, setConfig } = await import('../
 const { ensureBaselineCatalogs } = await import('../src/baseline.js');
 const employeeWorkbenchRoutes = (await import('../src/routes/employee-workbench.js')).default;
 const marshalRoutes = (await import('../src/routes/marshals.js')).default;
+const systemRoutes = (await import('../src/routes/system.js')).default;
 const {
   buildEmployeeExecutionProfile,
   REQUIRED_WORKBENCH_KEYS,
 } = await import('../src/employee-workbench.js');
+const { getRestaurantOutputContract } = await import('../src/engines/restaurant-output-contract.js');
 
 initSchema();
 migrateV2();
@@ -54,8 +56,27 @@ function makeApp() {
   });
   app.locals.employeeGenerate = async args => {
     employeeGenerateCalls.push(args);
+    const employeeIdx = Number(
+      args.responseSchema?.schema?.properties?.role?.properties?.employee_idx?.enum?.[0],
+    );
+    if (args.userMsg.includes('返回非法岗位JSON')) {
+      return {
+        text: '{"contract_id":"伪造"}',
+        mode: 'api',
+        model: 'test-model',
+        usage: { inputTokens: 160, outputTokens: 20 },
+      };
+    }
+    if (args.userMsg.includes('强制模板岗位底稿')) {
+      return {
+        text: args.fallback(),
+        mode: 'template',
+        model: 'template',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      };
+    }
     return {
-      text: '# 多附件数字员工测试产出\n\n已按授权材料形成待审阅结果。',
+      text: JSON.stringify(getRestaurantOutputContract(employeeIdx).validFixture),
       mode: 'api',
       model: 'test-model',
       usage: { inputTokens: 160, outputTokens: 80 },
@@ -77,6 +98,7 @@ function makeApp() {
   });
   app.use('/employee-workbench', employeeWorkbenchRoutes);
   app.use('/marshals', marshalRoutes);
+  app.use('/system', systemRoutes);
   return app;
 }
 
@@ -141,7 +163,17 @@ test('101-160 每人返回完整且不降级的九域工作台契约', async () 
       assert.equal(payload.skillLibrary.required[0].enabled, true);
       if (payload.skillLibrary.catalogStatus === 'loaded') {
         assert.ok(payload.skillLibrary.optional.length + payload.skillLibrary.learned.length > 0);
-        assert.ok(payload.skillLibrary.learned.every(skill => skill.verificationStatus || skill.origin === 'learned'));
+        assert.ok(payload.skillLibrary.learned.every(skill => (
+          skill.origin === 'learned'
+          || (
+            skill.verificationStatus === 'catalog_contract_verified'
+            && skill.legacyVerificationStatus === 'legacy_unverified'
+            && skill.verificationLevel === 'catalog_contract_verified'
+            && skill.effectValidation === 'requires_live_business_sample'
+            && /^sha256:[a-f0-9]{64}$/u.test(skill.contentFingerprint)
+            && skill.offlineAcceptanceFixture?.expectedInjection?.employeeIdx === idx
+          )
+        )));
       }
       assert.ok(payload.prompts.defaultTemplate.length > 100);
       assert.ok(payload.prompts.effectiveTemplate.length > 100);
@@ -165,6 +197,8 @@ test('101-160 每人返回完整且不降级的九域工作台契约', async () 
       assert.equal(payload.dispatch.guidance.taskExamples.includes('找出本月食材成本上涨的主要原因'), false);
       assert.equal(payload.permissions.canViewPrompt, true);
       assert.equal(payload.provenance.employeeIdx, idx);
+      assert.equal(payload.provenance.skillsVerificationLevel, 'catalog_contract_verified');
+      assert.equal(payload.provenance.skillsEffectValidation, 'requires_live_business_sample');
     }
   });
 });
@@ -545,6 +579,101 @@ test('任何待审核的餐饮员工产出都必须有审批单，auto_draft也�
     } finally {
       setConfig('risk_rules', null);
     }
+  });
+});
+
+test('岗位契约审计状态原子落库：合法API可采纳、模板不可采纳、非法JSON不落库并退款', async () => {
+  await withServer(async base => {
+    const valid = await jsonCall(base, '/employee-workbench/restaurant/103/dispatch', {
+      method: 'POST',
+      body: {
+        title: '合法岗位契约采纳验收',
+        type: '分析',
+        requirement: '只形成待审阅结构化交付。',
+      },
+    });
+    assert.equal(valid.response.status, 200);
+    let validTask;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      validTask = q.get(`SELECT status,output_id,employee_web_snapshot FROM agent_tasks
+        WHERE tenant_id=1 AND id=?`, valid.payload.taskId);
+      if (validTask?.status !== '生成中') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(validTask.status, '待审阅');
+    const validEvidence = JSON.parse(validTask.employee_web_snapshot);
+    assert.equal(validEvidence.kind, 'restaurant_employee_execution_evidence');
+    assert.equal(validEvidence.outputContract.valid, true);
+    assert.match(validEvidence.outputContract.contractId, /:103:/u);
+    assert.equal(validEvidence.outputContract.artifacts.length, 1);
+    assert.match(validEvidence.outputContract.artifacts[0].contentSha256, /^[a-f0-9]{64}$/u);
+    const adopted = await jsonCall(base, `/marshals/outputs/${validTask.output_id}/review`, {
+      method: 'POST',
+      body: { decision: 'adopt' },
+    });
+    assert.equal(adopted.response.status, 200, JSON.stringify(adopted.payload));
+    assert.equal(q.get('SELECT status FROM contents WHERE tenant_id=1 AND id=?', validTask.output_id).status, '可使用');
+    assert.equal(q.get('SELECT status FROM agent_tasks WHERE tenant_id=1 AND id=?', valid.payload.taskId).status, '已完成');
+
+    const template = await jsonCall(base, '/employee-workbench/restaurant/104/dispatch', {
+      method: 'POST',
+      body: {
+        title: '强制模板岗位底稿',
+        type: '分析',
+        requirement: '验证模板模式不能采纳。',
+      },
+    });
+    assert.equal(template.response.status, 200);
+    let templateTask;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      templateTask = q.get(`SELECT status,output_id,employee_web_snapshot FROM agent_tasks
+        WHERE tenant_id=1 AND id=?`, template.payload.taskId);
+      if (templateTask?.status !== '生成中') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(templateTask.status, '待审阅');
+    const templateEvidence = JSON.parse(templateTask.employee_web_snapshot);
+    assert.equal(templateEvidence.outputContract.valid, false);
+    assert.equal(templateEvidence.outputContract.skipped, 'template_mode');
+    const blocked = await jsonCall(base, `/marshals/outputs/${templateTask.output_id}/review`, {
+      method: 'POST',
+      body: { decision: 'adopt' },
+    });
+    assert.equal(blocked.response.status, 409);
+    assert.match(blocked.payload.error, /模板模式.*不能采纳/u);
+    assert.equal(q.get('SELECT status FROM contents WHERE tenant_id=1 AND id=?', templateTask.output_id).status, '待审核');
+    const templateApproval = q.get(`SELECT id FROM approvals
+      WHERE tenant_id=1 AND target_type='content' AND target_id=? AND status='待审核'`, templateTask.output_id);
+    const systemBlocked = await jsonCall(base, `/system/approvals/${templateApproval.id}/decide`, {
+      method: 'POST',
+      body: { pass: true },
+    });
+    assert.equal(systemBlocked.response.status, 409);
+    assert.match(systemBlocked.payload.error, /模板模式.*不能采纳/u);
+
+    const creditsBefore = Number(q.get('SELECT credits FROM tenants WHERE id=1').credits);
+    const invalid = await jsonCall(base, '/employee-workbench/restaurant/105/dispatch', {
+      method: 'POST',
+      body: {
+        title: '返回非法岗位JSON',
+        type: '分析',
+        requirement: '验证非法模型输出失败关闭。',
+      },
+    });
+    assert.equal(invalid.response.status, 200);
+    let invalidTask;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      invalidTask = q.get('SELECT status,output_id FROM agent_tasks WHERE tenant_id=1 AND id=?', invalid.payload.taskId);
+      if (invalidTask?.status !== '生成中') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(invalidTask.status, '失败');
+    assert.equal(invalidTask.output_id, null);
+    assert.equal(Number(q.get('SELECT credits FROM tenants WHERE id=1').credits), creditsBefore);
+    const released = q.get(`SELECT status,settled_credits FROM credit_holds
+      WHERE tenant_id=1 AND ref_type='agent_task' AND ref_id=? ORDER BY id DESC LIMIT 1`, invalid.payload.taskId);
+    assert.equal(released.status, 'settled');
+    assert.equal(Number(released.settled_credits || 0), 0);
   });
 });
 

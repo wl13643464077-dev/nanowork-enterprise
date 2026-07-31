@@ -3,7 +3,7 @@ import { message } from 'antd';
 // 新项目只使用自有 HttpOnly Cookie，不从 localStorage 读取或迁移其他项目会话。
 let currentUser: any = null;
 
-export const getToken = () => currentUser ? 'cookie-session' : null;
+export const getToken = () => (currentUser ? 'cookie-session' : null);
 export const setAuth = (_token: string, user: any) => {
   currentUser = user;
 };
@@ -42,7 +42,10 @@ async function request(method: string, url: string, body?: any, options: Request
   const controller = new AbortController();
   const timeoutMs = timeoutFor(url);
   let timedOut = false;
-  const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   // 手动桥接外部 signal（等效 AbortSignal.any，兼容旧运行时）
   const onExternalAbort = () => controller.abort();
   if (external) {
@@ -70,7 +73,11 @@ async function request(method: string, url: string, body?: any, options: Request
     const now = Date.now();
     if (now - lastNetErrAt > 3000) {
       lastNetErrAt = now;
-      message.error(aborted ? `请求超过${Math.round(timeoutMs / 1000)}秒，已自动停止，请缩短要求后重试` : '网络连接失败，请检查网络后重试');
+      message.error(
+        aborted
+          ? `请求超过${Math.round(timeoutMs / 1000)}秒，已自动停止，请缩短要求后重试`
+          : '网络连接失败，请检查网络后重试',
+      );
     }
     throw e;
   } finally {
@@ -98,7 +105,9 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
   let res: Response;
   try {
     res = await fetch(`/api${url}`, {
-      method: 'POST', credentials: 'same-origin', signal: controller.signal,
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),
     });
@@ -124,7 +133,9 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
   try {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buf = '', final: any = null, errText = '';
+    let buf = '',
+      final: any = null,
+      errText = '';
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -134,17 +145,30 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
-        let obj: any; try { obj = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        let obj: any;
+        try {
+          obj = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
         if (obj.error) errText = obj.error;
         else if (obj.done) final = obj;
         else onEvent(obj);
       }
       if (final || errText) break;
     }
-    if (errText) { message.error(errText); throw new Error(errText); }
-    if (!final) { message.error('流式响应中断，请重试'); throw new Error('stream interrupted'); }
+    if (errText) {
+      message.error(errText);
+      throw new Error(errText);
+    }
+    if (!final) {
+      message.error('流式响应中断，请重试');
+      throw new Error('stream interrupted');
+    }
     return final;
-  } finally { window.clearTimeout(hardCap); }
+  } finally {
+    window.clearTimeout(hardCap);
+  }
 }
 
 export const api = {
@@ -187,7 +211,9 @@ export function safeUrl(url: any): string {
   try {
     const u = new URL(s, window.location.origin);
     return u.protocol === 'http:' || u.protocol === 'https:' ? s : '#';
-  } catch { return '#'; }
+  } catch {
+    return '#';
+  }
 }
 
 export const fmtMoney = (n: number) => `¥${Number(n || 0).toLocaleString('zh-CN')}`;

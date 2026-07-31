@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { providerResponseError, sanitizeProviderError } from './provider-errors.js';
 
 // ===== 支付通道引擎（配置即用，未配置诚实降级）=====
 // 设计原则：
@@ -9,6 +10,7 @@ import crypto from 'node:crypto';
 
 const HTTP_TIMEOUT_MS = 10_000;
 const ORDER_EXPIRE_MINUTES = 30;
+const WECHAT_RESPONSE_MAX_SKEW_SECONDS = 300;
 const WECHAT_NATIVE_PATH = '/v3/pay/transactions/native';
 const WECHAT_API_BASE = 'https://api.mch.weixin.qq.com';
 const ALIPAY_DEFAULT_GATEWAY = 'https://openapi.alipay.com/gateway.do';
@@ -52,10 +54,10 @@ async function realHttpCall({ url, method = 'POST', headers = {}, body }) {
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const res = await fetch(url, { method, headers, body, signal: controller.signal });
-    return { status: res.status, text: await res.text() };
+    return { status: res.status, text: await res.text(), headers: res.headers };
   } catch (e) {
     if (e?.name === 'AbortError') throw payError('支付网关请求超时（10秒），请稍后重试');
-    throw payError(`支付网关网络请求失败：${e?.message || e}`);
+    throw payError(sanitizeProviderError(e, { service: '支付网关' }).message);
   } finally {
     clearTimeout(timer);
   }
@@ -110,6 +112,19 @@ function alipayTimestamp(date = new Date()) {
 }
 
 // ===== 微信支付 Native（APIv3）=====
+function wechatAuthorization(cfg, method, path, body = '') {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomBytes(16).toString('hex').toUpperCase();
+  const message = `${method}\n${path}\n${timestamp}\n${nonce}\n${body}\n`;
+  let signature;
+  try {
+    signature = crypto.createSign('RSA-SHA256').update(message, 'utf8').sign(cfg.privateKey, 'base64');
+  } catch {
+    throw payError('微信支付商户私钥无效，请检查 WXPAY_PRIVATE_KEY 配置', 500);
+  }
+  return `WECHATPAY2-SHA256-RSA2048 mchid="${cfg.mchid}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${cfg.serialNo}"`;
+}
+
 async function wechatCreate(cfg, order) {
   const fen = yuanToFen(order.amountYuan);
   const expireAtDate = new Date(Date.now() + ORDER_EXPIRE_MINUTES * 60_000);
@@ -123,22 +138,11 @@ async function wechatCreate(cfg, order) {
     amount: { total: fen, currency: 'CNY' },
   };
   const body = JSON.stringify(bodyObj);
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = crypto.randomBytes(16).toString('hex').toUpperCase();
-  // APIv3 请求签名：SHA256-RSA2048（method\n path\n timestamp\n nonce\n body\n）
-  const message = `POST\n${WECHAT_NATIVE_PATH}\n${timestamp}\n${nonce}\n${body}\n`;
-  let signature;
-  try {
-    signature = crypto.createSign('RSA-SHA256').update(message, 'utf8').sign(cfg.privateKey, 'base64');
-  } catch {
-    throw payError('微信支付商户私钥无效，请检查 WXPAY_PRIVATE_KEY 配置', 500);
-  }
-  const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${cfg.mchid}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${cfg.serialNo}"`;
   const res = await httpCall({
     url: `${WECHAT_API_BASE}${WECHAT_NATIVE_PATH}`,
     method: 'POST',
     headers: {
-      Authorization: authorization,
+      Authorization: wechatAuthorization(cfg, 'POST', WECHAT_NATIVE_PATH, body),
       'Content-Type': 'application/json',
       Accept: 'application/json',
       'User-Agent': 'nanowork-industry-pay/1.0',
@@ -147,20 +151,108 @@ async function wechatCreate(cfg, order) {
   });
   let data = {};
   try { data = JSON.parse(res.text); } catch { /* 保持空对象，走统一报错 */ }
-  if (res.status !== 200 || !data.code_url) {
-    throw payError(`微信支付下单失败（HTTP ${res.status}）：${data.message || data.code || '网关返回异常'}`);
+  if (res.status !== 200) {
+    throw providerResponseError(res.status || 502, data, { service: '微信支付网关' });
   }
-  return { qrUrl: data.code_url, channel: 'wechat', expireAt: expireAtDate.toISOString() };
+  // Native 下单成功应答同样属于必须验签的支付事实；未验签的 code_url 不得展示给用户。
+  verifyWechatResponse(res);
+  const qrUrl = String(data.code_url || '').trim();
+  if (!qrUrl || qrUrl.length > 2048) {
+    throw payError('微信支付下单应答缺少有效二维码，拒绝采用网关结果');
+  }
+  return { qrUrl, channel: 'wechat', expireAt: expireAtDate.toISOString() };
 }
 
 // 解析平台证书 / 平台公钥（支持 X.509 证书 PEM 或纯公钥 PEM）
-function wechatPlatformPublicKey() {
-  const raw = String(process.env.WXPAY_PLATFORM_CERT || '');
-  if (!raw.trim()) return null;
+function parseWechatPlatformPublicKey(raw, configName) {
   const pem = normalizePem(raw, 'PUBLIC KEY');
   try { return new crypto.X509Certificate(pem).publicKey; } catch { /* 不是证书，按公钥再试 */ }
   try { return crypto.createPublicKey(pem); } catch { /* 均失败 */ }
-  throw payError('WXPAY_PLATFORM_CERT 无法解析为证书或公钥，请检查配置', 500);
+  throw payError(`${configName} 无法解析为证书或公钥，请检查配置`, 500);
+}
+
+// 多证书轮换：WXPAY_PLATFORM_CERTS 为 {"平台证书序列号":"证书或公钥PEM"}。
+// 配置映射时必须按 Wechatpay-Serial 精确选择，未知序列号安全拒绝；
+// 未配置映射时继续兼容原有单证书 WXPAY_PLATFORM_CERT。
+function wechatPlatformPublicKey(serial = '') {
+  const rawMap = String(process.env.WXPAY_PLATFORM_CERTS || '').trim();
+  const normalizedSerial = String(serial || '').trim().toUpperCase();
+  if (rawMap) {
+    let parsed;
+    try { parsed = JSON.parse(rawMap); } catch {
+      throw payError('WXPAY_PLATFORM_CERTS 必须是“证书序列号到PEM”的JSON对象', 500);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw payError('WXPAY_PLATFORM_CERTS 必须是“证书序列号到PEM”的JSON对象', 500);
+    }
+    if (!normalizedSerial) throw payError('微信支付应答缺少平台证书序列号，无法选择验签证书');
+    const matched = Object.entries(parsed).find(
+      ([key]) => String(key).trim().toUpperCase() === normalizedSerial,
+    );
+    if (!matched || typeof matched[1] !== 'string' || !matched[1].trim()) {
+      throw payError(`微信支付平台证书序列号 ${normalizedSerial} 未配置，拒绝采用网关结果`);
+    }
+    return parseWechatPlatformPublicKey(
+      matched[1],
+      `WXPAY_PLATFORM_CERTS[${normalizedSerial}]`,
+    );
+  }
+  const raw = String(process.env.WXPAY_PLATFORM_CERT || '');
+  if (!raw.trim()) return null;
+  return parseWechatPlatformPublicKey(raw, 'WXPAY_PLATFORM_CERT');
+}
+
+function responseHeader(headers, name) {
+  if (typeof headers?.get === 'function') return String(headers.get(name) || '').trim();
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (String(key).toLowerCase() === wanted) return String(value || '').trim();
+  }
+  return '';
+}
+
+function assertWechatTimestampFresh(timestamp, context, status = 502) {
+  const value = String(timestamp || '').trim();
+  const seconds = Number(value);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  // 微信签名时间戳单位为 Unix 秒。拒绝毫秒值、非十进制值及前后超窗响应，
+  // 避免攻击者重放一份历史上签名合法的下单/查单/关单应答。
+  if (
+    !/^\d{10,11}$/.test(value)
+    || !Number.isSafeInteger(seconds)
+    || Math.abs(nowSeconds - seconds) > WECHAT_RESPONSE_MAX_SKEW_SECONDS
+  ) {
+    throw payError(`微信${context}时间戳超出5分钟容忍窗口，拒绝（防重放）`, status);
+  }
+}
+
+// 微信 APIv3 官方要求商户对成功应答验签。签名串为 timestamp\nnonce\nbody\n，
+// body 必须使用 HTTP 原始文本（包括 204 关单应答的空字符串），不能 JSON 重序列化。
+function verifyWechatResponse(res) {
+  const timestamp = responseHeader(res?.headers, 'wechatpay-timestamp');
+  const nonce = responseHeader(res?.headers, 'wechatpay-nonce');
+  const signature = responseHeader(res?.headers, 'wechatpay-signature');
+  const serial = responseHeader(res?.headers, 'wechatpay-serial');
+  const signatureType = responseHeader(res?.headers, 'wechatpay-signature-type');
+  if (!timestamp || !nonce || !signature || !serial) {
+    throw payError('微信支付应答缺少验签头，拒绝采用网关结果');
+  }
+  if (signatureType && signatureType !== 'WECHATPAY2-SHA256-RSA2048') {
+    throw payError('微信支付应答签名算法不支持，拒绝采用网关结果');
+  }
+  assertWechatTimestampFresh(timestamp, '支付应答');
+  const platformKey = wechatPlatformPublicKey(serial);
+  if (!platformKey) {
+    throw payError('未配置 WXPAY_PLATFORM_CERT，无法验证微信支付应答');
+  }
+  const body = String(res?.text ?? '');
+  let ok = false;
+  try {
+    ok = crypto.createVerify('RSA-SHA256')
+      .update(`${timestamp}\n${nonce}\n${body}\n`, 'utf8')
+      .verify(platformKey, signature, 'base64');
+  } catch { ok = false; }
+  if (!ok) throw payError('微信支付应答验签失败，拒绝采用网关结果');
 }
 
 // APIv3 回调报文解密：AES-256-GCM（密文末 16 字节为认证标签）
@@ -190,12 +282,11 @@ export function verifyWechatNotify(headers, rawBody) {
   const timestamp = h('wechatpay-timestamp');
   const nonce = h('wechatpay-nonce');
   const signature = h('wechatpay-signature');
+  const serial = h('wechatpay-serial');
   const bodyStr = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody ?? '');
-  if (!timestamp || !nonce || !signature || !bodyStr) throw payError('微信回调缺少验签头或报文体', 400);
-  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
-    throw payError('微信回调时间戳超出5分钟容忍窗口，拒绝（防重放）', 401);
-  }
-  const platformKey = wechatPlatformPublicKey();
+  if (!timestamp || !nonce || !signature || !serial || !bodyStr) throw payError('微信回调缺少验签头或报文体', 400);
+  assertWechatTimestampFresh(timestamp, '回调', 401);
+  const platformKey = wechatPlatformPublicKey(serial);
   if (!platformKey) {
     // 平台证书签名校验做成可配置：未提供时安全默认拒绝，绝不“跳过验签直接入账”。
     throw payError('未配置 WXPAY_PLATFORM_CERT（微信平台证书/平台公钥），出于安全默认拒绝回调；请在商户平台下载后配置', 401);
@@ -221,6 +312,123 @@ function alipaySignContent(params) {
     .sort()
     .map((k) => `${k}=${params[k]}`)
     .join('&');
+}
+
+// 支付宝同步应答只对 xxx_response 的原始 JSON 值验签（包含首尾花括号）。
+// 为避免 JSON.parse 后重排字段/改变斜杠转义，这里从原始 HTTP 文本精确截取该对象。
+function alipayTopLevelJsonMembers(rawBody) {
+  const raw = String(rawBody ?? '');
+  const members = [];
+  let objectDepth = 0;
+  let arrayDepth = 0;
+  let inString = false;
+  let escaped = false;
+  let stringStart = -1;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+        if (objectDepth === 1 && arrayDepth === 0) {
+          let colonAt = i + 1;
+          while (/\s/.test(raw[colonAt] || '')) colonAt += 1;
+          if (raw[colonAt] === ':') {
+            members.push({
+              key: JSON.parse(raw.slice(stringStart, i + 1)),
+              colonAt,
+            });
+          }
+        }
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      stringStart = i;
+    } else if (ch === '{') {
+      objectDepth += 1;
+    } else if (ch === '}') {
+      objectDepth -= 1;
+    } else if (ch === '[') {
+      arrayDepth += 1;
+    } else if (ch === ']') {
+      arrayDepth -= 1;
+    }
+  }
+  return members;
+}
+
+function extractAlipayResponseContent(rawBody, responseKey) {
+  const raw = String(rawBody ?? '');
+  const matches = alipayTopLevelJsonMembers(raw)
+    .filter(({ key }) => key === responseKey);
+  if (matches.length === 0) throw payError('支付宝应答缺少业务响应节点');
+  if (matches.length > 1) {
+    throw payError('支付宝应答包含重复业务响应节点，拒绝采用网关结果');
+  }
+  const colonAt = matches[0].colonAt;
+  let start = colonAt + 1;
+  while (/\s/.test(raw[start] || '')) start += 1;
+  if (raw[start] !== '{') throw payError('支付宝业务应答不是合法 JSON 对象');
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return raw.slice(start, i + 1);
+    }
+  }
+  throw payError('支付宝业务应答 JSON 未闭合');
+}
+
+function verifyAlipayResponse(cfg, rawBody, responseKey) {
+  const raw = String(rawBody ?? '');
+  let envelope;
+  try { envelope = JSON.parse(raw); } catch {
+    throw payError('支付宝应答不是合法 JSON');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+    throw payError('支付宝应答格式异常');
+  }
+  const signMembers = alipayTopLevelJsonMembers(raw)
+    .filter(({ key }) => key === 'sign');
+  if (signMembers.length > 1) {
+    throw payError('支付宝应答包含重复签名节点，拒绝采用网关结果');
+  }
+  const sign = String(envelope?.sign || '');
+  const signedContent = extractAlipayResponseContent(raw, responseKey);
+  if (!sign) throw payError('支付宝应答缺少签名，拒绝采用网关结果');
+  let ok = false;
+  try {
+    ok = crypto.createVerify('RSA-SHA256')
+      .update(signedContent, 'utf8')
+      .verify(cfg.publicKey, sign, 'base64');
+  } catch { ok = false; }
+  if (!ok) throw payError('支付宝应答验签失败，拒绝采用网关结果');
+  // 只消费刚刚通过验签的原始业务节点，绝不再从 JSON.parse(envelope) 读取
+  // 可能被重复顶层键覆盖的另一个对象。
+  let data;
+  try { data = JSON.parse(signedContent); } catch {
+    throw payError('支付宝业务应答不是合法 JSON 对象');
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw payError('支付宝业务应答格式异常');
+  }
+  return data;
 }
 
 async function alipayCreate(cfg, order) {
@@ -254,12 +462,24 @@ async function alipayCreate(cfg, order) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
     body: new URLSearchParams(params).toString(),
   });
-  let data = {};
-  try { data = JSON.parse(res.text)?.alipay_trade_precreate_response || {}; } catch { /* 走统一报错 */ }
-  if (res.status !== 200 || data.code !== '10000' || !data.qr_code) {
-    throw payError(`支付宝下单失败（HTTP ${res.status}）：${data.sub_msg || data.msg || '网关返回异常'}`);
+  if (res.status !== 200) {
+    let data = {};
+    try { data = JSON.parse(res.text)?.alipay_trade_precreate_response || {}; } catch { /* 走统一报错 */ }
+    throw providerResponseError(res.status || 502, data, { service: '支付宝网关' });
   }
-  return { qrUrl: data.qr_code, channel: 'alipay', expireAt: expireAtDate.toISOString() };
+  // 当面付预下单成功应答必须基于原始响应节点验签，不能采用未签名/坏签名二维码。
+  const data = verifyAlipayResponse(cfg, res.text, 'alipay_trade_precreate_response');
+  const qrUrl = String(data.qr_code || '').trim();
+  if (data.code !== '10000') {
+    throw providerResponseError(502, data, { service: '支付宝网关' });
+  }
+  if (String(data.out_trade_no || '') !== String(order.orderNo)) {
+    throw payError('支付宝下单应答订单号不匹配，拒绝采用网关结果');
+  }
+  if (!qrUrl || qrUrl.length > 2048) {
+    throw providerResponseError(502, data, { service: '支付宝网关' });
+  }
+  return { qrUrl, channel: 'alipay', expireAt: expireAtDate.toISOString() };
 }
 
 // 支付宝异步通知验签（RSA2 / RSA-SHA256，用支付宝公钥）。返回通过验签的参数对象。
@@ -285,30 +505,32 @@ export function verifyAlipayNotify(formParams) {
 // 返回统一结构 { paid, tradeNo, paidFen, closed }；查询失败抛错（调用方按“回调仍是主路径”静默容错）。
 async function wechatQuery(cfg, orderNo) {
   const path = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNo)}?mchid=${encodeURIComponent(cfg.mchid)}`;
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = crypto.randomBytes(16).toString('hex').toUpperCase();
-  const message = `GET\n${path}\n${timestamp}\n${nonce}\n\n`;
-  let signature;
-  try {
-    signature = crypto.createSign('RSA-SHA256').update(message, 'utf8').sign(cfg.privateKey, 'base64');
-  } catch {
-    throw payError('微信支付商户私钥无效，请检查 WXPAY_PRIVATE_KEY 配置', 500);
-  }
-  const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${cfg.mchid}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${cfg.serialNo}"`;
   const res = await httpCall({
     url: `${WECHAT_API_BASE}${path}`,
     method: 'GET',
-    headers: { Authorization: authorization, Accept: 'application/json', 'User-Agent': 'nanowork-industry-pay/1.0' },
+    headers: { Authorization: wechatAuthorization(cfg, 'GET', path), Accept: 'application/json', 'User-Agent': 'nanowork-industry-pay/1.0' },
   });
   let data = {};
   try { data = JSON.parse(res.text); } catch { /* 走统一报错 */ }
-  if (res.status !== 200) throw payError(`微信订单查询失败（HTTP ${res.status}）：${data.message || data.code || '网关返回异常'}`);
+  if (res.status !== 200) throw providerResponseError(res.status || 502, data, { service: '微信支付网关' });
+  verifyWechatResponse(res);
+  if (String(data.out_trade_no || '') !== orderNo) {
+    throw payError('微信支付查询应答订单号不匹配，拒绝采用网关结果');
+  }
+  if (String(data.mchid || '') !== cfg.mchid || String(data.appid || '') !== cfg.appid) {
+    throw payError('微信支付查询应答商户身份不匹配，拒绝采用网关结果');
+  }
+  if (data?.amount?.currency && String(data.amount.currency) !== 'CNY') {
+    throw payError('微信支付查询应答币种不匹配，拒绝采用网关结果');
+  }
   const state = String(data.trade_state || '');
   return {
     paid: state === 'SUCCESS',
     closed: state === 'CLOSED' || state === 'REVOKED' || state === 'PAYERROR',
     tradeNo: String(data.transaction_id || ''),
-    paidFen: Number(data?.amount?.payer_total ?? data?.amount?.total ?? 0),
+    // 订单入账应核对商户订单总额 total；payer_total 是优惠后的付款人实付，
+    // 可能小于 total，不能拿它误判成订单少付。
+    paidFen: Number(data?.amount?.total ?? 0),
   };
 }
 
@@ -334,11 +556,13 @@ async function alipayQuery(cfg, orderNo) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
     body: new URLSearchParams(params).toString(),
   });
-  let data = {};
-  try { data = JSON.parse(res.text)?.alipay_trade_query_response || {}; } catch { /* 走统一报错 */ }
-  if (res.status !== 200) throw payError(`支付宝订单查询失败（HTTP ${res.status}）`);
+  if (res.status !== 200) throw providerResponseError(res.status || 502, {}, { service: '支付宝网关' });
+  const data = verifyAlipayResponse(cfg, res.text, 'alipay_trade_query_response');
   if (data.code === '40004') return { paid: false, closed: false, tradeNo: '', paidFen: 0 }; // 交易不存在=未支付
-  if (data.code !== '10000') throw payError(`支付宝订单查询失败：${data.sub_msg || data.msg || '网关返回异常'}`);
+  if (data.code !== '10000') throw providerResponseError(502, data, { service: '支付宝网关' });
+  if (String(data.out_trade_no || '') !== orderNo) {
+    throw payError('支付宝查询应答订单号不匹配，拒绝采用网关结果');
+  }
   const status = String(data.trade_status || '');
   return {
     paid: status === 'TRADE_SUCCESS' || status === 'TRADE_FINISHED',
@@ -346,6 +570,60 @@ async function alipayQuery(cfg, orderNo) {
     tradeNo: String(data.trade_no || ''),
     paidFen: data.total_amount ? yuanToFen(data.total_amount) : 0,
   };
+}
+
+async function wechatClose(cfg, orderNo) {
+  const path = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNo)}/close`;
+  const body = JSON.stringify({ mchid: cfg.mchid });
+  const res = await httpCall({
+    url: `${WECHAT_API_BASE}${path}`,
+    method: 'POST',
+    headers: {
+      Authorization: wechatAuthorization(cfg, 'POST', path, body),
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'nanowork-industry-pay/1.0',
+    },
+    body,
+  });
+  if (res.status !== 204) {
+    let data = {};
+    try { data = JSON.parse(res.text); } catch { /* 统一安全报错 */ }
+    throw providerResponseError(res.status || 502, data, { service: '微信支付网关' });
+  }
+  verifyWechatResponse(res);
+  return { closed: true };
+}
+
+async function alipayClose(cfg, orderNo) {
+  const params = {
+    app_id: cfg.appId,
+    method: 'alipay.trade.close',
+    format: 'JSON',
+    charset: 'utf-8',
+    sign_type: 'RSA2',
+    timestamp: alipayTimestamp(),
+    version: '1.0',
+    biz_content: JSON.stringify({ out_trade_no: orderNo }),
+  };
+  try {
+    params.sign = crypto.createSign('RSA-SHA256').update(alipaySignContent(params), 'utf8').sign(cfg.privateKey, 'base64');
+  } catch {
+    throw payError('支付宝应用私钥无效，请检查 ALIPAY_PRIVATE_KEY 配置', 500);
+  }
+  const res = await httpCall({
+    url: cfg.gateway,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+    body: new URLSearchParams(params).toString(),
+  });
+  if (res.status !== 200) throw providerResponseError(res.status || 502, {}, { service: '支付宝网关' });
+  const data = verifyAlipayResponse(cfg, res.text, 'alipay_trade_close_response');
+  if (data.code !== '10000') throw providerResponseError(502, data, { service: '支付宝网关' });
+  if (data.out_trade_no && String(data.out_trade_no) !== orderNo) {
+    throw payError('支付宝关单应答订单号不匹配，拒绝采用网关结果');
+  }
+  return { closed: true, tradeNo: String(data.trade_no || '') };
 }
 
 export async function queryPayment(channel, orderNo) {
@@ -359,6 +637,23 @@ export async function queryPayment(channel, orderNo) {
     const cfg = alipayConfig();
     if (!cfg) throw payError('支付宝支付未配置', 501);
     return alipayQuery(cfg, orderNo);
+  }
+  throw payError('不支持的支付通道', 400);
+}
+
+// 线上订单取消必须先调用对应渠道的关单/关闭交易接口。只有验签通过的成功应答
+// 才返回 closed=true；调用方据此再做本地状态迁移，防止“本地取消、渠道仍可支付”。
+export async function closePayment(channel, orderNo) {
+  if (!orderNo) throw payError('缺少订单号', 400);
+  if (channel === 'wechat') {
+    const cfg = wechatConfig();
+    if (!cfg) throw payError('微信支付未配置', 501);
+    return wechatClose(cfg, orderNo);
+  }
+  if (channel === 'alipay') {
+    const cfg = alipayConfig();
+    if (!cfg) throw payError('支付宝支付未配置', 501);
+    return alipayClose(cfg, orderNo);
   }
   throw payError('不支持的支付通道', 400);
 }

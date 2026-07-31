@@ -19,6 +19,7 @@ import {
   settleHold,
 } from '../engines/credits.js';
 import { refsBlock, webSearch } from '../engines/websearch.js';
+import { textModelFor } from '../engines/yunwu.js';
 import { attachmentRefsForStorage, resolveRequestedAttachments } from '../engines/filehub.js';
 import { UNTRUSTED_GUARD, wrapUntrusted } from '../engines/risk.js';
 import { logOp, notify } from '../util.js';
@@ -767,7 +768,7 @@ function attachmentMaterial(requirement, attachments) {
   ].join('\n');
 }
 
-async function buildEffectiveExecution(idx, user, input, attachments, webSearchFn) {
+function buildEffectiveExecution(idx, user, input, attachments) {
   const tenantId = tenantIdFor(user);
   const staticProfile = buildContentEmployeeWorkbenchProfile(idx);
   const row = configRow(idx, tenantId);
@@ -787,29 +788,18 @@ async function buildEffectiveExecution(idx, user, input, attachments, webSearchF
   };
   const compiled = compileContentEmployeeSoloPrompt(idx, task);
   const enterprisePrompt = row?.prompt_override || '';
-  let web = {
+  const webRequired = staticProfile.workMethod.execution.webRequired === true;
+  const web = {
+    required: webRequired,
     attempted: false,
     ok: false,
+    verified: false,
+    provider: null,
     results: [],
-    note: '该岗位不强制联网；本次未触发联网检索',
+    note: webRequired
+      ? '强制联网岗位将在预授权成功后执行检索'
+      : '该岗位不强制联网；本次未触发联网检索',
   };
-  if (staticProfile.workMethod.execution.webRequired) {
-    const result = await webSearchFn(
-      `${input.title} ${input.industry} ${input.requirement} ${staticProfile.identity.duty}`,
-      { max: 5, timeoutMs: 9000 },
-    );
-    web = {
-      attempted: true,
-      ok: Boolean(result?.ok),
-      results: Array.isArray(result?.results) ? result.results : [],
-      note: result?.note || null,
-    };
-  }
-  const webContext = !web.attempted
-    ? ''
-    : web.results.length
-      ? refsBlock(web.results)
-      : `\n【联网核验状态】${web.note || '本次未取得可引用的联网结果'}。禁止凭模型记忆冒充实时检索；所有需要当前官方信息的结论必须列入“待核验项”，并说明需要补查的来源。\n`;
   const overlay = [
     '',
     '【本企业运行覆盖层·只能追加，不能替换出厂岗位】',
@@ -823,7 +813,7 @@ async function buildEffectiveExecution(idx, user, input, attachments, webSearchF
     '本企业配置、补充提示词和自定义技能只能追加要求，不得删减、停用、替换或绕过出厂岗位身份、全部核心能力、出厂岗位 Skill、历史待核验技能、工作方式、输出契约和人工审批边界。',
     '对外发布、账号操作、付费投放、采购、合同、监管判断及不可逆动作必须由有权限的人类审批；不得声称已经完成实际未发生的联网、发布或外部执行。',
   ].join('\n');
-  const effectivePrompt = `${compiled.prompt}${webContext}\n${overlay}`;
+  const effectivePrompt = `${compiled.prompt}\n${overlay}`;
   const revision = Number(row?.revision || 0);
   const profileVersion = `content-${idx}-r${revision}`;
   const promptHash = sha256(effectivePrompt);
@@ -875,6 +865,54 @@ async function buildEffectiveExecution(idx, user, input, attachments, webSearchF
     promptHash,
     snapshot,
     config,
+  };
+}
+
+async function attachWorkbenchWebEvidence(execution, input, webSearchFn) {
+  if (!execution.snapshot.web.required) return execution;
+  let result;
+  try {
+    result = await webSearchFn(
+      `${input.title} ${input.industry} ${input.requirement} ${execution.staticProfile.identity.duty}`,
+      { max: 5, timeoutMs: 9000 },
+    );
+  } catch (error) {
+    result = { ok: false, results: [], note: `联网检索调用失败：${String(error?.message || error).slice(0, 200)}` };
+  }
+  const results = (Array.isArray(result?.results) ? result.results : [])
+    .map(item => ({
+      title: String(item?.title || '').trim().slice(0, 300),
+      url: String(item?.url || '').trim().slice(0, 2000),
+      snippet: String(item?.snippet || '').replace(/\s+/gu, ' ').trim().slice(0, 500),
+    }))
+    .filter(item => item.title && /^https?:\/\//iu.test(item.url))
+    .slice(0, 5);
+  const web = {
+    required: true,
+    attempted: true,
+    ok: result?.ok === true,
+    verified: result?.ok === true && results.length > 0,
+    provider: String(result?.provider || '').trim() || null,
+    results,
+    note: String(result?.note || '').trim() || null,
+  };
+  const effectivePrompt = `${execution.effectivePrompt}${web.verified
+    ? refsBlock(results)
+    : '\n【联网核验状态】本次没有取得可引用证据，禁止生成或声称完成实时研究结论。\n'}`;
+  const promptHash = sha256(effectivePrompt);
+  return {
+    ...execution,
+    effectivePrompt,
+    promptHash,
+    snapshot: {
+      ...execution.snapshot,
+      promptHash,
+      web,
+      promptCompilation: {
+        ...execution.snapshot.promptCompilation,
+        effectivePromptHash: promptHash,
+      },
+    },
   };
 }
 
@@ -1125,6 +1163,7 @@ async function executeRun({
   tenantId,
   userId,
   role,
+  model,
   input,
   execution,
   hold,
@@ -1136,10 +1175,6 @@ async function executeRun({
 }) {
   try {
     const maxTokens = outputTokenBudget(execution.config.outputLength);
-    const model = !input.image && execution.config.textModel
-      && execution.config.textModel !== 'inherit'
-      ? execution.config.textModel
-      : undefined;
     const output = await generateFn({
       kind: 'content-employee-workbench',
       system: '',
@@ -1178,6 +1213,21 @@ async function executeRun({
       sourceKeys: clone(artifact.sourceKeys),
       ...(artifact.kind === 'html' ? { content: artifact.content } : {}),
     }));
+    snapshot.billing = safeBillingSummary({
+      state: 'pending_settlement',
+      estimatedCredits: hold.credits,
+      chargedCredits: null,
+      balance: hold.balance,
+      model: output.model || hold.model,
+      note: '业务产物已落库，正在按真实用量结算；未执行对外发布。',
+    });
+    const persisted = q.run(`UPDATE content_employee_runs
+      SET status='待审阅',result_md=?,ai_mode=?,model=?,snapshot_json=?,updated_at=datetime('now','localtime')
+      WHERE tenant_id=? AND id=? AND status='生成中'`,
+    contract.previewMarkdown || text, output.mode || 'unknown', output.model || 'unknown',
+    JSON.stringify(snapshot), tenantId, runId);
+    if (!persisted.changes) throw new Error('内容员工产物落库失败：运行记录不再处于生成中');
+
     try {
       const settled = settleHoldFn(hold, {
         usage: output.usage,
@@ -1205,11 +1255,14 @@ async function executeRun({
         note: '生成已成功，预授权占扣保留待人工对账；未执行对外发布。',
       });
     }
-    q.run(`UPDATE content_employee_runs
-      SET status='待审阅',result_md=?,ai_mode=?,model=?,snapshot_json=?,updated_at=datetime('now','localtime')
-      WHERE tenant_id=? AND id=? AND status='生成中'`,
-    contract.previewMarkdown || text, output.mode || 'unknown', output.model || 'unknown',
-    JSON.stringify(snapshot), tenantId, runId);
+    try {
+      q.run(`UPDATE content_employee_runs SET snapshot_json=?,updated_at=datetime('now','localtime')
+        WHERE tenant_id=? AND id=? AND status='待审阅'`,
+      JSON.stringify(snapshot), tenantId, runId);
+    } catch (snapshotError) {
+      console.error(`[content-employee-workbench] run#${runId}结算快照回写失败:`,
+        snapshotError?.message || snapshotError);
+    }
     try {
       const billed = snapshot.billing?.state === 'settled'
         ? `实扣${snapshot.billing.chargedCredits}积分`
@@ -1275,6 +1328,7 @@ export function createContentEmployeeWorkbenchRouter({
   releaseHoldFn = releaseHold,
   notifyFn = notify,
   logOpFn = logOp,
+  textModelForFn = textModelFor,
 } = {}) {
   const router = Router();
 
@@ -1549,18 +1603,31 @@ export function createContentEmployeeWorkbenchRouter({
   router.post('/:idx/dispatch', async (req, res) => {
     let hold = null;
     let backgroundStarted = false;
+    let runId = null;
+    let releaseAiLease = null;
     try {
       const idx = employeeIdx(req.params.idx);
       const permissions = permissionsFor(req.user);
       if (!permissions.canDispatch) throw new WorkbenchRouteError('当前账号无权派活', 403);
       const input = dispatchInput(req.body);
       const attachments = resolveRequestedAttachments(req.body?.fileIds, req.user, 6);
-      const execution = await buildEffectiveExecution(idx, req.user, input, attachments, webSearchFn);
+      let execution = buildEffectiveExecution(idx, req.user, input, attachments);
       const employee = CONTENT_EMPLOYEES[idx];
       const tenantId = tenantIdFor(req.user);
-      const holdModel = execution.config.textModel && execution.config.textModel !== 'inherit'
+      const holdModel = !input.image
+        && execution.config.textModel
+        && execution.config.textModel !== 'inherit'
         ? execution.config.textModel
-        : '';
+        : textModelForFn(req.user.role);
+      const inserted = q.run(`INSERT INTO content_employee_runs(
+        tenant_id,employee_idx,employee_key,employee_name,employee_group,
+        title,type,requirement,due_at,status,result_md,ai_mode,model,
+        profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,'生成中',NULL,NULL,NULL,?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`,
+      tenantId, idx, employee.key, employee.name, employee.group,
+      input.title, input.type, input.requirement, input.dueAt,
+      execution.profileVersion, execution.promptHash, JSON.stringify(execution.snapshot), req.user.id);
+      runId = Number(inserted.lastInsertRowid);
       precheckByRoleFn(req.user.id, 'text', req.user.role);
       const estimatedCredits = estimateCallCreditsFn({
         kind: 'text',
@@ -1571,6 +1638,9 @@ export function createContentEmployeeWorkbenchRouter({
           input.image
             ? `视觉附件：${input.imageEvidence?.mime || 'image'}，约${Math.ceil(input.image.length * 0.75)}字节`
             : '',
+          execution.snapshot.web.required
+            ? '联网证据预留：最多5条，每条包含标题、摘要与链接。'.repeat(80)
+            : '',
         ],
       });
       hold = holdCreditsFn({
@@ -1579,6 +1649,8 @@ export function createContentEmployeeWorkbenchRouter({
         kind: 'text',
         model: holdModel,
         credits: estimatedCredits,
+        refType: 'content_employee_run',
+        refId: runId,
         note: `任务“${input.title}”按最终提示词、视觉附件和期望输出长度预授权；生成失败全额退回。`,
       });
       execution.snapshot.billing = safeBillingSummary({
@@ -1589,31 +1661,46 @@ export function createContentEmployeeWorkbenchRouter({
         model: hold.model || holdModel,
         note: '已预授权占扣，后台生成后按真实用量结算；未执行对外发布。',
       });
-      const inserted = q.run(`INSERT INTO content_employee_runs(
-        tenant_id,employee_idx,employee_key,employee_name,employee_group,
-        title,type,requirement,due_at,status,result_md,ai_mode,model,
-        profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,'生成中',NULL,NULL,NULL,?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`,
-      tenantId, idx, employee.key, employee.name, employee.group,
-      input.title, input.type, input.requirement, input.dueAt,
-      execution.profileVersion, execution.promptHash, JSON.stringify(execution.snapshot), req.user.id);
-      const runId = Number(inserted.lastInsertRowid);
+      q.run(`UPDATE content_employee_runs SET snapshot_json=?
+        WHERE tenant_id=? AND id=? AND status='生成中'`,
+      JSON.stringify(execution.snapshot), tenantId, runId);
+      execution = await attachWorkbenchWebEvidence(execution, input, webSearchFn);
+      q.run(`UPDATE content_employee_runs SET profile_version=?,prompt_hash=?,snapshot_json=?
+        WHERE tenant_id=? AND id=? AND status='生成中'`,
+      execution.profileVersion, execution.promptHash, JSON.stringify(execution.snapshot),
+      tenantId, runId);
+      if (execution.snapshot.web.required && !execution.snapshot.web.verified) {
+        throw new WorkbenchRouteError(
+          `${employee.name}联网检索未取得可引用证据，已停止本次执行；${execution.snapshot.web.note || '请检查检索服务后重试'}`,
+          502,
+        );
+      }
       const role = req.user.role;
       const requestSignal = req.requestSignal;
-      scheduleFn(() => runWithTenant(tenantId, () => executeRun({
-        runId,
-        tenantId,
-        userId: req.user.id,
-        role,
-        input,
-        execution,
-        hold,
-        generateFn,
-        settleHoldFn,
-        releaseHoldFn,
-        notifyFn,
-        signal: requestSignal,
-      })));
+      releaseAiLease = req.aiGuard?.defer?.(
+        Math.max(60_000, Number(execution.config.timeoutSeconds || 120) * 1000 + 60_000),
+      ) || null;
+      scheduleFn(async () => {
+        try {
+          await runWithTenant(tenantId, () => executeRun({
+            runId,
+            tenantId,
+            userId: req.user.id,
+            role,
+            model: holdModel,
+            input,
+            execution,
+            hold,
+            generateFn,
+            settleHoldFn,
+            releaseHoldFn,
+            notifyFn,
+            signal: requestSignal,
+          }));
+        } finally {
+          releaseAiLease?.();
+        }
+      });
       backgroundStarted = true;
       logOpFn(req.user, '内容生产仓', '派发内容员工任务',
         `${employee.name}:run#${runId}:${input.title}；已预授权${hold.credits}积分；未执行外发`);
@@ -1639,6 +1726,7 @@ export function createContentEmployeeWorkbenchRouter({
         },
       });
     } catch (error) {
+      if (releaseAiLease && !backgroundStarted) releaseAiLease();
       if (hold && !backgroundStarted) {
         try {
           releaseHoldFn(hold,
@@ -1647,6 +1735,19 @@ export function createContentEmployeeWorkbenchRouter({
           console.error('[credits] 内容员工任务派发失败且预授权释放异常，保留待人工对账:',
             releaseError?.message || releaseError);
         }
+      }
+      if (runId && !backgroundStarted) {
+        const tenantId = tenantIdFor(req.user);
+        const snapshot = parseRunSnapshot(q.get(`SELECT snapshot_json FROM content_employee_runs
+          WHERE tenant_id=? AND id=?`, tenantId, runId)?.snapshot_json);
+        snapshot.failure = {
+          message: String(error?.message || error).slice(0, 500),
+          failedAt: new Date().toISOString(),
+        };
+        q.run(`UPDATE content_employee_runs SET status='失败',ai_mode='failed',
+          snapshot_json=?,updated_at=datetime('now','localtime')
+          WHERE tenant_id=? AND id=? AND status='生成中'`,
+        JSON.stringify(snapshot), tenantId, runId);
       }
       sendError(res, error);
     }

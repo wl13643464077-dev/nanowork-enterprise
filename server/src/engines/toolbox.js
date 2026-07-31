@@ -495,6 +495,23 @@ const TEMPLATE_BY_KEY = Object.freeze({
   vars: varsTemplate,
 });
 
+function toolboxEmployeeSnapshot(employeeExecution) {
+  if (!employeeExecution?.workbench) return null;
+  const { workbench } = employeeExecution;
+  return {
+    identity: workbench.identity,
+    capabilities: workbench.capabilities,
+    workMethod: workbench.workMethod,
+    skills: workbench.skillLibrary.enabled,
+    prompts: workbench.prompts,
+    workConfig: workbench.workConfig,
+    jobProfile: workbench.jobProfile,
+    profileVersion: workbench.provenance.profileVersion,
+    promptHash: employeeExecution.promptHash,
+    systemContext: employeeExecution.systemContext,
+  };
+}
+
 function assumptionsFor(toolKey, inputs) {
   const assumptions = [
     '本次使用纳米Work内置安全模板，未调用外部模型，也未联网检索。',
@@ -517,12 +534,27 @@ function evidenceFor(toolKey) {
   return evidence;
 }
 
-// AI 生成通道：配置模型时由对应数字员工真实生成，失败或未配置时自动回退安全模板。
-// 边界与模板一致：不编造事实、不联网、缺失信息标待补充；当前不消耗积分。
-export async function generateToolboxRun(definition, inputs, now = new Date()) {
+// AI 生成通道：由路由注入完整员工执行档案；积分占扣与结算在路由层完成。
+// 失败或未配置时回退安全模板，provenance.completionState='draft'，不能被计作真实完成。
+export async function generateToolboxRun(definition, inputs, options = {}) {
+  const now = options.now instanceof Date ? options.now : new Date();
+  const employeeExecution = options.employeeExecution || null;
+  const employeeSnapshot = toolboxEmployeeSnapshot(employeeExecution);
   const template = generateToolboxDraft(definition, inputs, now);
-  if (!aiAvailable()) return template;
+  const draft = {
+    ...template,
+    provenance: {
+      ...template.provenance,
+      completionState: 'draft',
+      employeeSnapshot,
+    },
+  };
+  if (!aiAvailable()) return draft;
+  const config = employeeExecution?.workbench?.workConfig || {};
   const system = [
+    employeeExecution?.systemContext || '',
+    '',
+    '【本次经营工具任务】',
     `你是纳米Work行业版的餐饮数字员工「${definition.employeeName}」，正在执行经营工具「${definition.title}」。`,
     '请输出结构清晰、动作可执行的中文 Markdown 交付草案。',
     '硬性边界：',
@@ -537,9 +569,13 @@ export async function generateToolboxRun(definition, inputs, now = new Date()) {
   ].join('\n\n');
   const r = await generate({
     kind: `toolbox:${definition.key}`, system, userMsg,
-    fallback: () => template.resultMd, maxTokens: 2500, role: 'sales',
+    fallback: () => template.resultMd,
+    maxTokens: config.outputLength === 'full' ? 5000 : 2500,
+    role: options.role || 'sales',
+    model: config.textModel || undefined,
+    timeoutMs: Number(config.timeoutSeconds) > 0 ? Number(config.timeoutSeconds) * 1000 : undefined,
   });
-  if (r.mode !== 'api') return template;
+  if (r.mode !== 'api') return draft;
   return {
     ...template,
     resultMd: r.text,
@@ -547,7 +583,15 @@ export async function generateToolboxRun(definition, inputs, now = new Date()) {
       '本次草案由 AI 模型基于表单输入生成，未联网检索；所有结论需人工核验后使用。',
       ...template.assumptions.filter(item => !item.startsWith('本次使用纳米Work内置安全模板')),
     ],
-    provenance: { ...template.provenance, mode: 'api', model: r.model, promptVersion: AI_PROMPT_VERSION },
+    provenance: {
+      ...template.provenance,
+      mode: 'api',
+      model: r.model,
+      usage: r.usage,
+      promptVersion: AI_PROMPT_VERSION,
+      completionState: 'completed',
+      employeeSnapshot,
+    },
   };
 }
 

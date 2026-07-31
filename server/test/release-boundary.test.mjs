@@ -17,6 +17,27 @@ test('新项目默认端口在后端、开发代理、环境模板和 README 中
   assert.match(read('README.md'), /http:\/\/127\.0\.0\.1:3107/);
 });
 
+test('生产 HTTP 装配可测试复用，启动副作用仍只保留在 index', () => {
+  const app = read('server/src/app.js');
+  const entry = read('server/src/index.js');
+  assert.match(app, /export function createApp\(/);
+  assert.match(entry, /const app = createApp\(\);/);
+  assert.match(entry, /initSchema\(\);/);
+  assert.match(entry, /recoverStaleAiWorkAcrossTenants\(\)/);
+  assert.match(entry, /startSchedulerIfEnabled\(\{ runTick: runSchedulerTick \}\);/);
+  assert.match(entry, /app\.listen\(PORT, HOST,/);
+  assert.doesNotMatch(app, /\binitSchema\(\)|\bstartSchedulerIfEnabled\(|\bapp\.listen\(/);
+
+  const rawCallback = app.indexOf("app.use('/api/recharge/notify', rechargeNotifyRoutes)");
+  const jsonParser = app.indexOf("app.use(express.json({ limit: '32mb' }))");
+  assert.ok(rawCallback >= 0 && jsonParser > rawCallback, '支付回调必须在全局 JSON 解析器之前挂载');
+  assert.match(
+    app,
+    /app\.use\('\/api\/data-intake', authMiddleware, tenantScope, tenantGate, moduleGuard\('system'\), dataIntakeRoutes\)/,
+  );
+  assert.match(app, /throw new Error\(`未知模块守卫：\$\{moduleId\}`\)/);
+});
+
 test('环境模板不预置凭据，并列出公开 URL 与常用限流边界', () => {
   const env = read('server/.env.example');
   for (const key of ['YUNWU_API_KEY', 'ANTHROPIC_API_KEY', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET']) {

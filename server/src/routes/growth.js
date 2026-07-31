@@ -1,9 +1,17 @@
 import { Router } from 'express';
-import { q, curTenant } from '../db.js';
+import { db, q, curTenant } from '../db.js';
 import { authMiddleware, maskPhone, logOp, notify, today, pct, pageParams, safeJsonArray, safeJsonParse } from '../util.js';
 import { rescoreLead, funnel } from '../engines/scoring.js';
 import { generate, kbContext, tplInvite } from '../engines/ai.js';
-import { precheck, precheckByRole, charge } from '../engines/credits.js';
+import {
+  precheckByRole,
+  estimateCallCredits,
+  holdCredits,
+  settleHold,
+  releaseHold,
+} from '../engines/credits.js';
+import { textModelFor } from '../engines/yunwu.js';
+import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { accessibleUserExists, canAccessOwner, userScopeClause } from '../engines/access.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, tableRows } from '../engines/deletion.js';
 
@@ -580,53 +588,166 @@ r.post('/leads/:id/objection', async (req, res) => {
   try {
     const { text, resolveIndex } = req.body || {};
     const concerns = safeJsonArray(lead.concerns);
-    // 即时生成应对话术（CRM-05）：AI 链路先行，成功后才把异议落库——否则积分不足/AI失败会留下脏数据，重试重复追加
-    let suggestion = null;
-    if (resolveIndex !== undefined) { if (concerns[resolveIndex]) concerns[resolveIndex].resolved = true; }
-    else if (text) {
-      precheckByRole(req.user.id, 'text', req.user.role);
-      const kb = await kbContext(['话术案例'], req.user.role, text || lead.interest);
-      const out = await generate({
-        kind: 'objection', role: req.user.role,
-        system: `你是餐饮门店顾客沟通助手。基于异议处理库提供一段可由员工审核后使用的沟通草稿。不得编造价格、折扣、库存、名额、顾客证言或紧迫性；涉及菜单、食安、过敏原、价格和权益时，只引用已核实信息并提示负责人确认。知识库：${kb}`,
-        userMsg: `客户「${lead.name}」（${lead.identity_tag}，预算${lead.budget_level}，阶段${lead.stage}）提出顾虑：「${text}」。给出1段可直接使用的应对话术+1个跟进动作。`,
-        fallback: () => `应对话术：感谢您把「${text}」说清楚。为了避免给您不准确的信息，我先确认用餐场景、人数、预算、时间和忌口，再请门店负责人按当前菜单与已审核价格给出适配方案；未确认的优惠、库存和名额我不会先做承诺。\n跟进动作：记录顾客需要核实的问题，由有权限的负责人确认后，按顾客同意的时间和方式回复。`,
+    if (resolveIndex !== undefined) {
+      if (concerns[resolveIndex]) concerns[resolveIndex].resolved = true;
+      const updated = withImmediateTransaction(db, () => {
+        q.run('UPDATE leads SET concerns = ? WHERE id = ?', JSON.stringify(concerns), lead.id);
+        return rescoreLead(lead.id);
       });
-      charge({ userId: req.user.id, feature: '增长中心·异议处理', kind: 'text', model: out.model, usage: out.usage, aiMode: out.mode });
-      suggestion = out.text;
-      concerns.push({ text, resolved: false });
+      return res.json({ lead: updated, suggestion: null });
     }
-    q.run('UPDATE leads SET concerns = ? WHERE id = ?', JSON.stringify(concerns), lead.id);
-    const updated = rescoreLead(lead.id);
-    res.json({ lead: updated, suggestion });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+
+    const concernText = String(text || '').trim();
+    if (!concernText) return res.status(400).json({ error: '请填写需要处理的顾客顾虑' });
+
+    const holdModel = textModelFor(req.user.role);
+    precheckByRole(req.user.id, 'text', req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: '增长中心·异议处理',
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          concernText,
+          lead.name,
+          lead.identity_tag,
+          lead.budget_level,
+          lead.stage,
+          lead.interest,
+        ],
+        outputTokens: 1200,
+      }),
+      note: `顾客#${lead.id}异议处理在供应商调用前预授权；未交付全额退回。`,
+    });
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: async () => {
+        const kb = await kbContext(['话术案例'], req.user.role, concernText);
+        return generate({
+          kind: 'objection',
+          role: req.user.role,
+          system: `你是餐饮门店顾客沟通助手。基于异议处理库提供一段可由员工审核后使用的沟通草稿。不得编造价格、折扣、库存、名额、顾客证言或紧迫性；涉及菜单、食安、过敏原、价格和权益时，只引用已核实信息并提示负责人确认。知识库：${kb}`,
+          userMsg: `客户「${lead.name}」（${lead.identity_tag}，预算${lead.budget_level}，阶段${lead.stage}）提出顾虑：「${concernText}」。给出1段可直接使用的应对话术+1个跟进动作。`,
+          fallback: () => `应对话术：感谢您把「${concernText}」说清楚。为了避免给您不准确的信息，我先确认用餐场景、人数、预算、时间和忌口，再请门店负责人按当前菜单与已审核价格给出适配方案；未确认的优惠、库存和名额我不会先做承诺。\n跟进动作：记录顾客需要核实的问题，由有权限的负责人确认后，按顾客同意的时间和方式回复。`,
+        });
+      },
+      persist: out => withImmediateTransaction(db, () => {
+        concerns.push({ text: concernText, resolved: false });
+        q.run('UPDATE leads SET concerns = ? WHERE id = ?', JSON.stringify(concerns), lead.id);
+        return rescoreLead(lead.id);
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: out => ({
+        usage: out.usage,
+        model: out.model,
+        aiMode: out.mode,
+        note: '异议话术已生成并完成顾客档案落库',
+      }),
+      releaseNote: '异议话术生成或顾客档案落库失败，预授权全额退回',
+    });
+    res.json({
+      lead: delivered.delivery,
+      suggestion: delivered.output.text,
+      mode: delivered.output.mode,
+      billing: delivered.billing,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
+  }
 });
 
 // AI 话术推荐（FR-GRW-05，私域跟进工作台：生成可复制话术，不直连微信/企微）
 r.post('/suggest-reply', async (req, res) => {
   try {
-  precheckByRole(req.user.id, 'text', req.user.role);
-  const { leadId, context } = req.body || {};
-  const lead = leadId ? q.get(`SELECT * FROM leads WHERE tenant_id = ${curTenant()} AND id = ?`, leadId) : null;
-  if (lead && !canAccessOwner(req.user, lead.owner_id)) return res.status(404).json({ error: '客户不存在或无权访问' });
-  const kb = await kbContext(['话术案例', '品牌资料'], req.user.role, context || (lead && lead.interest));
-  const wantsInvite = /下月|下个月|邀约|门店活动|主题活动|品鉴会|到店|活动/.test(String(context || ''));
-  const out = await generate({
-    kind: 'reply',
-    system: `你是餐饮门店顾客沟通助手。生成3条可由员工审核后复制到微信/企微/短信的回复草稿（每条≤80字，编号）。不得编造活动日期、名额、库存、价格、折扣、顾客证言或紧迫性；涉及价格、菜单、食安与权益时必须说明以门店负责人核实结果为准，并尊重顾客联系授权。知识库：${kb}`,
-    userMsg: `客户：${lead ? `${lead.name}（${lead.identity_tag}/${lead.grade}级/阶段${lead.stage}/兴趣${lead.interest}）` : '通用客户'}。当前沟通情境：${context || '客户询问产品'}`,
-    fallback: () => wantsInvite
-      ? `1. ${lead?.name || '您好'}，我们可以按您的用餐场景整理门店活动信息；日期、接待能力和菜单确认后再发您，您希望哪天了解？\n2. ${lead?.name || '您好'}，如果您愿意到店体验，请告诉我人数、预算、时间和忌口，我先请门店核实可预约时段。\n3. 我可以把已确认的活动流程和菜单发您参考；是否参加由您决定，价格与可预约情况以门店回复为准。`
-      : `1. ${lead?.name || '您好'}，您关心的问题我先记录下来，请门店按当前菜单和实际情况核实后回复，避免给您不准确的信息。\n2. 方便补充用餐人数、预算、时间和忌口吗？有了这些信息，我们才能给出适配建议。\n3. 涉及价格、库存或权益的内容，我会先请有权限的负责人确认，再按您同意的方式回复。`,
-    role: req.user.role,
-  });
-  const bill = charge({ userId: req.user.id, feature: '增长中心·私域话术', kind: 'text', model: out.model, usage: out.usage, aiMode: out.mode });
-  if (lead?.id) {
-    q.run('INSERT INTO lead_ai_suggestions(lead_id,user_id,context,suggestion,purpose) VALUES(?,?,?,?,?)',
-      lead.id, req.user.id, context || null, out.text, wantsInvite ? '下月邀约话术' : '私域回复话术');
+    const { leadId, context } = req.body || {};
+    const lead = leadId ? q.get(`SELECT * FROM leads WHERE tenant_id = ${curTenant()} AND id = ?`, leadId) : null;
+    if (lead && !canAccessOwner(req.user, lead.owner_id)) {
+      return res.status(404).json({ error: '客户不存在或无权访问' });
+    }
+    const contextText = String(context || '').trim();
+    const wantsInvite = /下月|下个月|邀约|门店活动|主题活动|品鉴会|到店|活动/.test(contextText);
+    const holdModel = textModelFor(req.user.role);
+    precheckByRole(req.user.id, 'text', req.user.role);
+    const hold = holdCredits({
+      userId: req.user.id,
+      feature: '增长中心·私域话术',
+      kind: 'text',
+      model: holdModel,
+      credits: estimateCallCredits({
+        kind: 'text',
+        model: holdModel,
+        texts: [
+          contextText,
+          lead?.name,
+          lead?.identity_tag,
+          lead?.grade,
+          lead?.stage,
+          lead?.interest,
+        ],
+        outputTokens: 1200,
+      }),
+      note: `${lead ? `顾客#${lead.id}` : '通用'}私域话术在供应商调用前预授权；未交付全额退回。`,
+    });
+    const delivered = await executeHeldDelivery({
+      hold,
+      generate: async () => {
+        const kb = await kbContext(
+          ['话术案例', '品牌资料'],
+          req.user.role,
+          contextText || lead?.interest,
+        );
+        return generate({
+          kind: 'reply',
+          system: `你是餐饮门店顾客沟通助手。生成3条可由员工审核后复制到微信/企微/短信的回复草稿（每条≤80字，编号）。不得编造活动日期、名额、库存、价格、折扣、顾客证言或紧迫性；涉及价格、菜单、食安与权益时必须说明以门店负责人核实结果为准，并尊重顾客联系授权。知识库：${kb}`,
+          userMsg: `客户：${lead ? `${lead.name}（${lead.identity_tag}/${lead.grade}级/阶段${lead.stage}/兴趣${lead.interest}）` : '通用客户'}。当前沟通情境：${contextText || '客户询问产品'}`,
+          fallback: () => wantsInvite
+            ? `1. ${lead?.name || '您好'}，我们可以按您的用餐场景整理门店活动信息；日期、接待能力和菜单确认后再发您，您希望哪天了解？\n2. ${lead?.name || '您好'}，如果您愿意到店体验，请告诉我人数、预算、时间和忌口，我先请门店核实可预约时段。\n3. 我可以把已确认的活动流程和菜单发您参考；是否参加由您决定，价格与可预约情况以门店回复为准。`
+            : `1. ${lead?.name || '您好'}，您关心的问题我先记录下来，请门店按当前菜单和实际情况核实后回复，避免给您不准确的信息。\n2. 方便补充用餐人数、预算、时间和忌口吗？有了这些信息，我们才能给出适配建议。\n3. 涉及价格、库存或权益的内容，我会先请有权限的负责人确认，再按您同意的方式回复。`,
+          role: req.user.role,
+        });
+      },
+      persist: out => withImmediateTransaction(db, () => {
+        let suggestionId = null;
+        if (lead?.id) {
+          suggestionId = Number(q.run(
+            'INSERT INTO lead_ai_suggestions(lead_id,user_id,context,suggestion,purpose) VALUES(?,?,?,?,?)',
+            lead.id,
+            req.user.id,
+            contextText || null,
+            out.text,
+            wantsInvite ? '下月邀约话术' : '私域回复话术',
+          ).lastInsertRowid);
+        }
+        return { suggestionId };
+      }),
+      settle: settleHold,
+      release: releaseHold,
+      settlement: out => ({
+        usage: out.usage,
+        model: out.model,
+        aiMode: out.mode,
+        note: '私域话术已生成并完成业务落库',
+      }),
+      releaseNote: '私域话术生成或业务落库失败，预授权全额退回',
+    });
+    res.json({
+      suggestions: delivered.output.text,
+      mode: delivered.output.mode,
+      billing: delivered.billing,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.billing ? { billing: e.billing } : {}),
+    });
   }
-  res.json({ suggestions: out.text, mode: out.mode, billing: bill });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 r.get('/key-customers', (req, res) => {

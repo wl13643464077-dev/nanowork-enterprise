@@ -215,10 +215,48 @@ export function estimateCallCredits({ kind = 'text', model, texts = [], outputTo
 
 // 占扣（两段式第一段）：条件更新原子扣减，并发多路同时占扣不会把积分池扣成负数（不超卖）。
 // 余额不足 → 402（此刻尚未开流、尚未发起外部调用，从源头杜绝"答案已交付却收不到钱"）。
-export function holdCredits({ userId, feature, kind = 'text', model = '', credits, note = '', refType = null, refId = null }) {
+export function holdCredits({
+  userId,
+  tenantId = null,
+  feature,
+  kind = 'text',
+  model = '',
+  credits,
+  note = '',
+  refType = null,
+  refId = null,
+}) {
   ensureHoldTable();
-  const tid = tenantOf(userId);
+  const userTenantId = userId == null ? null : tenantOf(userId);
+  const explicitTenantId = Number(tenantId);
+  if (userId != null && !userTenantId) {
+    throw Object.assign(new Error('计费账号不存在'), { status: 404 });
+  }
+  if (
+    userTenantId
+    && Number.isSafeInteger(explicitTenantId)
+    && explicitTenantId > 0
+    && explicitTenantId !== userTenantId
+  ) {
+    throw Object.assign(new Error('计费账号与目标租户不一致'), { status: 403 });
+  }
+  const tid = userTenantId || (
+    Number.isSafeInteger(explicitTenantId)
+    && explicitTenantId > 0
+    && q.get('SELECT id FROM tenants WHERE id=?', explicitTenantId)
+      ? explicitTenantId
+      : null
+  );
   if (!tid) throw Object.assign(new Error('计费账号不存在'), { status: 404 });
+  // 存量 credit_logs.user_id 为 NOT NULL。系统后台任务没有直接请求人时，
+  // 使用本租户老板/管理员作为审计归属，绝不借用其他租户账号。
+  const billingUserId = userId ?? q.get(`SELECT id FROM users
+    WHERE tenant_id=? AND status='启用'
+    ORDER BY CASE role WHEN 'boss' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
+    LIMIT 1`, tid)?.id;
+  if (!billingUserId) {
+    throw Object.assign(new Error('租户没有可用于后台计费归属的启用账号'), { status: 409 });
+  }
   const amount = Math.max(1, Math.ceil(Number(credits) || 0));
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -230,11 +268,11 @@ export function holdCredits({ userId, feature, kind = 'text', model = '', credit
     const after = q.get('SELECT credits FROM tenants WHERE id = ?', tid)?.credits ?? 0;
     const logR = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-      tid, userId, feature, kind, model || '', 0, 0, 0, amount, after, 'hold', note || '预授权占扣，结算时多退少补');
+      tid, billingUserId, feature, kind, model || '', 0, 0, 0, amount, after, 'hold', note || '预授权占扣，结算时多退少补');
     const holdR = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,ref_type,ref_id)
-           VALUES(?,?,?,?,?,?,?,?,?)`, tid, userId, logR.lastInsertRowid, feature, kind, model || '', amount, refType, refId);
+           VALUES(?,?,?,?,?,?,?,?,?)`, tid, billingUserId, logR.lastInsertRowid, feature, kind, model || '', amount, refType, refId);
     db.exec('COMMIT');
-    return { holdId: holdR.lastInsertRowid, logId: logR.lastInsertRowid, tenantId: tid, userId, feature, kind, model: model || '', credits: amount, balance: after };
+    return { holdId: holdR.lastInsertRowid, logId: logR.lastInsertRowid, tenantId: tid, userId: billingUserId, feature, kind, model: model || '', credits: amount, balance: after };
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw e;
@@ -246,24 +284,86 @@ export function holdCredits({ userId, feature, kind = 'text', model = '', credit
 // - credits 显式传入时按传入值实扣（视频按提交时报价结算，防止结算窗口内价格变动）
 // - 实扣 > 占扣（估算偏低）→ 差额无条件补扣：答案已交付必须计费，允许余额穿透为负（坏账可见、可催缴）
 // - 幂等：同一笔占扣只能结算一次，重复结算/释放返回 null 不动账
+function holdIntegrityMismatch(field) {
+  return Object.assign(
+    new Error(`预授权占扣完整性校验失败：${field} 与数据库权威记录不一致`),
+    { status: 409, code: 'CREDIT_HOLD_INTEGRITY_MISMATCH' },
+  );
+}
+
+function assertSuppliedHoldMatches(row, supplied) {
+  const numericFields = [
+    ['tenantId', 'tenant_id'],
+    ['logId', 'log_id'],
+    ['userId', 'user_id'],
+    ['credits', 'held_credits'],
+  ];
+  for (const [inputKey, rowKey] of numericFields) {
+    if (!Object.prototype.hasOwnProperty.call(supplied, inputKey)) continue;
+    const inputValue = supplied[inputKey];
+    const rowValue = row[rowKey];
+    if (inputValue == null && rowValue == null) continue;
+    if (Number(inputValue) !== Number(rowValue)) throw holdIntegrityMismatch(inputKey);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(supplied, 'kind')
+    && String(supplied.kind ?? '') !== String(row.kind ?? '')
+  ) {
+    throw holdIntegrityMismatch('kind');
+  }
+}
+
 export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: fixedCredits, note = '' } = {}) {
   if (!hold?.holdId) return null;
   ensureHoldTable();
   const b = billing();
-  const finalModel = model || hold.model || '';
-  const yuan = aiMode === 'api' ? costYuan(hold.kind, finalModel, usage, b) : 0;
-  const actual = fixedCredits != null
-    ? Math.max(0, Math.ceil(Number(fixedCredits) || 0))
-    : aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
   db.exec('BEGIN IMMEDIATE');
   try {
-    const claimed = q.run(`UPDATE credit_holds SET status='settled', settled_credits=?, settled_at=datetime('now','localtime') WHERE id=? AND status='held'`, actual, hold.holdId);
-    if (!claimed.changes) { db.exec('COMMIT'); return null; } // 已结算过：幂等返回，不产生双重退款
-    q.run('UPDATE tenants SET credits = credits + ? WHERE id = ?', hold.credits - actual, hold.tenantId);
-    const after = q.get('SELECT credits FROM tenants WHERE id = ?', hold.tenantId)?.credits ?? 0;
-    q.run(`UPDATE credit_logs SET credits=?, model=?, input_tokens=?, output_tokens=?, cost_yuan=?, balance_after=?, ai_mode=?, note=? WHERE id=?`,
+    // 只把 holdId 当作定位键；租户、流水、占扣金额和计费种类都从事务内
+    // 重新读取。调用方对象可能来自旧异步闭包，绝不能成为跨租户记账依据。
+    const row = q.get('SELECT * FROM credit_holds WHERE id=?', Number(hold.holdId));
+    if (!row || row.status !== 'held') {
+      db.exec('COMMIT');
+      return null; // 不存在或已经终结：保持历史幂等语义
+    }
+    assertSuppliedHoldMatches(row, hold);
+    const log = q.get(
+      'SELECT id,tenant_id FROM credit_logs WHERE tenant_id=? AND id=?',
+      row.tenant_id,
+      row.log_id,
+    );
+    if (!log) throw holdIntegrityMismatch('logId');
+    if (!q.get('SELECT id FROM tenants WHERE id=?', row.tenant_id)) {
+      throw holdIntegrityMismatch('tenantId');
+    }
+
+    const finalModel = model || row.model || '';
+    const yuan = aiMode === 'api' ? costYuan(row.kind, finalModel, usage, b) : 0;
+    const actual = fixedCredits != null
+      ? Math.max(0, Math.ceil(Number(fixedCredits) || 0))
+      : aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
+    const claimed = q.run(`UPDATE credit_holds
+      SET status='settled',settled_credits=?,settled_at=datetime('now','localtime')
+      WHERE tenant_id=? AND id=? AND status='held'`,
+    actual, row.tenant_id, row.id);
+    if (!claimed.changes) {
+      db.exec('COMMIT');
+      return null;
+    }
+    const tenantUpdated = q.run(
+      'UPDATE tenants SET credits=credits+? WHERE id=?',
+      Number(row.held_credits) - actual,
+      row.tenant_id,
+    );
+    if (tenantUpdated.changes !== 1) throw holdIntegrityMismatch('tenantId');
+    const after = q.get('SELECT credits FROM tenants WHERE id=?', row.tenant_id)?.credits ?? 0;
+    const logUpdated = q.run(`UPDATE credit_logs
+      SET credits=?,model=?,input_tokens=?,output_tokens=?,cost_yuan=?,balance_after=?,ai_mode=?,note=?
+      WHERE tenant_id=? AND id=?`,
       actual, finalModel, usage.inputTokens || 0, usage.outputTokens || 0, Math.round(yuan * 10000) / 10000, after, aiMode,
-      `${note ? `${note}；` : ''}预授权${hold.credits}分→实扣${actual}分`, hold.logId);
+      `${note ? `${note}；` : ''}预授权${row.held_credits}分→实扣${actual}分`,
+      row.tenant_id, row.log_id);
+    if (logUpdated.changes !== 1) throw holdIntegrityMismatch('logId');
     db.exec('COMMIT');
     return { credits: actual, balance: after, costYuan: Math.round(yuan * 100) / 100 };
   } catch (e) {

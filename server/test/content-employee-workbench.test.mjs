@@ -56,7 +56,11 @@ test('10名内容员工拥有统一且完整的纯静态工作台档案', () => 
     assert.equal(profile.skillLibrary.historical.length, history.expectedSkillCount);
     assert.equal(profile.skillLibrary.defaultInjected.length, history.expectedSkillCount + 1);
     for (const skill of profile.skillLibrary.historical) {
-      assert.equal(skill.verificationStatus, 'legacy_unverified');
+      assert.equal(skill.verificationStatus, 'catalog_contract_verified');
+      assert.equal(skill.legacyVerificationStatus, 'legacy_unverified');
+      assert.equal(skill.verificationLevel, 'catalog_contract_verified');
+      assert.equal(skill.effectValidation, 'requires_live_business_sample');
+      assert.match(skill.contentFingerprint, /^sha256:[a-f0-9]{64}$/u);
       assert.equal(skill.defaultInjected, true);
       assert.equal(skill.currentPlatformFact, false);
       assert.equal(skill.locked, true);
@@ -119,7 +123,8 @@ test('10名员工的独立派活提示词逐人完整、互不串岗且快照可
     assert.ok(result.prompt.includes('当前岗位最终输出契约'));
     assert.ok(result.prompt.includes(employee.outputSchema.contract));
     assert.ok(employee.outputKeys.every(key => result.prompt.includes(key)));
-    assert.ok(result.prompt.includes('历史待核验技能不得作为当前平台事实'));
+    assert.ok(result.prompt.includes('目录与执行注入契约已验证'));
+    assert.ok(result.prompt.includes('这不证明第三方说法、平台算法、实时效果或业务结果'));
     assert.equal(result.snapshot.identity.idx, employee.idx);
     assert.equal(result.snapshot.identity.key, employee.key);
     assert.equal(result.snapshot.promptHash, result.promptHash);

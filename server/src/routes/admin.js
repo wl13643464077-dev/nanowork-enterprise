@@ -5,8 +5,20 @@ import { db, q, getConfig, setConfig, getTenantConfig, setTenantConfig, modulesF
 import { hashPassword, logOp, requireRole, pageParams, safeJsonParse } from '../util.js';
 import { billing } from '../engines/credits.js';
 import { adjust, balanceOfTenant } from '../engines/credits.js';
-import { routing, maskedKey, yunwuAvailable, yunwuUsage } from '../engines/yunwu.js';
+import {
+  routing,
+  maskedKey,
+  yunwuAvailable,
+  yunwuUsage,
+  yunwuApiKey,
+  yunwuKeySource,
+} from '../engines/yunwu.js';
+import { providerResponseError, sanitizeProviderError } from '../engines/provider-errors.js';
 import { getRules } from '../engines/risk.js';
+import {
+  buildRuntimeReadiness,
+  recordRuntimeReadinessCheck,
+} from '../engines/runtime-readiness.js';
 
 // ===== 管理后台 API（仅 boss/admin；PRD V2 §20-21 管理后台）=====
 const r = Router();
@@ -132,8 +144,15 @@ r.get('/overview', (req, res) => {
     aiCalls: q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id = ${T} AND ai_mode != 'recharge'`)?.n || 0,
     pendingApprovals: q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id = ${T} AND status='待审核'`)?.n || 0,
     channel: yunwuAvailable() ? 'yunwu' : 'template',
+    readiness: buildRuntimeReadiness({ tenantId: T }),
     usage,
   });
+});
+
+// 本接口只聚合本地配置、进程状态与最近一次显式测试记录，严禁在 GET 中探测外部服务。
+r.get('/runtime-readiness', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(buildRuntimeReadiness({ tenantId: curTenant() }));
 });
 
 // —— 用户与组织 ——
@@ -291,16 +310,32 @@ r.post('/marshals/:id/sync', (req, res) => {
 
 // —— 接口管理：通道/模型路由/价格（PRD V2 §15）——
 r.get('/api-config', requirePlatformConfigOwner, (req, res) => {
+  const readiness = buildRuntimeReadiness({ tenantId: curTenant() });
+  const aiReadiness = readiness.channels.find(item => item.key === 'ai');
   res.json({
-    channel: { provider: '云雾API (yunwu.ai)', baseUrl: getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1', key: maskedKey(), available: yunwuAvailable() },
+    channel: {
+      provider: '云雾API (yunwu.ai)',
+      baseUrl: getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1',
+      key: maskedKey(),
+      keySource: yunwuKeySource(),
+      keyPersistence: 'environment_only',
+      available: yunwuAvailable(),
+      readiness: aiReadiness,
+    },
     routing: routing(),
     billing: billing(),
     riskRules: getRules(),
     usage: yunwuUsage(),
+    readiness,
   });
 });
 r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
   const { routing: rt, billing: bl, baseUrl, apiKey } = req.body || {};
+  if (apiKey !== undefined && String(apiKey || '').trim()) {
+    return res.status(400).json({
+      error: 'API Key 仅支持通过服务端 YUNWU_API_KEY 环境变量配置，本次输入未保存',
+    });
+  }
   if (baseUrl) {
     // 先做 DNS 解析校验（BE-M5），任何失败都不落库
     try { setConfig('yunwu_base_url', await validatedProviderBase(baseUrl)); }
@@ -308,28 +343,81 @@ r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
   }
   if (rt) setConfig('model_routing', rt);
   if (bl) setConfig('billing', bl);
-  // 客户自助填Key：界面保存即生效（落库优先于 .env），不回显明文
-  if (apiKey && String(apiKey).trim().length > 10) setConfig('yunwu_api_key', String(apiKey).trim());
-  logOp(req.user, '管理后台', '修改接口配置', [rt && '模型路由', bl && '计费', baseUrl && 'BaseURL', apiKey && 'API Key'].filter(Boolean).join('+'));
+  logOp(req.user, '管理后台', '修改接口配置', [rt && '模型路由', bl && '计费', baseUrl && 'BaseURL'].filter(Boolean).join('+'));
   res.json({ ok: true });
+});
+
+// 存量版本曾把云雾 Key 明文写入 sys_config。升级后仅兼容读取，绝不自动删除；
+// 只有环境变量已接管且总部管理员二次确认时，才允许显式清除旧值。
+r.delete('/api-config/legacy-key', requirePlatformConfigOwner, (req, res) => {
+  if (req.body?.confirm !== 'DELETE_LEGACY_YUNWU_KEY') {
+    return res.status(400).json({ error: '清除旧密钥需要明确二次确认' });
+  }
+  if (!String(process.env.YUNWU_API_KEY || '').trim()) {
+    return res.status(409).json({
+      error: '请先配置服务端 YUNWU_API_KEY 环境变量并重启，确认通道已接管后再清除旧数据库密钥',
+    });
+  }
+  const removed = q.run('DELETE FROM sys_config WHERE key=?', 'yunwu_api_key').changes > 0;
+  logOp(req.user, '管理后台', '清除旧数据库API密钥', removed ? '已迁移到环境变量' : '旧配置不存在');
+  return res.json({ ok: true, removed, keySource: yunwuKeySource() });
 });
 
 // 测试连接：校验 Key/BaseURL 是否可用（拉模型清单）
 r.post('/api-config/test', requirePlatformConfigOwner, async (req, res) => {
+  const tenantId = curTenant();
+  let timer;
   try {
     // 测试连接前重新解析校验一次（防存量配置或 DNS rebinding 把已保存域名指回内网）
     const base = await validatedProviderBase(getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1');
-    const key = getConfig('yunwu_api_key', null) || process.env.YUNWU_API_KEY || '';
-    if (!key) return res.json({ ok: false, error: '尚未配置 API Key' });
-    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 10000);
+    const key = yunwuApiKey();
+    if (!key) {
+      recordRuntimeReadinessCheck('ai', {
+        tenantId,
+        outcome: 'failed',
+        checkedBy: req.user.id,
+        error: '尚未配置 API Key',
+      });
+      return res.json({
+        ok: false,
+        error: '尚未配置 API Key',
+        readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'ai'),
+      });
+    }
+    const ctrl = new AbortController(); timer = setTimeout(() => ctrl.abort(), 10000);
     const resp = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: ctrl.signal });
-    clearTimeout(t);
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) return res.json({ ok: false, error: data?.error?.message || `HTTP ${resp.status}（Key无效或额度异常）` });
+    if (!resp.ok) throw providerResponseError(resp.status, data, { service: '云雾AI服务' });
     const n = Array.isArray(data?.data) ? data.data.length : 0;
+    recordRuntimeReadinessCheck('ai', {
+      tenantId,
+      outcome: 'passed',
+      checkedBy: req.user.id,
+      evidence: { provider: 'yunwu', models: n, baseUrl: base },
+    });
     logOp(req.user, '管理后台', '测试API连接', `成功，${n}个模型`);
-    res.json({ ok: true, models: n, base });
-  } catch (e) { res.json({ ok: false, error: e.name === 'AbortError' ? '连接超时（10秒）' : e.message }); }
+    res.json({
+      ok: true,
+      models: n,
+      base,
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'ai'),
+    });
+  } catch (error) {
+    const safe = sanitizeProviderError(error, { service: '云雾AI服务' });
+    recordRuntimeReadinessCheck('ai', {
+      tenantId,
+      outcome: 'failed',
+      checkedBy: req.user.id,
+      error: safe.message,
+    });
+    res.json({
+      ok: false,
+      error: safe.message,
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'ai'),
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 });
 
 // —— 积分管理 ——

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 
 const DBP = path.join(os.tmpdir(), `nanowork-content-automation-${process.pid}.db`);
@@ -11,10 +12,38 @@ for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
 }
 
 process.env.NANOWORK_DB = DBP;
-process.env.YUNWU_API_KEY = '';
+process.env.YUNWU_API_KEY = 'test-only-content-automation-key';
 process.env.OPENAI_API_KEY = '';
 process.env.ANTHROPIC_API_KEY = '';
 process.env.SEED_DEMO = 'false';
+process.env.BOCHA_API_KEY = 'content-automation-test-only';
+
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  if (String(url).startsWith('https://api.bochaai.com/v1/web-search')) {
+    return Response.json({
+      data: {
+        webPages: {
+          value: [{
+            name: '夏季餐饮内容趋势核验',
+            url: 'https://example.test/summer-food-trend',
+            summary: '测试夹具：只用于验证联网证据进入提示词和审计快照，不代表真实趋势。',
+          }],
+        },
+      },
+    });
+  }
+  if (String(url).startsWith('https://yunwu.ai/v1/chat/completions')) {
+    const request = JSON.parse(String(options?.body || '{}'));
+    const prompt = JSON.stringify(request.messages || []);
+    const output = prompt.includes('复盘官') ? validReviewOutput() : validTrendOutput();
+    return Response.json({
+      choices: [{ message: { content: JSON.stringify(output) } }],
+      usage: { prompt_tokens: 80, completion_tokens: 60 },
+    });
+  }
+  return nativeFetch(url, options);
+};
 
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
@@ -80,6 +109,21 @@ async function jsonRequest(base, route, { method = 'GET', body } = {}) {
   return { response, data };
 }
 
+async function waitForAutomationRun(base, ruleId, runId, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const history = await jsonRequest(
+      base,
+      `/content/automations/${ruleId}/runs?runId=${runId}`,
+    );
+    assert.equal(history.response.status, 200, JSON.stringify(history.data));
+    const run = history.data.runs?.[0];
+    if (run && run.status !== '运行中') return { history: history.data, run };
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.fail(`内容自动化运行#${runId}未在${timeoutMs}ms内进入终态`);
+}
+
 const dailyRule = {
   name: '每日招牌菜内容',
   enabled: true,
@@ -93,6 +137,29 @@ const dailyRule = {
   weekday: null,
   approvalMode: 'always',
 };
+
+function validTrendOutput() {
+  return {
+    briefing: '基于测试来源形成的趋势简报。',
+    channel_scan: [{ channel: '测试来源', finding: '发现一个可核验信号' }],
+    topics: Array.from({ length: 5 }, (_, index) => ({
+      title: `候选选题${index + 1}`,
+      angle: '经营者视角',
+      hook: '先给可核验结论',
+      reason: '与目标账号定位匹配',
+      heat: '中',
+      evidence: '测试来源',
+    })),
+  };
+}
+
+function validReviewOutput() {
+  return {
+    report: '本轮测试内容已按岗位边界复盘。',
+    next_topics: [{ title: '下一轮测试选题', reason: '验证改进动作是否闭环' }],
+    profile_updates: ['继续坚持事实核验后再发布'],
+  };
+}
 
 let ruleAId;
 let ruleBId;
@@ -216,21 +283,37 @@ test('规则列表、更新、启停与删除严格按租户隔离', async () =>
 
 test('立即自动运行锁定完整员工快照，产出进入审核且绝不自动发布', async () => {
   await withServer(bossA, async base => {
-    const run = await jsonRequest(base, `/content/automations/${ruleAId}/run`, {
-      method: 'POST', body: {},
+    const idempotencyKey = randomUUID();
+    const accepted = await jsonRequest(base, `/content/automations/${ruleAId}/run`, {
+      method: 'POST', body: { idempotencyKey },
     });
-    assert.equal(run.response.status, 200);
-    assert.equal(run.data.status, '成功');
-    assert.equal(run.data.contentStatus, '待审核');
-    assert.equal(run.data.published, false);
-    assert.equal(run.data.employee.contentEmployeeIdx, 0);
-    assert.equal(run.data.contract.status, 'valid');
-    assert.equal(run.data.contract.valid, true);
-    assert.equal(run.data.billing.state, 'settled');
-    assert.equal(run.data.billing.chargedCredits, 0);
-    assert.match(run.data.boundary, /未执行发布/);
+    assert.equal(accepted.response.status, 202, JSON.stringify(accepted.data));
+    assert.equal(accepted.data.status, '运行中');
+    assert.equal(accepted.data.queued, true);
+    assert.equal(accepted.data.reused, false);
+    assert.ok(Number.isSafeInteger(accepted.data.runId));
+    assert.match(accepted.data.pollUrl, new RegExp(`runId=${accepted.data.runId}$`));
+    assert.equal(accepted.data.rule.employee.contentEmployeeIdx, 0);
+    assert.match(accepted.data.boundary, /未执行发布/);
 
-    const content = q.get(`SELECT * FROM contents WHERE tenant_id=1 AND id=?`, run.data.contentId);
+    const duplicate = await jsonRequest(base, `/content/automations/${ruleAId}/run`, {
+      method: 'POST', body: { idempotencyKey },
+    });
+    assert.ok([200, 202].includes(duplicate.response.status), JSON.stringify(duplicate.data));
+    assert.equal(duplicate.data.runId, accepted.data.runId);
+    assert.equal(duplicate.data.reused, true);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM content_automation_runs
+      WHERE tenant_id=1 AND rule_id=? AND trigger='immediate'`, ruleAId).n, 1);
+
+    const completed = await waitForAutomationRun(base, ruleAId, accepted.data.runId);
+    const run = completed.run;
+    assert.equal(run.status, '成功');
+    assert.equal(run.contract.status, 'valid');
+    assert.equal(run.contract.valid, true);
+    assert.equal(run.billing.state, 'settled');
+    assert.ok(Number(run.billing.chargedCredits) > 0);
+
+    const content = q.get(`SELECT * FROM contents WHERE tenant_id=1 AND id=?`, run.contentId);
     assert.equal(content.status, '待审核');
     assert.equal(content.channel, null);
     assert.equal(content.content_employee_idx, 0);
@@ -244,7 +327,10 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.equal(q.get(`SELECT COUNT(*) n FROM op_logs
       WHERE tenant_id=1 AND action='立即自动生成'`).n, 1);
 
-    const history = await jsonRequest(base, `/content/automations/${ruleAId}/runs`);
+    const history = await jsonRequest(
+      base,
+      `/content/automations/${ruleAId}/runs?runId=${accepted.data.runId}`,
+    );
     assert.equal(history.response.status, 200);
     assert.equal(history.data.runs[0].status, '成功');
     assert.equal(history.data.runs[0].contract.status, 'valid');
@@ -264,24 +350,24 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.equal(snapshot.enterpriseOverlay.promptOverrideAppended, true);
     assert.equal(snapshot.enterpriseOverlay.promptTextStored, false);
     assert.equal(snapshot.billing.state, 'settled');
-    assert.equal(snapshot.billing.chargedCredits, 0);
+    assert.ok(Number(snapshot.billing.chargedCredits) > 0);
     assert.doesNotMatch(JSON.stringify(snapshot), /B店秘密提示词|B店私有技能/);
 
     const riskRun = await jsonRequest(base, `/content/automations/${riskRuleAId}/run`, {
-      method: 'POST', body: {},
+      method: 'POST', body: { idempotencyKey: randomUUID() },
     });
-    assert.equal(riskRun.response.status, 200);
-    assert.equal(riskRun.data.contentStatus, '可使用');
-    assert.equal(riskRun.data.published, false);
+    assert.equal(riskRun.response.status, 202);
+    const riskCompleted = await waitForAutomationRun(base, riskRuleAId, riskRun.data.runId);
+    assert.equal(riskCompleted.run.status, '成功');
     const riskContent = q.get(`SELECT status,channel,content_employee_idx FROM contents
-      WHERE tenant_id=1 AND id=?`, riskRun.data.contentId);
+      WHERE tenant_id=1 AND id=?`, riskCompleted.run.contentId);
     assert.equal(riskContent.status, '可使用');
     assert.equal(riskContent.channel, null);
     assert.equal(riskContent.content_employee_idx, 9);
     assert.equal(q.get(`SELECT COUNT(*) n FROM approvals
-      WHERE tenant_id=1 AND target_type='content' AND target_id=?`, riskRun.data.contentId).n, 0);
+      WHERE tenant_id=1 AND target_type='content' AND target_id=?`, riskCompleted.run.contentId).n, 0);
     assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets
-      WHERE tenant_id=1 AND source_type='content' AND source_id=?`, riskRun.data.contentId).n, 1);
+      WHERE tenant_id=1 AND source_type='content' AND source_id=?`, riskCompleted.run.contentId).n, 1);
   });
 });
 
@@ -300,7 +386,7 @@ test('定时调度原子认领且同周期幂等，停用规则不会运行', as
   assert.equal(first.results.find(item => item.tenantId === 2).contentAutomationClaimed, 0);
   const outcomes = await first.pending;
   assert.equal(outcomes.length, 1);
-  assert.equal(outcomes[0].status, 'fulfilled');
+  assert.equal(outcomes[0].status, 'fulfilled', String(outcomes[0].reason?.stack || outcomes[0].reason || ''));
   assert.equal(q.get(`SELECT COUNT(*) n FROM contents
     WHERE tenant_id=1 AND content_run_mode='automation_scheduled'`).n, beforeA + 1);
   const scheduledRun = q.get(`SELECT snapshot_json FROM content_automation_runs
@@ -308,7 +394,7 @@ test('定时调度原子认领且同周期幂等，停用规则不会运行', as
     ORDER BY id DESC LIMIT 1`, ruleAId);
   const scheduledSnapshot = JSON.parse(scheduledRun.snapshot_json);
   assert.equal(scheduledSnapshot.billing.state, 'settled');
-  assert.equal(scheduledSnapshot.billing.chargedCredits, 0);
+  assert.ok(Number(scheduledSnapshot.billing.chargedCredits) > 0);
   assert.equal(q.get(`SELECT COUNT(*) n FROM contents
     WHERE tenant_id=2 AND content_run_mode='automation_scheduled'`).n, beforeB);
   assert.equal(q.get(`SELECT next_run_at FROM content_automation_rules
@@ -322,6 +408,50 @@ test('定时调度原子认领且同周期幂等，停用规则不会运行', as
       AND scheduled_for='2026-07-23 10:00:00'`, ruleAId).n, 1);
   assert.equal(q.get(`SELECT COUNT(*) n FROM contents
     WHERE tenant_id=1 AND content_run_mode='automation_scheduled'`).n, beforeA + 1);
+});
+
+test('手动运行在claim前发现创建者撤权会原子停用规则并记录失败，不占扣不调用AI', async () => {
+  await withServer(bossA, async base => {
+    const created = await jsonRequest(base, '/content/automations', {
+      method: 'POST',
+      body: {
+        ...dailyRule,
+        name: '手动撤权复核规则',
+        runTime: '11:30',
+      },
+    });
+    assert.equal(created.response.status, 201);
+    const ruleId = created.data.rule.id;
+    const creditsBefore = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+    q.run(`UPDATE users SET modules='["dashboard"]' WHERE id=?`, bossA.id);
+    try {
+      const denied = await jsonRequest(base, `/content/automations/${ruleId}/run`, {
+        method: 'POST',
+        body: { idempotencyKey: randomUUID() },
+      });
+      assert.equal(denied.response.status, 403);
+      assert.match(denied.data.error, /规则已自动停用.*失去内容生产仓模块权限/u);
+      assert.ok(Number.isSafeInteger(denied.data.runId));
+      assert.equal(denied.data.status, '失败');
+      const rule = q.get(`SELECT enabled,next_run_at,last_status,last_error
+        FROM content_automation_rules WHERE tenant_id=1 AND id=?`, ruleId);
+      assert.equal(rule.enabled, 0);
+      assert.equal(rule.next_run_at, null);
+      assert.equal(rule.last_status, '已停用');
+      assert.match(rule.last_error, /失去内容生产仓模块权限/u);
+      const run = q.get(`SELECT status,error,snapshot_json
+        FROM content_automation_runs WHERE tenant_id=1 AND id=?`, denied.data.runId);
+      assert.equal(run.status, '失败');
+      assert.match(run.error, /失去内容生产仓模块权限/u);
+      assert.equal(JSON.parse(run.snapshot_json).entitlement.code, 'creator_content_revoked');
+      assert.equal(q.get(`SELECT COUNT(*) n FROM credit_holds
+        WHERE tenant_id=1 AND ref_type='content_automation_run' AND ref_id=?`,
+      denied.data.runId).n, 0);
+      assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, creditsBefore);
+    } finally {
+      q.run('UPDATE users SET modules=NULL WHERE id=?', bossA.id);
+    }
+  });
 });
 
 test('已完成规则可以删除且不会删除已生成内容', async () => {
@@ -340,6 +470,9 @@ test('已完成规则可以删除且不会删除已生成内容', async () => {
 });
 
 after(() => {
+  globalThis.fetch = nativeFetch;
+  delete process.env.BOCHA_API_KEY;
+  delete process.env.YUNWU_API_KEY;
   try { db.close(); } catch { /* already closed */ }
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch { /* cleanup */ }

@@ -669,7 +669,7 @@ r.get('/briefing', requireRole('boss', 'ops_director', 'admin', 'platform_super'
 });
 
 // 每日经营日报（昨日：涨跌→归因→建议）；无任何经营数据时返回 empty，前端整卡隐藏
-r.get('/daily-digest', (req, res) => {
+r.get('/daily-digest', requireRole('boss', 'ops_director', 'admin'), (req, res) => {
   const digest = buildDailyDigest(daysAgo(1));
   res.json(digest || { empty: true });
 });

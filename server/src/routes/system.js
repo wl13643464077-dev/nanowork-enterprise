@@ -14,6 +14,25 @@ import { decodeBase64File, MAX_FILE_BYTES } from '../engines/filehub.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, restoreDeletedRecord, tableRows } from '../engines/deletion.js';
 import { loadRestaurantCatalog } from '../catalog/restaurant.js';
 import { ensureContentAsset } from '../engines/content-assets.js';
+import { inspectRestaurantOutputAudit } from '../engines/restaurant-output-contract.js';
+import {
+  precheck,
+  estimateCallCredits,
+  holdCredits,
+  settleHold,
+  releaseHold,
+} from '../engines/credits.js';
+import {
+  executeHeldDelivery,
+  twoPhaseBillingSummary,
+  withImmediateTransaction,
+} from '../engines/two-phase-delivery.js';
+import { sanitizeProviderError } from '../engines/provider-errors.js';
+import {
+  buildRuntimeReadiness,
+  recordRuntimeReadinessCheck,
+} from '../engines/runtime-readiness.js';
+import * as yunwu from '../engines/yunwu.js';
 
 const r = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -371,12 +390,27 @@ r.post('/approvals/:id/decide', requireRole('boss', 'ops_director', 'admin'), (r
     return res.json({ ok: true, message: '终审已通过，已开始同步飞书日历和管理层提醒' });
   }
   if (a.target_type === 'content') {
-    const content = q.get(`SELECT id,type,title,body,topic,creator_id,effect_views,effect_leads
+    const content = q.get(`SELECT id,type,title,body,topic,creator_id,effect_views,effect_leads,ai_mode
       FROM contents WHERE tenant_id=? AND id=?`, curTenant(), a.target_id);
     if (!content) return res.status(404).json({ error: '待审批内容不存在' });
+    const employeeTask = q.get(`SELECT id,employee_profile_version,employee_web_snapshot
+      FROM agent_tasks WHERE tenant_id=? AND output_id=? ORDER BY id DESC LIMIT 1`,
+    curTenant(), content.id);
+    if (pass && employeeTask?.employee_profile_version) {
+      const audit = inspectRestaurantOutputAudit({
+        employeeProfileVersion: employeeTask.employee_profile_version,
+        aiMode: content.ai_mode,
+        executionEvidence: employeeTask.employee_web_snapshot,
+      });
+      if (!audit.valid) return res.status(409).json({ error: audit.error });
+    }
     immediateTransaction(() => {
       markApprovalDecision(a, req.user, pass, reason);
       q.run(`UPDATE contents SET status=? WHERE tenant_id=? AND id=?`, pass ? '可使用' : '已驳回', curTenant(), a.target_id);
+      if (employeeTask?.employee_profile_version) {
+        q.run(`UPDATE agent_tasks SET status=? WHERE tenant_id=? AND id=?`,
+          pass ? '已完成' : '已驳回', curTenant(), employeeTask.id);
+      }
       if (pass) {
         ensureContentAsset({ ...content, status: '可使用' }, {
           creatorId: content.creator_id,
@@ -568,8 +602,11 @@ r.delete('/kb/:id', (req, res) => {
 // ===== 知识库文件上传（FR-SYS-08：文档/图片，自动提取内容；图片走AI识图）=====
 r.post('/kb/upload', async (req, res) => { // 全员可上传：员工/合伙人上传自动「待启用」，管理员审核后进入AI引用
   let storedPath = '';
-  let transactionOpen = false;
   let persisted = false;
+  let keepStoredFile = false;
+  let retryMode = '';
+  let billing = null;
+  let fileUrl = '';
   try {
     if (typeof req.body?.name !== 'string' || typeof req.body?.b64 !== 'string') {
       return res.status(400).json({ error: '文件名与文件内容必须是文本' });
@@ -585,48 +622,6 @@ r.post('/kb/upload', async (req, res) => { // 全员可上传：员工/合伙人
     const { extractText, IMAGE_EXTS, ALLOWED_EXTS } = await import('../engines/extract.js');
     if (!ALLOWED_EXTS.includes(ext)) return res.status(400).json({ error: `不支持的格式 .${ext}（支持：docx/xlsx/pdf/txt/md/csv/json/png/jpg/webp）` });
     const buf = decodeBase64File(b64, MAX_FILE_BYTES);
-    // 租户独立目录 + 强随机文件名，避免同名同毫秒上传互相覆盖。
-    const dir = path.join(KB_UPLOAD_ROOT, String(curTenant()));
-    fs.mkdirSync(dir, { recursive: true });
-    const safeName = path.basename(name).replace(/[^\w.\u4e00-\u9fa5-]/g, '_').slice(0, 140) || `upload.${ext}`;
-    const safe = `${Date.now()}-${crypto.randomBytes(5).toString('hex')}-${safeName}`;
-    storedPath = path.join(dir, safe);
-    fs.writeFileSync(storedPath, buf, { flag: 'wx' });
-    const fileUrl = `/uploads/kb/${curTenant()}/${encodeURIComponent(safe)}`;
-
-    let body = ''; let extractMode = ''; let extractionReady = false;
-    if (IMAGE_EXTS.includes(ext)) {
-      // 图片 → vision 模型识图生成知识要点（真实计费）
-      try {
-        const { precheckByRole, charge } = await import('../engines/credits.js');
-        precheckByRole(req.user.id, 'text', req.user.role);
-        const yunwu = await import('../engines/yunwu.js');
-        const out = await yunwu.chat({
-          model: yunwu.routing().vision,
-          system: '你是餐饮企业知识库管理员。请把这张图片转写为可供AI引用的知识条目：①一句话说明图片是什么 ②逐条提取图中的关键信息（文字、数据、流程、菜品、价格表等，尽量完整）③适用场景 ④需要负责人核验的内容。不得补写图片中不存在的数据，直接输出内容。',
-          messages: [{ role: 'user', content: [
-            { type: 'text', text: `文件名：${name}，知识分类：${category}。请提取图片内容。` },
-            { type: 'image_url', image_url: { url: `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}` } },
-          ] }],
-          maxTokens: 1200,
-        });
-        const bill = charge({ userId: req.user.id, feature: '知识库·图片识别入库', kind: 'text', model: out.model,
-          usage: { inputTokens: out.inputTokens, outputTokens: out.outputTokens }, aiMode: 'api' });
-        body = String(out.text || '').trim() ? `【图片附件】${name}\n${out.text}` : '';
-        extractionReady = !!body;
-        extractMode = `AI识图（${out.model}，扣${bill.credits}积分）`;
-        res.locals = { billing: bill };
-      } catch (e) {
-        body = '';
-        extractMode = '图片已存档·识图待重试';
-      }
-    } else {
-      const text = extractText(buf, ext);
-      if (text && text.trim()) { body = text.trim(); extractionReady = true; extractMode = '自动提取正文'; }
-      else { body = ''; extractMode = '仅存档（未识别正文）'; }
-    }
-
-    const title = name.replace(/\.[^.]+$/, '');
     const normalizeRoles = (value, label) => {
       if (value === undefined || value === null) return null;
       if (!Array.isArray(value) || value.length > KB_ROLE_SET.size) throw Object.assign(new Error(`${label}格式不正确`), { status: 400 });
@@ -634,37 +629,194 @@ r.post('/kb/upload', async (req, res) => { // 全员可上传：员工/合伙人
       if (roles.some(role => !KB_ROLE_SET.has(role))) throw Object.assign(new Error(`${label}包含无效角色`), { status: 400 });
       return roles.length ? JSON.stringify(roles) : null;
     };
+    // 先完成所有会拒绝请求的字段校验，再写磁盘，避免无效请求留下孤儿文件。
     const vr = normalizeRoles(req.body.visibleRoles, '可见权限');
     const cr = normalizeRoles(req.body.callableRoles, 'AI调用权限');
+    const isImage = IMAGE_EXTS.includes(ext);
     const isManager = ['boss', 'ops_director', 'admin'].includes(req.user.role);
-    const enabled = isManager && extractionReady ? 1 : 0; // 无可读正文时不得进入AI引用
-    db.exec('BEGIN IMMEDIATE');
-    transactionOpen = true;
-    const result = q.run('INSERT INTO kb_docs(category,title,body,enabled,file_path,file_type,file_name,visible_roles,callable_roles) VALUES(?,?,?,?,?,?,?,?,?)',
-      category, title, body, enabled, fileUrl, ext, name, vr, cr);
-    q.run('INSERT INTO biz_assets(name,category,value,status,owner,source_type,source_id,creator_id,url,note) VALUES(?,?,?,?,?,?,?,?,?,?)',
-      title, '知识资产', 5000, '使用中', '知识库', 'kb', result.lastInsertRowid, req.user.id, fileUrl,
-      `知识库文件上传：${name}；提取方式=${extractMode}；上传人=${req.user.name || '-'}`);
-    db.exec('COMMIT');
-    transactionOpen = false;
-    persisted = true;
+    const title = name.replace(/\.[^.]+$/, '');
+    // 租户独立目录 + 强随机文件名，避免同名同毫秒上传互相覆盖。
+    const dir = path.join(KB_UPLOAD_ROOT, String(curTenant()));
+    fs.mkdirSync(dir, { recursive: true });
+    const safeName = path.basename(name).replace(/[^\w.\u4e00-\u9fa5-]/g, '_').slice(0, 140) || `upload.${ext}`;
+    const safe = `${Date.now()}-${crypto.randomBytes(5).toString('hex')}-${safeName}`;
+    storedPath = path.join(dir, safe);
+    fs.writeFileSync(storedPath, buf, { flag: 'wx' });
+    fileUrl = `/uploads/kb/${curTenant()}/${encodeURIComponent(safe)}`;
+    // 图片原文件一旦通过校验即作为可重试底稿保留；AI 或数据库失败不能让用户重新上传。
+    keepStoredFile = isImage;
+
+    let body = ''; let extractMode = ''; let extractionReady = false;
+    const persistArchive = ({ archiveBody, archiveMode, ready }) => withImmediateTransaction(db, () => {
+      const enabled = isManager && ready ? 1 : 0; // 无可读正文时不得进入AI引用
+      const result = q.run('INSERT INTO kb_docs(category,title,body,enabled,file_path,file_type,file_name,visible_roles,callable_roles) VALUES(?,?,?,?,?,?,?,?,?)',
+        category, title, archiveBody, enabled, fileUrl, ext, name, vr, cr);
+      q.run('INSERT INTO biz_assets(name,category,value,status,owner,source_type,source_id,creator_id,url,note) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        title, '知识资产', 5000, '使用中', '知识库', 'kb', result.lastInsertRowid, req.user.id, fileUrl,
+        `知识库文件上传：${name}；提取方式=${archiveMode}；上传人=${req.user.name || '-'}`);
+      return {
+        id: Number(result.lastInsertRowid),
+        enabled,
+        body: archiveBody,
+        extractMode: archiveMode,
+      };
+    });
+
+    let archive;
+    if (isImage) {
+      const visionSystem = '你是餐饮企业知识库管理员。请把这张图片转写为可供AI引用的知识条目：①一句话说明图片是什么 ②逐条提取图中的关键信息（文字、数据、流程、菜品、价格表等，尽量完整）③适用场景 ④需要负责人核验的内容。不得补写图片中不存在的数据，直接输出内容。';
+      const visionUserText = `文件名：${name}，知识分类：${category}。请提取图片内容。`;
+      let hold = null;
+      try {
+        if (!yunwu.yunwuAvailable()) {
+          throw Object.assign(new Error('识图通道未配置'), { status: 503, billingState: 'not_started' });
+        }
+        const holdModel = yunwu.routing().vision;
+        precheck(req.user.id, 'text', holdModel);
+        hold = holdCredits({
+          userId: req.user.id,
+          feature: '知识库·图片识别入库',
+          kind: 'text',
+          model: holdModel,
+          credits: estimateCallCredits({
+            kind: 'text',
+            model: holdModel,
+            texts: [visionSystem, visionUserText],
+            outputTokens: 1200,
+            // 视觉 token 与 base64 字符数并非一一对应；按原图体积保守占额并设上限。
+            overheadTokens: Math.min(100000, Math.max(6000, Math.ceil(buf.length / 2))),
+          }),
+          refType: 'kb_upload_vision',
+          note: `知识库图片「${name}」在供应商调用前预授权；知识文档与资产未原子落库则全额退回。`,
+        });
+        const activeHold = hold;
+        hold = null;
+        const delivered = await executeHeldDelivery({
+          hold: activeHold,
+          generate: () => yunwu.chat({
+            model: holdModel,
+            system: visionSystem,
+            messages: [{ role: 'user', content: [
+              { type: 'text', text: visionUserText },
+              { type: 'image_url', image_url: { url: `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}` } },
+            ] }],
+            maxTokens: 1200,
+          }),
+          persist: out => {
+            const extracted = String(out.text || '').trim();
+            if (!extracted) throw new Error('识图服务未返回可用正文');
+            return persistArchive({
+              archiveBody: `【图片附件】${name}\n${extracted}`,
+              archiveMode: `AI识图（${out.model}）`,
+              ready: true,
+            });
+          },
+          settle: settleHold,
+          release: releaseHold,
+          settlement: out => ({
+            usage: {
+              inputTokens: out.inputTokens,
+              outputTokens: out.outputTokens,
+            },
+            model: out.model,
+            aiMode: 'api',
+            note: '知识库图片正文与知识资产已原子落库',
+          }),
+          releaseNote: '知识库图片识别或业务落库失败，预授权全额退回',
+        });
+        archive = delivered.delivery;
+        billing = delivered.billing;
+        body = archive.body;
+        extractionReady = true;
+        extractMode = archive.extractMode;
+        persisted = true;
+      } catch (error) {
+        if (hold) {
+          try {
+            const released = releaseHold(hold, '知识库图片未进入供应商生成，预授权全额退回');
+            billing = twoPhaseBillingSummary({
+              state: 'released',
+              hold,
+              settled: released,
+              note: '本次未调用供应商，预授权已全额退回。',
+            });
+          } catch (releaseError) {
+            billing = twoPhaseBillingSummary({
+              state: 'pending_reconciliation',
+              hold,
+              error: releaseError,
+              note: '本次未调用供应商，但预授权释放异常，已保留待人工对账。',
+            });
+          }
+          hold = null;
+        } else if (error.billing) {
+          billing = error.billing;
+        } else {
+          billing = twoPhaseBillingSummary({
+            state: 'not_started',
+            hold: null,
+            error,
+            note: '识图未启动或尚未形成占额，不会产生实扣。',
+          });
+        }
+        body = '';
+        extractMode = '图片已存档·识图待重试';
+        retryMode = extractMode;
+        extractionReady = false;
+        // 上游识别或正式落库失败后，以独立事务保留“待重试”档案。
+        // 这笔档案不是可交付识图产物，因此无论落库成功与否都不得触发结算。
+        archive = persistArchive({
+          archiveBody: '',
+          archiveMode: extractMode,
+          ready: false,
+        });
+        persisted = true;
+      }
+    } else {
+      const text = extractText(buf, ext);
+      if (text && text.trim()) { body = text.trim(); extractionReady = true; extractMode = '自动提取正文'; }
+      else { body = ''; extractMode = '仅存档（未识别正文）'; }
+      archive = persistArchive({
+        archiveBody: body,
+        archiveMode: extractMode,
+        ready: extractionReady,
+      });
+      persisted = true;
+    }
+
     if (extractionReady) {
-      try { embedDoc(result.lastInsertRowid, title, body); } catch { /* 文档已入库，向量可稍后重建 */ }
+      try { embedDoc(archive.id, title, body); } catch { /* 文档已入库，向量可稍后重建 */ }
     }
     if (!isManager) {
       const mgrs = q.all(`SELECT id FROM users WHERE tenant_id = ${curTenant()} AND role IN ('boss','ops_director','admin')`);
       for (const u of mgrs) notify(u.id, '知识库', `员工上传知识待审：${title}`, `${req.user.name} 上传「${name}」到「${category}」，启用后才会被AI引用`);
     }
     logOp(req.user, '系统管理', '上传知识库文件', `${name}（${extractMode}）`);
-    res.json({ id: result.lastInsertRowid, title, body, fileUrl, fileType: ext, extractMode, enabled, billing: res.locals?.billing });
+    res.json({
+      id: archive.id,
+      title,
+      body,
+      fileUrl,
+      fileType: ext,
+      extractMode,
+      enabled: archive.enabled,
+      billing,
+    });
   } catch (e) {
-    if (transactionOpen) {
-      try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
-    }
-    if (storedPath && !persisted) {
+    if (storedPath && !persisted && !keepStoredFile) {
       try { fs.rmSync(storedPath, { force: true }); } catch { /* best-effort orphan cleanup */ }
     }
-    res.status(e.status || 500).json({ error: e.message });
+    const error = retryMode
+      ? `${retryMode}：${e.message}`
+      : e.message;
+    res.status(e.status || 500).json({
+      error,
+      ...(retryMode ? {
+        extractMode: retryMode,
+        fileUrl,
+        billing: e.billing || billing,
+      } : {}),
+    });
   }
 });
 
@@ -1005,6 +1157,11 @@ r.post('/deletions/:id/restore', requireRole('boss', 'admin'), (req, res) => {
 });
 
 // ===== 系统状态 =====
+r.get('/runtime-readiness', requireRole('boss', 'ops_director', 'admin', 'platform_super'), (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(buildRuntimeReadiness({ tenantId: curTenant() }));
+});
+
 r.get('/status', requireRole('boss', 'ops_director', 'admin', 'platform_super'), (req, res) => {
   const dbSize = fs.existsSync(DB_PATH) ? Math.round(fs.statSync(DB_PATH).size / 1024) : 0;
   const mem = process.memoryUsage();
@@ -1019,6 +1176,7 @@ r.get('/status', requireRole('boss', 'ops_director', 'admin', 'platform_super'),
       ? 'CPU或内存偏高，建议关注后续波动'
       : '核心资源处于安全区间';
   const usage = getTokenUsage();
+  const readiness = buildRuntimeReadiness({ tenantId: curTenant() });
   res.json({
     users: q.get(`SELECT COUNT(*) n FROM users WHERE tenant_id = ${curTenant()}`)?.n || 0,
     online: q.get(`SELECT COUNT(DISTINCT username) n FROM login_logs
@@ -1033,8 +1191,10 @@ r.get('/status', requireRole('boss', 'ops_director', 'admin', 'platform_super'),
     healthStatus,
     healthLabel,
     healthReason,
+    readiness,
     ai: {
       available: aiAvailable(),
+      readiness: readiness.channels.find(item => item.key === 'ai'),
       canViewDetail: canViewAiDetail,
       model: canViewAiDetail ? (process.env.AI_MODEL || 'claude-opus-4-8') : null,
       usage: canViewAiDetail ? usage : null,
@@ -1112,6 +1272,8 @@ r.get('/feishu', requireRole('boss', 'ops_director', 'admin'), async (req, res) 
   const { feishuConfig, appReady, appBotReady, feishuManagerSummary } = await import('../engines/feishu.js');
   const cfg = feishuConfig();
   const managers = feishuManagerSummary();
+  const readiness = buildRuntimeReadiness({ tenantId: curTenant() })
+    .channels.find(item => item.key === 'feishu');
   res.json({
     enabled: cfg.enabled, mode: 'app', receiverName: cfg.receiverName,
     receiveIdType: cfg.receiveIdType,
@@ -1121,6 +1283,7 @@ r.get('/feishu', requireRole('boss', 'ops_director', 'admin'), async (req, res) 
     managerReceiverCount: managers.count,
     managerCalendarCount: managers.calendarCount,
     managerReceivers: managers.recipients,
+    readiness,
   });
 });
 r.get('/feishu/me', async (req, res) => {
@@ -1187,14 +1350,54 @@ r.get('/feishu/qr', requireRole('boss', 'ops_director', 'admin'), async (req, re
 // 群绑定接口（/feishu/chats、/feishu/bind、/feishu/autobind）已随 V3 应用机器人单人绑定下线；
 // 前端从未调用，2026-07 升级中删除废弃桩，避免死接口误导集成方。
 r.post('/feishu/test', requireRole('boss', 'ops_director', 'admin'), async (req, res) => {
-  const { pushFeishuToManagers } = await import('../engines/feishu.js');
-  const out = await pushFeishuToManagers({
-    title: '纳米Work行业版 · 管理层连接测试',
-    lines: ['✅ 飞书应用机器人已接通', `操作人：${req.user.name}`, '后续活动创建/状态变更会同步推送给已绑定的老板与管理层，并自动写入飞书日历提醒'],
-  });
-  if (out.skipped) return res.status(400).json({ error: out.reason || '请先配置并启用飞书应用机器人' });
-  if (!out.ok) return res.status(502).json({ error: `飞书返回异常：${out.error || JSON.stringify(out.resp).slice(0, 160)}` });
-  res.json({ ok: true, sent: out.sent, total: out.total });
+  const tenantId = curTenant();
+  try {
+    const { pushFeishuToManagers } = await import('../engines/feishu.js');
+    const out = await pushFeishuToManagers({
+      title: '纳米Work行业版 · 管理层连接测试',
+      lines: ['✅ 飞书应用机器人已接通', `操作人：${req.user.name}`, '后续活动创建/状态变更会同步推送给已绑定的老板与管理层，并自动写入飞书日历提醒'],
+    });
+    if (out.skipped || !out.ok) {
+      const message = out.reason || out.error || (out.skipped
+        ? '请先配置并启用飞书应用机器人'
+        : '飞书服务暂时不可用，请稍后重试');
+      recordRuntimeReadinessCheck('feishu', {
+        tenantId,
+        outcome: 'failed',
+        checkedBy: req.user.id,
+        error: message,
+        evidence: { sent: Number(out.sent) || 0, total: Number(out.total) || 0 },
+      });
+      return res.status(out.skipped ? 400 : 502).json({
+        error: message,
+        readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'feishu'),
+      });
+    }
+    recordRuntimeReadinessCheck('feishu', {
+      tenantId,
+      outcome: 'passed',
+      checkedBy: req.user.id,
+      evidence: { sent: Number(out.sent) || 0, total: Number(out.total) || 0 },
+    });
+    res.json({
+      ok: true,
+      sent: out.sent,
+      total: out.total,
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'feishu'),
+    });
+  } catch (error) {
+    const safe = sanitizeProviderError(error, { service: '飞书服务' });
+    recordRuntimeReadinessCheck('feishu', {
+      tenantId,
+      outcome: 'failed',
+      checkedBy: req.user.id,
+      error: safe.message,
+    });
+    res.status(502).json({
+      error: safe.message,
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'feishu'),
+    });
+  }
 });
 // ===== 通知 =====
 r.get('/notifications', (req, res) => {

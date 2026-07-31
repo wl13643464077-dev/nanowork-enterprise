@@ -10,7 +10,14 @@ const FORMAT_ITEMS = [
   { key: 'pptx', label: 'PPT 演示 (.pptx)' },
 ];
 
-export function ArtifactActions({ title, content, sourceType, sourceId, onGenerated, compact = true }: {
+export function ArtifactActions({
+  title,
+  content,
+  sourceType,
+  sourceId,
+  onGenerated,
+  compact = true,
+}: {
   title: string;
   content: string;
   sourceType: string;
@@ -34,7 +41,9 @@ export function ArtifactActions({ title, content, sourceType, sourceId, onGenera
       link.target = '_blank';
       link.rel = 'noreferrer';
       link.click();
-    } finally { setWorking(null); }
+    } finally {
+      setWorking(null);
+    }
   };
 
   const archive = async () => {
@@ -49,12 +58,16 @@ export function ArtifactActions({ title, content, sourceType, sourceId, onGenera
     <Space size={4}>
       <Dropdown menu={{ items: FORMAT_ITEMS, onClick: ({ key }) => generate(key) }} trigger={['click']}>
         <Tooltip title="生成真实可下载文件并保存到产出档案">
-          <Button size={compact ? 'small' : 'middle'} type="text" icon={<DownloadOutlined />} loading={!!working}>生成文件</Button>
+          <Button size={compact ? 'small' : 'middle'} type="text" icon={<DownloadOutlined />} loading={!!working}>
+            生成文件
+          </Button>
         </Tooltip>
       </Dropdown>
       {artifact && !artifact.archived && (
         <Tooltip title="把本次产出写入知识库，后续AI可调用">
-          <Button size={compact ? 'small' : 'middle'} type="text" icon={<FolderAddOutlined />} onClick={archive}>入档</Button>
+          <Button size={compact ? 'small' : 'middle'} type="text" icon={<FolderAddOutlined />} onClick={archive}>
+            入档
+          </Button>
         </Tooltip>
       )}
     </Space>

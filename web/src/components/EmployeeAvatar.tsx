@@ -13,8 +13,17 @@ function hashOf(seed: number) {
   return h;
 }
 
-export default function EmployeeAvatar({ idx, name = '', color = '#2c76dc', size = 56 }: {
-  idx: number; name?: string; color?: string; group?: string; size?: number;
+export default function EmployeeAvatar({
+  idx,
+  name = '',
+  color = '#2c76dc',
+  size = 56,
+}: {
+  idx: number;
+  name?: string;
+  color?: string;
+  group?: string;
+  size?: number;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
   const h = hashOf(idx);
@@ -27,7 +36,13 @@ export default function EmployeeAvatar({ idx, name = '', color = '#2c76dc', size
   const arcTone = `color-mix(in srgb, #ffffff 16%, transparent)`;
 
   return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: '0 0 auto' }}>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      aria-hidden="true"
+      style={{ display: 'block', flex: '0 0 auto' }}
+    >
       <defs>
         <linearGradient id={`bg${uid}`} x1="0" y1="0" x2="0.35" y2="1">
           <stop offset="0" style={{ stopColor: bgTop }} />
@@ -38,7 +53,9 @@ export default function EmployeeAvatar({ idx, name = '', color = '#2c76dc', size
           <stop offset="0.5" stopColor="#ffffff" stopOpacity="0.07" />
           <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
         </radialGradient>
-        <clipPath id={`cp${uid}`}><rect x="0" y="0" width="64" height="64" rx="17" /></clipPath>
+        <clipPath id={`cp${uid}`}>
+          <rect x="0" y="0" width="64" height="64" rx="17" />
+        </clipPath>
       </defs>
       <g clipPath={`url(#cp${uid})`}>
         <rect x="0" y="0" width="64" height="64" fill={`url(#bg${uid})`} />
@@ -48,14 +65,43 @@ export default function EmployeeAvatar({ idx, name = '', color = '#2c76dc', size
         {/* 左上柔光 */}
         <rect x="0" y="0" width="64" height="64" fill={`url(#gl${uid})`} />
         {/* 姓氏大字：微投影 + 主字 */}
-        <text x="32" y="34.6" textAnchor="middle" dominantBaseline="central"
+        <text
+          x="32"
+          y="34.6"
+          textAnchor="middle"
+          dominantBaseline="central"
           fontFamily="'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif"
-          fontSize="30" fontWeight="600" fill="#12233a" opacity="0.22">{glyph}</text>
-        <text x="32" y="33" textAnchor="middle" dominantBaseline="central"
+          fontSize="30"
+          fontWeight="600"
+          fill="#12233a"
+          opacity="0.22"
+        >
+          {glyph}
+        </text>
+        <text
+          x="32"
+          y="33"
+          textAnchor="middle"
+          dominantBaseline="central"
           fontFamily="'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif"
-          fontSize="30" fontWeight="600" fill="#ffffff">{glyph}</text>
+          fontSize="30"
+          fontWeight="600"
+          fill="#ffffff"
+        >
+          {glyph}
+        </text>
         {/* 内描边收边 */}
-        <rect x="0.6" y="0.6" width="62.8" height="62.8" rx="16.4" fill="none" stroke="#ffffff" strokeOpacity="0.4" strokeWidth="1.2" />
+        <rect
+          x="0.6"
+          y="0.6"
+          width="62.8"
+          height="62.8"
+          rx="16.4"
+          fill="none"
+          stroke="#ffffff"
+          strokeOpacity="0.4"
+          strokeWidth="1.2"
+        />
       </g>
     </svg>
   );

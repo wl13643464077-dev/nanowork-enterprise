@@ -1,12 +1,17 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { curTenant, q } from './db.js';
 import { loadRestaurantCatalog, RESTAURANT_CATALOG_PATH } from './catalog/restaurant.js';
+import {
+  EMPLOYEE_SKILL_EFFECT_VALIDATION,
+  EMPLOYEE_SKILL_EVIDENCE_CATALOG,
+  EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH,
+  EMPLOYEE_SKILL_VERIFICATION_LEVEL,
+  verifiedEmployeeSkillsFor,
+} from './catalog/employee-skills-verification.js';
+import { getRestaurantOutputContract } from './engines/restaurant-output-contract.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const EMPLOYEE_SKILLS_PATH = path.join(__dirname, '..', 'catalog', 'employee-skills.json');
+export const EMPLOYEE_SKILLS_PATH = EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH;
 export const EMPLOYEE_TASK_TYPES = Object.freeze([
   '经营诊断', '执行方案', '检查清单', '数据分析', '活动策划', 'SOP',
   '话术', '方案', '清单', '排期', '分析', '常规',
@@ -118,34 +123,17 @@ function normalizeCatalogSkill(raw, employeeIdx, index) {
     required: false,
     enabled: raw.enabled !== false,
     learnedAt,
-    verificationStatus: raw.verificationStatus || (legacy ? 'legacy_unverified' : 'catalog'),
+    verificationStatus: raw.verificationLevel || raw.verificationStatus || (legacy ? 'legacy_unverified' : 'catalog'),
+    legacyVerificationStatus: legacy ? raw.verificationStatus : null,
+    verificationLevel: raw.verificationLevel || null,
+    effectValidation: raw.effectValidation || null,
+    contentFingerprint: raw.contentFingerprint || null,
+    offlineAcceptanceFixture: raw.offlineAcceptanceFixture || null,
     sourceSnapshot: raw.sourceSnapshot || null,
     locked: false,
     defaultInjected: true,
     currentPlatformFact: !legacy,
   };
-}
-
-function skillsForEmployeeFromRoot(root, employeeIdx) {
-  if (Array.isArray(root)) {
-    return root.filter(item => Number(item?.employeeIdx ?? item?.employee_idx ?? item?.idx) === employeeIdx);
-  }
-  if (!root || typeof root !== 'object') throw new Error('员工技能目录根节点必须是对象或数组');
-  if (Array.isArray(root.employees)) {
-    const employee = root.employees.find(item => Number(item?.employeeIdx ?? item?.employee_idx ?? item?.idx) === employeeIdx);
-    return Array.isArray(employee?.skills) ? employee.skills : [];
-  }
-  if (Array.isArray(root.skills)) {
-    return root.skills.filter(item => Number(item?.employeeIdx ?? item?.employee_idx ?? item?.idx) === employeeIdx);
-  }
-  if (Array.isArray(root.profiles)) {
-    const profile = root.profiles.find(item => Number(item?.employeeIdx ?? item?.employee_idx ?? item?.idx) === employeeIdx);
-    return Array.isArray(profile?.skills) ? profile.skills : [];
-  }
-  const direct = root[String(employeeIdx)];
-  if (Array.isArray(direct)) return direct;
-  if (Array.isArray(direct?.skills)) return direct.skills;
-  return [];
 }
 
 function optionalCatalogSkills(employeeIdx) {
@@ -158,8 +146,8 @@ function optionalCatalogSkills(employeeIdx) {
   } catch (error) {
     throw new Error(`员工技能目录读取失败，拒绝静默降级：${error.message}`);
   }
-  const root = strictJson(source, null, '员工技能目录');
-  const skills = skillsForEmployeeFromRoot(root, employeeIdx)
+  const root = EMPLOYEE_SKILL_EVIDENCE_CATALOG;
+  const skills = verifiedEmployeeSkillsFor(root, employeeIdx)
     .map((skill, index) => normalizeCatalogSkill(skill, employeeIdx, index));
   if (new Set(skills.map(skill => skill.id)).size !== skills.length) {
     throw new Error(`员工${employeeIdx}的可选技能ID重复，拒绝静默降级`);
@@ -440,7 +428,7 @@ function dispatchGuidance(employee) {
   };
 }
 
-function profileVersion(employee) {
+function profileVersion(employee, outputContract) {
   return `restaurant-v2-${sha256(JSON.stringify({
     idx: employee.idx,
     key: employee.key,
@@ -451,6 +439,8 @@ function profileVersion(employee) {
     deliverables: employee.deliverables,
     qualityGates: employee.qualityGates,
     safetyBoundaries: employee.safetyBoundaries,
+    outputContractId: outputContract.contractId,
+    outputSchemaVersion: outputContract.schemaVersion,
   })).slice(0, 16)}`;
 }
 
@@ -494,7 +484,8 @@ export function buildEmployeeWorkbench(idx, { tenantId = curTenant(), user = nul
     version: `restaurant-config-r${Number(row?.revision || 0)}`,
     boundary: '工作配置只改变执行参数，不得停用岗位必备能力、岗位手册、质量门或安全边界。',
   };
-  const version = profileVersion(employee);
+  const outputContract = getRestaurantOutputContract(employee.idx);
+  const version = profileVersion(employee, outputContract);
   const override = row?.prompt_override || '';
   // 覆盖提示词只能追加，不能替换出厂岗位手册和必备能力。
   const effectiveTemplate = [
@@ -606,6 +597,10 @@ export function buildEmployeeWorkbench(idx, { tenantId = curTenant(), user = nul
         timeoutSeconds: config.timeoutSeconds,
         outputLength: config.outputLength,
       },
+      outputContract,
+      outputSchema: outputContract.schema,
+      primaryArtifact: outputContract.primaryArtifact,
+      validOutputFixture: outputContract.validFixture,
       collaborators: RESTAURANT_CATALOG.groups
         .filter(item => item.name !== group.name)
         .map(item => item.name),
@@ -640,6 +635,8 @@ export function buildEmployeeWorkbench(idx, { tenantId = curTenant(), user = nul
       profileVersion: version,
       skillsCatalog: skills.catalogStatus,
       skillsCatalogHash: skills.catalogHash,
+      skillsVerificationLevel: EMPLOYEE_SKILL_VERIFICATION_LEVEL,
+      skillsEffectValidation: EMPLOYEE_SKILL_EFFECT_VALIDATION,
       tenantId,
       noSilentFallback: true,
     },
@@ -671,27 +668,38 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
     ...workbench.workMethod.safetyBoundaries.map(item => `- ${item}`),
     '',
     '【技能库·本次启用】',
-    ...enabledSkills.map(item => `- ${item.title}：${item.detail}（来源：${item.source}；核验状态：${item.verificationStatus || item.origin}）`),
+    ...enabledSkills.map(item => `- ${item.title}：${item.detail}（来源：${item.source}；目录与注入验证：${item.verificationLevel || item.verificationStatus || item.origin}；业务效果：${item.effectValidation || '按当前业务样本复核'}）`),
     '',
     '【工作配置】',
     JSON.stringify(workbench.workConfig),
     `【输出语言·必须执行】${workbench.workConfig.language}`,
     `【审批方式·必须执行】${workbench.workConfig.approvalMode}；无论何种模式，本次只能形成待审阅交付，不得自动对外发布。`,
+    '',
+    '【机器输出契约·直接派活必须执行】',
+    workbench.jobProfile.outputContract.instruction,
+    `契约ID：${workbench.jobProfile.outputContract.contractId}`,
+    `主产物：${workbench.jobProfile.outputContract.primaryArtifact}`,
     workbench.prompts.override ? `\n【本企业补充提示词】\n${workbench.prompts.override}` : '',
     '',
-    '【不可覆盖的最终约束】企业补充提示词和可选技能不得停用、删减或绕过完整岗位手册、全部必备能力、质量门与安全边界；标记为 legacy_unverified 的历史进修技能只能作为待核验线索，不得直接当作当前事实。',
+    '【不可覆盖的最终约束】企业补充提示词和可选技能不得停用、删减或绕过完整岗位手册、全部必备能力、质量门与安全边界；历史技能只完成目录完整性与执行注入契约验证，第三方说法、平台时效和真实业务效果仍须按当前样本复核，不得直接当作当前事实。',
   ].join('\n');
   const promptHash = sha256(systemContext);
   return {
     workbench,
     systemContext,
     promptHash,
+    responseSchema: {
+      name: `restaurant_employee_${workbench.identity.idx}_output`,
+      schema: workbench.jobProfile.outputContract.providerSchema,
+    },
+    outputContract: workbench.jobProfile.outputContract,
     snapshot: {
       profileVersion: workbench.provenance.profileVersion,
       promptHash,
       capabilities: workbench.capabilities,
       config: workbench.workConfig,
       skills: enabledSkills,
+      outputContract: workbench.jobProfile.outputContract,
     },
   };
 }

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { setTenantConfig, curTenant, q } from '../db.js';
+import { providerResponseError, sanitizeProviderError } from './provider-errors.js';
 
 // 飞书配置纯租户私有：无"平台默认"概念（每家企业自己的应用机器人/凭据/令牌），故只读本租户键、不回退全局。
 // 否则历史遗留的全局 feishu/feishu_ics_token 会串到未配置的企业，且 ICS 令牌反查不到租户。
@@ -15,6 +16,16 @@ const CALENDAR_USER_ID_TYPES = new Set(['open_id', 'user_id', 'union_id']);
 const MANAGER_ROLES = new Set(['boss', 'ops_director', 'admin']);
 const CALENDAR_IDENTITY_VERSION = 1;
 const oauthSessions = new Map();
+
+class FeishuBindingError extends Error {}
+
+function feishuResponseError(status, payload) {
+  return providerResponseError(status || 502, payload, { service: '飞书服务' });
+}
+
+function safeFeishuError(error) {
+  return sanitizeProviderError(error, { service: '飞书服务' });
+}
 
 function tenantDisplayName(tid = curTenant()) {
   const name = String(q.get('SELECT name FROM tenants WHERE id=?', Number(tid))?.name || '').replace(/\s+/g, ' ').trim();
@@ -239,7 +250,7 @@ async function tenantToken(tid = curTenant()) {
     body: JSON.stringify({ app_id: c.appId, app_secret: c.appSecret }),
   });
   const d = await res.json();
-  if (d.code !== 0) throw new Error(`飞书鉴权失败：${d.msg}`);
+  if (!res.ok || d.code !== 0) throw feishuResponseError(res.status, d);
   tokenCache.set(tid, { token: d.tenant_access_token, exp: Date.now() + (d.expire - 300) * 1000 });
   return d.tenant_access_token;
 }
@@ -318,7 +329,7 @@ async function exchangeUserAccessToken(code, redirectUri, tid = curTenant()) {
     }),
   });
   const d = await res.json();
-  if (d.code !== 0) throw new Error(d.msg || d.error_description || d.error || '获取飞书用户授权失败');
+  if (!res.ok || d.code !== 0) throw feishuResponseError(res.status, d);
   const token = d.data?.access_token || d.access_token || d.data?.user_access_token || d.user_access_token;
   if (!token) throw new Error('飞书未返回用户访问凭证');
   return token;
@@ -329,7 +340,7 @@ async function fetchOAuthUserInfo(userAccessToken) {
     headers: { Authorization: `Bearer ${userAccessToken}` },
   });
   const d = await res.json();
-  if (d.code !== 0) throw new Error(d.msg || '获取飞书用户信息失败');
+  if (!res.ok || d.code !== 0) throw feishuResponseError(res.status, d);
   return d.data || {};
 }
 
@@ -346,11 +357,13 @@ export async function handleFeishuOAuthCallback({ code, state } = {}) {
     const userAccessToken = await exchangeUserAccessToken(String(code), s.redirectUri, s.tid);
     const info = await fetchOAuthUserInfo(userAccessToken);
     const openId = info.open_id || info.openId;
-    if (!openId) throw new Error('飞书未返回 open_id，请确认应用已开通网页应用免登/用户信息权限');
+    if (!openId) throw new FeishuBindingError('飞书未返回 open_id，请确认应用已开通网页应用免登/用户信息权限');
     const cur = tcfg('feishu', {}, s.tid) || {};
     const receiverName = info.name || info.en_name || info.email || info.mobile || '飞书用户';
     const actor = s.userId ? q.get('SELECT id,name,role,status FROM users WHERE tenant_id = ? AND id = ?', s.tid, s.userId) : null;
-    if (!actor || actor.status !== '启用') throw new Error('发起绑定的账号已停用或不存在，请重新登录后扫码');
+    if (!actor || actor.status !== '启用') {
+      throw new FeishuBindingError('发起绑定的账号已停用或不存在，请重新登录后扫码');
+    }
     const bindingActor = actor;
     // OAuth here is always a personal binding. Tenant-wide recipients are
     // configured only through the manager-only enterprise settings endpoint.
@@ -384,9 +397,10 @@ export async function handleFeishuOAuthCallback({ code, state } = {}) {
     }, s.tid), s.tid).catch(() => {});
     return { ok: true, receiverName, receiveIdType: 'open_id' };
   } catch (e) {
+    const safe = e instanceof FeishuBindingError ? e : safeFeishuError(e);
     s.status = 'error';
-    s.error = e.message;
-    throw e;
+    s.error = safe.message;
+    throw safe;
   }
 }
 
@@ -399,7 +413,10 @@ async function sendAppMessage(receiveId, receiveIdType, cardObj, tid = curTenant
     body: JSON.stringify({ receive_id: receiveId, msg_type: 'interactive', content: JSON.stringify(cardObj) }),
   });
   const d = await res.json();
-  return { ok: d.code === 0, resp: d };
+  if (!res.ok || d.code !== 0) {
+    return { ok: false, error: feishuResponseError(res.status, d).message };
+  }
+  return { ok: true };
 }
 
 function buildCard({ title, lines = [], url }, tid = curTenant()) {
@@ -419,7 +436,11 @@ export async function pushFeishu(msg, tid = curTenant()) {
   if (!c.appId || !c.appSecret) return { skipped: true, reason: '未配置飞书企业应用凭据' };
   if (!c.receiveId) return { skipped: true, reason: '未配置飞书应用机器人接收人' };
   const card = buildCard(msg, tid);
-  try { return await sendAppMessage(c.receiveId, c.receiveIdType, card, tid); } catch (e) { return { ok: false, error: e.message }; }
+  try {
+    return await sendAppMessage(c.receiveId, c.receiveIdType, card, tid);
+  } catch (e) {
+    return { ok: false, error: safeFeishuError(e).message };
+  }
 }
 
 export async function pushFeishuToManagers(msg, tid = curTenant()) {
@@ -433,12 +454,28 @@ export async function pushFeishuToManagers(msg, tid = curTenant()) {
   for (const r of recipients) {
     try {
       const out = await sendAppMessage(r.receiveId, r.receiveIdType, card, tid);
-      results.push({ ok: out.ok, receiverName: r.receiverName || r.userName, receiveIdType: r.receiveIdType, resp: out.resp });
+      results.push({
+        ok: out.ok,
+        receiverName: r.receiverName || r.userName,
+        receiveIdType: r.receiveIdType,
+        ...(out.error ? { error: out.error } : {}),
+      });
     } catch (e) {
-      results.push({ ok: false, receiverName: r.receiverName || r.userName, receiveIdType: r.receiveIdType, error: e.message });
+      results.push({
+        ok: false,
+        receiverName: r.receiverName || r.userName,
+        receiveIdType: r.receiveIdType,
+        error: safeFeishuError(e).message,
+      });
     }
   }
-  return { ok: results.some(x => x.ok), sent: results.filter(x => x.ok).length, total: recipients.length, results };
+  return {
+    ok: results.some(x => x.ok),
+    sent: results.filter(x => x.ok).length,
+    total: recipients.length,
+    results,
+    ...(results.every(x => !x.ok) ? { error: results.find(x => x.error)?.error || '飞书服务暂时不可用，请稍后重试' } : {}),
+  };
 }
 
 export async function pushFeishuToUser(msg, userId, tid = curTenant()) {
@@ -450,7 +487,7 @@ export async function pushFeishuToUser(msg, userId, tid = curTenant()) {
     const out = await sendAppMessage(recipient.receiveId, recipient.receiveIdType, buildCard(msg, tid), tid);
     return { ...out, receiverName: recipient.receiverName || recipient.userName || '' };
   } catch (e) {
-    return { ok: false, error: e.message, receiverName: recipient.receiverName || recipient.userName || '' };
+    return { ok: false, error: safeFeishuError(e).message, receiverName: recipient.receiverName || recipient.userName || '' };
   }
 }
 
@@ -572,7 +609,7 @@ async function ensureCalendar(tid = curTenant()) {
     body: JSON.stringify({ summary: identity.summary, description: identity.description, permissions: 'show_only_free_busy' }),
   });
   const d = await res.json();
-  if (d.code !== 0) throw new Error(`创建飞书日历失败：${d.msg}`);
+  if (!res.ok || d.code !== 0) throw feishuResponseError(res.status, d);
   const id = d.data?.calendar?.calendar_id;
   setTenantConfig('feishu', { ...cur, calendarId: id, calendarIdentityVersion: CALENDAR_IDENTITY_VERSION }, tid);
   return id;
@@ -600,7 +637,9 @@ async function ensureEventAttendees(calendarId, eventId, tid = curTenant()) {
       }),
     });
     const d = await res.json();
-    results.push({ ok: d.code === 0, userIdType, count: list.length, resp: d });
+    results.push(d.code === 0
+      ? { ok: true, userIdType, count: list.length }
+      : { ok: false, userIdType, count: list.length, error: feishuResponseError(res.status, d).message });
   }
   return { ok: results.some(x => x.ok), total: recipients.length, results };
 }
@@ -647,8 +686,11 @@ export async function syncActivityToFeishuCalendar(act, tid = curTenant()) {
       setTenantConfig('feishu_event_map', eventMap, tid);
     }
   }
-  const attendee = d.code === 0 && eventId ? await ensureEventAttendees(calId, eventId, tid).catch(e => ({ ok: false, error: e.message })) : null;
-  return { ok: d.code === 0, resp: d.msg, attendee };
+  if (d.code !== 0) return { ok: false, error: feishuResponseError(502, d).message, attendee: null };
+  const attendee = eventId
+    ? await ensureEventAttendees(calId, eventId, tid).catch(e => ({ ok: false, error: safeFeishuError(e).message }))
+    : null;
+  return { ok: true, attendee };
 }
 
 function activityLines(act = {}, actor, actionLabel = '活动同步', tid = curTenant()) {
@@ -667,11 +709,12 @@ function activityLines(act = {}, actor, actionLabel = '活动同步', tid = curT
 
 export async function syncActivityLifecycleToFeishu(act, { tid = curTenant(), actor = null, action = 'updated', url = '' } = {}) {
   const actionLabel = ({ created: '新活动创建', updated: '活动信息更新', status: `活动状态更新：${act?.status || ''}`, result: '活动战果更新', approved: '活动策划审批通过，已同步日历' })[action] || '活动信息更新';
-  const calendar = await syncActivityToFeishuCalendar(act, tid).catch(e => ({ ok: false, error: e.message }));
+  const calendar = await syncActivityToFeishuCalendar(act, tid)
+    .catch(e => ({ ok: false, error: safeFeishuError(e).message }));
   const message = await pushFeishuToManagers({
     title: actionLabel,
     lines: activityLines(act, actor, actionLabel, tid),
     url,
-  }, tid).catch(e => ({ ok: false, error: e.message }));
+  }, tid).catch(e => ({ ok: false, error: safeFeishuError(e).message }));
   return { calendar, message };
 }

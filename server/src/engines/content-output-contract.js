@@ -94,26 +94,234 @@ function normalizedHtmlForProtocolCheck(html) {
     .toLowerCase();
 }
 
-function validateDeckHtml(html) {
+function validateCompleteHtml(html, path = 'html') {
   if (typeof html !== 'string' || !html.trim()) {
-    return ['字段“html”必须是非空字符串。'];
+    return [`字段“${path}”必须是非空字符串。`];
   }
 
   const errors = [];
   if (!/<html(?:\s|>)/iu.test(html) || !/<\/html\s*>/iu.test(html)) {
-    errors.push('演绎师的 html 字段必须包含完整的 <html> 根元素。');
+    errors.push(`字段“${path}”必须包含完整的 <html> 根元素。`);
   }
   if (!/<body(?:\s|>)/iu.test(html) || !/<\/body\s*>/iu.test(html)) {
-    errors.push('演绎师的 html 字段必须包含完整的 <body> 正文元素。');
+    errors.push(`字段“${path}”必须包含完整的 <body> 正文元素。`);
   }
   if (normalizedHtmlForProtocolCheck(html).includes('javascript:')) {
-    errors.push('演绎师 HTML 禁止使用 javascript: URL。');
+    errors.push(`字段“${path}”禁止使用 javascript: URL。`);
   }
   if (/<script\b[^>]*\bsrc\s*=/iu.test(html)) {
-    errors.push('演绎师 HTML 禁止引用外部脚本；脚本必须内联并经过人工审阅。');
+    errors.push(`字段“${path}”禁止引用外部脚本；脚本必须内联并经过人工审阅。`);
   }
   return errors;
 }
+
+function validateNonEmptyString(value, path, errors) {
+  if (typeof value !== 'string' || !value.trim()) {
+    errors.push(`字段“${path}”必须是非空字符串。`);
+    return false;
+  }
+  return true;
+}
+
+function validateArray(value, path, errors, {
+  min = 1,
+  max = null,
+  exact = null,
+  item = null,
+} = {}) {
+  if (!Array.isArray(value)) {
+    errors.push(`字段“${path}”必须是数组。`);
+    return false;
+  }
+  if (exact !== null && value.length !== exact) {
+    errors.push(`字段“${path}”必须恰好包含${exact}项。`);
+  } else if (max !== null && (value.length < min || value.length > max)) {
+    errors.push(`字段“${path}”必须包含${min}-${max}项${value.length === 0 ? '，不能是空数组' : ''}。`);
+  } else {
+    if (value.length < min) {
+      errors.push(`字段“${path}”必须至少包含${min}项，不能是空数组。`);
+    }
+  }
+  if (typeof item === 'function') {
+    value.forEach((entry, index) => item(entry, `${path}[${index}]`, errors));
+  }
+  return true;
+}
+
+function validateStringArray(value, path, errors, bounds = {}) {
+  return validateArray(value, path, errors, {
+    ...bounds,
+    item: (entry, itemPath, targetErrors) => {
+      validateNonEmptyString(entry, itemPath, targetErrors);
+    },
+  });
+}
+
+function validateObject(value, path, errors, fields) {
+  if (!isPlainObject(value)) {
+    errors.push(`字段“${path}”必须是JSON对象。`);
+    return false;
+  }
+  for (const [key, validator] of Object.entries(fields)) {
+    const childPath = `${path}.${key}`;
+    if (!Object.hasOwn(value, key)) {
+      errors.push(`缺少必需字段：${childPath}。`);
+      continue;
+    }
+    validator(value[key], childPath, errors);
+  }
+  const extras = Object.keys(value).filter(key => !Object.hasOwn(fields, key));
+  if (extras.length) {
+    errors.push(`字段“${path}”包含未知字段：${extras.join('、')}。`);
+  }
+  return true;
+}
+
+const STRING_FIELD = (value, path, errors) => validateNonEmptyString(value, path, errors);
+
+function validateObjectArray(value, path, errors, fields, bounds = {}) {
+  return validateArray(value, path, errors, {
+    ...bounds,
+    item: (entry, itemPath, targetErrors) => {
+      validateObject(entry, itemPath, targetErrors, fields);
+    },
+  });
+}
+
+function validateHttpUrl(value, path, errors) {
+  if (!validateNonEmptyString(value, path, errors)) return;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('unsupported protocol');
+  } catch {
+    errors.push(`字段“${path}”必须是有效的 http(s) 链接。`);
+  }
+}
+
+function validateDimensions(value, path, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`字段“${path}”必须是JSON对象。`);
+    return;
+  }
+  const entries = Object.entries(value);
+  if (!entries.length) {
+    errors.push(`字段“${path}”必须至少包含一个拆解维度。`);
+    return;
+  }
+  for (const [key, detail] of entries) {
+    if (!key.trim()) errors.push(`字段“${path}”包含空维度名。`);
+    validateNonEmptyString(detail, `${path}.${key || '(空)'}`, errors);
+  }
+}
+
+function validateSvg(value, path, errors) {
+  if (!validateNonEmptyString(value, path, errors)) return;
+  if (!/^\s*<svg(?:\s|>)[\s\S]*<\/svg>\s*$/iu.test(value)) {
+    errors.push(`字段“${path}”必须是完整的SVG。`);
+  }
+}
+
+const OUTPUT_VALIDATORS = Object.freeze([
+  (value, errors) => {
+    validateNonEmptyString(value.briefing, 'briefing', errors);
+    validateObjectArray(value.channel_scan, 'channel_scan', errors, {
+      channel: STRING_FIELD,
+      finding: STRING_FIELD,
+    });
+    validateObjectArray(value.topics, 'topics', errors, {
+      title: STRING_FIELD,
+      angle: STRING_FIELD,
+      hook: STRING_FIELD,
+      reason: STRING_FIELD,
+      heat: STRING_FIELD,
+      evidence: STRING_FIELD,
+    }, { exact: 5 });
+  },
+  (value, errors) => {
+    validateNonEmptyString(value.summary, 'summary', errors);
+    for (const key of ['facts', 'data_points', 'viewpoints']) {
+      validateStringArray(value[key], key, errors);
+    }
+    validateObjectArray(value.source_coverage, 'source_coverage', errors, {
+      channel: STRING_FIELD,
+      got: STRING_FIELD,
+    });
+    validateObjectArray(value.sources, 'sources', errors, {
+      title: STRING_FIELD,
+      url: validateHttpUrl,
+    });
+  },
+  (value, errors) => {
+    validateObjectArray(value.benchmarks, 'benchmarks', errors, {
+      title: STRING_FIELD,
+      platform: STRING_FIELD,
+      account: STRING_FIELD,
+      dimensions: validateDimensions,
+      why_hot: STRING_FIELD,
+    }, { min: 3, max: 5 });
+    for (const key of ['comment_insights', 'user_language', 'takeaways']) {
+      validateStringArray(value[key], key, errors);
+    }
+  },
+  (value, errors) => {
+    validateStringArray(value.title_candidates, 'title_candidates', errors, { exact: 3 });
+    validateNonEmptyString(value.body, 'body', errors);
+    validateStringArray(value.tags, 'tags', errors, { min: 5, max: 8 });
+    validateObjectArray(value.image_plan, 'image_plan', errors, {
+      slot: STRING_FIELD,
+      desc: STRING_FIELD,
+    }, { min: 2, max: 4 });
+  },
+  (value, errors) => {
+    validateNonEmptyString(value.body, 'body', errors);
+    validateStringArray(value.title_candidates, 'title_candidates', errors, { exact: 3 });
+    validateNonEmptyString(value.consistency_note, 'consistency_note', errors);
+  },
+  (value, errors) => {
+    validateObjectArray(value.images, 'images', errors, {
+      slot: STRING_FIELD,
+      desc: STRING_FIELD,
+      platform: STRING_FIELD,
+      svg: validateSvg,
+    });
+  },
+  (value, errors) => {
+    validateObjectArray(value.covers, 'covers', errors, {
+      style: STRING_FIELD,
+      platform: STRING_FIELD,
+      size: STRING_FIELD,
+      html: (html, path, targetErrors) => {
+        targetErrors.push(...validateCompleteHtml(html, path));
+      },
+    });
+  },
+  (value, errors) => {
+    validateNonEmptyString(value.summary, 'summary', errors);
+    errors.push(...validateCompleteHtml(value.html, 'html'));
+  },
+  (value, errors) => {
+    validateObjectArray(value.versions, 'versions', errors, {
+      platform: STRING_FIELD,
+      title: STRING_FIELD,
+      body: STRING_FIELD,
+      tags: (tags, path, targetErrors) => validateStringArray(tags, path, targetErrors),
+      best_time: STRING_FIELD,
+      checklist: (items, path, targetErrors) => (
+        validateStringArray(items, path, targetErrors, { min: 2, max: 4 })
+      ),
+      note: STRING_FIELD,
+    });
+    validateNonEmptyString(value.publish_plan, 'publish_plan', errors);
+  },
+  (value, errors) => {
+    validateNonEmptyString(value.report, 'report', errors);
+    validateObjectArray(value.next_topics, 'next_topics', errors, {
+      title: STRING_FIELD,
+      reason: STRING_FIELD,
+    });
+    validateStringArray(value.profile_updates, 'profile_updates', errors);
+  },
+]);
 
 function safeEmployeeKey(value) {
   const safe = String(value || '')
@@ -194,9 +402,11 @@ export function validateContentEmployeeOutputContract(idx, rawOutput) {
     if (missingKeys.length) {
       errors.push(`缺少必需字段：${missingKeys.join('、')}。`);
     }
-    if (profile.identity.idx === 7 && Object.hasOwn(parsed, 'html')) {
-      errors.push(...validateDeckHtml(parsed.html));
+    const unknownKeys = Object.keys(parsed).filter(key => !requiredKeys.includes(key));
+    if (unknownKeys.length) {
+      errors.push(`输出包含未知字段：${unknownKeys.join('、')}。`);
     }
+    OUTPUT_VALIDATORS[profile.identity.idx](parsed, errors);
   }
 
   if (errors.length) {

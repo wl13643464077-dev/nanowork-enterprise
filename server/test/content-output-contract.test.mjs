@@ -7,38 +7,97 @@ import {
   validateContentOutputContract,
 } from '../src/engines/content-output-contract.js';
 
-const VALUE_BY_KEY = Object.freeze({
-  briefing: '趋势简报',
-  channel_scan: [],
-  topics: [],
-  summary: '工作摘要',
-  facts: [],
-  data_points: [],
-  viewpoints: [],
-  source_coverage: [],
-  sources: [],
-  benchmarks: [],
-  comment_insights: [],
-  user_language: [],
-  takeaways: [],
-  title_candidates: [],
-  body: '正文 Markdown',
-  tags: [],
-  image_plan: [],
-  consistency_note: '一致性说明',
-  images: [],
-  covers: [],
-  html: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>演绎正文</body></html>',
-  versions: [],
-  publish_plan: '发布计划',
-  report: '复盘报告 Markdown',
-  next_topics: [],
-  profile_updates: [],
-});
+const VALID_OUTPUTS = Object.freeze([
+  {
+    briefing: '趋势简报',
+    channel_scan: [{ channel: '官方公告', finding: '发现一项可核验的新信号' }],
+    topics: Array.from({ length: 5 }, (_, index) => ({
+      title: `选题${index + 1}`,
+      angle: '从经营者视角切入',
+      hook: '一个可验证的开头钩子',
+      reason: '与目标账号和当前信号匹配',
+      heat: '中',
+      evidence: '来自官方公告',
+    })),
+  },
+  {
+    summary: '工作摘要',
+    facts: ['事实一（来源：官方公告）'],
+    data_points: ['数据点一（来源：官方公告）'],
+    viewpoints: ['观点一'],
+    source_coverage: [{ channel: '官方公告', got: '找到可核验事实' }],
+    sources: [{ title: '官方资料', url: 'https://example.test/source' }],
+  },
+  {
+    benchmarks: Array.from({ length: 3 }, (_, index) => ({
+      title: `对标内容${index + 1}`,
+      platform: '公众号',
+      account: '示例账号',
+      dimensions: { 开头: '直接说明用户问题' },
+      why_hot: '结构清晰且回应真实问题',
+    })),
+    comment_insights: ['读者关注可执行性'],
+    user_language: ['这一步到底怎么做'],
+    takeaways: ['开头先给结论'],
+  },
+  {
+    title_candidates: ['标题一', '标题二', '标题三'],
+    body: '正文 Markdown',
+    tags: ['经营', '门店', '增长', '复盘', '实操'],
+    image_plan: [
+      { slot: '开头', desc: '核心结论信息图' },
+      { slot: '正文', desc: '执行步骤示意图' },
+    ],
+  },
+  {
+    body: '风格化正文 Markdown',
+    title_candidates: ['标题一', '标题二', '标题三'],
+    consistency_note: '已保持历史表达节奏，并保留事实边界。',
+  },
+  {
+    images: [{
+      slot: '正文',
+      desc: '经营步骤信息图',
+      platform: '通用',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1440"><text x="20" y="40">步骤</text></svg>',
+    }],
+  },
+  {
+    covers: [{
+      style: '简洁商务',
+      platform: '公众号',
+      size: '1080×1440',
+      html: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>封面</body></html>',
+    }],
+  },
+  {
+    summary: '演绎稿说明',
+    html: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>演绎正文</body></html>',
+  },
+  {
+    versions: [{
+      platform: '公众号',
+      title: '适配标题',
+      body: '适配正文',
+      tags: ['经营'],
+      best_time: '工作日 12:00-13:00',
+      checklist: ['检查标题', '人工确认发布'],
+      note: '发布前复核事实与链接。',
+    }],
+    publish_plan: '先发布公众号，复核反馈后再适配其他平台。',
+  },
+  {
+    report: '复盘报告 Markdown',
+    next_topics: [{ title: '下一轮选题', reason: '延续真实反馈' }],
+    profile_updates: ['读者更关注可执行步骤'],
+  },
+]);
 
 function minimalValidOutput(idx) {
   const schema = buildContentEmployeeWorkbenchProfile(idx).jobProfile.outputSchema;
-  return Object.fromEntries(schema.keys.map(key => [key, structuredClone(VALUE_BY_KEY[key])]));
+  const output = structuredClone(VALID_OUTPUTS[idx]);
+  assert.deepEqual(Object.keys(output), schema.keys);
+  return output;
 }
 
 test('10个内容岗位均按自身outputSchema接受覆盖全部outputKeys的最小对象', () => {
@@ -76,6 +135,76 @@ test('10个内容岗位均按自身outputSchema接受覆盖全部outputKeys的�
     );
     assert.ok(result.previewMarkdown);
   }
+});
+
+test('10个岗位逐字段拒绝null、错类型、空数组与缺字段', () => {
+  for (let idx = 0; idx < VALID_OUTPUTS.length; idx += 1) {
+    const profile = buildContentEmployeeWorkbenchProfile(idx);
+    for (const key of profile.jobProfile.outputSchema.keys) {
+      const valid = minimalValidOutput(idx);
+      const expected = valid[key];
+      const cases = [
+        ['缺字段', output => { delete output[key]; }],
+        ['null', output => { output[key] = null; }],
+        ['错类型', output => { output[key] = Array.isArray(expected) ? {} : []; }],
+      ];
+      if (Array.isArray(expected)) {
+        cases.push(['空数组', output => { output[key] = []; }]);
+      }
+      for (const [label, mutate] of cases) {
+        const output = minimalValidOutput(idx);
+        mutate(output);
+        const result = validateContentEmployeeOutputContract(idx, JSON.stringify(output));
+        assert.equal(
+          result.valid,
+          false,
+          `${profile.identity.name}.${key} 应拒绝${label}`,
+        );
+        assert.match(result.errors.join(' '), new RegExp(key, 'u'));
+        assert.deepEqual(result.artifacts, []);
+      }
+    }
+  }
+});
+
+test('岗位数组中的对象结构、数量与内层非空数组同样严格校验', () => {
+  const cases = [
+    [0, output => { output.topics = output.topics.slice(0, 4); }, /topics.*恰好.*5/iu],
+    [0, output => { delete output.channel_scan[0].finding; }, /channel_scan\[0\]\.finding/iu],
+    [1, output => { output.sources[0].url = '不是链接'; }, /sources\[0\]\.url/iu],
+    [2, output => { output.benchmarks[0].dimensions = {}; }, /benchmarks\[0\]\.dimensions/iu],
+    [3, output => { output.title_candidates = ['只有一个']; }, /title_candidates.*恰好.*3/iu],
+    [3, output => { output.tags = ['一', '二', '三', '四']; }, /tags.*5-8/iu],
+    [3, output => { delete output.image_plan[0].desc; }, /image_plan\[0\]\.desc/iu],
+    [5, output => { output.images[0].svg = '不是SVG'; }, /images\[0\]\.svg/iu],
+    [6, output => { output.covers[0].html = '<div>不是完整页面</div>'; }, /covers\[0\]\.html/iu],
+    [8, output => { output.versions[0].tags = []; }, /versions\[0\]\.tags/iu],
+    [8, output => { output.versions[0].checklist = ['只有一步']; }, /versions\[0\]\.checklist.*2-4/iu],
+    [9, output => { output.next_topics[0].reason = null; }, /next_topics\[0\]\.reason/iu],
+  ];
+
+  for (const [idx, mutate, expectedError] of cases) {
+    const output = minimalValidOutput(idx);
+    mutate(output);
+    const result = validateContentEmployeeOutputContract(idx, JSON.stringify(output));
+    assert.equal(result.valid, false);
+    assert.match(result.errors.join(' '), expectedError);
+    assert.deepEqual(result.artifacts, []);
+  }
+});
+
+test('严格契约拒绝未知顶层字段和未知对象字段', () => {
+  const topLevel = minimalValidOutput(3);
+  topLevel.uncontracted = '不在契约内';
+  const topResult = validateContentEmployeeOutputContract(3, JSON.stringify(topLevel));
+  assert.equal(topResult.valid, false);
+  assert.match(topResult.errors.join(' '), /未知字段.*uncontracted/u);
+
+  const nested = minimalValidOutput(0);
+  nested.topics[0].uncontracted = '不在契约内';
+  const nestedResult = validateContentEmployeeOutputContract(0, JSON.stringify(nested));
+  assert.equal(nestedResult.valid, false);
+  assert.match(nestedResult.errors.join(' '), /topics\[0\].*未知字段.*uncontracted/u);
 });
 
 test('支持完整的json Markdown围栏且兼容导出别名', () => {

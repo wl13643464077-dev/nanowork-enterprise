@@ -7,8 +7,12 @@ export interface DashboardSummary {
   runningActivities?: number;
 }
 
-export interface BriefingItem { text: string }
-export interface DashboardBriefing { briefing: (string | BriefingItem)[] }
+export interface BriefingItem {
+  text: string;
+}
+export interface DashboardBriefing {
+  briefing: (string | BriefingItem)[];
+}
 
 export interface FollowRecord {
   created_at?: string;
