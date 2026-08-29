@@ -200,7 +200,7 @@ export default function Platform() {
           <Col xs={12} md={6}>
             <StatCard
               icon={<AuditOutlined />}
-              color="#f6a02d"
+              color="var(--warn)"
               label="待开通企业"
               value={ov.pending ?? 0}
               suffix="家"
@@ -210,7 +210,7 @@ export default function Platform() {
           <Col xs={12} md={6}>
             <StatCard
               icon={<WalletOutlined />}
-              color="#22c4a8"
+              color="var(--chart-2)"
               label="累计充值额"
               value={`¥${(ov.rechargeYuan ?? 0).toLocaleString()}`}
             />
@@ -218,7 +218,7 @@ export default function Platform() {
           <Col xs={12} md={6}>
             <StatCard
               icon={<DollarOutlined />}
-              color="#f25b6b"
+              color="var(--danger)"
               label="待确认订单"
               value={ov.pendingOrders ?? 0}
               suffix="笔"
@@ -236,7 +236,7 @@ export default function Platform() {
           <Panel
             title={
               <>
-                <AuditOutlined style={{ color: '#f6a02d' }} /> 企业注册开通
+                <AuditOutlined style={{ color: 'var(--warn)' }} /> 企业注册开通
               </>
             }
             extra={
@@ -305,7 +305,7 @@ export default function Platform() {
               <Col xs={12} md={6}>
                 <StatCard
                   icon={<ShopOutlined />}
-                  color="#22c4a8"
+                  color="var(--chart-2)"
                   label="活跃企业（近3天用过AI）"
                   value={ana.summary.active}
                   suffix={`/${ana.summary.total}`}
@@ -314,7 +314,7 @@ export default function Platform() {
               <Col xs={12} md={6}>
                 <StatCard
                   icon={<AuditOutlined />}
-                  color="#f25b6b"
+                  color="var(--danger)"
                   label="流失预警（14天没动静）"
                   value={ana.summary.churning}
                   suffix="家"
@@ -332,7 +332,7 @@ export default function Platform() {
               <Col xs={12} md={6}>
                 <StatCard
                   icon={<DollarOutlined />}
-                  color="#f6a02d"
+                  color="var(--warn)"
                   label="累计营收（客户充值）"
                   value={`¥${(ana.summary.totalRevenue || 0).toLocaleString()}`}
                 />
@@ -342,7 +342,7 @@ export default function Platform() {
               <Col xs={12} md={8}>
                 <StatCard
                   icon={<AuditOutlined />}
-                  color="#f25b6b"
+                  color="var(--danger)"
                   label="平台真实成本（云雾API·至今）"
                   value={`¥${(ana.summary.totalCost || 0).toLocaleString()}`}
                 />
@@ -350,7 +350,7 @@ export default function Platform() {
               <Col xs={12} md={8}>
                 <StatCard
                   icon={<DollarOutlined />}
-                  color="#22c4a8"
+                  color="var(--chart-2)"
                   label="客户已消耗价值（按售价）"
                   value={`¥${(ana.summary.consumedYuan || 0).toLocaleString()}`}
                 />
@@ -358,7 +358,7 @@ export default function Platform() {
               <Col xs={12} md={8}>
                 <StatCard
                   icon={<WalletOutlined />}
-                  color="#8a7450"
+                  color="var(--chart-3)"
                   label="AI转售毛利率（消耗−成本）"
                   value={`${ana.summary.marginRate || 0}`}
                   suffix="%"
@@ -370,7 +370,7 @@ export default function Platform() {
                 <Panel
                   title={
                     <>
-                      <DollarOutlined style={{ color: '#f6a02d' }} /> 营收趋势（近6月已到账充值）
+                      <DollarOutlined style={{ color: 'var(--warn)' }} /> 营收趋势（近6月已到账充值）
                     </>
                   }
                 >
@@ -392,7 +392,7 @@ export default function Platform() {
                                 minWidth: 30,
                                 height: 18,
                                 borderRadius: 4,
-                                background: 'linear-gradient(90deg,#f6a02d,#f8c46a)',
+                                background: 'linear-gradient(90deg,var(--warn),#f8c46a)',
                                 color: '#fff',
                                 fontSize: 10.5,
                                 textAlign: 'right',
@@ -463,7 +463,7 @@ export default function Platform() {
                           v == null ? (
                             '—'
                           ) : (
-                            <span style={{ color: v > 14 ? '#f25b6b' : 'var(--ui-text-2)' }}>{v}天</span>
+                            <span style={{ color: v > 14 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v}天</span>
                           ),
                       },
                       {
@@ -472,7 +472,7 @@ export default function Platform() {
                         align: 'right',
                         width: 84,
                         render: (v: number, r: any) => (
-                          <span style={{ color: r.lowBalance ? '#f25b6b' : 'var(--ui-accent)', fontWeight: 600 }}>
+                          <span style={{ color: r.lowBalance ? 'var(--danger)' : 'var(--ui-accent)', fontWeight: 600 }}>
                             {(v || 0).toLocaleString()}
                           </span>
                         ),
@@ -505,7 +505,7 @@ export default function Platform() {
                         align: 'right',
                         width: 84,
                         render: (v: number) => (
-                          <b style={{ color: (v || 0) >= 0 ? '#16a34a' : '#f25b6b' }}>¥{(v || 0).toFixed(2)}</b>
+                          <b style={{ color: (v || 0) >= 0 ? '#16a34a' : 'var(--danger)' }}>¥{(v || 0).toFixed(2)}</b>
                         ),
                       },
                       { title: '账号', dataIndex: 'users', width: 50, align: 'right' },
@@ -573,7 +573,7 @@ export default function Platform() {
                   width: 80,
                   align: 'right',
                   render: (_: any, r: any) => (
-                    <span style={{ color: r.user_count >= (r.seat_limit || 0) ? '#f25b6b' : 'var(--ui-text)' }}>
+                    <span style={{ color: r.user_count >= (r.seat_limit || 0) ? 'var(--danger)' : 'var(--ui-text)' }}>
                       {r.user_count}/{r.seat_limit ?? '-'}
                     </span>
                   ),
@@ -625,7 +625,7 @@ export default function Platform() {
           <Panel
             title={
               <>
-                <WalletOutlined style={{ color: '#22c4a8' }} /> 充值订单（确认到账即发放积分）
+                <WalletOutlined style={{ color: 'var(--chart-2)' }} /> 充值订单（确认到账即发放积分）
               </>
             }
           >
@@ -648,7 +648,7 @@ export default function Platform() {
                   dataIndex: 'price_yuan',
                   align: 'right',
                   width: 80,
-                  render: (v: number) => <b style={{ color: '#f25b6b' }}>¥{v}</b>,
+                  render: (v: number) => <b style={{ color: 'var(--danger)' }}>¥{v}</b>,
                 },
                 {
                   title: '积分',
@@ -692,7 +692,7 @@ export default function Platform() {
           <Panel
             title={
               <>
-                <AppstoreOutlined style={{ color: '#f6a02d' }} /> 充值套餐
+                <AppstoreOutlined style={{ color: 'var(--warn)' }} /> 充值套餐
               </>
             }
           >
@@ -723,7 +723,7 @@ export default function Platform() {
                   title: '赠送',
                   dataIndex: 'bonus_credits',
                   align: 'right',
-                  render: (v: number) => <span style={{ color: '#22c4a8' }}>+{v.toLocaleString()}</span>,
+                  render: (v: number) => <span style={{ color: 'var(--chart-2)' }}>+{v.toLocaleString()}</span>,
                 },
                 {
                   title: '到账积分',
@@ -960,7 +960,7 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
             align: 'right',
             render: (v: number) =>
               v > 0 ? (
-                <b style={{ color: '#f25b6b' }}>-{v}</b>
+                <b style={{ color: 'var(--danger)' }}>-{v}</b>
               ) : v < 0 ? (
                 <b style={{ color: '#16a34a' }}>+{-v}</b>
               ) : (

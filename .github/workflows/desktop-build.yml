@@ -1,0 +1,132 @@
+name: Desktop build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "package.json"
+      - ".github/workflows/desktop-build.yml"
+  push:
+    paths:
+      - "desktop/**"
+      - "package.json"
+      - ".github/workflows/desktop-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate desktop package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run desktop checks
+        run: npm run verify
+
+  macos:
+    name: Build macOS x64 and arm64
+    needs: validate
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run desktop checks
+        run: npm run verify
+      - name: Build unsigned macOS packages
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:mac
+      - name: Verify packaged application and installers
+        run: npm run verify:artifacts:mac
+      - name: Write SHA-256 manifest
+        run: shasum -a 256 dist/*.dmg dist/*.zip > dist/SHA256SUMS-macos.txt
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanowork-macos-${{ github.sha }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.yml
+            desktop/dist/*.blockmap
+            desktop/dist/SHA256SUMS-macos.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Build Windows x64
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run desktop checks
+        run: npm run verify
+      - name: Build unsigned Windows packages
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:win
+      - name: Verify packaged application and installers
+        run: npm run verify:artifacts:win
+      - name: Write SHA-256 manifest
+        run: |
+          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Encoding ascii dist/SHA256SUMS-windows.txt
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanowork-windows-${{ github.sha }}
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.zip
+            desktop/dist/*.yml
+            desktop/dist/*.blockmap
+            desktop/dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 14

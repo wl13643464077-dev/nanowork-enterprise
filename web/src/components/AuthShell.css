@@ -546,3 +546,132 @@
     }
   }
 }
+
+/* v4：卡片头行（kicker + 音效开关并排） */
+.au-kicker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* =====================================================================
+   v5 极简登录（对标 Claude/ChatGPT）：.au-min 出现时卡片退为"无形"，
+   页面只剩品牌、标题与表单本体；输入与按钮放大，留白加倍。
+   ===================================================================== */
+.au-center .au-card:has(.au-min) {
+  width: min(100%, 400px);
+  padding: var(--space-6) var(--space-5) var(--space-5);
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.au-min {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.au-min-brand img {
+  display: block;
+  filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--ui-primary) 26%, transparent));
+  animation: au-min-bob 6.4s ease-in-out infinite;
+}
+
+@keyframes au-min-bob {
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.au-min-title {
+  margin: var(--space-5) 0 0;
+  color: var(--ui-text);
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  line-height: 1.25;
+}
+
+.au-min-sub {
+  margin: var(--space-2) 0 0;
+  color: var(--ui-muted);
+  font-size: var(--font-3);
+}
+
+.au-min-form {
+  width: 100%;
+  margin-top: var(--space-6);
+}
+
+.au-min-form .ant-form-item {
+  margin-bottom: var(--space-3);
+}
+
+.au-min-form .ant-input-affix-wrapper {
+  height: 50px;
+  padding-inline: 14px;
+  border-radius: var(--radius-md);
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: none;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+.au-min-form .ant-input-affix-wrapper:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+}
+
+.au-min-form .ant-input-affix-wrapper-focused {
+  border-color: var(--ui-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-primary) 14%, transparent);
+}
+
+.au-min-form .ant-input-prefix {
+  margin-right: 10px;
+  color: var(--ui-muted);
+}
+
+.au-min-form .au-form-row {
+  margin: var(--space-1) 0 var(--space-4);
+}
+
+.au-min-form .au-submit {
+  height: 50px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-4);
+  font-weight: 650;
+  letter-spacing: 2px;
+}
+
+.au-min-foot {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-5);
+  color: var(--ui-muted);
+  font-size: var(--font-2);
+}
+
+.au-min-trust {
+  margin-top: var(--space-5);
+  opacity: 0.85;
+}
+
+.au-min-corner {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 10;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .au-min-brand img {
+    animation: none;
+  }
+}

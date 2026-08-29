@@ -19,9 +19,28 @@ export function nextFestival(withinDays = 30) {
 const money = (n = 0) => `¥${Math.round(Number(n) || 0).toLocaleString()}`;
 const rateText = (r = 0) => `${Math.round((Number(r) || 0) * 100)}%`;
 const compactNames = (rows = [], field = 'name', max = 5) => rows.slice(0, max).map(x => x[field]).filter(Boolean).join('、') || '暂无';
+export const BATTLE_PLAN_VERSION = 3;
+
+function pendingApprovalBossItems() {
+  const rows = q.all(`SELECT title,risk_level,approval_level FROM approvals
+    WHERE tenant_id = ${curTenant()} AND status = '待审核'
+    ORDER BY created_at DESC,id DESC`);
+  const bossReview = rows.filter(row => row.approval_level === 'boss');
+  const highRisk = rows.filter(row => row.approval_level !== 'boss' && row.risk_level === 'high');
+  const routine = rows.filter(row => row.approval_level !== 'boss' && row.risk_level !== 'high');
+  const singleTitle = list => list.length === 1 && list[0]?.title
+    ? `：${String(list[0].title).slice(0, 60)}`
+    : '';
+  return [
+    ...(bossReview.length ? [`${bossReview.length} 条老板终审事项待处理${singleTitle(bossReview)}`] : []),
+    ...(highRisk.length ? [`${highRisk.length} 条高风险事项待审批${singleTitle(highRisk)}`] : []),
+    ...(routine.length ? [`${routine.length} 条事项待审批${singleTitle(routine)}`] : []),
+  ];
+}
 
 // ===== 每日作战计划引擎（CTRL-02 / PRD §9.3）=====
-export function generateBattlePlan(date = today()) {
+// 只读构建器：可用于 GET 时刷新动态信号，不暗中改写 battle_plans。
+export function buildBattlePlan(date = today(), fixed = {}) {
   const yesterday = daysAgo(1);
   const yOps = q.get(`SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?`, yesterday) || {};
   const { funnel: fn, bottleneck } = funnel();
@@ -36,6 +55,8 @@ export function generateBattlePlan(date = today()) {
   else if (bottleneck === '已邀约' || bottleneck === '已到店') { theme = '到店活动邀约优化'; audience = 'B类培育客户'; }
   else if (bottleneck === '已成交') { theme = 'A类客户成交攻坚'; audience = 'A类高意向客户'; }
   else { theme = '门店招牌产品内容日更'; audience = '新流量人群'; }
+  if (fixed.theme) theme = String(fixed.theme);
+  if (fixed.audience) audience = String(fixed.audience);
 
   // 邀约目标 = 目标缺口反推：缺口成交数 ÷ 到店成交率 ÷ 邀约到店率
   const target = goal.revenue_target || getTenantConfig('month_revenue_target', 500000);
@@ -67,8 +88,8 @@ export function generateBattlePlan(date = today()) {
     ) LIMIT 8`);
 
   // 待老板确认事项
-  const pendingApprovals = q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id = ${curTenant()} AND status = '待审核'`)?.n || 0;
-  const bossLeads = q.all(`SELECT name, score FROM leads WHERE tenant_id = ${curTenant()} AND boss_alert = 1 AND stage NOT IN ('已成交','复购','已流失') LIMIT 5`);
+  const approvalBossItems = pendingApprovalBossItems();
+  const bossLeads = q.all(`SELECT name, score FROM leads WHERE tenant_id = ${curTenant()} AND boss_alert = 1 AND stage NOT IN ('已成交','复购','已流失') ORDER BY score DESC,id DESC LIMIT 5`);
 
   const contentWeek = q.get(`SELECT COUNT(*) pieces, COALESCE(SUM(effect_leads),0) leads
     FROM contents WHERE tenant_id = ${curTenant()} AND created_at >= date(?, '-6 day')`, date) || {};
@@ -94,12 +115,12 @@ export function generateBattlePlan(date = today()) {
       `今日主题：${theme}`,
       `主推人群：${audience}`,
       `昨日新增线索 ${yOps.new_leads || 0} 条，需要内容先完成种草、信任铺垫和转发素材补给`,
-      `近7天内容产出 ${contentWeek.pieces || 0} 条，带来线索 ${contentWeek.leads || 0} 条；当前待审核/草稿 ${pendingContent} 条`,
+      `近7天内容产出 ${contentWeek.pieces || 0} 条，带来线索 ${contentWeek.leads || 0} 条；当前待人工审阅/草稿 ${pendingContent} 条`,
     ],
     rules: [
       '内容任务服务于获客、邀约和协作伙伴转发，不把它解释成“销售直接完成金额”。',
       '如果今日有节日或活动主题，内容优先围绕用餐场景、到店活动、招牌产品和老客转介绍生成。',
-      '检查标准看素材是否进入待审核/可使用状态，以及后续内容带来的线索和邀约反馈。',
+      '检查标准：真实输出先通过质检再进入待人工审阅；只有人工已采纳才可进入发布，模板/降级/契约失败均不算完成。',
     ],
   };
 
@@ -165,12 +186,12 @@ export function generateBattlePlan(date = today()) {
   };
 
   const plan = {
-    planVersion: 2,
+    planVersion: BATTLE_PLAN_VERSION,
     date, theme, audience, bottleneck,
     festival: fest,
     yesterday: { newLeads: yOps.new_leads || 0, invited: yOps.invited || 0, arrived: yOps.arrived || 0, deals: yOps.deals || 0, amount: yOps.deal_amount || 0 },
     tasks: [
-      { type: '内容', action: `生成一键日更包（3条短视频脚本+5条朋友圈+3条社群话题），主题：${theme}`, owner: '品牌与增长部→内容工具箱', count: 11, due: '10:00', check: '素材全部进入待审核/可使用状态', basis: contentBasis },
+      { type: '内容', action: `生成一键日更包（3条短视频脚本+5条朋友圈+3条社群话题），主题：${theme}`, owner: '品牌与增长部→内容工具箱', count: 11, due: '10:00', check: '真实输出质检通过并进入待人工审阅，或已人工采纳；模板/降级/契约失败不算完成', basis: contentBasis },
       { type: '邀约', action: `电话+微信双触邀约，目标触达 ${inviteTarget} 人，预计到店/到会 ${expectedArrivals} 人，话术由AI生成人工确认后使用`, owner: '销售团队', count: inviteTarget, due: '18:00', check: '邀约结果回写CRM', basis: inviteBasis },
       { type: '跟进', action: `重点客户逐一跟进（${focusLeads.length}人），按评分倒序，先A后B`, owner: '销售成交官辅助', count: focusLeads.length, due: '20:00', check: '每客户新增1条跟进记录', basis: followBasis },
       { type: '培训', action: `下发协作伙伴每日任务包（学习卡+已审核素材+邀约目标，覆盖${activePartnerCount || 0}人）`, owner: '连锁与可持续部', count: Math.max(1, activePartnerCount), due: '06:30', check: '晚21:00回收打卡', basis: partnerBasis },
@@ -178,7 +199,7 @@ export function generateBattlePlan(date = today()) {
     ],
     focusLeads, silentPartners: silent,
     bossItems: [
-      ...(pendingApprovals ? [`${pendingApprovals} 条高风险内容待终审（含价格/收益类表达）`] : []),
+      ...approvalBossItems,
       ...bossLeads.map(l => `建议亲自跟进大客户「${l.name}」（成交概率 ${l.score} 分）`),
     ],
     briefing: [
@@ -190,9 +211,39 @@ export function generateBattlePlan(date = today()) {
     ].filter(Boolean),
   };
 
+  return plan;
+}
+
+// 已下发的任务保持稳定，但将审批、介入线索、昨日战果等会变信号刷新到当前真实状态。
+export function refreshBattlePlanSnapshot(plan, date = today()) {
+  const stored = plan && typeof plan === 'object' ? plan : {};
+  const fresh = buildBattlePlan(date, {
+    theme: stored.theme,
+    audience: stored.audience,
+  });
+  return {
+    ...stored,
+    planVersion: Math.max(Number(stored.planVersion || 0), Number(fresh.planVersion || 0)),
+    date,
+    theme: stored.theme || fresh.theme,
+    audience: stored.audience || fresh.audience,
+    bottleneck: fresh.bottleneck,
+    festival: fresh.festival,
+    yesterday: fresh.yesterday,
+    focusLeads: fresh.focusLeads,
+    silentPartners: fresh.silentPartners,
+    bossItems: fresh.bossItems,
+    briefing: fresh.briefing,
+    tasks: Array.isArray(stored.tasks) && stored.tasks.length ? stored.tasks : fresh.tasks,
+  };
+}
+
+// 显式“生成/重新生成”才持久化；普通读取不应产生写入副作用。
+export function generateBattlePlan(date = today()) {
+  const plan = buildBattlePlan(date);
   q.run(`INSERT INTO battle_plans(date,theme,audience,plan) VALUES(?,?,?,?)
          ON CONFLICT(tenant_id,date) DO UPDATE SET theme=excluded.theme, audience=excluded.audience, plan=excluded.plan`,
-    date, theme, audience, JSON.stringify(plan));
+    date, plan.theme, plan.audience, JSON.stringify(plan));
   return plan;
 }
 

@@ -208,7 +208,7 @@ r.post('/orders', async (req, res) => {
           : 502);
       return res.status(status).json({
         error: gatewayAccepted
-          ? '支付渠道已创建订单，但本地保存失败；系统已执行安全关单或保留待对账，请勿重复支付'
+          ? '支付渠道已创建订单，但本地保存失败；系统已执行安全关单或保留待账务对账，请勿重复支付'
           : (e?.message || '支付下单失败，请稍后重试'),
         orderNo,
         status: localStatus,

@@ -1,6 +1,12 @@
 import { useMemo } from 'react';
 import { Space, Table, Tag } from 'antd';
 import { Panel } from './Kit';
+import {
+  READINESS_STATUS_META,
+  runtimeReadinessConfigLabel,
+  runtimeReadinessMeta,
+  runtimeReadinessVerificationLabel,
+} from './statusPresentation.js';
 
 /**
  * 运行就绪矩阵（8 通道）。
@@ -12,49 +18,42 @@ import { Panel } from './Kit';
  * 「配置存在」不等于「已验证连接」，只有配置指纹匹配且有新鲜显式验证才显示已连接。
  */
 
-export const READINESS_META: Record<
+export const READINESS_META = READINESS_STATUS_META as Record<
   string,
   { label: string; color: string; badge: 'success' | 'warning' | 'error' | 'default' }
-> = {
-  connected: { label: '最近验证通过', color: 'green', badge: 'success' },
-  local_ready: { label: '本地能力可用', color: 'blue', badge: 'success' },
-  configured_unverified: { label: '已配置·待验证', color: 'gold', badge: 'warning' },
-  degraded: { label: '降级模式', color: 'orange', badge: 'warning' },
-  blocked: { label: '条件未满足', color: 'red', badge: 'error' },
-  manual_only: { label: '仅人工流程', color: 'default', badge: 'default' },
-  disabled: { label: '当前已关闭', color: 'default', badge: 'default' },
-  requires_input: { label: '等待实时输入', color: 'purple', badge: 'warning' },
-};
+>;
 
-const READINESS_VERIFICATION_LABEL: Record<string, string> = {
-  passed: '验证有效',
-  failed: '最近验证失败',
-  stale: '验证已过期',
-  never: '从未验证',
-  not_applicable: '无需验证',
-};
+export const readinessMeta = (item: any) => runtimeReadinessMeta(item) as (typeof READINESS_META)[string];
 
-export const readinessMeta = (item: any) => {
-  if (item?.verification === 'failed') return { label: '最近验证失败', color: 'red', badge: 'error' as const };
-  if (item?.verification === 'stale') return { label: '验证已过期', color: 'orange', badge: 'warning' as const };
-  return READINESS_META[item?.effective] || { label: '状态未上报', color: 'default', badge: 'default' as const };
-};
+export const readinessConfigLabel = (item: any) => runtimeReadinessConfigLabel(item);
 
-export const readinessConfigLabel = (item: any) =>
-  item?.configuration === 'not_required'
-    ? '无需配置'
-    : item?.configuration === 'ready'
-      ? '配置完整'
-      : item?.configuration === 'partial'
-        ? '部分配置'
-        : '配置不完整';
-
-export const readinessVerificationLabel = (item: any) => READINESS_VERIFICATION_LABEL[item?.verification] || '未验证';
+export const readinessVerificationLabel = (item: any) => runtimeReadinessVerificationLabel(item);
 
 export const readinessTag = (item: any) => {
   const meta = readinessMeta(item);
   return <Tag color={meta.color}>{meta.label}</Tag>;
 };
+
+export const readinessCapabilityTags = (item: any) => [
+  {
+    key: 'local_draft',
+    enabled: item?.canGenerateLocalDraft === true,
+    label: item?.canGenerateLocalDraft === true ? '能生成本地底稿' : '不提供本地底稿',
+    color: 'blue',
+  },
+  {
+    key: 'human_review',
+    enabled: item?.canDeliverForHumanReview === true,
+    label: item?.canDeliverForHumanReview === true ? '能交付人工审阅' : '尚不能交付人工审阅',
+    color: 'gold',
+  },
+  {
+    key: 'external_action',
+    enabled: item?.canPerformExternalAction === true,
+    label: item?.canPerformExternalAction === true ? '能执行外部动作' : '不执行外部动作',
+    color: 'green',
+  },
+];
 
 export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?: React.ReactNode }) {
   const channels = Array.isArray(matrix?.channels) ? matrix.channels : [];
@@ -85,14 +84,20 @@ export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?:
         },
         {
           title: '执行边界',
-          width: 160,
+          width: 320,
           render: (_: unknown, row: any) => (
-            <Space size={4} wrap>
-              <Tag color={row.canExecute ? 'blue' : 'default'}>{row.canExecute ? '可执行' : '不可执行'}</Tag>
-              <Tag color={row.canPerformExternalAction ? 'green' : 'default'}>
-                {row.canPerformExternalAction ? '可外部动作' : '无外部动作'}
-              </Tag>
-            </Space>
+            <div>
+              <Space size={4} wrap>
+                {readinessCapabilityTags(row).map(capability => (
+                  <Tag key={capability.key} color={capability.enabled ? capability.color : 'default'}>
+                    {capability.label}
+                  </Tag>
+                ))}
+              </Space>
+              <div style={{ marginTop: 4, fontSize: 'var(--font-1)', color: 'var(--ui-text-2)' }}>
+                {row.capabilitySummary || '三维能力状态未上报，按不可交付处理'}
+              </div>
+            </div>
           ),
         },
         {
@@ -116,7 +121,14 @@ export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?:
         <span style={{ fontSize: 'var(--font-1)', color: 'var(--ui-muted)' }}>只读本地状态，不会自动联网探测</span>
       }
     >
-      <Table size="small" rowKey="key" pagination={false} dataSource={channels} scroll={{ x: 900 }} columns={columns} />
+      <Table
+        size="small"
+        rowKey="key"
+        pagination={false}
+        dataSource={channels}
+        scroll={{ x: 1080 }}
+        columns={columns}
+      />
     </Panel>
   );
 }

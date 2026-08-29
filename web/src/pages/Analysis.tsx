@@ -54,14 +54,14 @@ const { RangePicker } = DatePicker;
 // 关键指标趋势的四条线（邀约/到店字段后端暂未下发时自动留空，legend 仍可切换）
 const KPI_LINES = [
   { name: '新增线索', key: 'new_leads', color: 'var(--ui-accent)' },
-  { name: '邀约', key: 'invited', color: '#8a7450' },
-  { name: '到店', key: 'arrived', color: '#f6a02d' },
-  { name: '成交', key: 'deals', color: '#22c4a8' },
+  { name: '邀约', key: 'invited', color: 'var(--chart-3)' },
+  { name: '到店', key: 'arrived', color: 'var(--warn)' },
+  { name: '成交', key: 'deals', color: 'var(--chart-2)' },
 ];
 
 const levelColor: Record<string, string> = { 优秀: 'green', 健康: 'green', 良好: 'blue', 一般: 'orange', 预警: 'red' };
 const scoreColor = (s: number) =>
-  s >= 85 ? '#22c4a8' : s >= 70 ? 'var(--ui-accent)' : s >= 55 ? '#f6a02d' : '#f25b6b';
+  s >= 85 ? 'var(--chart-2)' : s >= 70 ? 'var(--ui-accent)' : s >= 55 ? 'var(--warn)' : 'var(--danger)';
 const DIM_TAG = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan'];
 const wanAxis = (v: number) => (v >= 10000 ? `${Math.round(v / 10000)}万` : `${v}`);
 const buttonResetStyle = {
@@ -336,21 +336,21 @@ export default function Analysis() {
     },
     {
       icon: <RiseOutlined />,
-      color: '#22c4a8',
+      color: 'var(--chart-2)',
       title: '趋势预测',
       desc: '基于历史数据预测营收走势',
       onClick: () => nav('/advisor'),
     },
     {
       icon: <SwapOutlined />,
-      color: '#8a7450',
+      color: 'var(--chart-3)',
       title: '对比分析',
       desc: '渠道 / 产品 / 区域多维对比',
       onClick: () => nav('/advisor'),
     },
     {
       icon: <ExportOutlined />,
-      color: '#f6a02d',
+      color: 'var(--warn)',
       title: '报告导出',
       desc: '一键导出本周经营周报',
       onClick: exportWeekly,
@@ -405,7 +405,7 @@ export default function Analysis() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<PieChartOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="毛利率"
             value={
               overview.grossMargin === null
@@ -420,7 +420,7 @@ export default function Analysis() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ShoppingCartOutlined />}
-            color="#8a7450"
+            color="var(--chart-3)"
             label="订单数"
             value={overview.orders !== undefined ? Number(overview.orders).toLocaleString() : '-'}
             trend={overview.ordersWow}
@@ -431,7 +431,7 @@ export default function Analysis() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<PayCircleOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="客单价"
             value={overview.avgOrder !== undefined ? fmtMoney(overview.avgOrder) : '-'}
             onClick={() => openDrill('avg-order')}
@@ -440,7 +440,7 @@ export default function Analysis() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<RetweetOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="复购率"
             value={overview.repurchaseRate != null ? `${overview.repurchaseRate}%` : '-'}
             onClick={() => openDrill('repurchase')}
@@ -449,7 +449,7 @@ export default function Analysis() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<FundOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="营销费用"
             value={
               overview.marketingCost === null
@@ -527,11 +527,11 @@ export default function Analysis() {
                       markLine: {
                         silent: true,
                         symbol: 'none',
-                        lineStyle: { type: 'dashed', color: '#f6a02d', width: 1.5 },
+                        lineStyle: { type: 'dashed', color: 'var(--warn)', width: 1.5 },
                         label: {
                           formatter: `日目标 ${fmtWan(trend.dailyTarget)}`,
                           position: 'insideEndTop',
-                          color: '#f6a02d',
+                          color: 'var(--warn)',
                           fontSize: 10,
                         },
                         data: [{ yAxis: trend.dailyTarget }],
@@ -543,8 +543,8 @@ export default function Analysis() {
                       smooth: true,
                       symbol: 'none',
                       data: trend.rows.map((x: any) => x.repurchase_amount),
-                      lineStyle: { width: 2, color: '#22c4a8' },
-                      itemStyle: { color: '#22c4a8' },
+                      lineStyle: { width: 2, color: 'var(--chart-2)' },
+                      itemStyle: { color: 'var(--chart-2)' },
                     },
                   ],
                 } as any
@@ -734,7 +734,7 @@ export default function Analysis() {
                     percent={(x.n / pathMax) * 100}
                     showInfo={false}
                     size="small"
-                    strokeColor="#70757a"
+                    strokeColor="var(--ui-muted)"
                     style={{ flex: 1 }}
                   />
                   <span
@@ -759,7 +759,7 @@ export default function Analysis() {
                   新客 <b style={{ color: 'var(--ui-accent)' }}>{customers.newOld?.newC ?? 0}</b> 人
                 </span>
                 <span>
-                  老客（复购）<b style={{ color: '#22c4a8' }}>{customers.newOld?.oldC ?? 0}</b> 人
+                  老客（复购）<b style={{ color: 'var(--chart-2)' }}>{customers.newOld?.oldC ?? 0}</b> 人
                 </span>
               </div>
             </div>
@@ -796,7 +796,8 @@ export default function Analysis() {
                         borderRadius: 5,
                         fontSize: 11,
                         fontWeight: 600,
-                        background: i < 3 ? ['var(--ui-primary)', '#70757a', '#8a7450'][i] : 'var(--ui-surface-2)',
+                        background:
+                          i < 3 ? ['var(--ui-primary)', 'var(--ui-muted)', 'var(--chart-3)'][i] : 'var(--ui-surface-2)',
                         color: i === 0 ? 'var(--ui-on-primary)' : i < 3 ? '#fff' : 'var(--ui-muted)',
                       }}
                     >
@@ -874,7 +875,7 @@ export default function Analysis() {
                           y2: 0,
                           colorStops: [
                             { offset: 0, color: 'var(--ui-accent)' },
-                            { offset: 1, color: '#70757a' },
+                            { offset: 1, color: 'var(--ui-muted)' },
                           ],
                         },
                       },
@@ -906,7 +907,7 @@ export default function Analysis() {
                 percent={Math.min(health.total || 0, 100)}
                 size={130}
                 strokeWidth={9}
-                strokeColor={{ '0%': 'var(--ui-accent)', '100%': '#22c4a8' }}
+                strokeColor={{ '0%': 'var(--ui-accent)', '100%': 'var(--chart-2)' }}
                 format={() => (
                   <div>
                     <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--ui-text)', lineHeight: 1.1 }}>
@@ -1052,7 +1053,7 @@ export default function Analysis() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--ui-text-2)', margin: '6px 0 8px', lineHeight: 1.65 }}>
-                    <BulbOutlined style={{ color: '#f6a02d' }} /> {it.suggestion}
+                    <BulbOutlined style={{ color: 'var(--warn)' }} /> {it.suggestion}
                   </div>
                   <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                     <Button
@@ -1196,7 +1197,9 @@ export default function Analysis() {
       >
         {sourceMapError ? (
           <div style={{ textAlign: 'center', padding: '18px 0' }}>
-            <div style={{ fontSize: 12.5, color: '#f25b6b', marginBottom: 10 }}>来源地图加载失败：{sourceMapError}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 10 }}>
+              来源地图加载失败：{sourceMapError}
+            </div>
             <Button size="small" icon={<ReloadOutlined />} onClick={loadSourceMap}>
               重试
             </Button>
@@ -1402,7 +1405,7 @@ export default function Analysis() {
               <>
                 <div style={{ fontSize: 13 }}>
                   区间订单 <b>{drill.data.count}</b> 笔 · 平均客单{' '}
-                  <b style={{ color: '#f6a02d', fontSize: 17 }}>{fmtMoney(drill.data.avg)}</b>
+                  <b style={{ color: 'var(--warn)', fontSize: 17 }}>{fmtMoney(drill.data.avg)}</b>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {drill.data.buckets.map((b: any) => {
@@ -1430,7 +1433,7 @@ export default function Analysis() {
                               minWidth: b.n ? 18 : 0,
                               height: 16,
                               borderRadius: 4,
-                              background: '#f6a02d',
+                              background: 'var(--warn)',
                               color: '#fff',
                               fontSize: 10.5,
                               textAlign: 'right',
@@ -1549,7 +1552,7 @@ export default function Analysis() {
                     title: '累计金额',
                     dataIndex: 'total',
                     align: 'right',
-                    render: (v: any) => <b style={{ color: '#70757a' }}>{fmtMoney(v || 0)}</b>,
+                    render: (v: any) => <b style={{ color: 'var(--ui-muted)' }}>{fmtMoney(v || 0)}</b>,
                   },
                   { title: '最近下单', dataIndex: 'last_at', width: 100, render: (v: any) => (v || '').slice(5, 16) },
                 ]}
@@ -1567,7 +1570,7 @@ export default function Analysis() {
                     title: '营销费用',
                     dataIndex: 'marketing_cost',
                     align: 'right',
-                    render: (v: any) => <b style={{ color: '#f25b6b' }}>{fmtMoney(v || 0)}</b>,
+                    render: (v: any) => <b style={{ color: 'var(--danger)' }}>{fmtMoney(v || 0)}</b>,
                   },
                   { title: '当日营收', dataIndex: 'deal_amount', align: 'right', render: (v: any) => fmtMoney(v || 0) },
                   {

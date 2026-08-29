@@ -1,0 +1,809 @@
+/* 老板一句话找人 + AgentTeams 风格协同小队面板（参考派活AI，固化驻留） */
+.team-match {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+/* AI 指挥台：渐变描边 + 顶部光晕，与普通卡片拉开档次 */
+.team-match-input {
+  position: relative;
+  padding: 18px 20px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background:
+    linear-gradient(var(--ui-surface), var(--ui-surface)) padding-box,
+    linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--ui-primary) 55%, transparent),
+        color-mix(in srgb, #8b5cf6 45%, transparent) 45%,
+        color-mix(in srgb, var(--ui-primary) 25%, var(--ui-border)) 90%
+      )
+      border-box;
+  box-shadow: 0 14px 40px color-mix(in srgb, var(--ui-primary) 8%, rgba(29, 35, 43, 0.05));
+  overflow: hidden;
+}
+
+.team-match-input::before {
+  content: '';
+  position: absolute;
+  inset: -60% -20% auto;
+  height: 120%;
+  background: radial-gradient(
+    ellipse at 78% 0%,
+    color-mix(in srgb, var(--ui-primary) 12%, transparent),
+    transparent 55%
+  );
+  pointer-events: none;
+}
+
+.team-match-kicker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  background: linear-gradient(100deg, var(--ui-primary), #8b5cf6 70%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.01em;
+}
+
+.team-match-kicker .anticon {
+  -webkit-text-fill-color: var(--ui-primary);
+}
+
+.team-match-sub {
+  position: relative;
+  margin: 5px 0 12px;
+  color: var(--ui-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.team-match-form {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.team-match-form .ant-input {
+  flex: 1;
+  min-width: min(100%, 260px);
+  padding: 12px 14px;
+  border-radius: 14px;
+  border-color: var(--ui-border);
+  font-size: 14px;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.team-match-form .ant-input:focus {
+  border-color: color-mix(in srgb, var(--ui-primary) 55%, var(--ui-border));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ui-primary) 10%, transparent);
+}
+
+.team-match-form-actions {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.team-match-form-actions .ant-btn {
+  min-height: 40px;
+  border-radius: 12px;
+}
+
+/* —— AI 工作过程可视化：翻名册扫描 + 阶段点亮 —— */
+.team-working {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 18%, var(--ui-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ui-primary) 3%, var(--ui-surface));
+  animation: team-working-in 0.3s var(--ease-out, ease-out);
+}
+
+@keyframes team-working-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.team-working-scan {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  padding: 6px 4px;
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.team-working-scan > span {
+  display: inline-flex;
+  animation: team-working-bob 1.8s ease-in-out infinite;
+}
+
+@keyframes team-working-bob {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: translateY(0) scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1);
+  }
+}
+
+.team-working-beam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 56px;
+  border-radius: 10px;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    color-mix(in srgb, var(--ui-primary) 16%, transparent) 50%,
+    transparent
+  );
+  animation: team-working-sweep 2.4s ease-in-out infinite;
+}
+
+@keyframes team-working-sweep {
+  0% {
+    left: -60px;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.team-working-phases {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-working-phases li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ui-muted);
+  font-size: 12.5px;
+  transition: color 0.3s ease;
+}
+
+.team-working-phases li i {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid var(--ui-border);
+  border-radius: 50%;
+  transition:
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+.team-working-phases li[data-state='done'] {
+  color: var(--ui-text-2);
+}
+
+.team-working-phases li[data-state='done'] i {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.team-working-phases li[data-state='done'] i::after {
+  content: '';
+  position: absolute;
+  inset: 2px 3px 4px;
+  border: solid #fff;
+  border-width: 0 0 2px 2px;
+  transform: rotate(-50deg);
+}
+
+.team-working-phases li[data-state='active'] {
+  color: var(--ui-text);
+  font-weight: 650;
+}
+
+.team-working-phases li[data-state='active'] i {
+  border-color: var(--ui-primary);
+  border-top-color: transparent;
+  animation: team-working-spin 0.9s linear infinite;
+}
+
+@keyframes team-working-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.team-working-meta {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-working,
+  .team-working-scan > span,
+  .team-working-beam,
+  .team-working-phases li[data-state='active'] i {
+    animation: none;
+  }
+}
+
+/* —— 协同小队面板：固化驻留，只有“关闭”按钮能移除 —— */
+.team-match-board {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
+  border-radius: 18px;
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--ui-primary) 5%, transparent), transparent 55%), var(--ui-surface);
+  box-shadow: 0 14px 40px rgba(29, 35, 43, 0.06);
+  overflow: hidden;
+  animation: team-working-in 0.35s var(--ease-out, ease-out);
+}
+
+/* 顶部一条渐变光带：与输入卡呼应，形成“AI 指挥台”整体感 */
+.team-match-board::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--ui-primary),
+    #8b5cf6 55%,
+    color-mix(in srgb, var(--ui-primary) 30%, transparent)
+  );
+}
+
+.team-match-chip,
+.team-plan-brief {
+  animation: team-working-in 0.3s var(--ease-out, ease-out) both;
+}
+
+.team-match-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.team-match-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-match-title strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-text);
+  font-size: 15px;
+}
+
+.team-match-title small {
+  display: block;
+  color: var(--ui-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-match-summary {
+  margin: 0;
+  color: var(--ui-text-2, var(--ui-muted));
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.team-match-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.team-match-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.team-match-chip:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+}
+
+.team-match-chip.active {
+  border-color: var(--ui-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-primary) 18%, transparent);
+}
+
+.team-match-chip.lead {
+  background: color-mix(in srgb, var(--ui-primary) 7%, var(--ui-surface));
+}
+
+.team-match-chip span {
+  display: grid;
+  text-align: left;
+  line-height: 1.25;
+}
+
+.team-match-chip b {
+  color: var(--ui-text);
+  font-size: 13px;
+}
+
+.team-match-chip i {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.team-match-dag-label {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.team-match-dag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.team-match-dag-step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.team-match-dag-col {
+  display: grid;
+  gap: 6px;
+}
+
+.team-match-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 168px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  cursor: pointer;
+  text-align: left;
+}
+
+.team-match-node:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+}
+
+.team-match-node span {
+  display: grid;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.team-match-node b {
+  color: var(--ui-text);
+  font-size: 12.5px;
+}
+
+.team-match-node i {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.team-match-arrow {
+  flex: none;
+  color: color-mix(in srgb, var(--ui-primary) 70%, var(--ui-muted));
+  font-size: 18px;
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+.team-match-focus {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--ui-primary) 35%, var(--ui-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ui-primary) 4%, var(--ui-surface));
+}
+
+.team-match-focus-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.team-match-focus-copy strong {
+  color: var(--ui-text);
+  font-size: 15px;
+  margin-right: 8px;
+}
+
+.team-match-focus-copy span {
+  color: var(--ui-muted);
+  font-size: 12px;
+  margin-right: 8px;
+}
+
+.team-match-focus-copy p {
+  margin: 0;
+  color: var(--ui-text-2, var(--ui-text));
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.team-match-focus-copy .team-match-why {
+  color: var(--ui-muted);
+}
+
+.team-match-focus-copy small {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.team-match-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* —— 队长拆解派活编排区 —— */
+.team-plan {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ui-primary) 3%, var(--ui-surface));
+}
+
+.team-plan-head strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.team-plan-head small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.team-plan-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.team-plan-control {
+  display: grid;
+  gap: 4px;
+}
+
+.team-plan-control-label {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.team-plan-hint {
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.team-plan-briefs {
+  display: grid;
+  gap: 8px;
+}
+
+.team-plan-briefs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ui-text-2);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.team-plan-brief {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+
+.team-plan-brief[data-dispatched='true'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 4%, var(--ui-surface));
+}
+
+.team-plan-brief-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.team-plan-brief-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.team-plan-brief-title strong {
+  color: var(--ui-text);
+  font-size: 13.5px;
+}
+
+.team-plan-brief-title > span {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.team-plan-brief-task {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.team-plan-brief-deliverable {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: 12px;
+}
+
+.team-plan-brief details summary {
+  color: var(--ui-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.team-plan-brief details pre {
+  margin: 6px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ui-surface-2, #f5f6f8);
+  color: var(--ui-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.team-plan-brief-actions {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 6px;
+}
+
+/* —— 队长收尾汇总 —— */
+.team-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--ui-primary) 30%, var(--ui-border));
+  border-radius: 12px;
+  background: var(--ui-surface);
+}
+
+.team-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.team-summary-head strong {
+  color: var(--ui-text);
+  font-size: 13.5px;
+}
+
+.team-summary-hint {
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.team-summary-body {
+  display: grid;
+  gap: 10px;
+}
+
+.team-summary-conclusion {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--ui-primary);
+  background: color-mix(in srgb, var(--ui-primary) 5%, var(--ui-surface));
+  border-radius: 0 10px 10px 0;
+}
+
+.team-summary-conclusion p {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: 13.5px;
+  font-weight: 550;
+  line-height: 1.8;
+}
+
+/* 关键数据卡片行：老板一眼看到钱、时间、数量、目标值 */
+.team-summary-numbers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.team-summary-number {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 16%, var(--ui-border));
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+
+.team-summary-number strong {
+  color: var(--ui-primary);
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.team-summary-number span {
+  color: var(--ui-text-2);
+  font-size: 11.5px;
+}
+
+.team-summary-number small {
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+.team-summary-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.team-summary-row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--ui-surface-2, #f7f8fa);
+}
+
+.team-summary-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-summary-row-head strong {
+  flex: 0 0 auto;
+  color: var(--ui-text);
+  font-size: 12.5px;
+}
+
+.team-summary-row-head .ant-btn {
+  margin-left: auto;
+}
+
+.team-summary-highlight {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.team-summary-label {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.team-summary-actions-list ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+}
+
+.team-summary-actions-list li {
+  color: var(--ui-text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.team-summary-actions-list li small {
+  display: block;
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.team-summary-time {
+  color: var(--ui-muted);
+  font-size: 10.5px;
+}
+
+@media (max-width: 640px) {
+  .team-summary-row {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .team-match-focus {
+    flex-direction: column;
+  }
+
+  .team-plan-brief {
+    flex-wrap: wrap;
+  }
+}

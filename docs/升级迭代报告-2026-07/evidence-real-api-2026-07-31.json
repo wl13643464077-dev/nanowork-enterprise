@@ -1,0 +1,130 @@
+{
+  "schemaVersion": "nanowork-real-api-acceptance.v1",
+  "date": "2026-07-31",
+  "provider": {
+    "name": "yunwu",
+    "baseUrl": "https://yunwu.ai/v1",
+    "connectionTest": "passed",
+    "modelCount": 408,
+    "credentialSource": "process_environment",
+    "credentialPersisted": false
+  },
+  "calls": [
+    {
+      "feature": "老板参谋诊断",
+      "reference": "ai_message:8",
+      "model": "gpt-5.5",
+      "aiMode": "api",
+      "inputTokens": 2367,
+      "outputTokens": 5162,
+      "costYuan": 0.3807,
+      "credits": 58,
+      "outcome": "accepted_as_internal_advice"
+    },
+    {
+      "feature": "智能体·营收口径复核官",
+      "reference": "custom_agent_msg:4",
+      "model": "gpt-5.5",
+      "aiMode": "api",
+      "inputTokens": 2913,
+      "outputTokens": 2910,
+      "costYuan": 0.262,
+      "credits": 40,
+      "outcome": "submitted_then_boss_rejected_for_missing_evidence"
+    },
+    {
+      "feature": "智能体·营收补证执行助手首轮",
+      "reference": "custom_agent_msg:8",
+      "model": "deepseek-v4-flash",
+      "aiMode": "api",
+      "inputTokens": 1228,
+      "outputTokens": 1467,
+      "costYuan": 0.0135,
+      "credits": 3,
+      "outcome": "human_rework_required"
+    },
+    {
+      "feature": "智能体·营收补证执行助手返工",
+      "reference": "custom_agent_msg:10",
+      "model": "deepseek-v4-flash",
+      "aiMode": "api",
+      "inputTokens": 2228,
+      "outputTokens": 644,
+      "costYuan": 0.0144,
+      "credits": 3,
+      "outcome": "approved"
+    },
+    {
+      "feature": "餐饮数字员工·理论与实际食材成本",
+      "reference": "restaurant_task:17",
+      "model": "gpt-5.5",
+      "aiMode": "api",
+      "inputTokens": 13921,
+      "outputTokens": 14340,
+      "costYuan": 1.278,
+      "credits": 192,
+      "outcome": "approved_and_archived"
+    },
+    {
+      "feature": "内容员工·分发官首轮",
+      "reference": "content_run:2",
+      "model": "gpt-5.5",
+      "aiMode": "api",
+      "inputTokens": 7334,
+      "outputTokens": 2878,
+      "costYuan": 0.3927,
+      "credits": 59,
+      "outcome": "rejected_for_ungrounded_times_and_hash_tags"
+    },
+    {
+      "feature": "内容员工·分发官返工",
+      "reference": "content_run:3",
+      "model": "gpt-5.5",
+      "aiMode": "api",
+      "inputTokens": 7379,
+      "outputTokens": 1381,
+      "costYuan": 0.3042,
+      "credits": 46,
+      "outcome": "adopted_to_material_9_and_content_138"
+    },
+    {
+      "feature": "智能体·前厅执行清单验收助手",
+      "reference": "custom_agent_msg:2",
+      "model": "deepseek-v4-flash",
+      "aiMode": "api",
+      "inputTokens": 475,
+      "outputTokens": 528,
+      "costYuan": 0.005,
+      "credits": 1,
+      "outcome": "completed"
+    }
+  ],
+  "totals": {
+    "successfulProviderCalls": 8,
+    "inputTokens": 37845,
+    "outputTokens": 29310,
+    "costYuan": 2.6505,
+    "credits": 402
+  },
+  "businessFlows": {
+    "manualTaskRoot": 33,
+    "manualTaskChild": 34,
+    "restaurantTask": 17,
+    "contentRun": 3,
+    "material": 9,
+    "content": 138
+  },
+  "verification": {
+    "serverTests": {
+      "passed": 533,
+      "failed": 0
+    },
+    "typecheck": "passed",
+    "tenantIsolation": "passed",
+    "designTokenGate": "passed",
+    "uiContract": "passed",
+    "lint": "passed",
+    "format": "passed",
+    "productionBuild": "passed"
+  }
+}

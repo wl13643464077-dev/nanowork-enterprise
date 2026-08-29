@@ -29,23 +29,30 @@
   --font-6: 24px;
   --font-7: 32px;
 
-  /* 阴影 —— 带蓝灰调，禁纯黑 */
-  --shadow-1: 0 1px 2px rgba(20, 48, 82, 0.06);
-  --shadow-2: 0 4px 14px rgba(20, 48, 82, 0.08);
-  --shadow-3: 0 12px 32px rgba(20, 48, 82, 0.12);
+  /* 阴影只表达真正的浮层关系，页面分组优先使用留白和弱表面 */
+  --shadow-1: 0 1px 2px rgba(29, 35, 43, 0.035);
+  --shadow-2: 0 8px 24px rgba(29, 35, 43, 0.07);
+  --shadow-3: 0 18px 54px rgba(29, 35, 43, 0.13);
 
   /* 动效 —— 位移克制、统一缓动 */
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 320ms;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* 弹簧动效层（Fluid Functionalism 方法论）：
+     动效即信息、不为装饰而动；进场带轻微弹性、退出永远比进场快一档，
+     这样连续 hover 多个卡片时前一个的收尾不会拖住后一个的入场。 */
+  --ease-spring: cubic-bezier(0.34, 1.26, 0.44, 1);
+  --ease-settle: cubic-bezier(0.3, 1, 0.36, 1);
+  --dur-exit: 130ms;
 
   /* 中性灰阶 5 级 */
-  --gray-1: #f8fafd;
-  --gray-2: #edf3fa;
-  --gray-3: #dfe7f1;
-  --gray-4: #7b8da3;
-  --gray-5: #18263a;
+  --gray-1: #fafaf8;
+  --gray-2: #f0f1ee;
+  --gray-3: #e2e5e1;
+  --gray-4: #7d8792;
+  --gray-5: #1d232b;
 
   /* 语义色 —— 每种含义只保留一个值。
      业务代码禁止再写 #16a34a / #ef4444 之类字面量：同一「危险」语义出现两个红色
@@ -108,22 +115,32 @@
 :root[data-theme='nano'],
 :root[data-theme='light'] {
   color-scheme: light;
-  --ui-bg: #f3f6fa;
-  --ui-chrome: #ffffff;
-  --ui-chrome-2: #f8fafd;
+  --ui-bg: #f5f6f4;
+  --ui-chrome: rgba(255, 255, 255, 0.84);
+  --ui-chrome-2: #fafaf8;
   --ui-surface: #ffffff;
-  --ui-surface-2: #edf3fa;
-  --ui-text: #18263a;
-  --ui-text-2: #586a80;
-  --ui-muted: #7b8da3;
-  --ui-border: #dfe7f1;
-  --ui-border-strong: #cbd7e5;
-  --ui-primary: #1769d2;
-  --ui-primary-strong: #0751a3;
-  --ui-primary-soft: #dceafb;
+  --ui-surface-2: #f0f1ee;
+  --ui-text: #1d232b;
+  --ui-text-2: #5e6875;
+  --ui-muted: #8b949e;
+  --ui-border: #e2e5e1;
+  --ui-border-strong: #cdd2cc;
+  --ui-primary: #2f6bda;
+  --ui-primary-strong: #2558b7;
+  --ui-primary-soft: #eaf1ff;
   --ui-on-primary: #ffffff;
-  --ui-accent: #2c76dc;
+  --ui-accent: #2f6bda;
+  /* 暖色工作面：老板浏览区（数字员工/工具箱等）用的暖米白基调 */
+  --ui-warm-bg: #f6efe2;
+  --ui-warm-surface: #fffdf8;
+  --ui-warm-surface-2: #f4ecdd;
+  --ui-warm-border: #e6dcc8;
+  --ui-warning-text: #9a5b00;
   --ui-warning-surface: #fff7e8;
+  --ui-hairline: rgba(29, 35, 43, 0.09);
+  --ui-glass: rgba(255, 255, 255, 0.78);
+  --ui-glass-strong: rgba(255, 255, 255, 0.92);
+  --ui-focus-ring: rgba(47, 107, 218, 0.28);
 
   /* 认证页（Login/Register/Pending）mesh 背景与玻璃卡片 */
   --auth-bg: #eff4fb;
@@ -140,16 +157,17 @@
 
   /* 深海军蓝导航（DESIGN.md 布局约束：侧栏固定深色，不随主题反白）。
      此前这些色值散落在 MainLayout.css 与 Admin.tsx 的模板字符串里，共 15 处 !important。 */
-  --nav-bg: #071d36;
-  --nav-bg-2: #06182d;
-  --nav-border: #102d4b;
-  --nav-divider: rgba(117, 160, 207, 0.16);
-  --nav-text: #a9bfd7;
-  --nav-text-dim: #6f91b5;
-  --nav-text-active: #ffffff;
-  --nav-hover: rgba(73, 135, 205, 0.13);
-  --nav-active-from: rgba(44, 118, 220, 0.94);
-  --nav-active-to: rgba(11, 83, 158, 0.92);
+  --nav-bg: #191d24;
+  --nav-bg-2: #15191f;
+  --nav-border: rgba(255, 255, 255, 0.06);
+  --nav-divider: rgba(255, 255, 255, 0.065);
+  --nav-text: #aab1ba;
+  --nav-text-dim: #727b87;
+  --nav-text-active: #f7f8f9;
+  --nav-icon: #8d97a4;
+  --nav-hover: rgba(255, 255, 255, 0.055);
+  --nav-active-from: rgba(47, 107, 218, 0.82);
+  --nav-active-to: rgba(47, 107, 218, 0.7);
 }
 
 :root[data-theme='midnight'] {
@@ -169,7 +187,17 @@
   --ui-primary-soft: #1f4d7d;
   --ui-on-primary: #06182b;
   --ui-accent: #67a8f6;
+  /* 暖色工作面在暗色主题下退化为略暖的深面板，不发灰绿 */
+  --ui-warm-bg: #0b1828;
+  --ui-warm-surface: #12253c;
+  --ui-warm-surface-2: #182f4a;
+  --ui-warm-border: #2a4159;
+  --ui-warning-text: #f3bd69;
   --ui-warning-surface: #2b2518;
+  --ui-hairline: rgba(238, 246, 255, 0.11);
+  --ui-glass: rgba(10, 28, 48, 0.78);
+  --ui-glass-strong: rgba(10, 28, 48, 0.92);
+  --ui-focus-ring: rgba(103, 168, 246, 0.32);
 
   --auth-bg: #061527;
   --auth-blob-1: rgba(44, 118, 220, 0.3);
@@ -191,6 +219,7 @@
   --nav-text: #adc1d8;
   --nav-text-dim: #7890aa;
   --nav-text-active: #eef6ff;
+  --nav-icon: #8fc0fb;
   --nav-hover: rgba(103, 168, 246, 0.16);
   --nav-active-from: rgba(44, 118, 220, 0.85);
   --nav-active-to: rgba(11, 83, 158, 0.8);
@@ -214,6 +243,8 @@ body {
   color: var(--ui-text);
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
+  font-family: 'Inter Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  text-rendering: optimizeLegibility;
 }
 button,
 input,
@@ -410,5 +441,74 @@ select {
   }
   .nw-typing i {
     animation: none;
+  }
+}
+
+/* 语音输入聆听中：红点脉冲（useVoiceInput 公共视觉，所有派活入口共用） */
+.nw-voice-listening {
+  animation: nw-voice-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes nw-voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.32);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 77, 79, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nw-voice-listening {
+    animation: none;
+  }
+}
+
+/* ===== 全局微交互（Fluid Functionalism 落地） ===== */
+/* 按钮按压反馈：点击瞬间轻微下陷，松手回弹——给「点到了」的确定感 */
+.ant-btn:not(:disabled):active,
+.lp-cta-main:active,
+.lp-cta-ghost:active {
+  transform: scale(0.975);
+  transition: transform 60ms ease-out;
+}
+
+/* 磁性光晕（proximity hover）：径向高亮跟随鼠标位置，
+   在你点下去之前先「预览」落点。挂 data-glow 的卡片配合 JS 写入 --mx/--my 生效。 */
+[data-glow] {
+  position: relative;
+}
+
+[data-glow]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    260px circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in srgb, var(--ui-primary) 9%, transparent),
+    transparent 62%
+  );
+  opacity: 0;
+  /* 退出比进入快一档：光晕消失干脆利落 */
+  transition: opacity var(--dur-exit) ease-out;
+  pointer-events: none;
+}
+
+[data-glow]:hover::after {
+  opacity: 1;
+  transition: opacity var(--dur-base) var(--ease-settle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ant-btn:not(:disabled):active,
+  .lp-cta-main:active,
+  .lp-cta-ghost:active {
+    transform: none;
+  }
+
+  [data-glow]::after {
+    display: none;
   }
 }

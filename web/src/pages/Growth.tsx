@@ -46,8 +46,12 @@ import {
 } from '@ant-design/icons';
 import { api, notifyCredits } from '../api/client';
 import { loadXlsx, type XlsxModule } from '../utils/xlsx';
+import { parseGrowthSuggestions as parseSuggestions } from '../utils/growth';
 import { StatCard, Panel, StageTag, GradeTag } from '../components/Kit';
 import { Chart, CHART_COLORS, axisStyle } from '../components/Charts';
+import GrowthTodayFocus from '../components/GrowthTodayFocus';
+import BirthdayCare from '../components/BirthdayCare';
+import { GrowthInfoRow as InfoRow, GrowthSectionTitle as SectionTitle } from '../components/GrowthPrimitives';
 
 const { Paragraph } = Typography;
 
@@ -58,21 +62,6 @@ const SOURCES = ['短视频', '朋友圈', '社群', '转介绍', '主题试吃'
 const DEFAULT_IDENTITIES = ['企业主', '高管', '个体创业者', '普通消费者'];
 const BUDGETS = ['高', '中', '低', '未知'];
 const budgetColor: Record<string, string> = { 高: 'red', 中: 'orange', 低: 'default', 未知: 'default' };
-
-// 把 AI 返回的「编号 3 条话术」长文本拆成数组
-function parseSuggestions(s: string): string[] {
-  if (!s) return [];
-  const parts = s
-    .split(/(?:^|\n)\s*\d+[.、．)）]\s*/)
-    .map(t => t.trim())
-    .filter(Boolean);
-  if (parts.length >= 2) return parts.slice(0, 3);
-  return s
-    .split(/\n+/)
-    .map(t => t.replace(/^[-·]\s*/, '').trim())
-    .filter(Boolean)
-    .slice(0, 3);
-}
 
 const fmtTime = (v: any) => (v ? String(v).replace('T', ' ').slice(0, 16) : '');
 const interactiveSurfaceStyle = {
@@ -87,21 +76,6 @@ const interactiveSurfaceStyle = {
   font: 'inherit',
   textAlign: 'inherit',
 } as const;
-
-function InfoRow({ label, val }: { label: string; val: any }) {
-  return (
-    <div style={{ display: 'flex', fontSize: 12.5, padding: '3px 0', lineHeight: 1.6 }}>
-      <span style={{ color: 'var(--ui-muted)', width: 62, flexShrink: 0 }}>{label}</span>
-      <span style={{ color: 'var(--ui-text-2)', flex: 1, wordBreak: 'break-all' }}>{val || '-'}</span>
-    </div>
-  );
-}
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', margin: '12px 0 6px' }}>{children}</div>
-  );
-}
 
 function leadBucketTags(lead: any) {
   if (!lead || ['已成交', '复购', '已流失'].includes(lead.stage)) return [];
@@ -279,6 +253,9 @@ export default function Growth() {
     地区: 'region',
     城市: 'region',
     region: 'region',
+    生日: 'birthday',
+    客户生日: 'birthday',
+    birthday: 'birthday',
     下次跟进: 'next_follow_at',
     跟进日期: 'next_follow_at',
     下次跟进日期: 'next_follow_at',
@@ -338,6 +315,7 @@ export default function Growth() {
           stage: pickOption(o.stage, STAGES, '新线索'),
           company: cellText(o.company),
           region: cellText(o.region),
+          birthday: cellText(o.birthday),
           next_follow_at: dateText(o.next_follow_at),
           next_action: cellText(o.next_action),
           note: cellText(o.note),
@@ -986,7 +964,7 @@ export default function Growth() {
       sorter: true,
       sortOrder: ledgerSortOrder('scoreAsc', 'score'),
       render: (v: number) => (
-        <span style={{ fontWeight: 600, color: v >= 70 ? '#f25b6b' : 'var(--ui-text-2)' }}>{v ?? '-'}</span>
+        <span style={{ fontWeight: 600, color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v ?? '-'}</span>
       ),
     },
     {
@@ -1119,7 +1097,7 @@ export default function Growth() {
       align: 'right',
       sorter: (a: any, b: any) => numRank(a.score) - numRank(b.score),
       render: (v: number) => (
-        <span style={{ fontWeight: 600, color: v >= 70 ? '#f25b6b' : 'var(--ui-text-2)' }}>{v}分</span>
+        <span style={{ fontWeight: 600, color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v}分</span>
       ),
     },
     {
@@ -1143,6 +1121,18 @@ export default function Growth() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* ===== 今日必跟：第一屏先回答「今天该跟谁」 ===== */}
+      <GrowthTodayFocus
+        onOpenLead={id => {
+          if (id === -1) {
+            kpiFilter({ sort: 'follow', hint: '台账已按「下次跟进时间」排序，最上方为最急迫客户' });
+            return;
+          }
+          loadDetail(id);
+        }}
+      />
+      {/* ===== 近期生日客户：低成本复购动作 ===== */}
+      <BirthdayCare />
       {/* ===== KPI 行（逐卡可点：台账联动筛选 + 自动滚动定位）===== */}
       <Row gutter={[12, 12]}>
         <Col xs={12} md={8} xl={4}>
@@ -1158,7 +1148,7 @@ export default function Growth() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ClockCircleOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="待跟进客户"
             value={summary.pending ?? '-'}
             suffix="人"
@@ -1168,7 +1158,7 @@ export default function Growth() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<TeamOutlined />}
-            color="#8a7450"
+            color="var(--chart-3)"
             label="线索总池"
             value={summary.total ?? '-'}
             suffix="人"
@@ -1178,7 +1168,7 @@ export default function Growth() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<CalendarOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="已邀约"
             value={summary.invited ?? '-'}
             suffix="人"
@@ -1190,7 +1180,7 @@ export default function Growth() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ShopOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="已到店"
             value={summary.arrived ?? '-'}
             suffix="人"
@@ -1200,7 +1190,7 @@ export default function Growth() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<TrophyOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="已成交"
             value={summary.dealt ?? '-'}
             suffix="人"
@@ -1373,7 +1363,7 @@ export default function Growth() {
             </Spin>
             <Divider style={{ margin: '10px 0' }} />
             <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 4 }}>
-              <BulbOutlined style={{ color: '#f6a02d' }} /> 建议优先跟进
+              <BulbOutlined style={{ color: 'var(--warn)' }} /> 建议优先跟进
             </div>
             {followUpList.map((c: any) => (
               <button
@@ -1407,7 +1397,7 @@ export default function Growth() {
       <Panel
         title={
           <>
-            <MessageOutlined style={{ color: '#22c4a8' }} /> 私域跟进工作台
+            <MessageOutlined style={{ color: 'var(--chart-2)' }} /> 私域跟进工作台
           </>
         }
         extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>左侧=最近跟进队列；下方=自动分层客户池</span>}
@@ -1768,7 +1758,7 @@ export default function Growth() {
                       style={{
                         fontSize: 20,
                         fontWeight: 700,
-                        color: (detail.score ?? 0) >= 70 ? '#f25b6b' : 'var(--ui-accent)',
+                        color: (detail.score ?? 0) >= 70 ? 'var(--danger)' : 'var(--ui-accent)',
                       }}
                     >
                       {detail.score ?? '-'}
@@ -1777,10 +1767,10 @@ export default function Growth() {
                   </span>
                 </div>
                 <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 12px' }}>
-                  <InfoRow label="身份" val={detail.identity_tag} />
+                  <InfoRow label="身份" value={detail.identity_tag} />
                   <InfoRow
                     label="预算"
-                    val={
+                    value={
                       detail.budget_level && (
                         <Tag color={budgetColor[detail.budget_level] || 'default'} style={{ margin: 0 }}>
                           {detail.budget_level}
@@ -1788,10 +1778,10 @@ export default function Growth() {
                       )
                     }
                   />
-                  <InfoRow label="意向产品" val={detail.interest} />
-                  <InfoRow label="公司" val={detail.company} />
-                  <InfoRow label="来源" val={detail.source} />
-                  <InfoRow label="负责人" val={detail.owner_name} />
+                  <InfoRow label="意向产品" value={detail.interest} />
+                  <InfoRow label="公司" value={detail.company} />
+                  <InfoRow label="来源" value={detail.source} />
+                  <InfoRow label="负责人" value={detail.owner_name} />
                 </div>
 
                 <SectionTitle>跟进备份</SectionTitle>
@@ -1912,7 +1902,7 @@ export default function Growth() {
                                   background: j.reached
                                     ? isCurrent
                                       ? 'var(--ui-primary)'
-                                      : '#22c4a8'
+                                      : 'var(--chart-2)'
                                     : 'var(--ui-surface)',
                                   boxShadow: isCurrent ? '0 0 0 3px var(--ui-primary-soft)' : 'none',
                                 }}
@@ -2879,6 +2869,11 @@ export default function Growth() {
             <Col span={12}>
               <Form.Item name="region" label="区域">
                 <Input placeholder="如 临沂兰山区" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="birthday" label="生日（用于生日关怀）">
+                <Input placeholder="如 08-28 或 1990-08-28" maxLength={10} />
               </Form.Item>
             </Col>
             <Col span={12}>

@@ -1,0 +1,22 @@
+.system-error-state {
+  padding: 36px 0;
+  text-align: center;
+}
+
+.system-error-state__icon {
+  color: var(--danger);
+  font-size: var(--font-7, 32px);
+}
+
+.system-error-state__title {
+  margin-top: var(--space-3, 10px);
+  color: var(--ui-text);
+  font-size: var(--font-4, 16px);
+  font-weight: 600;
+}
+
+.system-error-state__message {
+  margin: 6px 0 var(--space-4, 16px);
+  color: var(--ui-muted);
+  font-size: var(--font-2, 12px);
+}

@@ -28,6 +28,7 @@ const T = Number(qRaw.run("INSERT INTO tenants(name,status,credits) VALUES('两�
 const U = Number(qRaw.run("INSERT INTO users(username,password_hash,name,role,tenant_id) VALUES('tp_u1','x','两段式员工','sales',?)", T).lastInsertRowid);
 qRaw.run(`INSERT INTO marshals(code,name,title,emoji,duty,sort) VALUES('M-01','测试分部','测试','🧪','测试职责',1)`);
 const M = Number(db.prepare(`SELECT id FROM marshals WHERE code='M-01'`).get().id);
+const REQUEST_ID = 'billing-two-phase-request';
 
 const bal = () => credits.balanceOfTenant(T);
 const sumLogs = () => db.prepare('SELECT COALESCE(SUM(credits),0) s FROM credit_logs WHERE tenant_id=?').get(T).s;
@@ -42,7 +43,11 @@ const setBalance = (target) => {
 function makeApp(user) {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
-  app.use((req, _res, next) => runWithTenant(user.tenant_id || 1, () => { req.user = user; next(); }));
+  app.use((req, _res, next) => runWithTenant(user.tenant_id || 1, () => {
+    req.user = user;
+    req.requestId = REQUEST_ID;
+    next();
+  }));
   app.use('/advisor', advisorRoutes);
   app.use('/marshals', marshalRoutes);
   return app;
@@ -87,13 +92,132 @@ test('占扣→结算多退少补：一条流水、余额精确、恒等成立�
   assert.equal(bal(), before - 2, '重复结算与释放均不改变余额');
 });
 
-test('结算超过占扣（估算偏低）：差额补扣，已交付答案绝不漏计费', () => {
+test('结算超过占扣时失败关闭：不追加扣款、不伪造实扣并保留 held 待对账', () => {
   const before = bal();
   const hold = credits.holdCredits({ userId: U, feature: '估算偏低补扣', kind: 'text', model: 'deepseek-v4-flash', credits: 5 });
+  const afterHold = bal();
+  const holdBefore = db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+    FROM credit_holds WHERE id=?`).get(hold.holdId);
+  const logBefore = db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+    FROM credit_logs WHERE id=?`).get(hold.logId);
   // 100000in/100000out → (100000×5+100000×5)/1e6=1元 ×1.5/0.01 = 150 分 > 占扣 5 分
-  const bill = credits.settleHold(hold, { usage: { inputTokens: 100000, outputTokens: 100000 }, model: 'deepseek-v4-flash', aiMode: 'api' });
-  assert.equal(bill.credits, 150);
-  assert.equal(bal(), before - 150, '实扣高于占扣时按真实用量补扣');
+  assert.throws(
+    () => credits.settleHold(hold, {
+      usage: { inputTokens: 100000, outputTokens: 100000 },
+      model: 'deepseek-v4-flash',
+      aiMode: 'api',
+    }),
+    error => error?.status === 409
+      && error?.code === 'BILLING_HOLD_EXCEEDED'
+      && /超过预授权.*待账务对账/u.test(error.message),
+  );
+  assert.equal(bal(), afterHold, '结算失败不得在占扣之外继续扣减余额');
+  assert.deepEqual(
+    db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+      FROM credit_holds WHERE id=?`).get(hold.holdId),
+    holdBefore,
+    '占扣必须继续保持 held，交给对账流程处理',
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+      FROM credit_logs WHERE id=?`).get(hold.logId),
+    logBefore,
+    '流水必须保持预授权原状，不得伪造 token、成本或实扣终态',
+  );
+  assertLedger();
+
+  const released = credits.releaseHold(hold, '专项测试清理超额待对账占扣');
+  assert.equal(released.credits, 0);
+  assert.equal(bal(), before);
+  assertLedger();
+
+  const fixedHold = credits.holdCredits({
+    userId: U,
+    feature: '固定报价超额阻断',
+    kind: 'video',
+    model: 'test-video',
+    credits: 5,
+  });
+  const afterFixedHold = bal();
+  assert.throws(
+    () => credits.settleHold(fixedHold, { credits: 6, model: 'test-video', aiMode: 'api' }),
+    error => error?.code === 'BILLING_HOLD_EXCEEDED',
+    '显式报价结算也不得绕过预授权上限',
+  );
+  assert.equal(bal(), afterFixedHold);
+  assert.equal(
+    db.prepare('SELECT status FROM credit_holds WHERE id=?').get(fixedHold.holdId).status,
+    'held',
+  );
+  credits.releaseHold(fixedHold, '专项测试清理固定报价占扣');
+  assert.equal(bal(), before);
+  assertLedger();
+});
+
+test('真实 API 文本结算缺少有效 usage 时失败关闭：hold、余额与流水原样保留', () => {
+  const invalidUsageCases = [
+    { label: '缺少用量', usage: {} },
+    { label: '非有限数', usage: { inputTokens: Number.NaN, outputTokens: 1 } },
+    { label: '负数', usage: { inputTokens: -1, outputTokens: 2 } },
+    { label: '总用量为0', usage: { inputTokens: 0, outputTokens: 0 } },
+  ];
+
+  for (const item of invalidUsageCases) {
+    const balanceBefore = bal();
+    const hold = credits.holdCredits({
+      userId: U,
+      feature: `usage失败关闭·${item.label}`,
+      kind: 'text',
+      model: 'deepseek-v4-flash',
+      credits: 20,
+    });
+    const balanceAfterHold = bal();
+    const holdBefore = db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+      FROM credit_holds WHERE id=?`).get(hold.holdId);
+    const logBefore = db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+      FROM credit_logs WHERE id=?`).get(hold.logId);
+
+    assert.throws(
+      () => credits.settleHold(hold, {
+        usage: item.usage,
+        model: 'deepseek-v4-flash',
+        aiMode: 'api',
+      }),
+      error => error?.status === 409
+        && error?.code === 'BILLING_USAGE_MISSING'
+        && error?.retryable === false,
+      item.label,
+    );
+    assert.equal(bal(), balanceAfterHold, `${item.label}：不得改变占扣后余额`);
+    assert.deepEqual(
+      db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+        FROM credit_holds WHERE id=?`).get(hold.holdId),
+      holdBefore,
+      `${item.label}：hold 必须保持 held`,
+    );
+    assert.deepEqual(
+      db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+        FROM credit_logs WHERE id=?`).get(hold.logId),
+      logBefore,
+      `${item.label}：流水不得被改写为0分已结算`,
+    );
+    credits.releaseHold(hold, `清理${item.label}专项测试占扣`);
+    assert.equal(bal(), balanceBefore);
+  }
+
+  const templateHold = credits.holdCredits({
+    userId: U,
+    feature: '模板底稿退款不受usage门影响',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 20,
+  });
+  const templateBill = credits.settleHold(templateHold, {
+    usage: { inputTokens: 0, outputTokens: 0 },
+    model: 'template',
+    aiMode: 'template',
+  });
+  assert.equal(templateBill.credits, 0, '模板底稿仍应全额退回预授权');
   assertLedger();
 });
 
@@ -156,6 +280,13 @@ test('BE-H2/SSE：总参谋占扣不足时不开流——402 前不 writeHead、
     assert.match(res.headers.get('content-type') || '', /application\/json/, '必须是 JSON 拒绝，不是 event-stream');
     const body = await res.json();
     assert.match(body.error, /积分余额不足/);
+    assert.equal(body.code, 'INSUFFICIENT_CREDITS');
+    assert.equal(body.aiStatus, 'failed');
+    assert.equal(body.deliveryState, 'failed');
+    assert.equal(body.failurePhase, 'preflight');
+    assert.equal(body.retryable, false, '额度未补足前不应误导用户直接重试');
+    assert.match(body.retryHint, /充值|分配额度/);
+    assert.equal(body.requestId, REQUEST_ID);
   });
   assert.equal(bal(), 6, '拒绝后余额分毫未动');
   assert.equal(heldCount(), 0, '不留悬挂占扣');
@@ -182,7 +313,7 @@ test('BE-H2/SSE：元帅对话占扣不足时同样在开流前 402', async () =
   assertLedger();
 });
 
-test('BE-H2/SSE 正路径：先占扣再开流，流结束按真实用量结算（模板模式全额退回）', async () => {
+test('BE-H2/SSE 无真实AI时：先占扣再明确失败，不交付模板正文并全额退回', async () => {
   setBalance(1000);
   const user = { id: U, name: '两段式员工', role: 'sales', tenant_id: T };
   await withServer(user, async base => {
@@ -195,16 +326,31 @@ test('BE-H2/SSE 正路径：先占扣再开流，流结束按真实用量结算�
     const events = (await res.text()).split('\n\n').filter(Boolean)
       .map(chunk => { try { return JSON.parse(chunk.replace(/^data: /, '')); } catch { return null; } })
       .filter(Boolean);
-    const done = events.find(e => e.done);
-    assert.ok(done, '流必须以 done 事件收尾');
-    assert.ok(done.reply, '答案已交付');
-    assert.equal(done.billing.credits, 0, '模板模式实扣 0 分（占扣全额退回）');
+    assert.equal(events.some(e => e.done), false, '没有真实AI产出时不得发送 done 伪装交付');
+    const failed = events.find(e => e.error);
+    assert.ok(failed, '流必须返回可解释的失败事件');
+    assert.equal(failed.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(failed.aiStatus, 'failed');
+    assert.equal(failed.deliveryState, 'failed');
+    assert.equal(failed.failurePhase, 'generate');
+    assert.equal(failed.retryable, true);
+    assert.match(failed.retryHint, /原任务重试|上游状态/);
+    assert.equal(failed.requestId, REQUEST_ID);
+    assert.equal(failed.ai.mode, 'template');
+    assert.ok(failed.ai.violations.includes('mode_not_api'));
+    assert.ok(failed.ai.violations.includes('usage_missing'));
+    assert.equal(failed.billing.state, 'released');
+    assert.equal(failed.billing.credits, 0, '未交付产出时占扣全额退回');
   });
-  assert.equal(bal(), 1000, '模板模式结算后余额不变');
+  assert.equal(bal(), 1000, '未交付结算后余额不变');
   assert.equal(heldCount(), 0, '占扣已全部结算');
-  const lastLog = db.prepare('SELECT credits,ai_mode FROM credit_logs WHERE tenant_id=? ORDER BY id DESC LIMIT 1').get(T);
+  const lastLog = db.prepare('SELECT credits,ai_mode,note FROM credit_logs WHERE tenant_id=? ORDER BY id DESC LIMIT 1').get(T);
   assert.equal(lastLog.credits, 0);
-  assert.equal(lastLog.ai_mode, 'template');
+  assert.equal(lastLog.ai_mode, 'failed');
+  assert.match(lastLog.note, /阶段=generate/);
+  assert.match(lastLog.note, /错误码=AI_REAL_OUTPUT_REQUIRED/);
+  assert.match(lastLog.note, /预授权.*实扣0分/);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=? AND role='assistant'`).get(T).n, 0);
   assertLedger();
 });
 

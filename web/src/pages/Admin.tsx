@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import {
   Alert,
   Avatar,
@@ -40,6 +40,7 @@ import {
 } from '@ant-design/icons';
 import { api, fmtMoney, getUser, exportCsv } from '../api/client';
 import { StatCard, Panel } from '../components/Kit';
+import AdminDispatchPolicyPanel, { AdminDeptModulesPanel } from './AdminDispatchPolicyPanel';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
 import './Admin.css';
@@ -74,6 +75,7 @@ const MODE_TAG: Record<string, { c: string; t: string }> = {
   admin: { c: 'purple', t: '管理员调整' },
 };
 const MONO = 'SFMono-Regular, Consolas, Menlo, monospace';
+const PANEL_HINT_STYLE: CSSProperties = { fontSize: 'var(--font-2, 12px)', color: 'var(--ui-muted)', marginBottom: 10 };
 
 const roleTag = (r: string) => <Tag color={ROLE_COLOR[r] || 'default'}>{ROLE_NAME[r] || r || '-'}</Tag>;
 const statusTag = (s: string) => <Tag color={(s || '启用') === '启用' ? 'green' : 'red'}>{s || '启用'}</Tag>;
@@ -243,7 +245,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ThunderboltOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="今日活跃"
             value={ov.activeToday ?? '-'}
             suffix="人"
@@ -253,7 +255,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<GoldOutlined />}
-            color="#8a7450"
+            color="var(--chart-3)"
             label="积分余额"
             value={(ov.totalCredits ?? 0).toLocaleString()}
             suffix="分"
@@ -263,7 +265,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<FireOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="今日消耗积分"
             value={(ov.todayCredits ?? 0).toLocaleString()}
             suffix="分"
@@ -273,7 +275,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<DollarOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="今日花费"
             value={fmtMoney(ov.todaySpendYuan)}
             onClick={() => setDrill('spend')}
@@ -282,7 +284,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<RobotOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="AI调用(累计)"
             value={(ov.aiCalls ?? 0).toLocaleString()}
             suffix="次"
@@ -300,7 +302,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                   style={{
                     fontWeight: 700,
                     fontSize: 15,
-                    color: aiReadiness.effective === 'connected' ? '#16a34a' : '#e0a253',
+                    color: aiReadiness.effective === 'connected' ? 'var(--ok)' : '#e0a253',
                   }}
                 >
                   {aiState.label}
@@ -333,8 +335,14 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                   alignItems: 'center',
                 }}
               >
-                <span style={{ fontSize: 12.5, color: '#e0a253', fontWeight: 600 }}>待审批内容</span>
-                <span style={{ fontSize: 18, fontWeight: 700, color: ov.pendingApprovals > 0 ? '#f25b6b' : '#16a34a' }}>
+                <span style={{ fontSize: 12.5, color: 'var(--ui-warning-text)', fontWeight: 600 }}>待人工审阅内容</span>
+                <span
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 700,
+                    color: ov.pendingApprovals > 0 ? 'var(--danger)' : 'var(--ok)',
+                  }}
+                >
                   {ov.pendingApprovals ?? 0} 条
                 </span>
               </div>
@@ -538,7 +546,11 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                 dataIndex: 'credits',
                 align: 'right',
                 render: (v: number) =>
-                  v > 0 ? <b style={{ color: '#f25b6b' }}>-{v}</b> : <span style={{ color: '#16a34a' }}>+{-v}</span>,
+                  v > 0 ? (
+                    <b style={{ color: 'var(--danger)' }}>-{v}</b>
+                  ) : (
+                    <span style={{ color: 'var(--ok)' }}>+{-v}</span>
+                  ),
               },
               {
                 title: '模式',
@@ -735,7 +747,7 @@ function UsersOrg() {
                 <Select
                   options={[
                     { value: '启用', label: '启用' },
-                    { value: '禁用', label: '禁用' },
+                    { value: '停用', label: '停用' },
                   ]}
                 />
               </Form.Item>
@@ -844,6 +856,7 @@ function Permissions() {
   const [rm, setRm] = useState<Record<string, string[]>>({});
   const [ff, setFf] = useState<Record<string, string[]>>({});
   const [dm, setDm] = useState<Record<string, string[]>>({});
+  const [dp, setDp] = useState<Record<string, string[]>>({}); // 员工派活权限（分部级角色白名单）
 
   const load = () =>
     api.get('/admin/permissions').then((d: any) => {
@@ -851,6 +864,11 @@ function Permissions() {
       setRm(d.roleModules || {});
       setFf(d.featureFlags || {});
       setDm(d.deptModules || {});
+      setDp(
+        Object.fromEntries(
+          Object.entries(d.employeeDispatchPolicy?.groups || {}).map(([g, r]: [string, any]) => [g, r?.roles || []]),
+        ),
+      );
     });
   useEffect(() => {
     load();
@@ -874,16 +892,6 @@ function Permissions() {
   const saveFeatures = () =>
     api.put('/admin/permissions', { featureFlags: ff }).then(() => {
       message.success('功能级权限已保存，立即生效');
-      load();
-    });
-  const toggleDm = (dept: string, mod: string) =>
-    setDm(prev => {
-      const list = prev[dept] || [];
-      return { ...prev, [dept]: list.includes(mod) ? list.filter(x => x !== mod) : [...list, mod] };
-    });
-  const saveDept = () =>
-    api.put('/admin/permissions', { deptModules: dm }).then(() => {
-      message.success('部门映射已保存：员工 = 角色基础包 ∪ 部门追加');
       load();
     });
 
@@ -948,9 +956,7 @@ function Permissions() {
           </Button>
         }
       >
-        <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginBottom: 10 }}>
-          控制高成本AI能力与数据导出的角色开关（勾选 = 允许使用）
-        </div>
+        <div style={PANEL_HINT_STYLE}>控制高成本AI能力与数据导出的角色开关（勾选 = 允许使用）</div>
         <Table
           size="small"
           rowKey="fkey"
@@ -985,46 +991,9 @@ function Permissions() {
         />
       </Panel>
 
-      <Panel
-        title="员工部门映射（三级权限·员工层）"
-        extra={
-          <Button type="primary" size="small" onClick={saveDept}>
-            保存部门映射
-          </Button>
-        }
-      >
-        <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginBottom: 10 }}>
-          员工实际可见 = 员工角色基础包（总控台+经营执行） ∪ 所在部门追加模块。例：销售部员工自动追加「增长中心」。
-        </div>
-        <Table
-          size="small"
-          rowKey="dept"
-          pagination={false}
-          dataSource={Array.from(new Set([...(meta.depts || []), ...Object.keys(dm)])).map((d: string) => ({
-            dept: d,
-          }))}
-          columns={
-            [
-              {
-                title: '部门',
-                dataIndex: 'dept',
-                width: 150,
-                render: (v: string) => <b style={{ color: 'var(--ui-text)' }}>{v}</b>,
-              },
-              ...meta.modules
-                .filter((m: any) => !['dashboard', 'system'].includes(m.key))
-                .map((m: any) => ({
-                  title: <div style={{ textAlign: 'center' as const }}>{m.name}</div>,
-                  key: m.key,
-                  align: 'center' as const,
-                  render: (_: any, r: any) => (
-                    <Checkbox checked={(dm[r.dept] || []).includes(m.key)} onChange={() => toggleDm(r.dept, m.key)} />
-                  ),
-                })),
-            ] as any
-          }
-        />
-      </Panel>
+      <AdminDeptModulesPanel meta={meta} dm={dm} setDm={setDm} onSaved={load} />
+
+      <AdminDispatchPolicyPanel meta={meta} dp={dp} setDp={setDp} onSaved={load} />
     </div>
   );
 }
@@ -1271,7 +1240,7 @@ function MarshalsAdmin() {
             name="kbDeps"
             label={
               <span>
-                📚 加载知识库（按分类勾选，<b style={{ color: '#16a34a' }}>自动跟随更新</b>）
+                📚 加载知识库（按分类勾选，<b style={{ color: 'var(--ok)' }}>自动跟随更新</b>）
               </span>
             }
             extra="勾选分类即可——该分类下的知识库文档无论后续怎么新增、修改、上传，员工对话/产出时都会实时引用最新的「已启用」文档，无需重新配置。括号内为该分类当前启用文档数（随数据库实时变化）。"
@@ -1883,9 +1852,9 @@ function CreditsAdmin() {
                     align: 'right',
                     render: (v: number) =>
                       v > 0 ? (
-                        <b style={{ color: '#f25b6b' }}>-{v}</b>
+                        <b style={{ color: 'var(--danger)' }}>-{v}</b>
                       ) : v < 0 ? (
-                        <b style={{ color: '#16a34a' }}>+{Math.abs(v)}</b>
+                        <b style={{ color: 'var(--ok)' }}>+{Math.abs(v)}</b>
                       ) : (
                         <span style={{ color: 'var(--ui-muted)' }}>0</span>
                       ),

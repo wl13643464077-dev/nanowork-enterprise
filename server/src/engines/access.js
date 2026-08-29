@@ -54,6 +54,13 @@ export function canAccessOwner(user, ownerId) {
   return ids.includes(Number(ownerId));
 }
 
+export function canReviewManualTask(user, task) {
+  if (!isManagerRole(user) || !task || !canAccessOwner(user, task.assignee_id)) return false;
+  // 只有老板可以终审自己负责的任务；其他管理角色必须保留职责分离。
+  if (Number(task.assignee_id) === Number(user?.id) && user?.role !== 'boss') return false;
+  return true;
+}
+
 export function accessibleUserExists(user, ownerId) {
   const id = Number(ownerId);
   if (!id) return false;

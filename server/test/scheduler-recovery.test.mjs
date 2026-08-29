@@ -25,6 +25,10 @@ const {
   runScheduledJobs,
 } = await import('../src/engines/scheduler.js');
 const { creditTenant, holdCredits, releaseHold } = await import('../src/engines/credits.js');
+const { createSkillLearningRun } = await import('../src/engines/employee-skill-learning.js');
+const { ensureContentAutomationSpecialProviderAttemptSchema } = await import(
+  '../src/routes/content.js'
+);
 
 initSchema();
 migrateV2();
@@ -76,15 +80,17 @@ function finishClaim({ runId, ruleId }) {
 function insertContentEmployeeRun({
   title,
   resultMd = null,
+  aiMode = 'api',
+  snapshot = resultMd ? { contract: { valid: true } } : {},
   createdAt = '2026-07-23 08:00:00',
   updatedAt = createdAt,
 }) {
   return runWithTenant(1, () => Number(q.run(`INSERT INTO content_employee_runs(
     employee_idx,employee_key,employee_name,employee_group,title,type,requirement,
-    status,result_md,profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
+    status,result_md,ai_mode,profile_version,prompt_hash,snapshot_json,created_by,created_at,updated_at
   ) VALUES(0,'trend','趋势官','热点雷达部',?,'趋势简报','恢复测试',
-    '生成中',?,'2026-07-30','scheduler-recovery-hash','{}',?,?,?)`,
-  title, resultMd, creatorId, createdAt, updatedAt).lastInsertRowid));
+    '生成中',?,?,'2026-07-30','scheduler-recovery-hash',?,?,?,?)`,
+  title, resultMd, aiMode, JSON.stringify(snapshot), creatorId, createdAt, updatedAt).lastInsertRowid));
 }
 
 test('服务恢复会原子终止超时运行，保留下次计划且同一周期不重跑', async () => {
@@ -198,6 +204,124 @@ test('恢复无产出的超时内容自动化会原子释放关联预授权，�
   assert.equal(JSON.parse(run.snapshot_json).billing.state, 'released');
 });
 
+test('恢复超时内容自动化同时收口专项provider：无产物退款，已持久化产物保留待对账', () => {
+  ensureContentAutomationSpecialProviderAttemptSchema();
+
+  const releasedRuleId = insertRule({
+    name: '专项provider无产物恢复规则',
+    nextRunAt: '2026-07-24 12:10:00',
+  });
+  const releasedRunId = insertRunning({
+    ruleId: releasedRuleId,
+    trigger: 'immediate',
+    claimKey: 'stale-special-held-no-output',
+    startedAt: '2026-07-23 08:00:00',
+  });
+  const beforeReleased = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const mainReleasedHold = holdCredits({
+    userId: creatorId,
+    feature: '专项provider恢复主产物',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 11,
+    refType: 'content_automation_run',
+    refId: releasedRunId,
+  });
+  const specialReleasedHold = holdCredits({
+    userId: creatorId,
+    feature: '专项provider恢复图片',
+    kind: 'image',
+    model: 'gpt-image-2',
+    credits: 13,
+    refType: 'content_special_provider',
+    refId: 7_771_001,
+  });
+  q.run(`INSERT INTO content_automation_special_provider_attempts(
+    tenant_id,run_id,employee_idx,provider_kind,attempt_id,request_fingerprint,
+    billing_ref_type,billing_ref_id,hold_id,status,created_by
+  ) VALUES(1,?,5,'image',?,'sha256:${'1'.repeat(64)}',
+    'content_special_provider',?,?, 'claimed',?)`,
+  releasedRunId,
+  `content-automation:pipeline:${releasedRunId}:station:5:provider:image:attempt:1`,
+  7_771_001,
+  specialReleasedHold.holdId,
+  creatorId);
+
+  const released = runWithTenant(1, () => (
+    recoverStaleContentAutomationRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(released.find(item => item.runId === releasedRunId)?.billingState, 'released');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, beforeReleased);
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', mainReleasedHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', specialReleasedHold.holdId).status, 'settled');
+  assert.equal(q.get(`SELECT status FROM content_automation_special_provider_attempts
+    WHERE run_id=?`, releasedRunId).status, 'released');
+  const releasedSnapshot = JSON.parse(q.get(`SELECT snapshot_json
+    FROM content_automation_runs WHERE id=?`, releasedRunId).snapshot_json);
+  assert.deepEqual(releasedSnapshot.specialProviderRecovery.releasedAttemptIds.length, 1);
+  assert.equal(releasedSnapshot.billing.state, 'released');
+
+  const pendingRuleId = insertRule({
+    name: '专项provider已持久化恢复规则',
+    nextRunAt: '2026-07-24 12:20:00',
+  });
+  const pendingRunId = insertRunning({
+    ruleId: pendingRuleId,
+    trigger: 'immediate',
+    claimKey: 'stale-special-held-with-output',
+    startedAt: '2026-07-23 08:00:00',
+  });
+  const beforePending = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  holdCredits({
+    userId: creatorId,
+    feature: '专项provider已持久化主产物',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 17,
+    refType: 'content_automation_run',
+    refId: pendingRunId,
+  });
+  const specialPendingHold = holdCredits({
+    userId: creatorId,
+    feature: '专项provider已持久化图片',
+    kind: 'image',
+    model: 'gpt-image-2',
+    credits: 19,
+    refType: 'content_special_provider',
+    refId: 7_771_002,
+  });
+  q.run(`INSERT INTO content_automation_special_provider_attempts(
+    tenant_id,run_id,employee_idx,provider_kind,attempt_id,request_fingerprint,
+    billing_ref_type,billing_ref_id,hold_id,status,output_json,delivery_json,created_by
+  ) VALUES(1,?,5,'image',?,'sha256:${'2'.repeat(64)}',
+    'content_special_provider',?,?,'persisted','{"images":[{"url":"https://example.test/a.png"}]}',
+    '{"persisted":true,"artifactIds":["material:9001"]}',?)`,
+  pendingRunId,
+  `content-automation:pipeline:${pendingRunId}:station:5:provider:image:attempt:1`,
+  7_771_002,
+  specialPendingHold.holdId,
+  creatorId);
+
+  const pending = runWithTenant(1, () => (
+    recoverStaleContentAutomationRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(pending.find(item => item.runId === pendingRunId)?.billingState, 'pending_reconciliation');
+  assert.equal(
+    q.get('SELECT credits FROM tenants WHERE id=1').credits,
+    beforePending - 19,
+  );
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', specialPendingHold.holdId).status, 'held');
+  assert.equal(q.get(`SELECT status FROM content_automation_special_provider_attempts
+    WHERE run_id=?`, pendingRunId).status, 'pending_reconciliation');
+  const pendingSnapshot = JSON.parse(q.get(`SELECT snapshot_json
+    FROM content_automation_runs WHERE id=?`, pendingRunId).snapshot_json);
+  assert.equal(pendingSnapshot.billing.state, 'pending_reconciliation');
+  assert.equal(pendingSnapshot.billing.components.specialProviders.length, 1);
+  assert.deepEqual(pendingSnapshot.specialProviderRecovery.pendingAttemptIds.length, 1);
+
+  runWithTenant(1, () => releaseHold(specialPendingHold, '测试收尾释放待对账图片预授权'));
+});
+
 test('恢复已有产物的超时内容自动化保留预授权待对账，不自动退款', () => {
   const ruleId = insertRule({
     name: '已有产物待对账规则',
@@ -240,13 +364,41 @@ test('恢复已有产物的超时内容自动化保留预授权待对账，不�
   releaseHold(hold, '测试结束清理待对账占扣');
 });
 
-test('恢复超时数字员工任务：无产出原子退款，有产出保留占扣并恢复到待审阅', () => {
+test('恢复超时数字员工任务：无产出原子退款，只有审阅链完整的真实产出恢复到待审阅', () => {
   const staleAt = '2026-07-23 08:00:00';
   const noOutputTaskId = runWithTenant(1, () => Number(q.run(
-    `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,created_by,created_at)
-     VALUES(1,'无产出恢复','经营诊断','恢复测试','生成中',?,?)`,
+    `INSERT INTO agent_tasks(
+      marshal_id,title,type,requirement,status,created_by,created_at,
+      employee_profile_version,employee_web_snapshot
+    ) VALUES(1,'无产出恢复','经营诊断','恢复测试','生成中',?,?,'restaurant-progress-test',?)`,
     creatorId,
     staleAt,
+    JSON.stringify({
+      kind: 'restaurant_employee_generation_progress',
+      progress: {
+        receivedChars: 680,
+        lastActivityAt: '2026-07-23T00:00:00.000Z',
+        attemptNumber: 2,
+        phase: 'repair',
+      },
+    }),
+  ).lastInsertRowid));
+  const activeHeartbeatTaskId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO agent_tasks(
+      marshal_id,title,type,requirement,status,created_by,created_at,
+      employee_profile_version,employee_web_snapshot
+    ) VALUES(1,'仍有心跳的长任务','经营诊断','恢复测试','生成中',?,?,'restaurant-progress-test',?)`,
+    creatorId,
+    staleAt,
+    JSON.stringify({
+      kind: 'restaurant_employee_generation_progress',
+      progress: {
+        receivedChars: 9_600,
+        lastActivityAt: '2026-07-23T01:59:30.000Z',
+        attemptNumber: 3,
+        phase: 'repair',
+      },
+    }),
   ).lastInsertRowid));
   const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
   const noOutputHold = holdCredits({
@@ -260,10 +412,13 @@ test('恢复超时数字员工任务：无产出原子退款，有产出保留�
   });
 
   const contentId = runWithTenant(1, () => Number(q.run(
-    `INSERT INTO contents(type,title,body,status,creator_id)
-     VALUES('员工产出','已有产出恢复','可审阅产物','待审核',?)`,
+    `INSERT INTO contents(type,title,body,status,creator_id,ai_mode)
+     VALUES('员工产出','已有产出恢复','可审阅产物','待审核',?,'api')`,
     creatorId,
   ).lastInsertRowid));
+  runWithTenant(1, () => q.run(`INSERT INTO approvals(
+    target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id
+  ) VALUES('content',?,'已有产出恢复','可审阅产物','none','[]','待审核',?)`, contentId, creatorId));
   const outputTaskId = runWithTenant(1, () => Number(q.run(
     `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,output_id,created_by,created_at)
      VALUES(1,'已有产出恢复','经营诊断','恢复测试','生成中',?,?,?)`,
@@ -281,17 +436,57 @@ test('恢复超时数字员工任务：无产出原子退款，有产出保留�
     refId: outputTaskId,
   });
 
+  const invalidContentId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO contents(type,title,body,status,creator_id,ai_mode)
+     VALUES('员工产出','无效产出恢复','只是模板底稿','待审核',?,'template')`,
+    creatorId,
+  ).lastInsertRowid));
+  const invalidTaskId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,output_id,created_by,created_at)
+     VALUES(1,'无效产出恢复','经营诊断','恢复测试','生成中',?,?,?)`,
+    invalidContentId,
+    creatorId,
+    staleAt,
+  ).lastInsertRowid));
+  const invalidHold = holdCredits({
+    userId: creatorId,
+    feature: '数字员工无效产出恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 31,
+    refType: 'agent_task',
+    refId: invalidTaskId,
+  });
+
   const recovered = runWithTenant(1, () => (
     recoverStaleAgentTasks(new Date('2026-07-23T02:00:00.000Z'))
   ));
   assert.equal(recovered.find(item => item.taskId === noOutputTaskId)?.billingState, 'released');
   assert.equal(recovered.find(item => item.taskId === outputTaskId)?.billingState, 'pending_reconciliation');
+  assert.equal(recovered.find(item => item.taskId === invalidTaskId)?.billingState, 'pending_reconciliation');
   assert.equal(q.get('SELECT status FROM agent_tasks WHERE id=?', noOutputTaskId).status, '失败');
+  const recoveredEvidence = JSON.parse(q.get(
+    'SELECT employee_web_snapshot FROM agent_tasks WHERE id=?',
+    noOutputTaskId,
+  ).employee_web_snapshot);
+  assert.equal(recoveredEvidence.kind, 'restaurant_employee_execution_evidence');
+  assert.equal(recoveredEvidence.failure.code, 'EMPLOYEE_GENERATION_INTERRUPTED');
+  assert.equal(recoveredEvidence.progress, undefined);
+  const activeHeartbeatTask = q.get(
+    'SELECT status,employee_web_snapshot FROM agent_tasks WHERE id=?',
+    activeHeartbeatTaskId,
+  );
+  assert.equal(activeHeartbeatTask.status, '生成中');
+  assert.equal(JSON.parse(activeHeartbeatTask.employee_web_snapshot).progress.receivedChars, 9_600);
   assert.equal(q.get('SELECT status FROM agent_tasks WHERE id=?', outputTaskId).status, '待审阅');
+  assert.equal(q.get('SELECT status FROM agent_tasks WHERE id=?', invalidTaskId).status, '失败');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', noOutputHold.holdId).status, 'settled');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', outputHold.holdId).status, 'held');
-  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 29);
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', invalidHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 29 - 31);
   releaseHold(outputHold, '测试结束清理待对账占扣');
+  releaseHold(invalidHold, '测试结束清理无效产出占扣');
+  q.run('DELETE FROM agent_tasks WHERE tenant_id=1 AND id=?', activeHeartbeatTaskId);
 });
 
 test('恢复超时媒体任务：无交付且无供应商任务号退款；已有产物待对账；视频任务号继续轮询', () => {
@@ -435,6 +630,32 @@ test('恢复超时内容员工运行：无产物原子退款，有产物保留�
   releaseHold(deliveredHold, '测试结束清理内容员工已有产物待对账占扣');
 });
 
+test('恢复超时内容员工运行：有正文但契约无效仍是失败，不得伪装待审阅', () => {
+  const runId = insertContentEmployeeRun({
+    title: '契约无效恢复',
+    resultMd: '# 格式不完整的正文',
+    snapshot: { contract: { valid: false, errors: ['缺少必备交付字段'] } },
+  });
+  const hold = holdCredits({
+    userId: creatorId,
+    feature: '内容员工无效产出恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 13,
+    refType: 'content_employee_run',
+    refId: runId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleContentEmployeeRuns(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.find(item => item.runId === runId)?.status, '失败');
+  assert.equal(recovered.find(item => item.runId === runId)?.billingState, 'pending_reconciliation');
+  assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', runId).status, '失败');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', hold.holdId).status, 'held');
+  releaseHold(hold, '测试结束清理无效产出待对账占扣');
+});
+
 test('内容员工运行恢复接入关闭调度器时的启动恢复与每轮统计', async () => {
   const startupRunId = insertContentEmployeeRun({ title: '关闭调度器启动恢复' });
   const startupHold = holdCredits({
@@ -478,6 +699,76 @@ test('内容员工运行恢复接入关闭调度器时的启动恢复与每轮�
   );
   assert.equal(q.get('SELECT status FROM content_employee_runs WHERE id=?', tickRunId).status, '失败');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', tickHold.holdId).status, 'settled');
+});
+
+test('员工全网进修同时接入关闭调度器时的启动恢复与每轮tick', async () => {
+  const createStaleLearningRun = ({ idx, name }) => {
+    const run = createSkillLearningRun({
+      tenantId: 1,
+      domain: 'content',
+      employeeIdx: idx,
+      employeeName: name,
+      skillsBefore: 0,
+      createdBy: creatorId,
+    });
+    q.run(`UPDATE employee_skill_learning_runs
+      SET status='running',started_at='2000-01-01 00:00:00',updated_at='2000-01-01 00:00:00'
+      WHERE tenant_id=1 AND id=?`, run.id);
+    return run;
+  };
+
+  const startupRun = createStaleLearningRun({ idx: 910, name: '启动恢复进修岗位' });
+  const startupHold = holdCredits({
+    userId: creatorId,
+    tenantId: 1,
+    feature: '全网进修启动恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 17,
+    refType: 'employee_skill_learning_run',
+    refId: startupRun.id,
+  });
+  process.env.ENABLE_SCHEDULER = 'false';
+  const startupRecovered = recoverStaleAiWorkAcrossTenants(new Date());
+  const tenantStartup = startupRecovered.find(item => item.tenantId === 1);
+  assert.equal(tenantStartup.skillLearningRuns.length, 1);
+  assert.equal(tenantStartup.skillLearningRuns[0].runId, startupRun.id);
+  assert.equal(
+    q.get('SELECT status FROM credit_holds WHERE id=?', startupHold.holdId).status,
+    'settled',
+  );
+  assert.equal(
+    q.get('SELECT status FROM employee_skill_learning_runs WHERE id=?', startupRun.id).status,
+    'failed',
+  );
+
+  const tickRun = createStaleLearningRun({ idx: 911, name: '调度轮次进修岗位' });
+  const tickHold = holdCredits({
+    userId: creatorId,
+    tenantId: 1,
+    feature: '全网进修轮次恢复测试',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 19,
+    refType: 'employee_skill_learning_run',
+    refId: tickRun.id,
+  });
+  const tick = runScheduledJobs(new Date(), {
+    contentAutomationRunner: async () => assert.fail('本用例不应触发内容自动化供应商调用'),
+  });
+  await tick.pending;
+  assert.equal(
+    tick.results.find(item => item.tenantId === 1).skillLearningRunsRecovered,
+    1,
+  );
+  assert.equal(
+    q.get('SELECT status FROM employee_skill_learning_runs WHERE id=?', tickRun.id).status,
+    'failed',
+  );
+  assert.equal(
+    q.get('SELECT status FROM credit_holds WHERE id=?', tickHold.holdId).status,
+    'settled',
+  );
 });
 
 test('启动恢复覆盖停用租户，单条损坏不阻断同租户其余记录和其他租户', () => {

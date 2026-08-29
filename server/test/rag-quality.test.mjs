@@ -12,13 +12,70 @@ process.env.YUNWU_API_KEY = '';
 process.env.ANTHROPIC_API_KEY = '';
 
 const { initSchema, migrateV2, q, runWithTenant, setConfig } = await import('../src/db.js');
-const { selectKbExcerpts, kbSearch, kbContext, ragMinSimilarity } = await import('../src/engines/ai.js');
+const {
+  buildEmployeeRagQuery,
+  EMPLOYEE_PROVIDER_CALL_BUDGET,
+  employeeOutputTokenBudget,
+  employeeRagMinSimilarity,
+  selectKbExcerpts,
+  kbSearch,
+  kbContext,
+  ragMinSimilarity,
+} = await import('../src/engines/ai.js');
 const { recordKbCitations, citationsFor } = await import('../src/engines/rag.js');
 
 initSchema();
 migrateV2();
 
 const doc = (id, title) => ({ id, category: '品牌资料', title });
+
+test('buildEmployeeRagQuery：只保留岗位语义和真实需求，清理逐岗验收模板噪声', () => {
+  const query = buildEmployeeRagQuery(
+    { name: '内部调度容器', duty: '仅负责调度' },
+    {
+      title: '[真实API逐岗验收] 重做高峰后厨叫单与出餐口控制',
+      type: '执行方案',
+      requirement: [
+        '任务唯一标识：nonce-restaurant-134-7fc533',
+        '执行岗位：出餐协调员；岗位职责：高峰出餐管理。',
+        '这是生产接口的真实云模型调用验收，不是模板演示。',
+        '业务对象：纳米Work验收门店A。',
+        '统一已知事实：营业额100000元，订单2000单。',
+        '岗位材料：',
+        '1. 近30天高峰时段催菜记录：本轮已提供“岗位验收资料-134-1”；资料口径为2026-07-01至2026-07-31。',
+        '晚市有三次同桌菜品间隔超过20分钟，请优先定位叫单与出餐口交接断点。',
+        '期望交付：高峰出餐流程图；异常升级规则。',
+        '边界：不得声称已经发布、采购或付款。',
+      ].join('\n'),
+    },
+    {
+      workbench: {
+        identity: { name: '出餐协调员', duty: '管理后厨叫单、出餐口节奏和同桌齐菜' },
+        workMethod: { deliverables: ['高峰出餐流程图', '异常升级规则', '班次复盘表'] },
+        jobProfile: { expectedDeliverables: ['高峰出餐流程图'] },
+      },
+    },
+  );
+
+  assert.match(query, /数字员工：出餐协调员/u);
+  assert.match(query, /岗位职责：管理后厨叫单、出餐口节奏和同桌齐菜/u);
+  assert.match(query, /任务：重做高峰后厨叫单与出餐口控制/u);
+  assert.match(query, /任务类型：执行方案/u);
+  assert.match(query, /岗位交付物：高峰出餐流程图；异常升级规则；班次复盘表/u);
+  assert.match(query, /晚市有三次同桌菜品间隔超过20分钟/u, '实际用户业务需求必须保留');
+  assert.match(query, /所需材料：近30天高峰时段催菜记录/u, '保留岗位相关的材料主题');
+  for (const noise of ['nonce', '真实API', '真实云模型', '统一已知事实', '业务对象', '岗位验收资料', '发布边界']) {
+    assert.equal(query.includes(noise), false, `RAG query 不得包含验收噪声：${noise}`);
+  }
+  assert.ok(query.length <= 1000, '聚焦查询必须有硬性长度上限');
+});
+
+test('employeeOutputTokenBudget：完整与标准岗位交付使用可容纳完整正文的预算', () => {
+  assert.equal(EMPLOYEE_PROVIDER_CALL_BUDGET, 3);
+  assert.equal(employeeOutputTokenBudget('full'), 20_000);
+  assert.equal(employeeOutputTokenBudget('standard'), 8_000);
+  assert.equal(employeeOutputTokenBudget('full') * EMPLOYEE_PROVIDER_CALL_BUDGET, 60_000);
+});
 
 test('selectKbExcerpts：低于最小相似度阈值的块不注入，无向量候选(sim=-1)一律挡下', () => {
   const candidates = [
@@ -62,6 +119,18 @@ test('ragMinSimilarity：默认 0.25，后台 rag_min_similarity 配置可调', 
   assert.equal(ragMinSimilarity(), 0.25);
 });
 
+test('employeeRagMinSimilarity：员工执行默认宁缺毋滥，且支持独立阈值', () => {
+  setConfig('rag_min_similarity', null);
+  setConfig('employee_rag_min_similarity', null);
+  assert.equal(employeeRagMinSimilarity(), 0.62);
+  setConfig('rag_min_similarity', 0.7);
+  assert.equal(employeeRagMinSimilarity(), 0.7, '全局阈值更严时不得降低');
+  setConfig('employee_rag_min_similarity', 0.58);
+  assert.equal(employeeRagMinSimilarity(), 0.58, '员工专用显式配置优先');
+  setConfig('rag_min_similarity', null);
+  setConfig('employee_rag_min_similarity', null);
+});
+
 test('kbSearch：向量召回按相似度过滤并返回引用清单（mode=semantic 不降级）', async () => {
   await runWithTenant(1, async () => {
     q.run(`INSERT INTO kb_docs(category,title,body,enabled,embedding) VALUES(?,?,?,?,?)`,
@@ -92,15 +161,15 @@ test('kbSearch：向量召回按相似度过滤并返回引用清单（mode=sema
   });
 });
 
-test('kbSearch：embedding 不可用时不冒充检索成功——标记 degraded 并退回热度排序', async () => {
+test('kbSearch：有查询但 embedding 不可用时停止注入，不能拿热度冒充相关性', async () => {
   await runWithTenant(1, async () => {
     q.run(`INSERT INTO kb_docs(category,title,body,enabled,ref_count) VALUES(?,?,?,?,?)`,
       'RAG测试乙', '热门文档', '热度排序兜底正文', 1, 9);
     const out = await kbSearch(['RAG测试乙'], null, '有查询但无法向量化');
-    assert.equal(out.mode, 'hot');
+    assert.equal(out.mode, 'unavailable');
     assert.equal(out.degraded, true, 'embedding 失败必须标记降级');
-    assert.match(out.text, /热门文档/);
-    assert.equal(out.refs[0].sim, null, '热度降级的引用不得伪造相似度');
+    assert.equal(out.text, '');
+    assert.deepEqual(out.refs, []);
 
     // 无 query 的热度模式属正常设计，不算降级
     const noQuery = await kbSearch(['RAG测试乙'], null, null);
@@ -109,7 +178,7 @@ test('kbSearch：embedding 不可用时不冒充检索成功——标记 degrade
   });
 });
 
-test('kbSearch：知识库未向量化时同样标记 degraded（不静默）', async () => {
+test('kbSearch：知识库未向量化时同样停止注入并标记 degraded', async () => {
   await runWithTenant(1, async () => {
     q.run(`INSERT INTO kb_docs(category,title,body,enabled) VALUES(?,?,?,?)`,
       'RAG测试丙', '未向量化文档', '尚未生成向量的正文', 1);
@@ -123,9 +192,10 @@ test('kbSearch：知识库未向量化时同样标记 degraded（不静默）', 
     };
     try {
       const out = await kbSearch(['RAG测试丙'], null, '任意问题');
-      assert.equal(out.mode, 'hot');
+      assert.equal(out.mode, 'unavailable');
       assert.equal(out.degraded, true, '候选全无向量必须如实标记降级');
-      assert.match(out.text, /未向量化文档/);
+      assert.equal(out.text, '');
+      assert.deepEqual(out.refs, []);
     } finally {
       globalThis.fetch = realFetch;
       process.env.YUNWU_API_KEY = '';

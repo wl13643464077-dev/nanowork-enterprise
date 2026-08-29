@@ -29,12 +29,17 @@ function timeoutFor(url: string) {
   if (/\/content\/generate-image/.test(url)) return 125000;
   if (/\/(advisor|marshals|agents)\/.*(chat|skill-file)|\/advisor\/chat/.test(url)) return 135000;
   if (/\/(generate-ppt|artifacts\/generate)/.test(url)) return 120000;
+  // 一句话找人链路是重推理调用：组队/拆解/汇总在供应商慢时可达 60-90 秒，
+  // 60 秒默认超时会把还在生成的请求掐断（老板看到报错但后端其实在跑）。
+  if (/\/employees\/(match-team|team-plan|team-summary)/.test(url)) return 150000;
   return 60000;
 }
 
-// 可选请求项：signal 为外部 AbortSignal（如用户点击「取消生成」）。
+// 可选请求项：
+// - signal 为外部 AbortSignal（如用户点击「取消生成」）
+// - silent 用于命令面板等辅助请求；失败交给调用方降级，不弹全局错误提示
 // 外部取消与内部超时并存：任一触发即中止请求；用户主动取消不弹全局错误提示。
-export type RequestOptions = { signal?: AbortSignal };
+export type RequestOptions = { signal?: AbortSignal; silent?: boolean };
 
 async function request(method: string, url: string, body?: any, options: RequestOptions = {}) {
   let res: Response;
@@ -71,7 +76,7 @@ async function request(method: string, url: string, body?: any, options: Request
     // 网络层失败（断网/超时/服务未响应）——此前唯一会"完全静默"的路径。
     // 节流 3s：避免一个页面并发多个请求时错误提示刷屏。
     const now = Date.now();
-    if (now - lastNetErrAt > 3000) {
+    if (!options.silent && now - lastNetErrAt > 3000) {
       lastNetErrAt = now;
       message.error(
         aborted
@@ -91,7 +96,7 @@ async function request(method: string, url: string, body?: any, options: Request
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    message.error(data.error || `请求失败 (${res.status})`);
+    if (!options.silent) message.error(data.error || `请求失败 (${res.status})`);
     throw new Error(data.error || `HTTP ${res.status}`);
   }
   return data;

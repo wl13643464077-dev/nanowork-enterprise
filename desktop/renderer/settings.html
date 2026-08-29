@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
+    <title>纳米Work · 服务器设置</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="brand">纳米WORK</p>
+        <h1>服务器设置</h1>
+        <p class="summary">
+          客户端会使用这个地址加载数字员工、内容生产和工具箱。
+        </p>
+      </header>
+
+      <form id="settings-form" novalidate>
+        <label for="server-url">服务器地址</label>
+        <input
+          id="server-url"
+          name="serverUrl"
+          type="url"
+          inputmode="url"
+          autocomplete="url"
+          spellcheck="false"
+          placeholder="https://work.example.com"
+          required
+        />
+        <p class="hint">
+          远程地址必须使用 HTTPS；本机调试可使用 http://127.0.0.1:3107。
+        </p>
+
+        <section
+          id="status"
+          class="status status-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="status-mark" aria-hidden="true"></span>
+          <div>
+            <strong id="status-title">正在读取设置</strong>
+            <p id="status-detail">请稍候…</p>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button
+            id="check-button"
+            class="button button-secondary"
+            type="button"
+          >
+            检查连接
+          </button>
+          <button id="save-button" class="button button-primary" type="submit">
+            保存并连接
+          </button>
+        </div>
+        <button
+          id="force-save-button"
+          class="button button-warning hidden"
+          type="button"
+        >
+          仍然保存这个地址
+        </button>
+      </form>
+
+      <footer>
+        <button id="retry-button" class="text-button" type="button">
+          用已保存的地址重试
+        </button>
+        <span id="version" class="version"></span>
+      </footer>
+    </main>
+    <script src="./settings.js"></script>
+  </body>
+</html>

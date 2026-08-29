@@ -8,6 +8,24 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { currentPaihuoSourceTemplate } from "./lib/paihuo-content-prompt-migration.mjs";
+
+const EXPECTED_REGISTRY_SHA256 =
+  "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc";
+const SOURCE_FINGERPRINT_ALGORITHM = "sha256-json-utf8";
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function jsonFingerprint(value) {
+  return `sha256:${sha256(JSON.stringify(value))}`;
+}
+
+function textFingerprint(value) {
+  return `sha256:${sha256(value)}`;
+}
+
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   args.set(process.argv[index], process.argv[index + 1]);
@@ -29,14 +47,8 @@ const skillsCatalog = JSON.parse(
   ),
 );
 const registrySource = fs.readFileSync(registryPath, "utf8");
-const registrySha256 = crypto
-  .createHash("sha256")
-  .update(registrySource)
-  .digest("hex");
-if (
-  registrySha256 !==
-  "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce"
-) {
+const registrySha256 = sha256(registrySource);
+if (registrySha256 !== EXPECTED_REGISTRY_SHA256) {
   throw new Error("registry.py与已审核权威快照不一致");
 }
 
@@ -74,6 +86,20 @@ const sourceData = JSON.parse(
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
   }),
+);
+const sourceCapabilityCount = Object.values(sourceData.CAPABILITIES).reduce(
+  (total, capabilities) => total + capabilities.length,
+  0,
+);
+const sourcePromptCount = Object.keys(sourceData.DEFAULT_PROMPTS).length;
+if (sourceCapabilityCount !== 45 || sourcePromptCount !== 10) {
+  throw new Error(
+    `registry.py权威字段数量不正确：能力${sourceCapabilityCount}/45，提示词${sourcePromptCount}/10`,
+  );
+}
+const currentSourcePrompts = Object.fromEntries(
+  Object.entries(sourceData.DEFAULT_PROMPTS)
+    .map(([key, value]) => [key, currentPaihuoSourceTemplate(value)]),
 );
 
 const skillProfiles = new Map(
@@ -280,174 +306,90 @@ function roleSpecificConfig(employee, legacyProfile) {
   };
 }
 
-const employees = currentCatalog.employees.map(
-  (employee, order, allEmployees) => {
+function sourceConnectorTopology(employee) {
+  const sourceConnectors = connectorMap[employee.idx] || [];
+  const currentConnectors = employee.connectorPolicy?.connectors || [];
+  if (sourceConnectors.length !== currentConnectors.length) {
+    throw new Error(`内容员工${employee.idx}连接器拓扑数量与旧源不一致`);
+  }
+  for (const sourceConnector of sourceConnectors) {
+    const current = currentConnectors.find(
+      (candidate) => candidate.kind === sourceConnector.kind,
+    );
+    if (
+      !current ||
+      current.primary !== sourceConnector.primary ||
+      current.addon !== sourceConnector.addon ||
+      current.legacyHandler !== sourceConnector.legacyHandler
+    ) {
+      throw new Error(
+        `内容员工${employee.idx}连接器${sourceConnector.kind}与旧源拓扑不一致`,
+      );
+    }
+    if (
+      current.newProjectStatus === "catalog_only" ||
+      current.status === "catalog_only"
+    ) {
+      throw new Error(
+        `内容员工${employee.idx}连接器${sourceConnector.kind}不得退回catalog_only`,
+      );
+    }
+  }
+}
+
+const employees = currentCatalog.employees.map((employee) => {
     const legacyProfile = skillProfiles.get(employee.idx);
     if (!legacyProfile)
       throw new Error(`内容员工${employee.idx}缺少安全技能档案`);
-    const template = sourceData.DEFAULT_PROMPTS[employee.key];
-    const outputContract = template.split(sourceData.JSON_RULE)[1];
-    if (!outputContract) throw new Error(`内容员工${employee.idx}缺少输出契约`);
-    const previous = allEmployees[order - 1] || null;
-    const next = allEmployees[order + 1] || null;
+    const sourceTemplate = sourceData.DEFAULT_PROMPTS[employee.key];
+    const sourceCapabilities = sourceData.CAPABILITIES[employee.key];
+    if (typeof sourceTemplate !== "string" || !sourceTemplate.trim()) {
+      throw new Error(`内容员工${employee.idx}缺少旧源提示词`);
+    }
+    if (
+      !Array.isArray(sourceCapabilities) ||
+      sourceCapabilities.length !== employee.capabilities.length
+    ) {
+      throw new Error(`内容员工${employee.idx}能力数量与旧源不一致`);
+    }
+    sourceConnectorTopology(employee);
+    const capabilities = employee.capabilities.map((capability, index) => {
+      const sourceDefinition = sourceCapabilities[index];
+      if (
+        capability.name !== sourceDefinition.name ||
+        capability.emoji !== sourceDefinition.emoji
+      ) {
+        throw new Error(
+          `内容员工${employee.idx}能力${index + 1}与旧源错位`,
+        );
+      }
+      return {
+        ...capability,
+        sourceDefinition,
+        sourceFingerprint: jsonFingerprint(sourceDefinition),
+      };
+    });
+    const sourceCapabilitySetFingerprint = jsonFingerprint(sourceCapabilities);
+    const currentTemplate = currentPaihuoSourceTemplate(sourceTemplate);
+    const sourcePromptFingerprint = textFingerprint(currentTemplate);
     return {
       ...employee,
-      capabilities: sourceData.CAPABILITIES[employee.key].map((capability) => ({
-        ...capability,
-        required: true,
-        enabled: true,
-        locked: true,
-      })),
-      skillProfile: {
-        catalog: "employee-skills.json",
-        employeeIdx: employee.idx,
-        expectedSkillCount: legacyProfile.expectedSkillCount,
-        verificationStatus: "legacy_unverified",
-      },
-      systemPrompt: {
-        messageMode: "none",
-        template: null,
-        reason:
-          "旧版供应商调用把完整拼装提示词作为单个role=user消息发送，没有独立system消息。",
-      },
+      capabilities,
       pipelinePrompt: {
-        messageMode: "single_user",
-        legacyBuilder: "build_prompt",
-        assemblyOrder: [
-          "boss_brief_and_persona",
-          "required_capabilities",
-          "tenant_company_profile",
-          "tenant_knowledge",
-          "enabled_skill_cards",
-          "role_template",
-        ],
-        template,
-      },
-      soloPrompt: {
-        messageMode: "single_user",
-        legacyBuilder: "solo_prompt",
-        template: soloTemplate(employee),
-        placeholders: {
-          required_capabilities: "全部必备硬能力",
-          enabled_skills: "启用中的历史或后续学习技能",
-          tenant_company_profile_and_knowledge: "当前租户企业档案与知识沉淀",
-          direction: "任务内容",
-          industry: "行业/赛道",
-          material: "补充材料",
-          feedback: "上一版反馈",
-          length_hint: "篇幅约束",
-        },
+        ...employee.pipelinePrompt,
+        sourceTemplate: currentTemplate,
+        sourceFingerprint: sourcePromptFingerprint,
       },
       placeholders: sourceData.PLACEHOLDERS[employee.key],
-      workMethod: {
-        input: {
-          upstream: previous
-            ? `工位${previous.idx + 1}·${previous.name}产出`
-            : "老板Brief",
-          context: [
-            "老板Brief",
-            "账号人设档案",
-            "企业档案",
-            "公司知识沉淀",
-            "返工意见",
-          ],
-        },
-        execution: {
-          handler: handlers[employee.idx],
-          capabilities: "逐项运用全部必备硬能力，缺一不可",
-          skills: "启用技能自动注入工作提示词",
-          webRequired: ["trend", "research", "benchmark"].includes(
-            employee.key,
-          ),
-          realtimeSteps: true,
-        },
-        output: {
-          duty: employee.duty,
-          keys: employee.outputKeys,
-          primaryArtifact: primaryArtifacts[employee.idx],
-        },
-        approval: {
-          code: employee.approval,
-          description: approvals[employee.approval],
-        },
-        handoff: {
-          target: next
-            ? `工位${next.idx + 1}·${next.name}`
-            : "交付包与知识沉淀",
-          optional: employee.optional,
-          qualityGateBefore: employee.idx === 8,
-        },
-      },
-      defaultWorkConfig: {
-        common: {
-          capabilitiesRequired: true,
-          capabilitiesEnabled: true,
-          capabilitiesLocked: true,
-          skillVerificationStatus: "legacy_unverified",
-          textModel: legacyProfile.safeLegacyConfig.modelText || "inherit",
-          imageModel: legacyProfile.safeLegacyConfig.modelImage || "inherit",
-          approval: employee.approval,
-          optional: employee.optional,
-          messageMode: "single_user",
-        },
-        roleSpecific: roleSpecificConfig(employee, legacyProfile),
-      },
-      dispatchForm: {
-        mode: "single_station",
-        fields: [
-          {
-            key: "direction",
-            label: "任务内容",
-            type: "textarea",
-            required: true,
-          },
-          { key: "industry", label: "行业", type: "text", required: false },
-          {
-            key: "material",
-            label: "材料",
-            type: "textarea_upload",
-            required: false,
-            accept: uploadAccept,
-          },
-          {
-            key: "length",
-            label: "篇幅",
-            type: "select",
-            required: true,
-            default: "std",
-            options: [
-              { value: "lite", label: "精简" },
-              { value: "std", label: "标准" },
-              { value: "full", label: "详尽" },
-            ],
-          },
-        ],
-        result: {
-          format: "markdown",
-          persistedAsAsset: true,
-          supportsRedoFeedback: true,
-        },
-      },
-      outputSchema: {
-        format: "json_object",
-        keys: employee.outputKeys,
-        contract: outputContract,
-        primaryArtifact: primaryArtifacts[employee.idx],
-      },
-      connectorPolicy: {
-        executionBoundary: "静态完整岗位能力不等于新项目已接通十工位自动流水线",
-        connectors: connectorMap[employee.idx],
-      },
       sourceProvenance: {
-        project: "派活AI",
-        referencePath: "app/skills/registry.py",
+        ...employee.sourceProvenance,
         referenceSha256: registrySha256,
-        legacyIdx: employee.idx,
-        snapshotDate: "2026-07-23",
+        snapshotDate: "2026-08-01",
+        sourceCapabilitySetFingerprint,
+        sourcePromptFingerprint,
       },
     };
-  },
-);
+  });
 
 const result = {
   ...currentCatalog,
@@ -455,6 +397,12 @@ const result = {
   source: {
     ...currentCatalog.source,
     referenceSha256: registrySha256,
+    snapshotDate: "2026-08-01",
+    sourceFingerprintAlgorithm: SOURCE_FINGERPRINT_ALGORITHM,
+    capabilityCount: sourceCapabilityCount,
+    promptCount: sourcePromptCount,
+    capabilitySetFingerprint: jsonFingerprint(sourceData.CAPABILITIES),
+    promptSetFingerprint: jsonFingerprint(currentSourcePrompts),
     profilePolicy:
       "Full declarative profiles; no legacy runtime import or database dependency.",
   },

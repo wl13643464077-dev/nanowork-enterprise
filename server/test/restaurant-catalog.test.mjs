@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadRestaurantCatalog, parseEmployeeMarkdown, validateRestaurantCatalog } from '../src/catalog/restaurant.js';
 
-test('餐饮员工目录包含8个分部与101-160共60名员工', () => {
+test('餐饮员工目录包含8个分部与101-161共61名员工', () => {
   const catalog = loadRestaurantCatalog();
   assert.equal(catalog.groups.length, 8);
-  assert.equal(catalog.employees.length, 60);
-  assert.deepEqual(catalog.employees.map(employee => employee.idx), Array.from({ length: 60 }, (_, index) => 101 + index));
-  assert.equal(new Set(catalog.employees.map(employee => employee.key)).size, 60);
+  assert.equal(catalog.employees.length, 61);
+  assert.deepEqual(catalog.employees.map(employee => employee.idx), Array.from({ length: 61 }, (_, index) => 101 + index));
+  assert.equal(new Set(catalog.employees.map(employee => employee.key)).size, 61);
   assert.ok(catalog.employees.every(employee => employee.inputs.length > 0));
   assert.ok(catalog.employees.every(employee => employee.steps.length > 0));
   assert.ok(catalog.employees.every(employee => employee.deliverables.length > 0));
@@ -62,6 +62,6 @@ test('目录结构缺员会被拒绝，不静默降级', () => {
   const catalog = loadRestaurantCatalog();
   assert.throws(
     () => validateRestaurantCatalog({ ...catalog, employees: catalog.employees.slice(0, -1) }),
-    /必须包含60名员工/,
+    /必须包含61名员工/,
   );
 });

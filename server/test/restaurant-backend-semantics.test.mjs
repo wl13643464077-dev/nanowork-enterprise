@@ -63,7 +63,7 @@ async function call(base, route, method = 'GET', body) {
   return { status: response.status, payload };
 }
 
-test('增长阶段写入真实餐饮订单字段，并把旧旅程值只作为读取兼容', async () => {
+test('增长阶段写入真实餐饮订单字段，旧旅程只读兼容且无AI时话术不冒充完成', async () => {
   const leadId = Number(q.run(`INSERT INTO leads(name,source,identity_tag,budget_level,stage,owner_id,tenant_id)
     VALUES(?,?,?,?,?,?,1)`, '顾客甲', '到店', '普通消费者', '中', '已到店', bossId).lastInsertRowid);
 
@@ -100,18 +100,21 @@ test('增长阶段写入真实餐饮订单字段，并把旧旅程值只作为�
     assert.doesNotMatch(JSON.stringify(journey.payload.journey), /已到馆|已品鉴|已报价/);
 
     const objection = await call(base, `/growth/leads/${leadId}/objection`, 'POST', { text: '价格是否适合我的预算' });
-    assert.equal(objection.status, 200);
-    assert.match(objection.payload.suggestion, /负责人确认|门店负责人/);
-    assert.doesNotMatch(objection.payload.suggestion, /多花不到|限时|就\d+个|留位|占名额/);
+    assert.equal(objection.status, 502);
+    assert.equal(objection.payload.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(objection.payload.retryable, true);
+    assert.equal(objection.payload.billing.state, 'released');
+    assert.deepEqual(JSON.parse(q.get(`SELECT concerns FROM leads WHERE tenant_id=1 AND id=?`, leadId).concerns), []);
 
     const reply = await call(base, '/growth/suggest-reply', 'POST', { leadId, context: '想了解下个月门店活动' });
-    assert.equal(reply.status, 200);
-    assert.match(reply.payload.suggestions, /以门店回复为准|门店核实/);
-    assert.doesNotMatch(reply.payload.suggestions, /就\d+个位置|留位|占个名额|比.*划算|关键是有面子/);
+    assert.equal(reply.status, 502);
+    assert.equal(reply.payload.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(reply.payload.retryable, true);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM lead_ai_suggestions WHERE tenant_id=1 AND lead_id=?`, leadId).n, 0);
   });
 });
 
-test('活动新写入使用餐饮字段，复盘路由M-07且没有伪造企业基准', async () => {
+test('活动新写入使用餐饮字段，无真实AI时复盘不伪造M-07完成或企业基准', async () => {
   await withServer(async base => {
     const created = await call(base, '/activities', 'POST', { title: '社区晚餐体验活动', date: '2026-08-08' });
     assert.equal(created.status, 200);
@@ -124,12 +127,14 @@ test('活动新写入使用餐饮字段，复盘路由M-07且没有伪造企业�
 
     q.run(`UPDATE activities SET invited=20,signed_up=10,arrived=8,converted=3,revenue=1200,cost=0,satisfaction=4.5 WHERE tenant_id=1 AND id=?`, activityId);
     const review = await call(base, `/activities/${activityId}/review`, 'POST', { ok: ['顾客反馈已记录'] });
-    assert.equal(review.status, 200);
-    assert.equal(review.payload.aiMeta.divisionCode, 'M-07');
-    assert.equal(review.payload.baselineStatus, 'unavailable');
-    assert.equal(review.payload.rates.roi, null);
-    assert.ok(review.payload.missingFields.length > 0);
-    assert.doesNotMatch(JSON.stringify(review.payload), /M-09|限时权益|封坛|权益延期|行业基准/);
+    assert.equal(review.status, 502);
+    assert.equal(review.payload.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(review.payload.retryable, true);
+    assert.equal(review.payload.billing.state, 'released');
+    const unchanged = q.get(`SELECT review,status FROM activities WHERE tenant_id=1 AND id=?`, activityId);
+    assert.equal(unchanged.review, null);
+    assert.notEqual(unchanged.status, '已复盘');
+    assert.equal(q.get(`SELECT COUNT(*) n FROM kb_docs WHERE tenant_id=1 AND title=?`, '活动复盘：社区晚餐体验活动').n, 0);
 
     const legacyType = await call(base, '/activities', 'POST', { title: '旧模板导入活动', date: '2026-08-09', type: '品鉴会' });
     assert.equal(legacyType.status, 200);

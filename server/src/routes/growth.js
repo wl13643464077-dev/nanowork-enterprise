@@ -2,18 +2,24 @@ import { Router } from 'express';
 import { db, q, curTenant } from '../db.js';
 import { authMiddleware, maskPhone, logOp, notify, today, pct, pageParams, safeJsonArray, safeJsonParse } from '../util.js';
 import { rescoreLead, funnel } from '../engines/scoring.js';
-import { generate, kbContext, tplInvite } from '../engines/ai.js';
+import { aiAvailable, generate, kbContext, tplInvite } from '../engines/ai.js';
 import {
   precheckByRole,
   estimateCallCredits,
   holdCredits,
-  settleHold,
   releaseHold,
+  settleHold,
 } from '../engines/credits.js';
 import { textModelFor } from '../engines/yunwu.js';
 import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { accessibleUserExists, canAccessOwner, userScopeClause } from '../engines/access.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, tableRows } from '../engines/deletion.js';
+import {
+  aiFailurePayload,
+  aiFailureReleaseNote,
+  assertRealAiOutput,
+  releaseFailedAiHold,
+} from '../engines/ai-delivery-status.js';
 
 const r = Router();
 const STAGES = ['新线索', '已沟通', '已邀约', '已到店', '已成交', '复购'];
@@ -64,6 +70,19 @@ const normalizeDate = v => {
   if (!m) return s.slice(0, 20);
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
 };
+// 生日统一规范化为 MM-DD 或 YYYY-MM-DD（生日雷达按「-MM-DD 结尾」匹配）。
+// 兼容「5月12日」「2026/5/12」「5-12」「05.12」等常见写法；认不出的原样保留（不丢用户数据）。
+const normalizeBirthday = v => {
+  const s = cleanText(v);
+  if (!s) return null;
+  const pad = n => String(Number(n)).padStart(2, '0');
+  const valid = (m, d) => Number(m) >= 1 && Number(m) <= 12 && Number(d) >= 1 && Number(d) <= 31;
+  let m = s.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/u);
+  if (m && valid(m[2], m[3])) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  m = s.match(/^(\d{1,2})[-/.月](\d{1,2})日?$/u);
+  if (m && valid(m[1], m[2])) return `${pad(m[1])}-${pad(m[2])}`;
+  return s.slice(0, 20);
+};
 function resolveBatchOwner(req, rawOwnerId) {
   const id = Number(rawOwnerId);
   if (!id) return req.user.id;
@@ -85,6 +104,7 @@ function normalizeLeadBatchRow(raw, req) {
     owner_id: resolveBatchOwner(req, b.owner_id),
     region: cleanText(b.region),
     company: cleanText(b.company),
+    birthday: normalizeBirthday(b.birthday),
     next_follow_at: normalizeDate(b.next_follow_at),
     next_action: cleanText(b.next_action),
     note: cleanText(b.note),
@@ -113,7 +133,7 @@ function findBatchDuplicate(row, req) {
   return q.get(`${sql} ORDER BY id DESC LIMIT 1`, ...params);
 }
 function updateBatchLead(id, row) {
-  const fields = ['name', 'phone', 'wechat', 'source', 'identity_tag', 'interest', 'budget_level', 'stage', 'owner_id', 'region', 'company', 'next_follow_at', 'next_action'];
+  const fields = ['name', 'phone', 'wechat', 'source', 'identity_tag', 'interest', 'budget_level', 'stage', 'owner_id', 'region', 'company', 'birthday', 'next_follow_at', 'next_action'];
   const sets = [];
   const params = [];
   for (const f of fields) {
@@ -142,6 +162,67 @@ function ensureLeadAccess(req, res, id) {
     return null;
   }
   return lead;
+}
+
+function assertGrowthRealAiOutput(output, options) {
+  let evidence;
+  try {
+    evidence = assertRealAiOutput(output, options);
+  } catch (error) {
+    const usage = error?.ai?.usage || {
+      inputTokens: Number(output?.usage?.inputTokens) || 0,
+      outputTokens: Number(output?.usage?.outputTokens) || 0,
+    };
+    const violations = new Set(Array.isArray(error?.ai?.violations) ? error.ai.violations : []);
+    if (!(Number(usage.inputTokens) > 0)) violations.add('input_tokens_missing');
+    if (!(Number(usage.outputTokens) > 0)) violations.add('output_tokens_missing');
+    if (error?.ai) error.ai.violations = [...violations];
+    throw error;
+  }
+  const violations = [];
+  if (!(Number(evidence.usage.inputTokens) > 0)) violations.push('input_tokens_missing');
+  if (!(Number(evidence.usage.outputTokens) > 0)) violations.push('output_tokens_missing');
+  if (!violations.length) return evidence;
+  throw Object.assign(new Error(`${options?.label || '增长AI任务'}缺少可验证的正向输入/输出token，业务产物未落库。请检查云API用量回传后重试。`), {
+    status: 502,
+    code: 'AI_REAL_OUTPUT_REQUIRED',
+    retryable: true,
+    retryHint: '请检查云API用量回传后在原任务重试。',
+    aiStatus: 'failed',
+    ai: { ...evidence, violations },
+  });
+}
+
+function objectionReadback(lead) {
+  const concerns = safeJsonArray(lead?.concerns);
+  const suggestionIds = [...new Set(concerns
+    .map(item => Number(item?.suggestionId))
+    .filter(id => Number.isSafeInteger(id) && id > 0))];
+  const suggestions = suggestionIds.length
+    ? q.scopedAll(
+      'lead_ai_suggestions',
+      `AND lead_id=? AND purpose=?
+       AND id IN (${suggestionIds.map(() => '?').join(',')})`,
+      Number(lead.id),
+      '异议处理',
+      ...suggestionIds,
+    )
+    : [];
+  const byId = new Map(suggestions.map(item => [Number(item.id), item]));
+  return concerns.map((item, index) => {
+    const candidate = byId.get(Number(item?.suggestionId));
+    const suggestion = candidate && String(candidate.context || '') === String(item?.text || '')
+      ? candidate
+      : null;
+    return {
+      index,
+      text: String(item?.text || ''),
+      resolved: item?.resolved === true,
+      suggestionId: suggestion ? Number(suggestion.id) : null,
+      suggestion: suggestion?.suggestion || null,
+      createdAt: item?.createdAt || suggestion?.created_at || null,
+    };
+  });
 }
 
 function leadDeletePolicy(req, lead) {
@@ -277,6 +358,8 @@ r.get('/leads', (req, res) => {
   if (followStatus === 'unfollowed') where += ' AND NOT EXISTS (SELECT 1 FROM follow_ups f WHERE f.lead_id = l.id)';
   if (followStatus === 'next') where += " AND l.next_follow_at IS NOT NULL AND trim(l.next_follow_at) <> ''";
   if (followStatus === 'overdue') where += " AND l.next_follow_at IS NOT NULL AND trim(l.next_follow_at) <> '' AND l.next_follow_at < date('now','localtime')";
+  // due = 今日到期 + 已超期（「今日必跟」工作面口径），不含已成交/流失
+  if (followStatus === 'due') where += " AND l.next_follow_at IS NOT NULL AND trim(l.next_follow_at) <> '' AND l.next_follow_at <= date('now','localtime') AND l.stage NOT IN ('已成交','复购','已流失')";
   if (kw) { where += ' AND (l.name LIKE ? OR l.company LIKE ? OR l.phone LIKE ?)'; params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`); }
   const orderBy = {
     score: 'l.score DESC',
@@ -320,10 +403,10 @@ r.post('/leads', (req, res) => {
   if (!b.name) return res.status(400).json({ error: '客户姓名必填' });
   const ownerId = resolveBatchOwner(req, b.owner_id);
   const source = normalizeLeadSource(b.source);
-  const result = q.run(`INSERT INTO leads(name,phone,wechat,source,identity_tag,interest,budget_level,owner_id,region,company,next_follow_at,next_action,last_interact_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const result = q.run(`INSERT INTO leads(name,phone,wechat,source,identity_tag,interest,budget_level,owner_id,region,company,birthday,next_follow_at,next_action,last_interact_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     b.name, b.phone || null, b.wechat || null, source, b.identity_tag || '普通消费者',
-    b.interest || null, b.budget_level || '未知', ownerId, b.region || null, b.company || null,
+    b.interest || null, b.budget_level || '未知', ownerId, b.region || null, b.company || null, normalizeBirthday(b.birthday),
     b.next_follow_at || null, b.next_action || null, today());
   const lead = rescoreLead(result.lastInsertRowid);
   markJourney(lead.id, '新线索', req.user.name, `来源：${source}`);
@@ -356,10 +439,10 @@ r.post('/leads/batch', (req, res) => {
         const lead = rescoreLead(exists.id);
         result.updated.push({ id: exists.id, name: lead.name });
       } else {
-        const inserted = q.run(`INSERT INTO leads(name,phone,wechat,source,identity_tag,interest,budget_level,stage,owner_id,region,company,next_follow_at,next_action,last_interact_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        const inserted = q.run(`INSERT INTO leads(name,phone,wechat,source,identity_tag,interest,budget_level,stage,owner_id,region,company,birthday,next_follow_at,next_action,last_interact_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           row.name, row.phone, row.wechat, row.source, row.identity_tag, row.interest, row.budget_level, row.stage, row.owner_id,
-          row.region, row.company, row.next_follow_at, row.next_action, today());
+          row.region, row.company, row.birthday || null, row.next_follow_at, row.next_action, today());
         const lead = rescoreLead(inserted.lastInsertRowid);
         markJourney(lead.id, '新线索', req.user.name, `批量导入：${row.source || '到店'}`);
         markJourney(lead.id, '已建档', req.user.name, '批量导入客户线索表');
@@ -404,13 +487,20 @@ r.get('/leads/:id', (req, res) => {
   });
 });
 
+r.get('/leads/:id/objections', (req, res) => {
+  const lead = ensureLeadAccess(req, res, req.params.id);
+  if (!lead) return;
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ leadId: Number(lead.id), objections: objectionReadback(lead) });
+});
+
 r.put('/leads/:id', (req, res) => {
   const lead = ensureLeadAccess(req, res, req.params.id);
   if (!lead) return;
   const b = req.body || {};
-  const fields = ['name', 'phone', 'wechat', 'source', 'identity_tag', 'interest', 'budget_level', 'owner_id', 'region', 'company', 'next_follow_at', 'next_action', 'path_type', 'referrer'];
+  const fields = ['name', 'phone', 'wechat', 'source', 'identity_tag', 'interest', 'budget_level', 'owner_id', 'region', 'company', 'next_follow_at', 'next_action', 'path_type', 'referrer', 'birthday'];
   for (const f of fields) if (b[f] !== undefined) {
-    const value = f === 'source' ? normalizeLeadSource(b[f]) : b[f];
+    const value = f === 'source' ? normalizeLeadSource(b[f]) : f === 'birthday' ? normalizeBirthday(b[f]) : b[f];
     q.run(`UPDATE leads SET ${f} = ? WHERE id = ?`, value, req.params.id);
   }
   res.json(rescoreLead(req.params.id));
@@ -512,14 +602,28 @@ r.post('/leads/:id/advance', (req, res) => {
 
 r.post('/leads/:id/follow', (req, res) => {
   const { content, next_follow_at, next_action } = req.body || {};
-  if (!content) return res.status(400).json({ error: '跟进内容必填' });
+  if (content !== undefined && typeof content !== 'string') {
+    return res.status(400).json({ error: '跟进内容必须是文本' });
+  }
+  if (next_follow_at !== undefined && next_follow_at !== null && typeof next_follow_at !== 'string') {
+    return res.status(400).json({ error: '下次跟进时间必须是文本日期' });
+  }
+  if (next_action !== undefined && next_action !== null && typeof next_action !== 'string') {
+    return res.status(400).json({ error: '下次动作必须是文本' });
+  }
+  const normalizedContent = cleanText(content);
+  const normalizedNextFollowAt = normalizeDate(next_follow_at);
+  const normalizedNextAction = cleanText(next_action);
+  if (!normalizedContent) return res.status(400).json({ error: '跟进内容必填' });
+  if (normalizedContent.length > 4000) return res.status(400).json({ error: '跟进内容不能超过4000字' });
+  if (normalizedNextAction && normalizedNextAction.length > 500) return res.status(400).json({ error: '下次动作不能超过500字' });
   const lead = ensureLeadAccess(req, res, req.params.id);
   if (!lead) return;
-  q.run('INSERT INTO follow_ups(lead_id,user_id,content) VALUES(?,?,?)', req.params.id, req.user.id, content);
+  q.run('INSERT INTO follow_ups(lead_id,user_id,content) VALUES(?,?,?)', req.params.id, req.user.id, normalizedContent);
   q.run(`UPDATE leads SET last_interact_at=?, next_follow_at=COALESCE(?,next_follow_at), next_action=COALESCE(?,next_action),
-         updated_at=datetime('now','localtime') WHERE id=?`, today(), next_follow_at, next_action, req.params.id);
-  markJourney(req.params.id, '已联系', req.user.name, content.slice(0, 60));
-  markByKeywords(req.params.id, content, req.user.name);
+         updated_at=datetime('now','localtime') WHERE id=?`, today(), normalizedNextFollowAt, normalizedNextAction, req.params.id);
+  markJourney(req.params.id, '已联系', req.user.name, normalizedContent.slice(0, 60));
+  markByKeywords(req.params.id, normalizedContent, req.user.name);
   res.json(rescoreLead(req.params.id));
 });
 
@@ -620,46 +724,82 @@ r.post('/leads/:id/objection', async (req, res) => {
         ],
         outputTokens: 1200,
       }),
+      refType: 'lead',
+      refId: Number(lead.id),
       note: `顾客#${lead.id}异议处理在供应商调用前预授权；未交付全额退回。`,
     });
     const delivered = await executeHeldDelivery({
       hold,
       generate: async () => {
         const kb = await kbContext(['话术案例'], req.user.role, concernText);
-        return generate({
+        const output = await generate({
           kind: 'objection',
           role: req.user.role,
           system: `你是餐饮门店顾客沟通助手。基于异议处理库提供一段可由员工审核后使用的沟通草稿。不得编造价格、折扣、库存、名额、顾客证言或紧迫性；涉及菜单、食安、过敏原、价格和权益时，只引用已核实信息并提示负责人确认。知识库：${kb}`,
           userMsg: `客户「${lead.name}」（${lead.identity_tag}，预算${lead.budget_level}，阶段${lead.stage}）提出顾虑：「${concernText}」。给出1段可直接使用的应对话术+1个跟进动作。`,
           fallback: () => `应对话术：感谢您把「${concernText}」说清楚。为了避免给您不准确的信息，我先确认用餐场景、人数、预算、时间和忌口，再请门店负责人按当前菜单与已审核价格给出适配方案；未确认的优惠、库存和名额我不会先做承诺。\n跟进动作：记录顾客需要核实的问题，由有权限的负责人确认后，按顾客同意的时间和方式回复。`,
         });
+        assertGrowthRealAiOutput(output, {
+          label: '顾客异议处理',
+          noDelivery: '本次不更新客户档案、不保存话术',
+        });
+        return output;
       },
       persist: out => withImmediateTransaction(db, () => {
-        concerns.push({ text: concernText, resolved: false });
-        q.run('UPDATE leads SET concerns = ? WHERE id = ?', JSON.stringify(concerns), lead.id);
-        return rescoreLead(lead.id);
+        const suggestionId = Number(q.run(
+          `INSERT INTO lead_ai_suggestions(lead_id,user_id,context,suggestion,purpose)
+           VALUES(?,?,?,?,?)`,
+          lead.id,
+          req.user.id,
+          concernText,
+          out.text,
+          '异议处理',
+        ).lastInsertRowid);
+        const objection = {
+          text: concernText,
+          resolved: false,
+          suggestionId,
+          createdAt: new Date().toISOString(),
+        };
+        concerns.push(objection);
+        const updated = q.run(
+          `UPDATE leads SET concerns=?,updated_at=datetime('now','localtime')
+           WHERE tenant_id=? AND id=?`,
+          JSON.stringify(concerns),
+          curTenant(),
+          lead.id,
+        );
+        if (Number(updated.changes) !== 1) throw new Error('顾客异议档案未完成本次租户内更新');
+        const linked = q.run(`UPDATE credit_holds SET ref_type='lead_ai_suggestion',ref_id=?
+          WHERE tenant_id=? AND id=? AND status='held'`, suggestionId, curTenant(), hold.holdId);
+        if (Number(linked.changes) !== 1) throw new Error('异议话术未绑定本次有效预授权记录');
+        return { lead: rescoreLead(lead.id), objection };
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: out => ({
         usage: out.usage,
         model: out.model,
         aiMode: out.mode,
-        note: '异议话术已生成并完成顾客档案落库',
+        note: '异议话术、顾客异议索引与积分引用已完成同事务落库',
       }),
-      releaseNote: '异议话术生成或顾客档案落库失败，预授权全额退回',
+      releaseNote: aiFailureReleaseNote('顾客异议处理'),
     });
     res.json({
-      lead: delivered.delivery,
+      lead: delivered.delivery.lead,
       suggestion: delivered.output.text,
+      suggestionId: delivered.delivery.objection.suggestionId,
+      objection: delivered.delivery.objection,
       mode: delivered.output.mode,
+      model: delivered.output.model,
+      usage: delivered.output.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
     });
   } catch (e) {
-    res.status(e.status || 500).json({
-      error: e.message,
-      ...(e.billing ? { billing: e.billing } : {}),
-    });
+    res.status(e.status || 500).json(aiFailurePayload(e, { requestId: req.requestId }));
   }
 });
 
@@ -693,6 +833,7 @@ r.post('/suggest-reply', async (req, res) => {
         ],
         outputTokens: 1200,
       }),
+      ...(lead?.id ? { refType: 'lead', refId: Number(lead.id) } : {}),
       note: `${lead ? `顾客#${lead.id}` : '通用'}私域话术在供应商调用前预授权；未交付全额退回。`,
     });
     const delivered = await executeHeldDelivery({
@@ -703,7 +844,7 @@ r.post('/suggest-reply', async (req, res) => {
           req.user.role,
           contextText || lead?.interest,
         );
-        return generate({
+        const output = await generate({
           kind: 'reply',
           system: `你是餐饮门店顾客沟通助手。生成3条可由员工审核后复制到微信/企微/短信的回复草稿（每条≤80字，编号）。不得编造活动日期、名额、库存、价格、折扣、顾客证言或紧迫性；涉及价格、菜单、食安与权益时必须说明以门店负责人核实结果为准，并尊重顾客联系授权。知识库：${kb}`,
           userMsg: `客户：${lead ? `${lead.name}（${lead.identity_tag}/${lead.grade}级/阶段${lead.stage}/兴趣${lead.interest}）` : '通用客户'}。当前沟通情境：${contextText || '客户询问产品'}`,
@@ -712,6 +853,11 @@ r.post('/suggest-reply', async (req, res) => {
             : `1. ${lead?.name || '您好'}，您关心的问题我先记录下来，请门店按当前菜单和实际情况核实后回复，避免给您不准确的信息。\n2. 方便补充用餐人数、预算、时间和忌口吗？有了这些信息，我们才能给出适配建议。\n3. 涉及价格、库存或权益的内容，我会先请有权限的负责人确认，再按您同意的方式回复。`,
           role: req.user.role,
         });
+        assertGrowthRealAiOutput(output, {
+          label: '私域话术推荐',
+          noDelivery: '本次不保存话术或顾客建议',
+        });
+        return output;
       },
       persist: out => withImmediateTransaction(db, () => {
         let suggestionId = null;
@@ -724,29 +870,33 @@ r.post('/suggest-reply', async (req, res) => {
             out.text,
             wantsInvite ? '下月邀约话术' : '私域回复话术',
           ).lastInsertRowid);
+          q.run(`UPDATE credit_holds SET ref_type='lead_ai_suggestion',ref_id=?
+            WHERE tenant_id=? AND id=? AND status='held'`, suggestionId, curTenant(), hold.holdId);
         }
         return { suggestionId };
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: out => ({
         usage: out.usage,
         model: out.model,
         aiMode: out.mode,
         note: '私域话术已生成并完成业务落库',
       }),
-      releaseNote: '私域话术生成或业务落库失败，预授权全额退回',
+      releaseNote: aiFailureReleaseNote('私域话术推荐'),
     });
     res.json({
       suggestions: delivered.output.text,
       mode: delivered.output.mode,
+      model: delivered.output.model,
+      usage: delivered.output.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
     });
   } catch (e) {
-    res.status(e.status || 500).json({
-      error: e.message,
-      ...(e.billing ? { billing: e.billing } : {}),
-    });
+    res.status(e.status || 500).json(aiFailurePayload(e, { requestId: req.requestId }));
   }
 });
 
@@ -778,8 +928,9 @@ r.post('/leads/:id/path', (req, res) => {
 r.post('/daily-report', (req, res) => {
   const b = req.body || {};
   // 明细表(leads/orders)为唯一事实源：成交单数/成交金额/复购金额由阶段推进自动归集，禁止人工二次上报（P0-3防双计）
+  // 校验口径与 dashboard /staff-daily 完全一致（0-999 整数），两个上报入口不能一严一松
   const fields = ['new_leads', 'invited', 'arrived', 'content_count'];
-  const vals = fields.map(f => Math.max(0, +b[f] || 0));
+  const vals = fields.map(f => Math.min(999, Math.max(0, Math.trunc(Number(b[f]) || 0))));
   if (vals.every(v => v === 0)) return res.status(400).json({ error: '至少填写一项数据' });
   q.run(`INSERT INTO daily_ops(date,new_leads,invited,arrived,deals,deal_amount,repurchase_amount,content_count)
          VALUES(?,?,?,?,?,?,?,?)
@@ -794,6 +945,125 @@ r.post('/daily-report', (req, res) => {
     today(), ...vals);
   logOp(req.user, '增长中心', '每日数据上报', fields.map((f, i) => vals[i] ? `${f}:${vals[i]}` : null).filter(Boolean).join(' '));
   res.json({ ok: true, date: today(), msg: '已计入今日经营数据，总控台与经营分析实时联动' });
+});
+
+// ===== 会员生日关怀：未来 N 天内过生日的客户 + AI 祝福话术（真实计费）=====
+// birthday 存 MM-DD 或 YYYY-MM-DD；按月日匹配（跨年自动处理）。
+r.get('/birthdays', (req, res) => {
+  const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
+  const scope = leadOwnerScope(req);
+  const rows = q.all(
+    `SELECT l.id, l.name, l.stage, l.grade, l.birthday, l.wechat, l.phone,
+      (SELECT u.name FROM users u WHERE u.id = l.owner_id) owner_name
+     FROM leads l
+     WHERE l.tenant_id = ${curTenant()} AND l.birthday IS NOT NULL AND trim(l.birthday) <> ''
+       AND l.stage NOT IN ('已流失')${scope.sql}`,
+    ...scope.params,
+  );
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const upcoming = rows
+    .map(row => {
+      const match = String(row.birthday).match(/(\d{1,2})-(\d{1,2})$/u);
+      if (!match) return null;
+      const month = Number(match[1]);
+      const day = Number(match[2]);
+      if (!month || !day || month > 12 || day > 31) return null;
+      let next = new Date(now.getFullYear(), month - 1, day);
+      if (next < startOfToday) next = new Date(now.getFullYear() + 1, month - 1, day);
+      const inDays = Math.round((next.getTime() - startOfToday.getTime()) / 86400000);
+      return inDays <= days ? { ...row, inDays, dateLabel: `${month}月${day}日` } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.inDays - b.inDays);
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ days, customers: upcoming });
+});
+
+r.post('/birthdays/:id/wish', async (req, res) => {
+  const lead = ensureLeadAccess(req, res, req.params.id);
+  if (!lead) return;
+  if (!aiAvailable()) return res.status(503).json({ error: '真实 AI 通道未配置，无法生成祝福话术' });
+  const model = textModelFor('sales');
+  let hold = null;
+  try {
+    precheckByRole(req.user.id, 'text', req.user.role);
+    hold = holdCredits({
+      userId: req.user.id,
+      feature: '会员增长·生日祝福话术',
+      kind: 'text',
+      model,
+      credits: estimateCallCredits({ model, outputTokens: 2500, texts: [lead.name, lead.interest || ''] }),
+      refType: 'lead',
+      refId: lead.id,
+    });
+    const deliveryHold = hold;
+    hold = null;
+    const delivered = await executeHeldDelivery({
+      hold: deliveryHold,
+      generate: async () => {
+        let output = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          output = await generate({
+            kind: 'lead-birthday-wish',
+            system: [
+              '你是餐饮门店的会员运营，为客户写一条微信生日祝福（发送人是门店）。',
+              '要求：',
+              '- 像熟人发的，不像群发模板；50-90 字。',
+              '- 自然带出到店福利邀请（如生日当月到店赠招牌菜/长寿面），但不写具体折扣数字。',
+              `- 客户信息：姓名「${lead.name}」${lead.interest ? `，此前感兴趣：${lead.interest}` : ''}${lead.grade ? `，等级 ${lead.grade}` : ''}。`,
+              '- 只输出祝福正文，不要前后缀。',
+            ].join('\n'),
+            userMsg: '请输出这条生日祝福。',
+            fallback: () => '',
+            maxTokens: 2500,
+            role: req.user.role,
+            model,
+            providerPolicy: 'yunwu_only',
+            signal: req.requestSignal,
+          });
+          const retryable =
+            output?.mode !== 'api' &&
+            ['provider_rate_limited', 'provider_empty_output'].includes(output?.providerFailure?.code);
+          if (!retryable || attempt === 2) break;
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        assertRealAiOutput(output, { label: '生日祝福', noDelivery: '本次不生成祝福，也不扣费' });
+        const text = String(output.text || '').replace(/^["'「『]+|["'」』]+$/gu, '').trim();
+        if (text.length < 20) throw Object.assign(new Error('祝福话术过短，已拒收，请重试'), { status: 422 });
+        return { text, output };
+      },
+      persist: generated => generated.text,
+      settle: settleHold,
+      release: releaseHold,
+      settlement: generated => ({
+        usage: generated.output.usage,
+        model: generated.output.model,
+        aiMode: generated.output.mode,
+        note: `生日祝福话术：${lead.name}`,
+      }),
+      requirePositiveApiUsage: true,
+      releaseNote: '生日祝福未交付，预授权全额退回',
+    });
+    logOp(req.user, '增长中心', '生日祝福话术', lead.name);
+    res.set('Cache-Control', 'private, no-store');
+    return res.json({
+      wish: delivered.delivery,
+      billing: delivered.billing,
+      boundary: '话术仅生成草稿；请复制到微信发送，系统不代替对外发送。',
+    });
+  } catch (error) {
+    if (hold) {
+      try {
+        releaseHold(hold, '生日祝福未进入模型生成，预授权全额退回');
+      } catch { /* 保留原始错误 */ }
+      hold = null;
+    }
+    return res.status(error.status || 502).json({
+      error: String(error?.message || '生日祝福生成失败').slice(0, 200),
+      ...(error.billing ? { billing: error.billing } : {}),
+    });
+  }
 });
 
 // 沟通会话列表（工作台左栏：按最近跟进排序）

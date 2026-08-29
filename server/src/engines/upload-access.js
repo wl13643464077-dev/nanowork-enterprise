@@ -1,5 +1,6 @@
 import { q, curTenant } from '../db.js';
 import { canAccessOwner, roleListAllows } from './access.js';
+import { loadAgentTaskSupersession } from './delivery-state.js';
 
 const KB_ADMIN_ROLES = new Set(['boss', 'ops_director', 'admin', 'platform_super']);
 
@@ -8,18 +9,53 @@ export function uploadAccessGuard(req, res, next) {
   const tenantId = curTenant();
   const kbAdmin = KB_ADMIN_ROLES.has(req.user.role);
 
+  // 同一文件可能同时是 generated_artifact 和已入档 KB 附件。
+  // 先取产物的取代状态，避免 KB 管理角色在 knowledge 分支提前
+  // next()，绕过旧报告静态下载门禁。
+  const artifact = q.get(`SELECT user_id,source_type,source_id
+    FROM generated_artifacts WHERE tenant_id=? AND file_url=?`, tenantId, publicPath);
+  const artifactSupersededBy = String(artifact?.source_type || '') === 'agent_task'
+    ? loadAgentTaskSupersession(artifact.source_id, { tenantId })
+    : null;
+  const supersededResponse = () => res.status(409).json({
+    error: `旧报告已由安全修订任务 #${artifactSupersededBy.taskId} 取代，请使用修订版文件`,
+    code: 'DELIVERY_SUPERSEDED',
+    supersededBy: artifactSupersededBy,
+  });
+
+  if (artifactSupersededBy && canAccessOwner(req.user, artifact.user_id)) {
+    return supersededResponse();
+  }
+
   // 入档后的附件同时受“知识库可见性”和“原文件归属”保护；任一授权成立即可读取。
   const knowledge = q.get('SELECT enabled,visible_roles FROM kb_docs WHERE tenant_id=? AND file_path=?', tenantId, publicPath);
   if (knowledge) {
     const visible = kbAdmin || (knowledge.enabled && roleListAllows(knowledge.visible_roles, req.user.role));
-    if (visible) return next();
+    if (visible) {
+      if (artifactSupersededBy) return supersededResponse();
+      return next();
+    }
   }
 
   const uploaded = q.get('SELECT user_id FROM uploaded_files WHERE tenant_id=? AND file_url=?', tenantId, publicPath);
   if (uploaded && canAccessOwner(req.user, uploaded.user_id)) return next();
 
-  const artifact = q.get('SELECT user_id FROM generated_artifacts WHERE tenant_id=? AND file_url=?', tenantId, publicPath);
-  if (artifact && canAccessOwner(req.user, artifact.user_id)) return next();
+  if (artifact && canAccessOwner(req.user, artifact.user_id)) {
+    return next();
+  }
+
+  // AI媒体成片在人工验收前仍以 media_jobs 作为权威归属记录。
+  // 只允许当前租户内任务所有人及其有权管理者预览；未入库路径不能变成公开静态文件。
+  const media = q.get(
+    `SELECT user_id,status FROM media_jobs
+    WHERE tenant_id=? AND url=? AND status='成功'`,
+    tenantId,
+    publicPath,
+  );
+  if (media && (
+    canAccessOwner(req.user, media.user_id)
+    || String(req.user?.role || '') === 'platform_super'
+  )) return next();
 
   const escapedPath = publicPath.replace(/[\\%_]/g, '\\$&');
   const candidates = q.all(`SELECT s.user_id,t.assignee_id,s.content FROM task_submissions s

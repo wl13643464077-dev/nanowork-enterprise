@@ -336,6 +336,92 @@ function ensureEmbeddingJobTable() {
   embeddingJobTableReady = true;
 }
 
+const BLOCKING_EMBEDDING_JOB_STATUSES = Object.freeze([
+  'preparing',
+  'queued',
+  'running',
+  'pending_reconciliation',
+]);
+
+const hasStoredVectorSql = alias => `(
+  (${alias}.embedding IS NOT NULL AND trim(${alias}.embedding)<>'')
+  OR EXISTS(
+    SELECT 1 FROM kb_chunks c
+    WHERE c.doc_id=${alias}.id AND c.embedding IS NOT NULL AND trim(c.embedding)<>''
+  )
+)`;
+
+// 文档“已启用”和“可做语义召回”是两件事。这个快照只读取计数与任务状态，
+// 不读取或返回知识正文，供管理页准确解释为什么 RAG 没有注入资料。
+export function kbVectorReadiness({
+  tenantId = curTenant(),
+  env = process.env,
+} = {}) {
+  ensureEmbeddingJobTable();
+  const tid = Number(tenantId);
+  const storedVector = hasStoredVectorSql('d');
+  const coverage = db.prepare(`SELECT
+      COUNT(*) enabled_docs,
+      SUM(CASE WHEN ${storedVector} THEN 1 ELSE 0 END) vectorized_docs,
+      SUM(CASE WHEN NOT ${storedVector} THEN 1 ELSE 0 END) missing_docs
+    FROM kb_docs d
+    WHERE d.tenant_id=? AND d.enabled=1`).get(tid) || {};
+  const jobs = db.prepare(`SELECT
+      COUNT(DISTINCT CASE WHEN j.status IN ('preparing','queued','running') THEN j.doc_id END) active_docs,
+      SUM(CASE WHEN j.status IN ('preparing','queued','running') THEN 1 ELSE 0 END) active_jobs,
+      COUNT(DISTINCT CASE WHEN j.status='pending_reconciliation' THEN j.doc_id END) reconciliation_docs,
+      SUM(CASE WHEN j.status='pending_reconciliation' THEN 1 ELSE 0 END) reconciliation_jobs,
+      COUNT(DISTINCT CASE WHEN j.status IN ('preparing','queued','running','pending_reconciliation') THEN j.doc_id END) blocked_docs
+    FROM kb_embedding_jobs j
+    JOIN kb_docs d ON d.id=j.doc_id AND d.tenant_id=j.tenant_id
+    WHERE j.tenant_id=? AND d.enabled=1 AND NOT ${storedVector}`).get(tid) || {};
+  const enabledDocs = Number(coverage.enabled_docs || 0);
+  const vectorizedDocs = Number(coverage.vectorized_docs || 0);
+  const missingDocs = Number(coverage.missing_docs || 0);
+  const activeDocs = Number(jobs.active_docs || 0);
+  const activeJobs = Number(jobs.active_jobs || 0);
+  const reconciliationDocs = Number(jobs.reconciliation_docs || 0);
+  const reconciliationJobs = Number(jobs.reconciliation_jobs || 0);
+  const blockedDocs = Math.min(missingDocs, Number(jobs.blocked_docs || 0));
+  const availableForBackfill = Math.max(0, missingDocs - blockedDocs);
+  const backgroundEnabled = backgroundEmbeddingsEnabled(env);
+
+  let state = 'needs_backfill';
+  let message = `有 ${missingDocs} 条已启用知识尚未生成语义向量`;
+  if (enabledDocs === 0) {
+    state = 'empty';
+    message = '暂无已启用知识，先上传、录入或初始化知识库';
+  } else if (missingDocs === 0) {
+    state = 'ready';
+    message = `已启用知识的语义向量已全部就绪（${vectorizedDocs}/${enabledDocs}）`;
+  } else if (!backgroundEnabled) {
+    state = 'disabled';
+    message = `后台向量化开关未启用，${missingDocs} 条知识只完成入库、尚不能参与语义召回`;
+  } else if (reconciliationJobs > 0) {
+    state = 'billing_attention';
+    message = `${reconciliationJobs} 个向量任务待账务对账，相关知识暂不重复回填`;
+  } else if (activeJobs > 0) {
+    state = 'processing';
+    message = `${activeJobs} 个向量任务处理中，仍有 ${missingDocs} 条知识尚未就绪`;
+  }
+
+  return {
+    state,
+    message,
+    backgroundEnabled,
+    enabledDocs,
+    vectorizedDocs,
+    missingDocs,
+    percent: enabledDocs > 0 ? Math.round(vectorizedDocs / enabledDocs * 100) : 0,
+    activeDocs,
+    activeJobs,
+    reconciliationDocs,
+    reconciliationJobs,
+    availableForBackfill,
+    canBackfill: backgroundEnabled && availableForBackfill > 0,
+  };
+}
+
 function updateEmbeddingJob(tenantId, jobId, fields = {}) {
   if (!tenantId || !jobId) return;
   const allowed = new Set([
@@ -679,6 +765,71 @@ export function embedDoc(id, title, body, options = {}) {
       chargedCredits: null,
       balance: hold.balance,
     },
+  };
+}
+
+// 管理员显式触发的缺失向量回填。每次最多 20 篇；已有运行中或待对账任务的
+// 文档不会重复排队。返回值只有任务元数据，不把知识正文带回 API 或日志。
+export function backfillMissingEmbeddings({
+  userId = null,
+  limit = 10,
+} = {}) {
+  const requestedLimit = Math.min(20, positiveInt(limit, 10));
+  if (!backgroundEmbeddingsEnabled()) {
+    return {
+      accepted: 0,
+      rejected: 0,
+      candidates: 0,
+      requestedLimit,
+      reason: 'disabled',
+      results: [],
+    };
+  }
+  ensureEmbeddingJobTable();
+  const tenantId = curTenant();
+  const blockingPlaceholders = BLOCKING_EMBEDDING_JOB_STATUSES.map(() => '?').join(',');
+  const docs = db.prepare(`SELECT d.id,d.title,d.body
+    FROM kb_docs d
+    WHERE d.tenant_id=? AND d.enabled=1
+      AND trim(COALESCE(d.body,''))<>''
+      AND NOT ${hasStoredVectorSql('d')}
+      AND NOT EXISTS(
+        SELECT 1 FROM kb_embedding_jobs j
+        WHERE j.tenant_id=d.tenant_id AND j.doc_id=d.id
+          AND j.status IN (${blockingPlaceholders})
+      )
+    ORDER BY d.updated_at DESC,d.id DESC
+    LIMIT ?`).all(
+    tenantId,
+    ...BLOCKING_EMBEDDING_JOB_STATUSES,
+    requestedLimit,
+  );
+  const results = [];
+  for (const doc of docs) {
+    try {
+      const queued = embedDoc(doc.id, doc.title, doc.body, { userId });
+      results.push({
+        docId: Number(doc.id),
+        accepted: queued?.accepted === true,
+        reason: queued?.reason || null,
+        callsPlanned: Number(queued?.callsPlanned || 0),
+      });
+    } catch (error) {
+      results.push({
+        docId: Number(doc.id),
+        accepted: false,
+        reason: Number(error?.status) === 402 ? 'billing_hold_failed' : 'schedule_failed',
+        callsPlanned: 0,
+      });
+    }
+  }
+  return {
+    accepted: results.filter(item => item.accepted).length,
+    rejected: results.filter(item => !item.accepted).length,
+    candidates: docs.length,
+    requestedLimit,
+    reason: docs.length ? null : 'no_eligible_documents',
+    results,
   };
 }
 

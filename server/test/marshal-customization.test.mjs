@@ -32,6 +32,12 @@ q.run(`INSERT INTO tenants(id,name,status,plan,credits) VALUES(2,'企业二','�
 
 const boss1 = { id: 1, name: '老板一', role: 'boss', tenant_id: 1 };
 const boss2 = { id: 2, name: '老板二', role: 'boss', tenant_id: 2 };
+const staff1 = { id: 9991, name: '普通员工', role: 'staff', tenant_id: 1 };
+const internalProfileRoles = ['boss', 'admin', 'platform_super'];
+const restrictedProfileRoles = ['ops_director', 'manager', 'staff', 'sales', 'partner'];
+const marshalInternalKeys = [
+  'prompt', 'skills', 'kb_deps', 'allies', 'synced_at', 'duty', 'sort', 'person', 'profile_json',
+];
 const target = q.get(`SELECT id,code,name FROM marshals WHERE code='M-03'`);
 const currentCodes = Array.from({ length: 8 }, (_, index) => `M-${String(index + 1).padStart(2, '0')}`);
 const baselineEmployees = q.all(`SELECT employee_idx,name,duty FROM specialists
@@ -58,6 +64,19 @@ async function withServer(user, fn) {
   const port = await new Promise(resolve => server.once('listening', () => resolve(server.address().port)));
   try { return await fn(`http://127.0.0.1:${port}`); }
   finally { await new Promise(resolve => server.close(resolve)); }
+}
+
+function collectJsonKeys(value, keys = new Set()) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonKeys(item, keys);
+    return keys;
+  }
+  if (!value || typeof value !== 'object') return keys;
+  for (const [key, nested] of Object.entries(value)) {
+    keys.add(key);
+    collectJsonKeys(nested, keys);
+  }
+  return keys;
 }
 
 test('restaurant目录忽略旧版员工重匹配参数，但保留分部级租户覆盖', async () => {
@@ -131,8 +150,8 @@ test('/employees只读取当前8分部101-160权威目录并忽略历史员工�
   try {
     await withServer(boss1, async base => {
       const directory = await fetch(`${base}/employees`).then(response => response.json());
-      assert.equal(directory.total, 59);
-      assert.ok(directory.employees.every(employee => employee.idx >= 101 && employee.idx <= 160));
+      assert.equal(directory.total, 60);
+      assert.ok(directory.employees.every(employee => employee.idx >= 101 && employee.idx <= 161));
       assert.ok(!directory.employees.some(employee => employee.idx === 160 || employee.idx === 999));
       const employee101 = directory.employees.find(employee => employee.idx === 101);
       assert.equal(employee101.name, authority.name);
@@ -149,9 +168,28 @@ test('/employees只读取当前8分部101-160权威目录并忽略历史员工�
 
   await withServer(boss1, async base => {
     const restored = await fetch(`${base}/employees`).then(response => response.json());
-    assert.equal(restored.total, 60);
+    assert.equal(restored.total, 61);
     assert.deepEqual(restored.employees.map(employee => employee.idx).sort((a, b) => a - b),
-      Array.from({ length: 60 }, (_, index) => index + 101));
+      Array.from({ length: 61 }, (_, index) => index + 101));
+  });
+});
+
+test('/employees普通员工只能读取派活目录摘要，不能旁路取得完整工作方式', async () => {
+  await withServer(staff1, async base => {
+    const list = await fetch(`${base}/employees`).then(response => response.json());
+    assert.equal(list.total, 61);
+    assert.ok(list.employees.length > 0);
+    for (const employee of list.employees) {
+      assert.equal(employee.inputs, undefined);
+      assert.equal(employee.steps, undefined);
+      assert.equal(employee.deliverables, undefined);
+      assert.equal(typeof employee.name, 'string');
+      assert.equal(typeof employee.duty, 'string');
+    }
+    const detail = await fetch(`${base}/employees/101`).then(response => response.json());
+    assert.equal(detail.inputs, undefined);
+    assert.equal(detail.steps, undefined);
+    assert.equal(detail.deliverables, undefined);
   });
 });
 
@@ -186,11 +224,11 @@ test('对外员工接口只暴露当前在线8分部、60名数字员工与3个�
     ]);
     assert.deepEqual(list.map(item => item.code), currentCodes);
     assert.deepEqual({ marshals: overview.marshals, specialists: overview.specialists, core: overview.core },
-      { marshals: 8, specialists: 60, core: 3 });
+      { marshals: 8, specialists: 61, core: 3 });
     assert.deepEqual(core.rows.map(item => item.code), ['M-01', 'M-02', 'M-06']);
     assert.doesNotMatch(JSON.stringify(core), /元帅|专员|M-10/);
-    assert.equal(departments.rows.reduce((total, item) => total + item.specialists, 0), 60);
-    assert.equal(employees.rows.length, 60);
+    assert.equal(departments.rows.reduce((total, item) => total + item.specialists, 0), 61);
+    assert.equal(employees.rows.length, 61);
     assert.ok(!JSON.stringify(employees).includes('历史旧专员'));
 
     const legacyEmployee = await fetch(`${base}/marshals/${target.id}/tasks`, {
@@ -235,6 +273,58 @@ test('分部与数字员工覆盖仅影响当前企业', async () => {
     assert.equal(detail.name, target.name);
     assert.deepEqual(detail.specialists.map(item => item.name), baselineSpecialistNames);
   });
+});
+
+test('分部列表与详情按角色使用服务端白名单，非内部角色整包响应不含岗位内部字段', async () => {
+  for (const role of restrictedProfileRoles) {
+    const user = { ...staff1, role, name: `${role}权限验证` };
+    await withServer(user, async base => {
+      const [listResponse, detailResponse] = await Promise.all([
+        fetch(`${base}/marshals`),
+        fetch(`${base}/marshals/${target.id}`),
+      ]);
+      assert.equal(listResponse.status, 200, `${role}:list`);
+      assert.equal(detailResponse.status, 200, `${role}:detail`);
+      const list = await listResponse.json();
+      const detail = await detailResponse.json();
+      const listRow = list.find(item => item.code === target.code);
+      assert.ok(listRow, `${role}:target list row`);
+
+      assert.deepEqual(Object.keys(listRow).sort(), [
+        'avatar', 'code', 'collab_tasks', 'done_tasks', 'emoji', 'id', 'month_outputs',
+        'name', 'online', 'rate', 'title', 'total_tasks',
+      ], `${role}:list positive DTO`);
+      assert.deepEqual(Object.keys(detail).sort(), [
+        'avatar', 'code', 'emoji', 'id', 'name', 'online', 'outputs', 'specialists', 'stats', 'tasks', 'title',
+      ], `${role}:detail positive DTO`);
+      assert.ok(detail.specialists.length > 0, `${role}:specialists`);
+      assert.deepEqual(Object.keys(detail.specialists[0]).sort(), [
+        'employee_idx', 'id', 'key', 'last_task', 'marshal_id', 'name', 'status',
+      ], `${role}:specialist positive DTO`);
+
+      const responseKeys = new Set([...collectJsonKeys(list), ...collectJsonKeys(detail)]);
+      for (const key of marshalInternalKeys) {
+        assert.equal(responseKeys.has(key), false, `${role} leaked JSON key ${key}`);
+      }
+    });
+  }
+
+  for (const role of internalProfileRoles) {
+    const user = { ...boss1, role, name: `${role}权限验证` };
+    await withServer(user, async base => {
+      const [list, detail] = await Promise.all([
+        fetch(`${base}/marshals`).then(response => response.json()),
+        fetch(`${base}/marshals/${target.id}`).then(response => response.json()),
+      ]);
+      const listRow = list.find(item => item.code === target.code);
+      for (const key of ['prompt', 'skills', 'kb_deps', 'allies', 'synced_at']) {
+        assert.equal(Object.hasOwn(listRow, key), true, `${role}:list must retain ${key}`);
+        assert.equal(Object.hasOwn(detail, key), true, `${role}:detail must retain ${key}`);
+      }
+      assert.equal(Object.hasOwn(detail.specialists[0], 'duty'), true, `${role}:specialist duty`);
+      assert.equal(Object.hasOwn(detail.specialists[0], 'person'), true, `${role}:specialist person`);
+    });
+  }
 });
 
 test('cleanup', () => {

@@ -37,6 +37,11 @@ jobs:
       - name: 后端测试
         run: npm run test
 
+      # 常驻检查目录、导出器和模型注入的45/10/65源指纹；
+      # 本地或私有 runner 可用 PAIHUO_CONTENT_REGISTRY_PATH 额外对照旧源全文 SHA。
+      - name: 派活内容10岗源指纹门禁
+        run: npm run check:paihuo-content-source
+
       - name: 类型检查
         run: npm run typecheck
 

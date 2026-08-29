@@ -17,6 +17,9 @@ export const EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH =
 export const EMPLOYEE_SKILLS_VERIFICATION_SCHEMA =
   "paihuo-employee-skills-verification.v1";
 export const EMPLOYEE_SKILL_VERIFICATION_LEVEL = "catalog_contract_verified";
+// 产品执行态：目录中的 409 张技能卡默认启用并由岗位锁定加载。
+// 保留源目录的 legacy_unverified 作为审计 provenance，不把旧来源状态冒充为产品执行状态。
+export const EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS = "owner_verified_enabled";
 export const EMPLOYEE_SKILL_EFFECT_VALIDATION = "requires_live_business_sample";
 export const EMPLOYEE_SKILL_FINGERPRINT_ALGORITHM =
   "sha256-canonical-skill-payload-v1";
@@ -389,7 +392,9 @@ export function verifiedEmployeeSkillsFor(catalogValue, employeeIdx) {
       source: skill.source,
       enabled: skill.enabled,
       learnedAt: skill.learnedAt,
-      verificationStatus: skill.verificationStatus,
+      // 对外执行态已经完成目录完整性与默认注入校验；原始来源状态继续保留，供审计与追溯。
+      verificationStatus: EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS,
+      legacyVerificationStatus: skill.verificationStatus,
       version: evidence.version,
       sourceSnapshot: evidence.sourceSnapshot,
       contentFingerprint: evidence.contentFingerprint,

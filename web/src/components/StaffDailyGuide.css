@@ -1,0 +1,118 @@
+/* 员工每日数据填报引导卡：员工登录第一屏的行动入口 */
+.sdg {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background:
+    linear-gradient(var(--ui-surface), var(--ui-surface)) padding-box,
+    linear-gradient(
+        115deg,
+        color-mix(in srgb, var(--ui-primary) 50%, transparent),
+        color-mix(in srgb, #22c4a8 40%, transparent) 60%,
+        color-mix(in srgb, var(--ui-primary) 20%, var(--ui-border))
+      )
+      border-box;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--ui-primary) 7%, rgba(29, 35, 43, 0.05));
+}
+
+.sdg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sdg-title strong {
+  color: var(--ui-text);
+  font-size: 15.5px;
+  margin-right: 10px;
+}
+
+.sdg-title span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.sdg-badges {
+  display: flex;
+  gap: 4px;
+}
+
+.sdg-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.sdg-field {
+  display: grid;
+  gap: 4px;
+}
+
+.sdg-field-label {
+  color: var(--ui-text);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.sdg-field .ant-input-number {
+  width: 100%;
+  border-radius: 10px;
+}
+
+.sdg-field small {
+  color: var(--ui-muted);
+  font-size: 10.5px;
+}
+
+.sdg-field em {
+  color: var(--ui-primary);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.sdg-submit {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.sdg-submit .ant-btn {
+  min-height: 38px;
+  border-radius: 10px;
+}
+
+.sdg-submit small {
+  color: var(--ui-muted);
+  font-size: 10.5px;
+}
+
+.sdg-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px dashed var(--ui-border);
+}
+
+.sdg-foot-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sdg-foot-auto {
+  color: var(--ui-muted);
+  font-size: 11px;
+}

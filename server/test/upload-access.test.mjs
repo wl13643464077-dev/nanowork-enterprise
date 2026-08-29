@@ -46,6 +46,12 @@ const taskAttachmentUrl = '/uploads/tasks/1/report_01.pdf';
 const taskId = q.run(`INSERT INTO tasks(title,assignee_id,status,tenant_id) VALUES(?,?,?,?)`, '附件权限任务', ownerId, '待审核', 1).lastInsertRowid;
 q.run(`INSERT INTO task_submissions(task_id,user_id,content,tenant_id) VALUES(?,?,?,?)`, taskId, ownerId,
   JSON.stringify({ kind: 'task_submit_v2', attachments: [{ name: 'report.pdf', url: taskAttachmentUrl }] }), 1);
+const mediaUrl = '/uploads/ai-sales-video/1/composed.mp4';
+q.run(`INSERT INTO media_jobs(user_id,kind,status,url,tenant_id) VALUES(?,?,?,?,?)`,
+  ownerId, 'video', '成功', mediaUrl, 1);
+const processingMediaUrl = '/uploads/ai-sales-video/1/processing.mp4';
+q.run(`INSERT INTO media_jobs(user_id,kind,status,url,tenant_id) VALUES(?,?,?,?,?)`,
+  ownerId, 'video', '处理中', processingMediaUrl, 1);
 
 const tokenFor = (id, role, tenantId) => signToken({ id, username: `u${id}`, name: `u${id}`, role, tenant_id: tenantId });
 
@@ -80,6 +86,11 @@ test('附件访问：未登录拒绝、本人和本企业管理层可读、同�
     assert.equal((await fetch(base + taskAttachmentUrl, { headers: { Authorization: `Bearer ${tokenFor(managerId, 'manager', 1)}` } })).status, 200);
     assert.equal((await fetch(base + taskAttachmentUrl, { headers: { Authorization: `Bearer ${tokenFor(peerId, 'sales', 1)}` } })).status, 404);
     assert.equal((await fetch(`${base}/uploads/tasks/1/reportX01.pdf`, { headers: { Authorization: `Bearer ${tokenFor(managerId, 'manager', 1)}` } })).status, 404);
+    assert.equal((await fetch(base + mediaUrl, { headers: { Authorization: `Bearer ${tokenFor(ownerId, 'sales', 1)}` } })).status, 200);
+    assert.equal((await fetch(base + mediaUrl, { headers: { Authorization: `Bearer ${tokenFor(managerId, 'manager', 1)}` } })).status, 200);
+    assert.equal((await fetch(base + mediaUrl, { headers: { Authorization: `Bearer ${tokenFor(peerId, 'sales', 1)}` } })).status, 404);
+    assert.equal((await fetch(base + mediaUrl, { headers: { Authorization: `Bearer ${tokenFor(otherBossId, 'boss', 2)}` } })).status, 404);
+    assert.equal((await fetch(base + processingMediaUrl, { headers: { Authorization: `Bearer ${tokenFor(ownerId, 'sales', 1)}` } })).status, 404);
   });
 });
 

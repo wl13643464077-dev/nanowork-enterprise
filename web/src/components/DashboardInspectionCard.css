@@ -1,0 +1,38 @@
+/* 驾驶舱 · 巡店看板 */
+.dic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.dic-subtitle {
+  margin: 0 0 8px;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  font-weight: 600;
+}
+
+.dic-totals {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-muted);
+  font-size: var(--font-2);
+}
+
+.dic-time {
+  color: var(--ui-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.dic-note {
+  margin-top: 10px;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+@media (max-width: 1050px) {
+  .dic-grid {
+    grid-template-columns: 1fr;
+  }
+}

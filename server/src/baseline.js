@@ -1,7 +1,7 @@
 import { db } from './db.js';
 import { loadRestaurantCatalog } from './catalog/restaurant.js';
 
-const RESTAURANT_CATALOG_VERSION = 2;
+const RESTAURANT_CATALOG_VERSION = 3;
 export const RESTAURANT_CATALOG = loadRestaurantCatalog();
 
 function groupCode(index) {

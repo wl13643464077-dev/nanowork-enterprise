@@ -1,4 +1,5 @@
 import { curTenant, q } from '../db.js';
+import { assertContentDeliverable } from './delivery-state.js';
 
 const BASE_VALUE_BY_TYPE = Object.freeze({
   '短视频脚本': 200,
@@ -21,8 +22,9 @@ export function contentAssetBaseValue(content = {}) {
 }
 
 function contentRow(contentOrId, tenantId) {
-  if (contentOrId && typeof contentOrId === 'object') return contentOrId;
-  const id = Number(contentOrId);
+  const id = Number(contentOrId && typeof contentOrId === 'object'
+    ? contentOrId.id
+    : contentOrId);
   if (!Number.isInteger(id) || id <= 0) return null;
   return q.get(`SELECT * FROM contents WHERE tenant_id=? AND id=?`, tenantId, id) || null;
 }
@@ -41,6 +43,12 @@ export function ensureContentAsset(contentOrId, {
   if (!content) {
     throw Object.assign(new Error('待登记的内容不存在'), { status: 404 });
   }
+  // Never trust a caller-supplied status/mode object. The canonical row,
+  // approval history and output-contract evidence are reloaded in one place.
+  assertContentDeliverable(content.id, {
+    tenantId,
+    action: '登记内容资产',
+  });
   const contentId = Number(content.id);
   const baseValue = contentAssetBaseValue(content);
   const effectBonus = Math.max(0, Number(content.effect_leads || 0)) * 10;

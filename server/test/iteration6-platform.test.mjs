@@ -103,7 +103,12 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     const uploadedArchive = await call(base, `/files/${upload.file.id}/archive`, 'POST', { category: '品牌资料' });
     assert.ok(uploadedArchive.kbDocId);
     assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets WHERE tenant_id=1 AND source_type='kb' AND source_id=?`, uploadedArchive.kbDocId).n, 1);
-    assert.match(await kbContext(['品牌资料'], boss.role, '张三 当前阶段'), /当前阶段：已邀约/);
+    assert.equal(
+      await kbContext(['品牌资料'], boss.role, '张三 当前阶段'),
+      '',
+      '有明确查询但向量不可用时不得用热度资料冒充语义命中',
+    );
+    assert.match(await kbContext(['品牌资料'], boss.role, null), /当前阶段：已邀约/);
     const longDocId = q.run(`INSERT INTO kb_docs(category,title,body,enabled,ref_count) VALUES(?,?,?,?,?)`,
       '品牌资料', '超长品牌资料', `超长文档关键标识-${'长'.repeat(3600)}`, 1, 999).lastInsertRowid;
     const longContext = await kbContext(['品牌资料'], boss.role, null);
@@ -126,11 +131,14 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     writtenFiles.push(artifactPath);
     assert.equal(artifact.format, 'pdf');
     assert.ok(artifact.size > 500);
-    assert.match(resolvePdfFontPath().path, /@fontsource[/\\]noto-sans-sc/);
+    const pdfFont = resolvePdfFontPath();
+    assert.match(pdfFont.path, /\.(?:ttf|otf)$/i);
+    assert.doesNotMatch(pdfFont.path, /\.woff2?$/i);
     const archived = await call(base, `/files/artifacts/${artifact.id}/archive`, 'POST', { category: '员工产出' });
     assert.ok(archived.kbDocId);
     assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets WHERE tenant_id=1 AND source_type='kb' AND source_id=?`, archived.kbDocId).n, 1);
-    assert.match(await kbContext(['员工产出'], boss.role, '经营诊断报告'), /优先跟进张三/);
+    assert.equal(await kbContext(['员工产出'], boss.role, '经营诊断报告'), '');
+    assert.match(await kbContext(['员工产出'], boss.role, null), /优先跟进张三/);
     await call(base, `/sys/kb/${archived.kbDocId}`, 'DELETE');
     assert.equal(q.get(`SELECT kb_doc_id FROM generated_artifacts WHERE tenant_id=1 AND id=?`, artifact.id).kb_doc_id, null);
     const rearchived = await call(base, `/files/artifacts/${artifact.id}/archive`, 'POST', { category: '员工产出' });
@@ -289,12 +297,27 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     });
     assert.equal(excessiveSheets.status, 400);
 
-    const first = await call(base, '/advisor/chat', 'POST', { question: '分析本月客户问题', fileIds: [upload.file.id] });
+    const firstResponse = await fetch(base + '/advisor/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '分析本月客户问题', fileIds: [upload.file.id] }),
+    });
+    const first = await firstResponse.json();
+    assert.equal(firstResponse.status, 502);
+    assert.equal(first.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(first.retryable, true);
+    assert.ok(first.conversationId);
     await call(base, `/advisor/conversations/${first.conversationId}/memory`, 'POST', { content: '重点客户张三处于已邀约阶段' });
-    await call(base, '/advisor/chat', 'POST', { conversationId: first.conversationId, question: '下一步怎么做' });
+    const followupResponse = await fetch(base + '/advisor/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId: first.conversationId, question: '下一步怎么做' }),
+    });
+    const followup = await followupResponse.json();
+    assert.equal(followupResponse.status, 502);
+    assert.equal(followup.code, 'AI_REAL_OUTPUT_REQUIRED');
     const convo = q.get('SELECT summary,memory,updated_at FROM ai_conversations WHERE id=?', first.conversationId);
     assert.match(convo.memory, /张三/);
-    assert.match(convo.summary, /下一步怎么做/);
+    assert.equal(convo.summary, null, '没有真实AI助手产出时不得伪造已完成会话摘要');
+    assert.equal(q.get(`SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=1 AND conversation_id=? AND role='assistant'`, first.conversationId).n, 0);
     assert.ok(convo.updated_at);
 
     const prefs = await call(base, '/dashboard/widgets/preferences');
@@ -302,11 +325,21 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     const savedPrefs = await call(base, '/dashboard/widgets/preferences', 'PUT', { widgets: ['kpi', 'follow', 'activities'] });
     assert.deepEqual(savedPrefs.selected, ['kpi', 'follow', 'activities']);
 
-    const draft = await call(base, '/activities/plan-drafts/generate', 'POST', {
-      title: '中秋企业主品鉴会', type: '品鉴会', date: '2026-09-01', targetJoin: 37, goal: '现场成交', audience: '本地企业主', budget: '1-3万',
+    const draftResponse = await fetch(base + '/activities/plan-drafts/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        title: '中秋企业主品鉴会', type: '品鉴会', date: '2026-09-01', targetJoin: 37,
+        goal: '现场成交', audience: '本地企业主', budget: '1-3万',
+      }),
     });
-    assert.ok(draft.draftId);
-    assert.ok(Array.isArray(draft.plan.flow));
+    const failedDraft = await draftResponse.json();
+    assert.equal(draftResponse.status, 502);
+    assert.equal(failedDraft.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(q.get(`SELECT COUNT(*) n FROM activity_plan_drafts WHERE tenant_id=1 AND title='中秋企业主品鉴会'`).n, 0);
+    const draft = {
+      draftId: q.run(`INSERT INTO activity_plan_drafts(user_id,title,type,date,goal,audience,budget,target_join,plan,status)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`, boss.id, '中秋企业主品鉴会', '门店主题活动', '2026-09-01', '现场成交', '本地企业主', '1-3万', 37,
+      JSON.stringify({ theme: '中秋企业主品鉴会', flow: [{ time: '14:00', item: '签到' }], materials: ['签到表'], invites: '已授权客户', sop: ['核对名单'], kpi: {}, budgetNote: '待审批' }), '草稿').lastInsertRowid,
+    };
     const created = await call(base, `/activities/plan-drafts/${draft.draftId}/create-activity`, 'POST', { date: '2026-09-01' });
     const createdActivity = q.get(`SELECT id,target_join FROM activities WHERE tenant_id=1 AND id=? AND plan_status='草稿'`, created.activityId);
     assert.equal(createdActivity.target_join, 37);
@@ -383,12 +416,17 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     setConfig('yunwu_base_url', `http://127.0.0.1:${upstreamPort}/v1`);
     const timeoutStartedAt = Date.now();
     try {
-      const degradedPlan = await call(base, `/activities/${created.activityId}/plan`, 'POST', {
-        goal: '招商', audience: '本地企业主', budget: '1-3万',
+      const failedPlanResponse = await fetch(base + `/activities/${created.activityId}/plan`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          goal: '招商', audience: '本地企业主', budget: '1-3万',
+        }),
       });
-      assert.equal(degradedPlan.mode, 'template');
-      assert.ok(degradedPlan.plan.flow.length > 0);
-      assert.ok(Date.now() - timeoutStartedAt < 2500, '交互式AI超时后应快速降级，不能让页面长期卡住');
+      const failedPlan = await failedPlanResponse.json();
+      assert.equal(failedPlanResponse.status, 502);
+      assert.equal(failedPlan.code, 'AI_REAL_OUTPUT_REQUIRED');
+      assert.equal(failedPlan.retryable, true);
+      assert.equal(failedPlan.billing.state, 'released');
+      assert.ok(Date.now() - timeoutStartedAt < 2500, '交互式AI超时后应快速返回可重试失败，不能让页面长期卡住');
     } finally {
       setConfig('yunwu_api_key', '');
       setConfig('yunwu_base_url', 'http://127.0.0.1:9');

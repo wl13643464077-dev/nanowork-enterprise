@@ -52,6 +52,7 @@ const user = {
   role: 'boss',
   tenant_id: tenantId,
 };
+const REQUEST_ID = 'advisor-two-phase-request';
 const bootstrapHold = holdCredits({
   userId,
   feature: '顾问两阶段测试初始化',
@@ -74,6 +75,7 @@ function makeApp(overrides = {}) {
   app.use(express.json({ limit: '2mb' }));
   app.use((req, _res, next) => runWithTenant(tenantId, () => {
     req.user = user;
+    req.requestId = REQUEST_ID;
     next();
   }));
   app.post('/advisor/chat', createAdvisorChatHandler(overrides));
@@ -109,6 +111,12 @@ const heldRows = () => db.prepare(
    WHERE tenant_id=? AND status='held'
    ORDER BY id`,
 ).all(tenantId);
+
+const latestAdvisorLog = () => db.prepare(
+  `SELECT ai_mode,credits,note FROM credit_logs
+   WHERE tenant_id=? AND feature LIKE '老板参谋%'
+   ORDER BY id DESC LIMIT 1`,
+).get(tenantId);
 
 test('顾问联网检索与供应商/RAG 调用都发生在额度预授权之后，落库完成后才结算', async () => {
   const events = [];
@@ -159,11 +167,102 @@ test('顾问联网检索与供应商/RAG 调用都发生在额度预授权之后
     assert.equal(result.response.status, 200, JSON.stringify(result.payload));
     assert.equal(result.payload.billing.state, 'settled');
     assert.equal(result.payload.billing.chargedCredits, 0);
+    assert.equal(result.payload.mode, 'api');
+    assert.equal(result.payload.model, providerOutput.model);
+    assert.deepEqual(result.payload.usage, providerOutput.usage);
+    assert.equal(result.payload.aiStatus, 'succeeded');
+    assert.equal(result.payload.deliveryState, 'succeeded');
+    assert.equal(result.payload.retryable, false);
     assert.equal(result.payload.sources[0].title, '本地假搜索证据');
   });
   assert.deepEqual(events, ['web', 'provider', 'settle']);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
+});
+
+test('顾问降级为模板或零token时明确失败，不保存助手产出并可在原会话重试', async () => {
+  const before = balanceOfTenant(tenantId);
+  const assistantsBefore = db.prepare(
+    `SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=? AND role='assistant'`,
+  ).get(tenantId).n;
+
+  await withServer({
+    advisorReplyFn: async () => ({
+      text: '这是不能冒充交付的本地模板',
+      mode: 'template',
+      model: 'template',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      kb: { refs: [], degraded: true, mode: 'hot' },
+    }),
+  }, async base => {
+    const failed = await post(base, { question: '强制顾问模板降级' });
+    assert.equal(failed.response.status, 502, JSON.stringify(failed.payload));
+    assert.equal(failed.payload.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(failed.payload.aiStatus, 'failed');
+    assert.equal(failed.payload.deliveryState, 'failed');
+    assert.equal(failed.payload.failurePhase, 'generate');
+    assert.equal(failed.payload.retryable, true);
+    assert.match(failed.payload.retryHint, /原任务重试|上游状态/);
+    assert.equal(failed.payload.requestId, REQUEST_ID);
+    assert.ok(failed.payload.conversationId);
+    assert.equal(failed.payload.ai.mode, 'template');
+    assert.ok(failed.payload.ai.violations.includes('mode_not_api'));
+    assert.ok(failed.payload.ai.violations.includes('usage_missing'));
+    assert.deepEqual(failed.payload.ai.usage, { inputTokens: 0, outputTokens: 0 });
+    assert.equal(failed.payload.billing.state, 'released');
+    assert.equal(failed.payload.billing.chargedCredits, 0);
+  });
+
+  assert.equal(
+    db.prepare(`SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=? AND role='assistant'`).get(tenantId).n,
+    assistantsBefore,
+  );
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
+  const log = latestAdvisorLog();
+  assert.equal(log.ai_mode, 'failed');
+  assert.equal(log.credits, 0);
+  assert.match(log.note, /阶段=generate/);
+  assert.match(log.note, /错误码=AI_REAL_OUTPUT_REQUIRED/);
+});
+
+test('顾问上游超时时保留可诊断错误码，不交付助手消息并全额退回', async () => {
+  const before = balanceOfTenant(tenantId);
+  const assistantsBefore = db.prepare(
+    `SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=? AND role='assistant'`,
+  ).get(tenantId).n;
+
+  await withServer({
+    advisorReplyFn: async () => {
+      throw Object.assign(new Error('注入的上游超时'), {
+        status: 504,
+        code: 'AI_PROVIDER_TIMEOUT',
+      });
+    },
+  }, async base => {
+    const failed = await post(base, { question: '强制顾问上游超时' });
+    assert.equal(failed.response.status, 504, JSON.stringify(failed.payload));
+    assert.equal(failed.payload.code, 'AI_PROVIDER_TIMEOUT');
+    assert.equal(failed.payload.deliveryState, 'failed');
+    assert.equal(failed.payload.failurePhase, 'generate');
+    assert.equal(failed.payload.retryable, true);
+    assert.match(failed.payload.retryHint, /上游超时/);
+    assert.equal(failed.payload.requestId, REQUEST_ID);
+    assert.equal(failed.payload.billing.state, 'released');
+    assert.equal(failed.payload.billing.chargedCredits, 0);
+  });
+
+  assert.equal(
+    db.prepare(`SELECT COUNT(*) n FROM ai_messages WHERE tenant_id=? AND role='assistant'`).get(tenantId).n,
+    assistantsBefore,
+  );
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
+  const log = latestAdvisorLog();
+  assert.equal(log.ai_mode, 'failed');
+  assert.equal(log.credits, 0);
+  assert.match(log.note, /阶段=generate/);
+  assert.match(log.note, /错误码=AI_PROVIDER_TIMEOUT/);
 });
 
 test('顾问业务产物事务中后置步骤失败会整体回滚，并全额释放预授权', async () => {
@@ -193,6 +292,11 @@ test('顾问业务产物事务中后置步骤失败会整体回滚，并全额�
       question: '强制顾问业务事务回滚',
     });
     assert.equal(failed.response.status, 500);
+    assert.equal(failed.payload.code, 'AI_DELIVERY_FAILED');
+    assert.equal(failed.payload.deliveryState, 'failed');
+    assert.equal(failed.payload.failurePhase, 'persist');
+    assert.equal(failed.payload.retryable, true);
+    assert.equal(failed.payload.requestId, REQUEST_ID);
     assert.equal(failed.payload.billing.state, 'released');
     assert.equal(failed.payload.billing.chargedCredits, 0);
   });
@@ -211,6 +315,10 @@ test('顾问业务产物事务中后置步骤失败会整体回滚，并全额�
   );
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
+  const log = latestAdvisorLog();
+  assert.equal(log.ai_mode, 'failed');
+  assert.match(log.note, /阶段=persist/);
+  assert.match(log.note, /错误码=AI_DELIVERY_FAILED/);
 });
 
 test('顾问结算失败保留已交付产物和 held 账目，并明确返回 pending_reconciliation', async () => {
@@ -297,6 +405,9 @@ test('顾问 SSE 在业务落库失败前不泄露模型增量，失败账单返
     const events = body.split('\n\n').filter(Boolean)
       .map(chunk => JSON.parse(chunk.replace(/^data: /, '')));
     const error = events.find(event => event.error);
+    assert.equal(error.deliveryState, 'failed');
+    assert.equal(error.failurePhase, 'persist');
+    assert.equal(error.requestId, REQUEST_ID);
     assert.equal(error.billing.state, 'released');
   });
   assert.equal(heldRows().length, 0);

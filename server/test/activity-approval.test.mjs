@@ -142,6 +142,70 @@ test('待确认事项审批：提交 -> 总监初审 -> 老板终审后自动标
   assert.equal(checklist[0].approvedBy.name, '老板');
 });
 
+test('Boss/platform_super会话提交活动方案与清单不创建审批；普通角色仍按策略且body伪造role不能绕过', async () => {
+  const plan = {
+    theme: 'Boss自授权测试活动',
+    flow: [{ time: '19:00-19:15', item: '签到' }],
+    materials: ['签到台'],
+    invites: '企业客户',
+    sop: ['会前确认'],
+    kpi: { inviteSign: '50%', signArrive: '70%', arriveDeal: '25%', roi: '2.0', inviteRate: '80%' },
+    budgetNote: '仅用于隔离测试，不产生真实活动',
+  };
+
+  // The request body is untrusted. A manager claiming role=boss must still
+  // receive the configured approval route and create exactly one approval.
+  await withServer({ id: 2, name: '运营总监', role: 'ops_director' }, async base => {
+    const created = await fetch(`${base}/activities`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '会话角色优先-普通角色', date: '2026-10-01', type: '品鉴会' }),
+    }).then(r => r.json());
+    const submitted = await fetch(`${base}/activities/${created.id}/plan/submit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'boss', plan }),
+    }).then(r => r.json());
+    assert.equal(submitted.planStatus, '待审批');
+    assert.notEqual(submitted.approvalId, null);
+    assert.equal(q.get(
+      `SELECT COUNT(*) n FROM approvals WHERE tenant_id=1 AND target_type='activity_plan' AND target_id=?`,
+      created.id,
+    ).n, 1);
+  });
+
+  for (const actorRole of ['boss', 'platform_super']) {
+    const actor = { id: 1, name: actorRole === 'boss' ? '老板' : '平台超级管理员', role: actorRole };
+    await withServer(actor, async base => {
+      const created = await fetch(`${base}/activities`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: `会话自授权-${actorRole}`, date: '2026-10-02', type: '品鉴会' }),
+      }).then(r => r.json());
+      const submitted = await fetch(`${base}/activities/${created.id}/plan/submit`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // A conflicting body role must not downgrade the authenticated actor.
+        body: JSON.stringify({ role: 'ops_director', plan }),
+      }).then(r => r.json());
+      assert.equal(submitted.planStatus, '已通过', actorRole);
+      assert.equal(submitted.approvalId, null, actorRole);
+      assert.equal(q.get(
+        `SELECT COUNT(*) n FROM approvals WHERE tenant_id=1 AND target_type='activity_plan' AND target_id=?`,
+        created.id,
+      ).n, 0, actorRole);
+
+      const checklist = await fetch(`${base}/activities/${created.id}/checklist/0/submit`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'ops_director' }),
+      }).then(r => r.json());
+      assert.equal(checklist.approvalId, null, actorRole);
+      assert.equal(checklist.checklist[0].approvalStatus, '已通过', actorRole);
+      assert.equal(checklist.checklist[0].done, true, actorRole);
+      assert.equal(q.get(
+        `SELECT COUNT(*) n FROM approvals WHERE tenant_id=1 AND target_type='activity_checklist' AND target_id=?`,
+        created.id,
+      ).n, 0, actorRole);
+    });
+  }
+});
+
 test('活动策划工作分配：同步员工任务、幂等更新并向已绑定员工发送飞书提醒', async () => {
   setTenantConfig('feishu', {
     enabled: true,
@@ -214,7 +278,7 @@ test('活动策划工作分配：同步员工任务、幂等更新并向已绑�
   }
 });
 
-test('餐饮活动复盘由M-07数据分析部执行并写入知识库', async () => {
+test('餐饮活动复盘无真实AI时明确失败，不冒充M-07完成且不写知识库', async () => {
   let activityId;
   await withServer({ id: 2, name: '运营总监', role: 'ops_director' }, async base => {
     const created = await fetch(`${base}/activities`, {
@@ -224,23 +288,23 @@ test('餐饮活动复盘由M-07数据分析部执行并写入知识库', async (
     activityId = created.id;
     q.run(`UPDATE activities SET invited=20,signed_up=8,arrived=5,converted=1,revenue=30000,cost=12000,satisfaction=4.5 WHERE id=?`, activityId);
 
-    const review = await fetch(`${base}/activities/${activityId}/review`, {
+    const response = await fetch(`${base}/activities/${activityId}/review`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ok: ['邀约名单质量较高'], bad: ['现场转化动作要加强'] }),
-    }).then(r => r.json());
-    assert.equal(review.kbSync.category, '员工产出');
-    assert.equal(review.kbSync.title, '活动复盘：复盘入库测试渠道合作活动');
-    assert.equal(review.aiMeta.divisionCode, 'M-07');
-    assert.equal(review.baselineStatus, 'unavailable');
-    assert.ok(review.missingFields.length > 0);
-    assert.equal(review.rates.roi, 2.5);
-    assert.doesNotMatch(JSON.stringify(review), /M-09|限时权益|封坛|权益延期/);
+    });
+    const failed = await response.json();
+    assert.equal(response.status, 502, JSON.stringify(failed));
+    assert.equal(failed.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(failed.aiStatus, 'failed');
+    assert.equal(failed.retryable, true);
+    assert.equal(failed.billing.state, 'released');
   });
 
   const doc = q.get(`SELECT * FROM kb_docs WHERE title=?`, '活动复盘：复盘入库测试渠道合作活动');
-  assert.equal(doc.category, '员工产出');
-  assert.match(doc.body, /活动复盘：复盘入库测试渠道合作活动/);
-  assert.match(doc.body, /邀约名单质量较高/);
+  assert.equal(doc, undefined);
+  const activity = q.get(`SELECT review,status FROM activities WHERE tenant_id=1 AND id=?`, activityId);
+  assert.equal(activity.review, null);
+  assert.notEqual(activity.status, '已复盘');
 });
 
 test('活动策划草稿严格按组织树隔离，运营总监不能访问平级团队', async () => {
@@ -316,21 +380,19 @@ test('正式活动新增和修改拒绝非法日期、人数与金额', async ()
   });
 });
 
-test('AI策划草稿落库失败会释放预授权，仅保留0分审计流水', async () => {
+test('无真实AI的活动策划不落草稿，释放预授权且仅保留0分审计流水', async () => {
   await withServer({ id: 2, name: '运营总监', role: 'ops_director' }, async base => {
     const before = q.get(`SELECT credits FROM tenants WHERE id=1`).credits;
     const logsBefore = q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1`).n;
-    q.run(`CREATE TRIGGER fail_atomic_plan_draft BEFORE INSERT ON activity_plan_drafts
-      WHEN NEW.title='原子失败策划' BEGIN SELECT RAISE(ABORT,'forced plan draft failure'); END`);
-    try {
-      const response = await fetch(`${base}/activities/plan-drafts/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '原子失败策划', date: '2026-09-01', targetJoin: 20 }),
-      });
-      assert.equal(response.status, 500);
-    } finally {
-      q.run(`DROP TRIGGER IF EXISTS fail_atomic_plan_draft`);
-    }
+    const response = await fetch(`${base}/activities/plan-drafts/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '无真实AI策划', date: '2026-09-01', targetJoin: 20 }),
+    });
+    const failed = await response.json();
+    assert.equal(response.status, 502);
+    assert.equal(failed.code, 'AI_REAL_OUTPUT_REQUIRED');
+    assert.equal(failed.retryable, true);
+    assert.equal(failed.billing.state, 'released');
     assert.equal(q.get(`SELECT credits FROM tenants WHERE id=1`).credits, before);
     assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1`).n, logsBefore + 1);
     const releasedLog = q.get(`SELECT credits,ai_mode,note FROM credit_logs
@@ -340,7 +402,7 @@ test('AI策划草稿落库失败会释放预授权，仅保留0分审计流水',
     const releasedHold = q.get(`SELECT status,settled_credits FROM credit_holds
       WHERE tenant_id=1 AND feature='活动策划室·AI策划' ORDER BY id DESC LIMIT 1`);
     assert.deepEqual({ ...releasedHold }, { status: 'settled', settled_credits: 0 });
-    assert.equal(q.get(`SELECT COUNT(*) n FROM activity_plan_drafts WHERE tenant_id=1 AND title='原子失败策划'`).n, 0);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM activity_plan_drafts WHERE tenant_id=1 AND title='无真实AI策划'`).n, 0);
   });
 });
 

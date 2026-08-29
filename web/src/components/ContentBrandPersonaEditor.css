@@ -1,0 +1,75 @@
+.content-brand-persona-modal .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 18px;
+}
+
+.content-brand-persona-modal .ant-modal-header {
+  margin: -20px -24px 20px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.content-brand-persona-modal .ant-modal-body {
+  max-height: min(76vh, 760px);
+  overflow-y: auto;
+}
+
+.content-profile-section + .content-profile-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.content-profile-section > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.content-profile-section h3 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.content-profile-section header span {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.content-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+}
+
+.content-profile-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.content-profile-actions {
+  position: sticky;
+  bottom: -20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 6px -24px -20px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--ui-border);
+  background: color-mix(in srgb, var(--ui-surface) 96%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+@media (max-width: 640px) {
+  .content-profile-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .content-profile-grid .wide {
+    grid-column: auto;
+  }
+}

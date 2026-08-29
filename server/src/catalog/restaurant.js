@@ -101,7 +101,7 @@ function bracketSection(markdown, label) {
 function isLeadIn(field, value) {
   const normalized = cleanHeading(value);
   if (field === 'inputs') {
-    return /^(?:收集并标注缺失项|请提供以下信息|请先提供|必要输入如下)$/u.test(normalized);
+    return /^(?:收集并标注缺失项|收集并标注来源日期|请提供以下信息|请先提供|必要输入如下)$/u.test(normalized);
   }
   if (field === 'deliverables') {
     return /^(?:提供|输出|交付内容如下|最终提供)$/u.test(normalized);
@@ -138,7 +138,7 @@ function fail(message) {
 export function validateRestaurantCatalog(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('根节点必须是对象');
   if (!Array.isArray(value.groups) || value.groups.length !== 8) fail(`必须包含8个分部，当前为${value.groups?.length ?? 0}个`);
-  if (!Array.isArray(value.employees) || value.employees.length !== 60) fail(`必须包含60名员工，当前为${value.employees?.length ?? 0}名`);
+  if (!Array.isArray(value.employees) || value.employees.length !== 61) fail(`必须包含61名员工，当前为${value.employees?.length ?? 0}名`);
 
   const employees = value.employees.map(normalizeEmployee);
   const byIdx = new Map();
@@ -156,11 +156,11 @@ export function validateRestaurantCatalog(value) {
     }
   }
 
-  for (let idx = 101; idx <= 160; idx += 1) {
+  for (let idx = 101; idx <= 161; idx += 1) {
     if (!byIdx.has(idx)) fail(`缺少员工idx：${idx}`);
   }
   for (const idx of byIdx.keys()) {
-    if (idx < 101 || idx > 160) fail(`员工idx超出101-160：${idx}`);
+    if (idx < 101 || idx > 161) fail(`员工idx超出101-161：${idx}`);
   }
 
   const groupNames = new Set();

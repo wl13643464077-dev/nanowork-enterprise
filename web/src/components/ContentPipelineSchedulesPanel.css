@@ -1,0 +1,105 @@
+.cps-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.cps-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cps-head h3 {
+  margin: 10px 0 4px;
+  font-size: 22px;
+}
+
+.cps-head p,
+.cps-card p {
+  margin: 0;
+  color: var(--ui-text-secondary, #687386);
+}
+
+.cps-loading {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+}
+
+.cps-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cps-card .ant-card-body {
+  display: grid;
+  gap: 12px;
+}
+
+.cps-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cps-card-title strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cps-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.cps-card dl > div {
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--ui-surface-muted, #f6f8fb);
+}
+
+.cps-card dt {
+  color: var(--ui-text-tertiary, #8a94a6);
+  font-size: 12px;
+}
+
+.cps-card dd {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.cps-note {
+  color: var(--ui-text-secondary, #687386);
+}
+
+.cps-actions {
+  padding-top: 2px;
+}
+
+.cps-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+}
+
+.cps-wide-control {
+  width: 100%;
+}
+
+@media (max-width: 820px) {
+  .cps-head {
+    flex-direction: column;
+  }
+
+  .cps-grid,
+  .cps-form-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
@@ -12,16 +12,16 @@ dayjs.locale('zh-cn');
 
 const PALETTES: Record<string, any> = {
   nano: {
-    primary: '#1769d2',
-    bg: '#f3f6fa',
+    primary: '#2f6bda',
+    bg: '#f5f6f4',
     surface: '#ffffff',
     elevated: '#ffffff',
-    text: '#18263a',
-    text2: '#586a80',
-    border: '#dfe7f1',
-    border2: '#e9eef5',
-    selected: '#e8f1fc',
-    selectedText: '#125ab4',
+    text: '#1d232b',
+    text2: '#5e6875',
+    border: '#e2e5e1',
+    border2: '#eceeeb',
+    selected: '#eaf1ff',
+    selectedText: '#2558b7',
   },
   midnight: {
     primary: '#67a8f6',
@@ -38,16 +38,38 @@ const PALETTES: Record<string, any> = {
 };
 
 const THEME_KEY = 'nanowork_industry_theme_v1';
+const DEFAULT_THEME = 'nano';
+
+function readTheme() {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    return stored && PALETTES[stored] ? stored : DEFAULT_THEME;
+  } catch {
+    return DEFAULT_THEME;
+  }
+}
+
+// 图表会在首次 passive effect 中解析 CSS 变量；React 挂载前先写入主题，
+// 避免首屏按未命中的默认变量初始化后再闪烁或缓存错误色值。
+const initialTheme = readTheme();
+document.documentElement.dataset.theme = initialTheme;
 
 function Root() {
-  const [uiTheme, setUiTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'nano');
-  useEffect(() => {
+  const [uiTheme, setUiTheme] = useState(initialTheme);
+
+  // 主题 DOM 状态必须先于子组件的 passive effect（尤其是 ECharts setOption）落地。
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = uiTheme;
-    const onTheme = (event: Event) =>
-      setUiTheme((event as CustomEvent).detail?.theme || localStorage.getItem(THEME_KEY) || 'nano');
+  }, [uiTheme]);
+
+  useEffect(() => {
+    const onTheme = (event: Event) => {
+      const requested = (event as CustomEvent).detail?.theme;
+      setUiTheme(requested && PALETTES[requested] ? requested : readTheme());
+    };
     window.addEventListener('nanowork-theme-change', onTheme);
     return () => window.removeEventListener('nanowork-theme-change', onTheme);
-  }, [uiTheme]);
+  }, []);
   const p = PALETTES[uiTheme] || PALETTES.nano;
   return (
     <ConfigProvider
@@ -56,7 +78,7 @@ function Root() {
         algorithm: uiTheme === 'midnight' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
           colorPrimary: p.primary,
-          borderRadius: 10,
+          borderRadius: 9,
           colorBgLayout: p.bg,
           colorBgContainer: p.surface,
           colorBgElevated: p.elevated,
@@ -67,8 +89,8 @@ function Root() {
           colorInfo: p.primary,
           colorLink: p.primary,
           colorLinkHover: p.selectedText,
-          fontSize: 13,
-          fontFamily: "'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif",
+          fontSize: 14,
+          fontFamily: "'Inter Variable','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif",
         },
         components: {
           Menu: { itemSelectedBg: p.selected, itemSelectedColor: p.selectedText, itemHeight: 42, iconSize: 15 },

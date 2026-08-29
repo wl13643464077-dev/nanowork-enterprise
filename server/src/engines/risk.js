@@ -1,4 +1,9 @@
 import { db, q, getConfig } from '../db.js';
+import {
+  DEFAULT_APPROVAL_ROUTING_POLICY,
+  resolveApprovalRoute,
+  resolveTenantApprovalRoute,
+} from './approval-routing-policy.js';
 
 // 风控规则引擎（PRD §2.4 / M-10 / RISK-01~03）
 const DEFAULT_RULES = [
@@ -13,12 +18,42 @@ export function getRules() {
   return getConfig('risk_rules', null) || DEFAULT_RULES;
 }
 
+// 报告里的授权/否定字段是治理状态，不是对外收益或价格承诺。只把这些
+// 明确的中性短语从 PRICE_PROMISE 的匹配文本中移除；同一段里若仍出现
+// “保证收益”“承诺回本”等真实承诺，剩余文本照常命中高风险规则。
+const PRICE_PROMISE_GOVERNANCE_ONLY_PATTERNS = Object.freeze([
+  /(?:承诺授权字段|承诺授权|承诺状态|财务或监管承诺授权)\s*[|｜:：]\s*(?:否|无|未授权|不允许)/gu,
+  /(?:未承诺|不构成承诺|不承诺)/gu,
+]);
+
+function pricePromiseContainsPositiveEvidence(text, pattern) {
+  let remaining = String(text || '');
+  let removed = false;
+  for (const safePattern of PRICE_PROMISE_GOVERNANCE_ONLY_PATTERNS) {
+    safePattern.lastIndex = 0;
+    const next = remaining.replace(safePattern, '');
+    if (next !== remaining) removed = true;
+    remaining = next;
+  }
+  if (!removed) return true;
+  try {
+    return new RegExp(pattern).test(remaining);
+  } catch {
+    return true;
+  }
+}
+
 export function scanText(text) {
   const hits = [];
   let level = 'none';
   for (const r of getRules()) {
     try {
-      if (new RegExp(r.pattern).test(text || '')) {
+      const matched = new RegExp(r.pattern).test(text || '');
+      const pricePromiseIsGovernanceOnly =
+        r.code === 'PRICE_PROMISE' &&
+        matched &&
+        !pricePromiseContainsPositiveEvidence(text, r.pattern);
+      if (matched && !pricePromiseIsGovernanceOnly) {
         hits.push({ code: r.code, name: r.name, level: r.level });
         if (r.level === 'high') level = 'high';
         else if (r.level === 'medium' && level !== 'high') level = 'medium';
@@ -77,17 +112,73 @@ export function createApproval({
   rulesHit,
   submitterId,
   approvalLevel = null,
+  assignedReviewerId = null,
+  approvalPolicySnapshot = null,
   payload = null,
 }) {
+  let routedLevel = approvalLevel;
+  let routedReviewerId = assignedReviewerId;
+  let routedSnapshot = approvalPolicySnapshot;
+  if (targetType === 'content' && !routedSnapshot) {
+    let route = resolveTenantApprovalRoute({
+      targetType: 'content',
+      riskLevel,
+      requestedLevel: approvalLevel,
+    });
+    // createApproval() is also the explicit/manual approval command used by
+    // legacy content routes.  A tenant's automatic low-risk policy must not
+    // turn an explicit submission into a null reviewer (or a forged auto
+    // decision).  When the caller supplied an approval level, lock a real
+    // one-step review route; ordinary automatic employee flows never call
+    // this command and therefore create no approval row at all.
+    if (!route.requiresReview && approvalLevel) {
+      const forcedMode = approvalLevel === 'boss' ? 'boss' : 'manager';
+      route = resolveApprovalRoute({
+        targetType: 'content',
+        riskLevel,
+        requestedLevel: approvalLevel,
+        policy: {
+          ...DEFAULT_APPROVAL_ROUTING_POLICY,
+          employeeOutput: {
+            mode: forcedMode,
+            reviewerUserId: forcedMode === 'manager' ? assignedReviewerId : null,
+          },
+        },
+      });
+    }
+    if (!route.requiresReview || !route.firstStep) {
+      throw Object.assign(new Error('当前企业规则已对该低风险产出免审，不应创建审批单'), {
+        status: 409,
+        code: 'APPROVAL_NOT_REQUIRED',
+      });
+    }
+    routedLevel = route.firstStep.level;
+    routedReviewerId = route.firstStep.assignedReviewerId;
+    routedSnapshot = route.snapshot;
+  }
   const columns = db.prepare('PRAGMA table_info(approvals)').all();
   const hasPolicyColumns = columns.some(column => column.name === 'approval_level');
-  const r = hasPolicyColumns
+  const hasRoutingColumns = columns.some(column => column.name === 'assigned_reviewer_id')
+    && columns.some(column => column.name === 'approval_policy_snapshot');
+  const r = hasRoutingColumns
+    ? q.run(
+      `INSERT INTO approvals(
+        target_type,target_id,title,summary,risk_level,rules_hit,submitter_id,approval_level,
+        assigned_reviewer_id,approval_policy_snapshot,payload
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      targetType, targetId, title, (summary || '').slice(0, 200), riskLevel,
+      JSON.stringify(rulesHit || []), submitterId ?? null, routedLevel,
+      routedReviewerId ?? null,
+      routedSnapshot == null ? null : JSON.stringify(routedSnapshot),
+      payload == null ? null : JSON.stringify(payload),
+    )
+    : hasPolicyColumns
     ? q.run(
       `INSERT INTO approvals(
         target_type,target_id,title,summary,risk_level,rules_hit,submitter_id,approval_level,payload
       ) VALUES(?,?,?,?,?,?,?,?,?)`,
       targetType, targetId, title, (summary || '').slice(0, 200), riskLevel,
-      JSON.stringify(rulesHit || []), submitterId ?? null, approvalLevel, payload == null
+      JSON.stringify(rulesHit || []), submitterId ?? null, routedLevel, payload == null
         ? null
         : JSON.stringify(payload),
     )

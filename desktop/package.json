@@ -1,0 +1,36 @@
+{
+  "name": "@nanowork/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "纳米Work行业版 Windows / macOS 安全桌面客户端",
+  "main": "src/main.cjs",
+  "author": {
+    "name": "NanoWork"
+  },
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test test/*.test.mjs",
+    "icons": "node scripts/generate-icons.mjs",
+    "check:build-config": "node scripts/validate-build-config.mjs",
+    "verify": "npm run icons && npm run check:build-config && npm test",
+    "pack": "npm run verify && electron-builder --config electron-builder.yml --dir --publish never",
+    "dist": "npm run verify && electron-builder --config electron-builder.yml --publish never",
+    "dist:mac": "npm run verify && electron-builder --config electron-builder.yml --mac --x64 --arm64 --publish never",
+    "dist:win": "npm run verify && electron-builder --config electron-builder.yml --win --x64 --publish never",
+    "verify:artifacts:mac": "node scripts/verify-artifacts.mjs mac",
+    "verify:artifacts:win": "node scripts/verify-artifacts.mjs win"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "electron": "43.4.1",
+    "electron-builder": "26.15.7",
+    "sharp": "0.35.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

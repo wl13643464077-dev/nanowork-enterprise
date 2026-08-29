@@ -1,0 +1,161 @@
+/* Shared presentation for system approval and deletion audit surfaces. */
+.system-approval-rule-card {
+  min-height: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.system-approval-rule-title {
+  margin-bottom: var(--space-1);
+  color: var(--ui-text);
+  font-weight: 700;
+}
+
+.system-approval-rule-description {
+  min-height: 38px;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.system-approval-rule-description--selected {
+  min-height: 0;
+  margin-top: var(--space-1);
+}
+
+.system-approval-rule-label {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.system-approval-rule-label--approval,
+.system-approval-rule-label--reviewer,
+.system-approval-rule-threshold {
+  margin-top: var(--space-3);
+}
+
+.system-approval-rule-label--threshold {
+  margin-bottom: var(--space-1);
+}
+
+.system-approval-rule-control {
+  width: 100%;
+  margin-top: var(--space-1);
+}
+
+.system-approval-rule-readonly-tag {
+  margin-top: var(--space-1);
+}
+
+.system-approval-rule-reviewer-readonly {
+  margin-top: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.system-deletion-drawer__danger-icon,
+.system-deletion-history__danger-icon {
+  color: var(--danger);
+}
+
+.system-deletion-drawer__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.system-deletion-drawer__meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2);
+}
+
+.system-deletion-drawer__meta-card {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+}
+
+.system-deletion-drawer__meta-label {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.system-deletion-drawer__meta-value {
+  margin-top: var(--space-1);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  font-weight: 600;
+}
+
+.system-deletion-drawer__section-title {
+  margin-bottom: var(--space-1);
+  font-size: var(--font-2);
+  font-weight: 600;
+}
+
+.system-deletion-drawer__reason,
+.system-deletion-drawer__snapshot {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+}
+
+.system-deletion-drawer__reason {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-2);
+  line-height: 1.8;
+}
+
+.system-deletion-drawer__snapshot {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-3);
+  background: var(--ui-surface-2);
+  font-size: var(--font-1);
+  white-space: pre-wrap;
+}
+
+.system-deletion-drawer__snapshot--related {
+  margin-top: var(--space-2);
+}
+
+.system-deletion-history__status-select {
+  width: 110px;
+}
+
+.system-deletion-history__alert {
+  margin-bottom: var(--space-3);
+}
+
+.system-deletion-history__object-link {
+  font-weight: 600;
+}
+
+.system-deletion-history__summary {
+  margin-top: calc(var(--space-1) / 2);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.system-deletion-history__module-tag {
+  font-size: var(--font-1);
+}
+
+.system-deletion-history__role-tag {
+  margin-left: calc(var(--space-1) / 2);
+  font-size: var(--font-1);
+}
+
+.system-deletion-history__reason {
+  color: var(--ui-text-2);
+}
+
+.system-deletion-history__time {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}

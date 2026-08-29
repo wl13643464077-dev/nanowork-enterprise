@@ -10,6 +10,8 @@ const Pending = lazy(() => import('./pages/Pending'));
 const Platform = lazy(() => import('./pages/Platform'));
 const Recharge = lazy(() => import('./pages/Recharge'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const StoreOps = lazy(() => import('./pages/StoreOps'));
+const Reviews = lazy(() => import('./pages/Reviews'));
 const Advisor = lazy(() => import('./pages/Advisor'));
 const Employees = lazy(() => import('./pages/Employees'));
 const Toolbox = lazy(() => import('./pages/Toolbox'));
@@ -17,6 +19,7 @@ const Growth = lazy(() => import('./pages/Growth'));
 const Activities = lazy(() => import('./pages/Activities'));
 const ContentFactory = lazy(() => import('./pages/ContentFactory'));
 const Execution = lazy(() => import('./pages/Execution'));
+const TaskCenter = lazy(() => import('./pages/TaskCenter'));
 const Analysis = lazy(() => import('./pages/Analysis'));
 const StoreData = lazy(() => import('./pages/StoreData'));
 const Assets = lazy(() => import('./pages/Assets'));
@@ -81,6 +84,8 @@ function SessionGate({ children }: { children: JSX.Element }) {
   return children;
 }
 
+// MainLayout 内的路由用 PageSkeleton（保留外壳只换内容区）；
+// 这里的 fallback 只服务于外壳之外的整页路由（登录/平台台/移动端/管理后台）。
 const routeFallback = (
   <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--ui-bg)' }}>
     <Spin size="large" />
@@ -199,10 +204,34 @@ export default function App() {
                 }
               />
               <Route
+                path="/tasks"
+                element={
+                  <ModuleOnly moduleKey="execution">
+                    <TaskCenter />
+                  </ModuleOnly>
+                }
+              />
+              <Route
                 path="/execution"
                 element={
                   <ModuleOnly moduleKey="execution">
                     <Execution />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/store-ops"
+                element={
+                  <ModuleOnly moduleKey="dashboard">
+                    <StoreOps />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/reviews"
+                element={
+                  <ModuleOnly moduleKey="dashboard">
+                    <Reviews />
                   </ModuleOnly>
                 }
               />
@@ -217,9 +246,11 @@ export default function App() {
               <Route
                 path="/store-data"
                 element={
-                  <ModuleOnly moduleKey="analysis">
-                    <StoreData />
-                  </ModuleOnly>
+                  <RoleOnly roles={['boss', 'ops_director', 'manager', 'admin']}>
+                    <ModuleOnly moduleKey="analysis">
+                      <StoreData />
+                    </ModuleOnly>
+                  </RoleOnly>
                 }
               />
               <Route

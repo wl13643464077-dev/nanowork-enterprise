@@ -49,6 +49,8 @@ import { useQuery, QueryStatus } from '../hooks/useQuery';
 import { Chart } from '../components/Charts';
 import { UnifiedFilePicker, type UploadedFileRef } from '../components/UnifiedFilePicker';
 import { ArtifactActions } from '../components/ArtifactActions';
+import BusinessFlowTrace from '../components/BusinessFlowTrace';
+import { generatedArtifactStatusLabel } from '../components/statusPresentation.js';
 import { useNavigate } from 'react-router-dom';
 
 const { TextArea } = Input;
@@ -160,6 +162,7 @@ export default function Advisor() {
   const [deepOn, setDeepOn] = useState(false);
   const [draftNotice, setDraftNotice] = useState('');
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [businessFlowMessageId, setBusinessFlowMessageId] = useState<number | null>(null);
   const [artifacts, setArtifacts] = useState<any[]>([]);
   const [memories, setMemories] = useState<any[]>([]);
   const [now] = useState(() => new Date());
@@ -383,12 +386,17 @@ export default function Advisor() {
 
   const dispatchMarshals = async (codes: string[], names: string[]) => {
     if (!codes.length) return;
+    const sourceMessageId = [...messages]
+      .reverse()
+      .find(messageItem => messageItem.role === 'assistant' && messageItem.serverId)?.serverId;
     const res = await api.post('/advisor/dispatch', {
       marshalCodes: codes,
       title: (lastQuestion || `${diagType}会诊`).slice(0, 50),
+      sourceMessageId,
     });
     const dispatched: string[] = res?.dispatched?.length ? res.dispatched : names;
-    message.success(`已转派：${dispatched.join('、')}`);
+    const owner = res?.owner?.name ? `，由 ${res.owner.name} 接单` : '';
+    message.success(`已创建 ${res?.created?.length || 0} 个分部任务${owner}：${dispatched.join('、')}`);
   };
 
   const stepItems = STEP_DEFS.map((s, i) => {
@@ -492,7 +500,7 @@ export default function Advisor() {
                 </div>
               </div>
               <div style={{ marginTop: 14, fontSize: 12, fontWeight: 600, color: 'var(--ui-text-2)' }}>
-                <BulbOutlined style={{ color: '#f6a02d' }} /> 猜你想问
+                <BulbOutlined style={{ color: 'var(--warn)' }} /> 猜你想问
               </div>
               <Row gutter={[8, 8]} style={{ marginTop: 8 }}>
                 {questions.slice(0, 4).map((q, i) => (
@@ -734,21 +742,34 @@ export default function Advisor() {
                                   </Button>
                                 </Tooltip>
                                 {m.serverId && (
-                                  <Tooltip title="把回复中的执行动作一键生成待办任务（执行中心可跟进）">
-                                    <Button
-                                      size="small"
-                                      type="text"
-                                      icon={<CarryOutOutlined />}
-                                      onClick={async () => {
-                                        const out = await api.post(`/advisor/messages/${m.serverId}/to-tasks`);
-                                        message.success(
-                                          `已生成 ${out.created?.length || 0} 条待办，到「执行中心」跟进`,
-                                        );
-                                      }}
-                                    >
-                                      转任务
-                                    </Button>
-                                  </Tooltip>
+                                  <>
+                                    <Tooltip title="把回复中的执行动作一键生成待办任务（执行中心可跟进）">
+                                      <Button
+                                        size="small"
+                                        type="text"
+                                        icon={<CarryOutOutlined />}
+                                        onClick={async () => {
+                                          const out = await api.post(`/advisor/messages/${m.serverId}/to-tasks`);
+                                          message.success(
+                                            `已新增 ${out.created?.length || 0} 条、复用 ${out.existing?.length || 0} 条待办，到「任务看板」跟进`,
+                                          );
+                                        }}
+                                      >
+                                        转任务
+                                      </Button>
+                                    </Tooltip>
+                                    <Tooltip title="只读查看这条会诊结论及其下游任务；可见范围由企业角色权限决定">
+                                      <Button
+                                        aria-label="只读查看业务流"
+                                        size="small"
+                                        type="text"
+                                        icon={<ApartmentOutlined />}
+                                        onClick={() => setBusinessFlowMessageId(m.serverId)}
+                                      >
+                                        查看业务流
+                                      </Button>
+                                    </Tooltip>
+                                  </>
                                 )}
                                 <ArtifactActions
                                   title={(lastQuestion || `${diagType}报告`).slice(0, 50)}
@@ -789,7 +810,7 @@ export default function Advisor() {
                 style={{ border: 'none', boxShadow: 'none', padding: '4px 2px', fontSize: 13 }}
               />
               {draftNotice && (
-                <div style={{ marginTop: 6, fontSize: 11.5, color: '#f6a02d' }}>
+                <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--warn)' }}>
                   <BulbOutlined /> {draftNotice}
                 </div>
               )}
@@ -886,7 +907,7 @@ export default function Advisor() {
               }
               extra={
                 <button type="button" className="ui-link-button" onClick={() => nav('/employees')}>
-                  查看60名员工
+                  查看61名餐饮员工
                 </button>
               }
               style={{ height: 'auto' }}
@@ -953,7 +974,7 @@ export default function Advisor() {
                         width: 7,
                         height: 7,
                         borderRadius: '50%',
-                        background: marshal.online ? '#22c4a8' : 'var(--ui-muted)',
+                        background: marshal.online ? 'var(--chart-2)' : 'var(--ui-muted)',
                         flexShrink: 0,
                       }}
                     />
@@ -1001,7 +1022,7 @@ export default function Advisor() {
             <Panel
               title={
                 <>
-                  <TeamOutlined style={{ color: '#8a7450' }} /> 推荐协同分部
+                  <TeamOutlined style={{ color: 'var(--chart-3)' }} /> 推荐协同分部
                 </>
               }
               style={{ height: 'auto' }}
@@ -1081,7 +1102,7 @@ export default function Advisor() {
             <Panel
               title={
                 <>
-                  <HistoryOutlined style={{ color: '#f6a02d' }} /> 最近会诊
+                  <HistoryOutlined style={{ color: 'var(--warn)' }} /> 最近会诊
                 </>
               }
               style={{ height: 'auto' }}
@@ -1146,7 +1167,7 @@ export default function Advisor() {
             <Panel
               title={
                 <>
-                  <RadarChartOutlined style={{ color: '#22c4a8' }} /> 能力矩阵
+                  <RadarChartOutlined style={{ color: 'var(--chart-2)' }} /> 能力矩阵
                 </>
               }
               style={{ height: 'auto' }}
@@ -1190,7 +1211,7 @@ export default function Advisor() {
             <Panel
               title={
                 <>
-                  <ApartmentOutlined style={{ color: '#70757a' }} /> 数字员工分部协同状态
+                  <ApartmentOutlined style={{ color: 'var(--ui-muted)' }} /> 数字员工分部协同状态
                 </>
               }
               style={{ height: 'auto' }}
@@ -1309,7 +1330,7 @@ export default function Advisor() {
                     <Tag>{String(a.format).toUpperCase()}</Tag>
                   </Space>
                 }
-                description={`${(a.created_at || '').slice(0, 16)} · ${a.status || '可用'}`}
+                description={`${(a.created_at || '').slice(0, 16)} · ${generatedArtifactStatusLabel(a.status)}`}
               />
             </List.Item>
           )}
@@ -1335,6 +1356,12 @@ export default function Advisor() {
           )}
         />
       </Drawer>
+      <BusinessFlowTrace
+        sourceType="advisor_message"
+        sourceId={businessFlowMessageId}
+        open={businessFlowMessageId !== null}
+        onClose={() => setBusinessFlowMessageId(null)}
+      />
     </div>
   );
 }

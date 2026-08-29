@@ -1,0 +1,186 @@
+/* 老板「今日一眼」：4 个大数 + 最要紧的事 + 待办，3 秒看完 */
+.bg-glance {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background:
+    linear-gradient(var(--ui-surface), var(--ui-surface)) padding-box,
+    linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--ui-primary) 45%, transparent),
+        color-mix(in srgb, #8b5cf6 30%, transparent) 55%,
+        color-mix(in srgb, var(--ui-primary) 18%, var(--ui-border))
+      )
+      border-box;
+  box-shadow: 0 14px 40px color-mix(in srgb, var(--ui-primary) 7%, rgba(29, 35, 43, 0.05));
+}
+
+.bg-glance-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+}
+
+.bg-glance-metric {
+  display: grid;
+  gap: 2px;
+  align-content: center;
+  padding: 14px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition:
+    border-color 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.bg-glance-metric:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 40%, var(--ui-border));
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ui-primary) 10%, rgba(29, 35, 43, 0.06));
+}
+
+.bg-glance-metric-label {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.bg-glance-metric strong {
+  color: var(--ui-text);
+  font-size: clamp(22px, 2vw, 30px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.bg-glance-metric small {
+  min-height: 16px;
+  font-size: 11px;
+}
+
+.bg-glance-metric em {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.bg-glance-up {
+  color: var(--ok);
+}
+
+.bg-glance-down {
+  color: var(--danger);
+}
+
+.bg-glance-alert {
+  color: var(--danger);
+}
+
+.bg-glance-side {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.bg-glance-issue {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ui-primary) 4%, var(--ui-surface));
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.bg-glance-issue:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ui-primary) 10%, transparent);
+}
+
+.bg-glance-issue-calm {
+  cursor: default;
+}
+
+.bg-glance-issue-kicker {
+  color: var(--ui-primary);
+  font-size: 10.5px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+}
+
+.bg-glance-issue strong {
+  color: var(--ui-text);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.bg-glance-issue p {
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.65;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.bg-glance-issue-cta {
+  color: var(--ui-primary);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.bg-glance-todos {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bg-glance-todos button {
+  padding: 6px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.bg-glance-todos button:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+  color: var(--ui-primary);
+}
+
+.bg-glance-todos button b {
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+
+.bg-glance-dispatch {
+  color: var(--ui-primary) !important;
+  border-color: color-mix(in srgb, var(--ui-primary) 30%, var(--ui-border)) !important;
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .bg-glance {
+    grid-template-columns: 1fr;
+  }
+}

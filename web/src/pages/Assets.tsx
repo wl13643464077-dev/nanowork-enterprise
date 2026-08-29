@@ -58,27 +58,27 @@ const catTagColor: Record<string, string> = {
 };
 const catChartColor: Record<string, string> = {
   内容资产: 'var(--ui-accent)',
-  知识资产: '#8a7450',
-  客户资产: '#22c4a8',
-  数据资产: '#f6a02d',
-  品牌资产: '#f25b6b',
+  知识资产: 'var(--chart-3)',
+  客户资产: 'var(--chart-2)',
+  数据资产: 'var(--warn)',
+  品牌资产: 'var(--danger)',
 };
 const statusColor: Record<string, string> = {
-  使用中: '#22c4a8',
-  闲置: '#f6a02d',
-  待归档: '#70757a',
+  使用中: 'var(--chart-2)',
+  闲置: 'var(--warn)',
+  待归档: 'var(--ui-muted)',
   已归档: 'var(--ui-muted)',
 };
 const actionColor: Record<string, string> = {
   创建: 'var(--ui-accent)',
   新增: 'var(--ui-accent)',
   入库: 'var(--ui-accent)',
-  启用: '#22c4a8',
-  使用: '#22c4a8',
-  调用: '#70757a',
-  更新: '#8a7450',
-  闲置: '#f6a02d',
-  流转: '#f6a02d',
+  启用: 'var(--chart-2)',
+  使用: 'var(--chart-2)',
+  调用: 'var(--ui-muted)',
+  更新: 'var(--chart-3)',
+  闲置: 'var(--warn)',
+  流转: 'var(--warn)',
   归档: 'var(--ui-muted)',
 };
 const buttonResetStyle = {
@@ -388,7 +388,7 @@ export default function Assets() {
 
   const catTotal = categories.reduce((s, c) => s + (c.n || 0), 0);
   const score = health?.score ?? 0;
-  const scoreColor = score >= 80 ? '#22c4a8' : score >= 60 ? '#f6a02d' : '#f25b6b';
+  const scoreColor = score >= 80 ? 'var(--chart-2)' : score >= 60 ? 'var(--warn)' : 'var(--danger)';
   const scoreLevel = score >= 80 ? '健康' : score >= 60 ? '良好' : '需关注';
   const maxUse = Math.max(...topUsed.map(t => t.use_count || 0), 1);
   const wCounts = warnings?.counts || {};
@@ -397,7 +397,7 @@ export default function Assets() {
       key: 'idle',
       label: '闲置超90天',
       tag: 'orange',
-      color: '#f6a02d',
+      color: 'var(--warn)',
       n: wCounts.idle ?? (warnings?.idle || []).length,
       rows: warnings?.idle || [],
     },
@@ -405,7 +405,7 @@ export default function Assets() {
       key: 'incomplete',
       label: '信息不完整',
       tag: 'red',
-      color: '#f25b6b',
+      color: 'var(--danger)',
       n: wCounts.incomplete ?? (warnings?.incomplete || []).length,
       rows: warnings?.incomplete || [],
     },
@@ -436,7 +436,7 @@ export default function Assets() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<PayCircleOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="资产总价值"
             value={fmtWan(summary.totalValue || 0)}
             onClick={() => openDrill('value')}
@@ -445,7 +445,7 @@ export default function Assets() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<PlusSquareOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="本月新增资产"
             value={summary.monthNew ?? '-'}
             suffix="项"
@@ -455,7 +455,7 @@ export default function Assets() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<PlayCircleOutlined />}
-            color="#8a7450"
+            color="var(--chart-3)"
             label="使用中资产"
             value={summary.inUse ?? '-'}
             suffix={summary.total ? `占比 ${((summary.inUse / summary.total) * 100).toFixed(1)}%` : ''}
@@ -465,7 +465,7 @@ export default function Assets() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<FundOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="资产使用率"
             value={`${summary.useRate ?? '-'}%`}
             onClick={() => openDrill('use-rate')}
@@ -474,7 +474,7 @@ export default function Assets() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ThunderboltOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="调用次数"
             value={summary.calls ?? '-'}
             trend={summary.valueGrowth}
@@ -647,8 +647,8 @@ export default function Assets() {
                     symbolSize: 5,
                     yAxisIndex: 1,
                     data: trend.map(x => x.count),
-                    lineStyle: { width: 2, color: '#22c4a8' },
-                    itemStyle: { color: '#22c4a8' },
+                    lineStyle: { width: 2, color: 'var(--chart-2)' },
+                    itemStyle: { color: 'var(--chart-2)' },
                   },
                 ],
               }}
@@ -911,7 +911,7 @@ export default function Assets() {
             <Panel
               title={
                 <>
-                  <FireOutlined style={{ color: '#f6a02d' }} /> 资产使用 TOP5
+                  <FireOutlined style={{ color: 'var(--warn)' }} /> 资产使用 TOP5
                 </>
               }
               style={{ height: 'auto' }}
@@ -942,7 +942,8 @@ export default function Assets() {
                           fontSize: 11,
                           fontWeight: 700,
                           color: i < 3 ? '#fff' : 'var(--ui-muted)',
-                          background: i < 3 ? ['#f25b6b', '#f6a02d', '#70757a'][i] : 'var(--ui-border)',
+                          background:
+                            i < 3 ? ['var(--danger)', 'var(--warn)', 'var(--ui-muted)'][i] : 'var(--ui-border)',
                         }}
                       >
                         {i + 1}
@@ -978,7 +979,7 @@ export default function Assets() {
             <Panel
               title={
                 <>
-                  <AlertOutlined style={{ color: '#f25b6b' }} /> 资产预警
+                  <AlertOutlined style={{ color: 'var(--danger)' }} /> 资产预警
                 </>
               }
               extra={
@@ -1105,7 +1106,7 @@ export default function Assets() {
           <Panel
             title={
               <>
-                <PieChartOutlined style={{ color: '#8a7450' }} /> 资产价值分布
+                <PieChartOutlined style={{ color: 'var(--chart-3)' }} /> 资产价值分布
               </>
             }
           >
@@ -1163,7 +1164,7 @@ export default function Assets() {
           <Panel
             title={
               <>
-                <ThunderboltOutlined style={{ color: '#f6a02d' }} /> 资产流转动态
+                <ThunderboltOutlined style={{ color: 'var(--warn)' }} /> 资产流转动态
               </>
             }
             extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>最近 {flows.length} 条</span>}
@@ -1223,7 +1224,9 @@ export default function Assets() {
       >
         {sourceMapError ? (
           <div style={{ textAlign: 'center', padding: '18px 0' }}>
-            <div style={{ fontSize: 12.5, color: '#f25b6b', marginBottom: 10 }}>来源地图加载失败：{sourceMapError}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 10 }}>
+              来源地图加载失败：{sourceMapError}
+            </div>
             <Button size="small" icon={<ReloadOutlined />} onClick={loadSourceMap}>
               重试
             </Button>
@@ -1434,7 +1437,7 @@ export default function Assets() {
         open={trace.open}
         width={520}
         onClose={() => setTrace({ open: false, data: null })}
-        title={trace.data ? <span>🔍 资产溯源 · {trace.data.name}</span> : '资产溯源'}
+        title={trace.data ? <span>资产溯源 · {trace.data.name}</span> : '资产溯源'}
       >
         {!trace.data ? (
           <div style={{ textAlign: 'center', padding: 40 }}>
@@ -1457,7 +1460,7 @@ export default function Assets() {
                 <Tag style={{ margin: 0 }}>{trace.data.category}</Tag>
               </span>
               <span>
-                估值 <b style={{ color: '#f6a02d' }}>{fmtWan(trace.data.value || 0)}</b>
+                估值 <b style={{ color: 'var(--warn)' }}>{fmtWan(trace.data.value || 0)}</b>
               </span>
               <span>
                 状态{' '}
@@ -1471,7 +1474,7 @@ export default function Assets() {
               <span>登记 {(trace.data.created_at || '').slice(0, 16)}</span>
             </div>
 
-            <Panel title={`📌 来源：${trace.data.source.type}`}>
+            <Panel title={`来源：${trace.data.source.type}`}>
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 6 }}>
                 {trace.data.source.label}
               </div>

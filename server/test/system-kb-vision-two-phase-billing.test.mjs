@@ -67,15 +67,21 @@ providerApp.post('/v1/chat/completions', (req, res) => {
   if (requestText.includes('识图上游失败.png')) {
     return res.status(503).json({ error: { message: 'local injected provider failure' } });
   }
+  const zeroUsage = requestText.includes('识图零token.png');
   return res.json({
     choices: [{ message: { content: '一句话说明：门店经营表。\\n关键信息：本月到店人数 28。\\n适用场景：经营复盘。\\n待核验：统计周期。' } }],
-    usage: { prompt_tokens: 180, completion_tokens: 95 },
+    usage: zeroUsage
+      ? { prompt_tokens: 0, completion_tokens: 0 }
+      : { prompt_tokens: 180, completion_tokens: 95 },
   });
 });
 const providerServer = providerApp.listen(0, '127.0.0.1');
 const providerPort = await new Promise(resolve => {
   providerServer.once('listening', () => resolve(providerServer.address().port));
 });
+// BASE() 以环境变量优先（运维切换供应商用）；.env 配置了 YUNWU_BASE_URL 时
+// 仅靠 setConfig 注入会被盖住，必须同时写 env 才能把请求钉在本地假供应商上。
+process.env.YUNWU_BASE_URL = `http://127.0.0.1:${providerPort}/v1`;
 setConfig('yunwu_base_url', `http://127.0.0.1:${providerPort}/v1`);
 
 const app = express();
@@ -134,6 +140,24 @@ test('知识库图片在供应商调用前占额，文档与资产原子入库�
   assert.ok(asset);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
+});
+
+test('知识库识图 API 返回正文但 usage 为0时，仅保留待重试空档案', async () => {
+  const before = balanceOfTenant(tenantId);
+  const result = await upload('识图零token.png');
+
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'released');
+  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(result.payload.body, '');
+  assert.equal(result.payload.enabled, 0);
+  assert.match(result.payload.extractMode, /识图待重试/);
+  const doc = db.prepare('SELECT body,enabled FROM kb_docs WHERE tenant_id=? AND id=?')
+    .get(tenantId, result.payload.id);
+  assert.equal(doc.body, '');
+  assert.equal(doc.enabled, 0);
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
 });
 
 test('知识库图片识别失败会释放占额，文件和待重试档案仍保留', async () => {

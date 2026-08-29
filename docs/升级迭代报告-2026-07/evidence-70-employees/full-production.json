@@ -1,0 +1,3489 @@
+{
+  "schemaVersion": "nanowork.employee-output-matrix.v1",
+  "generatedAt": "2026-07-31T10:43:35.755Z",
+  "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+  "providerEvidence": "deterministic_mock",
+  "verdict": "PASS_OFFLINE_PIPELINE",
+  "coverage": {
+    "total": 70,
+    "restaurant": 60,
+    "content": 10
+  },
+  "middlewareEvidence": {
+    "createAppProductionAssembly": true,
+    "authMiddleware": true,
+    "tenantScope": true,
+    "tenantGate": true,
+    "moduleGuard": true,
+    "aiGuard": "production_createAiGuard",
+    "crossTenantReadDenied": true
+  },
+  "externalNetworkAttempts": [],
+  "providerCalls": 70,
+  "webEvidenceCalls": 10,
+  "rows": [
+    {
+      "domain": "restaurant",
+      "idx": 101,
+      "employeeId": "restaurant:101",
+      "key": "01-restaurant-market-opportunity",
+      "name": "餐饮市场机会研究",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-101-40059eb5-69fe-4cf7-bee2-20f779efcb0c",
+      "taskId": 1,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:101:01-restaurant-market-opportunity:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-101-01-restaurant-market-opportunity-delivery-package",
+      "outputSummary": "# 餐饮市场机会研究｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:101:01-restaurant-market-opportunity:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 1,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 1,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 1,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 1,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "4ae39d11e7e3cb46ed0f2b5f3989153965873b2a2e2360def92aa4e918b6a36d",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 102,
+      "employeeId": "restaurant:102",
+      "key": "02-trade-area-competitor-profile",
+      "name": "竞品与商圈画像",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-102-8fd4498c-fe3c-49f6-8600-8e522b7222db",
+      "taskId": 2,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:102:02-trade-area-competitor-profile:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-102-02-trade-area-competitor-profile-delivery-package",
+      "outputSummary": "# 竞品与商圈画像｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:102:02-trade-area-competitor-profile:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 2,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 2,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 2,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 2,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "1dae0ce386a465779bc33dd6c22bf9832203385daabfde6d4a640ba5586a5f99",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 103,
+      "employeeId": "restaurant:103",
+      "key": "03-restaurant-concept-validation",
+      "name": "品牌定位与概念验证",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-103-fb370e8a-ea37-4d29-9e52-ff2731ea2528",
+      "taskId": 3,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:103:03-restaurant-concept-validation:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-103-03-restaurant-concept-validation-delivery-package",
+      "outputSummary": "# 品牌定位与概念验证｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:103:03-restaurant-concept-validation:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 3,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 3,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 3,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 3,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "da786e0d1db6f76d2c836623b8da38d9a32c6d2a42e9cf342792b46dd16ef6e7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 104,
+      "employeeId": "restaurant:104",
+      "key": "04-site-selection-lease-model",
+      "name": "选址评分与租约测算",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-104-95aee79d-b97c-4a6c-8501-cd11dfe87f5f",
+      "taskId": 4,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:104:04-site-selection-lease-model:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-104-04-site-selection-lease-model-delivery-package",
+      "outputSummary": "# 选址评分与租约测算｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:104:04-site-selection-lease-model:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 4,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 4,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 4,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 4,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "12c0c2cb7136558a2ea616517b06eec532b8dc3c37c2778cd70344c07605b278",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 105,
+      "employeeId": "restaurant:105",
+      "key": "05-restaurant-format-service-design",
+      "name": "店型与服务模式设计",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-105-6ada776b-bc93-4096-a481-841b6995f61d",
+      "taskId": 5,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:105:05-restaurant-format-service-design:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-105-05-restaurant-format-service-design-delivery-package",
+      "outputSummary": "# 店型与服务模式设计｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:105:05-restaurant-format-service-design:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 5,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 5,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 5,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 5,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "8dc2701f8163df10ff3f140257a9a4345e77cfd0ec76e32144f4528840dd1dc8",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 106,
+      "employeeId": "restaurant:106",
+      "key": "06-restaurant-unit-economics",
+      "name": "单店商业模型与盈亏平衡",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-106-36e4ec32-e59b-4ac4-8262-28c1d2179f06",
+      "taskId": 6,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:106:06-restaurant-unit-economics:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-106-06-restaurant-unit-economics-delivery-package",
+      "outputSummary": "# 单店商业模型与盈亏平衡｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:106:06-restaurant-unit-economics:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 6,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 6,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 6,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 6,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "322227de8bdfe1a8b62b2967e6dec675abea790b4a71c864d2b5a2f89058ecb0",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 107,
+      "employeeId": "restaurant:107",
+      "key": "07-restaurant-opening-readiness",
+      "name": "证照、空间与开业倒排",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-107-cc73ffcd-5573-4df5-b0cc-fb798f6e3acb",
+      "taskId": 7,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:107:07-restaurant-opening-readiness:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-107-07-restaurant-opening-readiness-delivery-package",
+      "outputSummary": "# 证照、空间与开业倒排｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:107:07-restaurant-opening-readiness:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 7,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 7,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 7,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 7,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "4061668bca093d992b67987cc7dc9883b4d5948736cd7440a8f7ca40e0356c1c",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 108,
+      "employeeId": "restaurant:108",
+      "key": "08-menu-architecture",
+      "name": "菜单架构与组合规划",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-108-5a9ff446-a36a-4198-a68b-c2a8ff84f8ef",
+      "taskId": 8,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:108:08-menu-architecture:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-108-08-menu-architecture-delivery-package",
+      "outputSummary": "# 菜单架构与组合规划｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:108:08-menu-architecture:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | --- ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 8,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 8,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 8,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 8,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "0ac3fbc9b851a2d6e1b41fe4d057b71df932cee10cdd5277746aa4cf00d30e56",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 109,
+      "employeeId": "restaurant:109",
+      "key": "09-standard-recipe-card",
+      "name": "标准配方与菜品卡",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-109-800f6866-06ff-46a6-9040-a6d65f3be364",
+      "taskId": 9,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:109:09-standard-recipe-card:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-109-09-standard-recipe-card-delivery-package",
+      "outputSummary": "# 标准配方与菜品卡｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:109:09-standard-recipe-card:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | --",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 9,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 9,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 9,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 9,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "941e708d89f8bebf6e51219c5ffa12096d8514e0e1601405e6211a6400ed0f21",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 110,
+      "employeeId": "restaurant:110",
+      "key": "10-yield-portion-control",
+      "name": "出成率与份量控制",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-110-9f1eb6b3-6119-4174-bb16-50db766bd4e4",
+      "taskId": 10,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:110:10-yield-portion-control:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-110-10-yield-portion-control-delivery-package",
+      "outputSummary": "# 出成率与份量控制｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:110:10-yield-portion-control:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | -",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 10,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 10,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 10,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 10,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "007901fab5f704970dec7ea3a2a0c2ea8258564f5082710183f67956745fb1b7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 111,
+      "employeeId": "restaurant:111",
+      "key": "11-dish-costing-pricing",
+      "name": "菜品成本卡与售价建议",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-111-61b5958e-ed80-4a25-830d-431c0b954835",
+      "taskId": 11,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:111:11-dish-costing-pricing:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-111-11-dish-costing-pricing-delivery-package",
+      "outputSummary": "# 菜品成本卡与售价建议｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:111:11-dish-costing-pricing:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 11,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 11,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 11,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 11,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "154e48fad4c3e758439391f9437dcabbafa342b4e4a5a696b50744ed82294b52",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 112,
+      "employeeId": "restaurant:112",
+      "key": "12-menu-engineering",
+      "name": "菜单工程分析",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-112-7161cb51-2bbc-4f21-9ceb-bcf3298ead12",
+      "taskId": 12,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:112:12-menu-engineering:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-112-12-menu-engineering-delivery-package",
+      "outputSummary": "# 菜单工程分析｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:112:12-menu-engineering:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | --- | --",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 12,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 12,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 12,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 12,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "bc49cd3cfbbb07a4b44ab5c793431c14cbaafa39a5f600d5473ed745e2f7dea7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 113,
+      "employeeId": "restaurant:113",
+      "key": "13-dish-rd-sensory-test",
+      "name": "菜品研发与试制评审",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-113-d3e30857-fd10-4f70-8a67-31c7547dff09",
+      "taskId": 13,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:113:13-dish-rd-sensory-test:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-113-13-dish-rd-sensory-test-delivery-package",
+      "outputSummary": "# 菜品研发与试制评审｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:113:13-dish-rd-sensory-test:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | -",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 13,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 13,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 13,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 13,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "7bdd3c0b78b72f86e98f56cb764df0ebe52648fffca695839555f7ecba66fb97",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 114,
+      "employeeId": "restaurant:114",
+      "key": "14-nutrition-calculation-labeling",
+      "name": "营养计算与营养标识",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-114-562bd7b1-104f-4c53-bcc5-a47476d08f92",
+      "taskId": 14,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:114:14-nutrition-calculation-labeling:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-114-14-nutrition-calculation-labeling-delivery-package",
+      "outputSummary": "# 营养计算与营养标识｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:114:14-nutrition-calculation-labeling:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 14,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 14,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 14,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 14,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "49040aeec9688cfb345191701355439369b5e0eb72751ff76bc865be2096078f",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 115,
+      "employeeId": "restaurant:115",
+      "key": "15-allergen-matrix-guest-disclosure",
+      "name": "过敏原矩阵与顾客告知",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-115-f334a3bb-35f1-4610-bd56-a0f56422dd40",
+      "taskId": 15,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:115:15-allergen-matrix-guest-disclosure:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-115-15-allergen-matrix-guest-disclosure-delivery-package",
+      "outputSummary": "# 过敏原矩阵与顾客告知｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:115:15-allergen-matrix-guest-disclosure:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 15,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 15,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 15,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 15,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "e0626c238686ffe5c563f69f0591b04fdf9884d99350f6ffb7f7c929f290e57b",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 116,
+      "employeeId": "restaurant:116",
+      "key": "16-food-hygiene-prerequisite-programs",
+      "name": "GHP 与 PRP 基础卫生方案",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-116-4228e1ff-dbef-4512-9273-bb52a136197e",
+      "taskId": 16,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:116:16-food-hygiene-prerequisite-programs:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-116-16-food-hygiene-prerequisite-programs-delivery-package",
+      "outputSummary": "# GHP 与 PRP 基础卫生方案｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:116:16-food-hygiene-prerequisite-programs:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 16,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 16,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 16,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 16,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "b6408933f560cf2c13ad8d06be28bcda09cd3615ea148fce154152742f37e21b",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 117,
+      "employeeId": "restaurant:117",
+      "key": "17-haccp-plan-builder",
+      "name": "HACCP 危害分析与计划",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-117-e552d2e2-ad81-429b-888f-c81f53c84ae7",
+      "taskId": 17,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:117:17-haccp-plan-builder:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-117-17-haccp-plan-builder-delivery-package",
+      "outputSummary": "# HACCP 危害分析与计划｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:117:17-haccp-plan-builder:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 17,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 17,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 17,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 17,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "fa00b9425af984def5d4197407e51725411151c2a12dbb891011812335811e78",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 118,
+      "employeeId": "restaurant:118",
+      "key": "18-time-temperature-control",
+      "name": "时间温度全过程控制",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-118-6d3df5bb-d423-4ed3-9e0f-97d8910dfb0f",
+      "taskId": 18,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:118:18-time-temperature-control:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-118-18-time-temperature-control-delivery-package",
+      "outputSummary": "# 时间温度全过程控制｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:118:18-time-temperature-control:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 18,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 18,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 18,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 18,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "555f7bda893ff075d52830e944e92fe61b198d11d1dc34cdeb3ebb635132860b",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 119,
+      "employeeId": "restaurant:119",
+      "key": "19-sanitation-ssop",
+      "name": "清洁消毒 SSOP",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-119-79b31ce3-8baf-4218-8084-dc7dd5f78ad4",
+      "taskId": 19,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:119:19-sanitation-ssop:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-119-19-sanitation-ssop-delivery-package",
+      "outputSummary": "# 清洁消毒 SSOP｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:119:19-sanitation-ssop:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | --- | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 19,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 19,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 19,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 19,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "590914b305e35ae3173b3b46b4a70320f9700985afdf218e9932b87694708f93",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 120,
+      "employeeId": "restaurant:120",
+      "key": "20-employee-health-hygiene",
+      "name": "员工健康与个人卫生",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-120-a988fbf2-d863-49a6-88ea-83de83b43a89",
+      "taskId": 20,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:120:20-employee-health-hygiene:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-120-20-employee-health-hygiene-delivery-package",
+      "outputSummary": "# 员工健康与个人卫生｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:120:20-employee-health-hygiene:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 20,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 20,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 20,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 20,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "b81dae37cc5fbd875b5feea3e8cb39cfc24142098d355c33e7d6d7a9d4feb231",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 121,
+      "employeeId": "restaurant:121",
+      "key": "21-cross-contamination-allergen-control",
+      "name": "交叉污染与过敏原控制",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-121-9d642e7a-9657-4b5b-b9b8-5e4ada2fe9ad",
+      "taskId": 21,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:121:21-cross-contamination-allergen-control:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-121-21-cross-contamination-allergen-control-delivery-package",
+      "outputSummary": "# 交叉污染与过敏原控制｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:121:21-cross-contamination-allergen-control:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 21,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 21,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 21,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 21,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "a2e78ce2c56dbb5813d62710572c79a9acb2606c3343fefd26f1d77d76618d7d",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 122,
+      "employeeId": "restaurant:122",
+      "key": "22-supplier-receiving-compliance",
+      "name": "供应商与进货合规",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-122-2740bd95-3177-470e-9ab1-553ebc6e5aed",
+      "taskId": 22,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:122:22-supplier-receiving-compliance:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-122-22-supplier-receiving-compliance-delivery-package",
+      "outputSummary": "# 供应商与进货合规｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:122:22-supplier-receiving-compliance:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 22,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 22,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 22,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 22,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "8c7de66309febc9ac61bbed96a1c3482b75a6ed7a4f559eb4adcaed245e2bfce",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 123,
+      "employeeId": "restaurant:123",
+      "key": "23-traceability-recall",
+      "name": "追溯、撤回与召回",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-123-ece3a6a7-2c3c-4ec7-843d-b701882605b6",
+      "taskId": 23,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:123:23-traceability-recall:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-123-23-traceability-recall-delivery-package",
+      "outputSummary": "# 追溯、撤回与召回｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:123:23-traceability-recall:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | ---",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 23,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 23,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 23,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 23,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "c9b3195fdf251a92c1cbddc28ee1261b9e9d30f120fde57f4a8e554576df78a7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 124,
+      "employeeId": "restaurant:124",
+      "key": "24-food-safety-audit-capa",
+      "name": "内审、迎检与纠正预防",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-124-54842b47-edcb-48ae-9c52-2048d1058edc",
+      "taskId": 24,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:124:24-food-safety-audit-capa:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-124-24-food-safety-audit-capa-delivery-package",
+      "outputSummary": "# 内审、迎检与纠正预防｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:124:24-food-safety-audit-capa:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 24,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 24,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 24,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 24,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "ffdc232b5f7407137e86d69be9d3b8fc90433524b98e6df1df498eb30587fffe",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 125,
+      "employeeId": "restaurant:125",
+      "key": "25-supplier-sourcing-approval",
+      "name": "供应商寻源与准入",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-125-3cd75573-6eec-469b-8c43-cd656e5f725c",
+      "taskId": 25,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:125:25-supplier-sourcing-approval:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-125-25-supplier-sourcing-approval-delivery-package",
+      "outputSummary": "# 供应商寻源与准入｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:125:25-supplier-sourcing-approval:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 25,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 25,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 25,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 25,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "480ea941c32601de2c42c643122d2e8f1825197baca1330f818612193e1a5611",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 126,
+      "employeeId": "restaurant:126",
+      "key": "26-purchase-spec-bid-comparison",
+      "name": "采购规格与比价评标",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-126-3d24579b-79b4-4044-a00b-a60d3cb1d1cf",
+      "taskId": 26,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:126:26-purchase-spec-bid-comparison:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-126-26-purchase-spec-bid-comparison-delivery-package",
+      "outputSummary": "# 采购规格与比价评标｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:126:26-purchase-spec-bid-comparison:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 26,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 26,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 26,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 26,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "c74676220f416b965894aa3d4ef38aed8411187940b69fe7ed20aa548f6b5c23",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 127,
+      "employeeId": "restaurant:127",
+      "key": "27-demand-forecast-replenishment",
+      "name": "需求预测与补货建议",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-127-bdb9763a-b15e-437c-ad1f-e7fb6daa44af",
+      "taskId": 27,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:127:27-demand-forecast-replenishment:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-127-27-demand-forecast-replenishment-delivery-package",
+      "outputSummary": "# 需求预测与补货建议｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:127:27-demand-forecast-replenishment:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 27,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 27,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 27,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 27,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "34c5dbdd025f1ddce543f38c6d29b3af776c29d583a0e5856e35a4bdcf01ee43",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 128,
+      "employeeId": "restaurant:128",
+      "key": "28-receiving-storage-fefo",
+      "name": "收货验收、储存与 FEFO",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-128-df41dafc-ad92-4100-9bda-fb3bbd4c227a",
+      "taskId": 28,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:128:28-receiving-storage-fefo:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-128-28-receiving-storage-fefo-delivery-package",
+      "outputSummary": "# 收货验收、储存与 FEFO｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:128:28-receiving-storage-fefo:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 28,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 28,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 28,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 28,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "af3578e1fcf552ae788045c63dd031e8a16c118a4de90f7828a9d9a2375f2fc3",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 129,
+      "employeeId": "restaurant:129",
+      "key": "29-inventory-variance-waste",
+      "name": "库存差异与损耗分析",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-129-01a73153-ef69-433d-9c1e-08b609a0fdd0",
+      "taskId": 29,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:129:29-inventory-variance-waste:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-129-29-inventory-variance-waste-delivery-package",
+      "outputSummary": "# 库存差异与损耗分析｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:129:29-inventory-variance-waste:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 29,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 29,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 29,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 29,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "a1ea8c28e93e8100c02ed51eb8b934384d07c3582c08be84d462ea8746efcec1",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 130,
+      "employeeId": "restaurant:130",
+      "key": "30-prep-plan-batch-production",
+      "name": "备料计划与批次生产",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-130-1cdacdbe-7af9-4a20-92ea-90b6653f72fa",
+      "taskId": 30,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:130:30-prep-plan-batch-production:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-130-30-prep-plan-batch-production-delivery-package",
+      "outputSummary": "# 备料计划与批次生产｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:130:30-prep-plan-batch-production:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 30,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 30,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 30,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 30,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "1d809352f624570b07f0814e089c9146bbd8db3837f01613f632e4259515b6c7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 131,
+      "employeeId": "restaurant:131",
+      "key": "31-central-kitchen-cold-chain",
+      "name": "中央厨房与冷链配送",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-131-be4e4fca-72ea-4f38-8ff6-33f0ef29e028",
+      "taskId": 31,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:131:31-central-kitchen-cold-chain:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-131-31-central-kitchen-cold-chain-delivery-package",
+      "outputSummary": "# 中央厨房与冷链配送｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:131:31-central-kitchen-cold-chain:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 31,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 31,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 31,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 31,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "76b17906648103e2cee57922b16669e0ddfb63a0e9669d0a7592b120c8f881a4",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 132,
+      "employeeId": "restaurant:132",
+      "key": "32-opening-closing-handover",
+      "name": "开店、闭店与班次交接",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-132-fd5c3fab-1c20-45bd-9c58-e9e5429d9173",
+      "taskId": 32,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:132:32-opening-closing-handover:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-132-32-opening-closing-handover-delivery-package",
+      "outputSummary": "# 开店、闭店与班次交接｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:132:32-opening-closing-handover:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 32,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 32,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 32,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 32,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "3289f56063d88041686f249b61fb207f47385b2c17e966df7d0b09d550ae1cc7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 133,
+      "employeeId": "restaurant:133",
+      "key": "33-front-of-house-service-sop",
+      "name": "前厅服务 SOP",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-133-217ec7b3-4651-4d98-9941-f4d7c9368078",
+      "taskId": 33,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:133:33-front-of-house-service-sop:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-133-33-front-of-house-service-sop-delivery-package",
+      "outputSummary": "# 前厅服务 SOP｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:133:33-front-of-house-service-sop:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 33,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 33,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 33,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 33,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "1793c0a1873e341ee99eb1559f7a3f2047686a629c20405a0bafcad930d2f696",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 134,
+      "employeeId": "restaurant:134",
+      "key": "34-kitchen-station-expediting-flow",
+      "name": "后厨工位与出餐控制",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-134-d289c774-0283-4d6d-a4d6-0f5c5697d31a",
+      "taskId": 34,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:134:34-kitchen-station-expediting-flow:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-134-34-kitchen-station-expediting-flow-delivery-package",
+      "outputSummary": "# 后厨工位与出餐控制｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:134:34-kitchen-station-expediting-flow:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 34,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 34,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 34,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 34,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "134b32b3de5cd4a4d9c77cd2dded4525e99c2d9bc3ac983c4d7c8c013403164f",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 135,
+      "employeeId": "restaurant:135",
+      "key": "35-reservation-queue-table-yield",
+      "name": "订座、等位与桌台收益",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-135-e6aceada-1018-426a-9e33-5c4ad0a5e6d4",
+      "taskId": 35,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:135:35-reservation-queue-table-yield:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-135-35-reservation-queue-table-yield-delivery-package",
+      "outputSummary": "# 订座、等位与桌台收益｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:135:35-reservation-queue-table-yield:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 35,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 35,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 35,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 35,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "04019783d52223e03305f41caebb7b41c858cfb641c689d0669ea979efaf0267",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 136,
+      "employeeId": "restaurant:136",
+      "key": "36-demand-based-staff-scheduling",
+      "name": "需求驱动排班",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-136-aa50b733-73d7-4bae-8d8a-46d2fcc2e365",
+      "taskId": 36,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:136:36-demand-based-staff-scheduling:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-136-36-demand-based-staff-scheduling-delivery-package",
+      "outputSummary": "# 需求驱动排班｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:136:36-demand-based-staff-scheduling:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 36,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 36,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 36,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 36,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "f0a1ec11bb9a9d5dc598a4c029cd00ca38ab45049accb1d7c35f5a582ec9f557",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 137,
+      "employeeId": "restaurant:137",
+      "key": "37-staff-training-certification",
+      "name": "员工培训与资格管理",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-137-1efc9d05-16f6-452e-8cb1-638ea4b65bab",
+      "taskId": 37,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:137:37-staff-training-certification:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-137-37-staff-training-certification-delivery-package",
+      "outputSummary": "# 员工培训与资格管理｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:137:37-staff-training-certification:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 37,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 37,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 37,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 37,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "645bb4df3f2e570a777cfbf755ac76b2df3a24c7d88e031a08c033fb2a5eece7",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 138,
+      "employeeId": "restaurant:138",
+      "key": "38-complaint-service-recovery",
+      "name": "客诉与服务补救",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-138-3e37aad5-a463-4a67-aa00-b7fe6236fa0a",
+      "taskId": 38,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:138:38-complaint-service-recovery:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-138-38-complaint-service-recovery-delivery-package",
+      "outputSummary": "# 客诉与服务补救｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:138:38-complaint-service-recovery:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 38,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 38,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 38,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 38,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "3d5a909c401dadc9815df6a3626b19eaf61f3424a00af4785ae2ea8043a71394",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 139,
+      "employeeId": "restaurant:139",
+      "key": "39-restaurant-safety-maintenance",
+      "name": "餐厅安全与设备维护",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-139-c5334ae1-1d60-4f03-9606-2fcf217c4584",
+      "taskId": 39,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:139:39-restaurant-safety-maintenance:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-139-39-restaurant-safety-maintenance-delivery-package",
+      "outputSummary": "# 餐厅安全与设备维护｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:139:39-restaurant-safety-maintenance:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 39,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 39,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 39,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 39,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "d6ca47ff7b5ae3a0c23bf3bb2bdbde3342ef84a235d554552c58ad988e1d01b6",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 140,
+      "employeeId": "restaurant:140",
+      "key": "40-restaurant-brand-voice-menu-copy",
+      "name": "餐饮品牌语调与菜单文案",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-140-e6533c0a-7e31-4c1d-8842-64a7180ac729",
+      "taskId": 40,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:140:40-restaurant-brand-voice-menu-copy:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-140-40-restaurant-brand-voice-menu-copy-delivery-package",
+      "outputSummary": "# 餐饮品牌语调与菜单文案｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:140:40-restaurant-brand-voice-menu-copy:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 40,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 40,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 40,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 40,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "dcbb787b782fa7bf8c4fd62dd664a9bc5b50543cccee4ba9a888e62f1c6335cc",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 141,
+      "employeeId": "restaurant:141",
+      "key": "41-local-store-marketing-calendar",
+      "name": "本地门店营销日历",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-141-b3b1413c-f52c-44b1-80ef-fcae7f6ae613",
+      "taskId": 41,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:141:41-local-store-marketing-calendar:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-141-41-local-store-marketing-calendar-delivery-package",
+      "outputSummary": "# 本地门店营销日历｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:141:41-local-store-marketing-calendar:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 41,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 41,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 41,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 41,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "300ad4001aaa0f3620313d294d07163ee9a20065e8e082f0dbb8f37634d95b3d",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 142,
+      "employeeId": "restaurant:142",
+      "key": "42-restaurant-social-ugc",
+      "name": "餐厅社媒与 UGC 运营",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-142-6216e643-55e6-4c39-9367-3537cbd5a5d8",
+      "taskId": 42,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:142:42-restaurant-social-ugc:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-142-42-restaurant-social-ugc-delivery-package",
+      "outputSummary": "# 餐厅社媒与 UGC 运营｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:142:42-restaurant-social-ugc:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 42,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 42,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 42,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 42,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "d720b98f30889ad34d0ed5d65727959da7161f62fc98dfb2fb0858d18d09dd2a",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 143,
+      "employeeId": "restaurant:143",
+      "key": "43-review-reputation-operations",
+      "name": "评价与口碑运营",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-143-2b976d91-50c4-4ae1-af1a-f4ecb26a55ac",
+      "taskId": 43,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:143:43-review-reputation-operations:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-143-43-review-reputation-operations-delivery-package",
+      "outputSummary": "# 评价与口碑运营｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:143:43-review-reputation-operations:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 43,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 43,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 43,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 43,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "04cd8862f0ef2aadfa636691522dfd9cab061fcc1c5744e432c9fefe9fe03a71",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 144,
+      "employeeId": "restaurant:144",
+      "key": "44-restaurant-crm-loyalty-lifecycle",
+      "name": "CRM、忠诚度与生命周期",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-144-d3658406-cc16-47fe-801a-c26301271732",
+      "taskId": 44,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:144:44-restaurant-crm-loyalty-lifecycle:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-144-44-restaurant-crm-loyalty-lifecycle-delivery-package",
+      "outputSummary": "# CRM、忠诚度与生命周期｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:144:44-restaurant-crm-loyalty-lifecycle:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 44,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 44,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 44,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 44,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "9da81ebe2ec31f1c27d43bee7217aac12c4a1c5f33c350b6dbba719eb0618701",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 145,
+      "employeeId": "restaurant:145",
+      "key": "45-promotion-economics-experiment",
+      "name": "促销经济性与实验",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-145-66ca29df-ddd5-4dd8-8b1a-c8226f61b922",
+      "taskId": 45,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:145:45-promotion-economics-experiment:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-145-45-promotion-economics-experiment-delivery-package",
+      "outputSummary": "# 促销经济性与实验｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:145:45-promotion-economics-experiment:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 45,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 45,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 45,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 45,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "8e81e9ffd5a50147e241273643fc29e66c066a72bf45bb3ef27e35d5ff113a9b",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 146,
+      "employeeId": "restaurant:146",
+      "key": "46-delivery-catering-channel-operations",
+      "name": "外卖、配送与团餐渠道运营",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-146-06469d53-ad2b-48f1-8511-8ff2fd0dabab",
+      "taskId": 46,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:146:46-delivery-catering-channel-operations:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-146-46-delivery-catering-channel-operations-delivery-package",
+      "outputSummary": "# 外卖、配送与团餐渠道运营｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:146:46-delivery-catering-channel-operations:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 46,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 46,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 46,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 46,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "481c06987115776f8c5572a160bbbdbc6e39c0e5060d0caa765c3a31cdef4b43",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 147,
+      "employeeId": "restaurant:147",
+      "key": "47-daily-sales-reconciliation",
+      "name": "每日销售与资金核对",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-147-ea0ff79a-f8d6-4642-8fe5-0c9b461c4a6f",
+      "taskId": 47,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:147:47-daily-sales-reconciliation:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-147-47-daily-sales-reconciliation-delivery-package",
+      "outputSummary": "# 每日销售与资金核对｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:147:47-daily-sales-reconciliation:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 47,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 47,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 47,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 47,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "087b2291229f1e6bdf061ac5c83a5460d201f777840b0b2c52ff3a3fc3364689",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 148,
+      "employeeId": "restaurant:148",
+      "key": "48-theoretical-actual-food-cost",
+      "name": "理论与实际食材成本",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-148-badf4968-4b60-45cf-ae09-9fc24ba88687",
+      "taskId": 48,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:148:48-theoretical-actual-food-cost:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-148-48-theoretical-actual-food-cost-delivery-package",
+      "outputSummary": "# 理论与实际食材成本｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:148:48-theoretical-actual-food-cost:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | ",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 48,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 48,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 48,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 48,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "51cfd4b1286e1ad1900930c01155313024f55d1df189961d83853fbcb37bb8d6",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 149,
+      "employeeId": "restaurant:149",
+      "key": "49-labor-cost-productivity",
+      "name": "人工成本与生产率",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-149-0ff8425a-0b80-43a3-808d-d5e31c567422",
+      "taskId": 49,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:149:49-labor-cost-productivity:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-149-49-labor-cost-productivity-delivery-package",
+      "outputSummary": "# 人工成本与生产率｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:149:49-labor-cost-productivity:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 49,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 49,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 49,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 49,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "53b2e47509f1de11c9a4a04d10d7b92c540e6f32cf003281b3428c0acb1eb519",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 150,
+      "employeeId": "restaurant:150",
+      "key": "50-prime-cost-unit-pnl",
+      "name": "Prime Cost 与单店损益",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-150-5b9fb743-4515-48c2-95bb-55fff4758ba9",
+      "taskId": 50,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:150:50-prime-cost-unit-pnl:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-150-50-prime-cost-unit-pnl-delivery-package",
+      "outputSummary": "# Prime Cost 与单店损益｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:150:50-prime-cost-unit-pnl:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 50,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 50,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 50,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 50,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "6d38d55cbd00e59bc489f2766cdbdb0168907a382be6f1a95bd4d68a309973b0",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 151,
+      "employeeId": "restaurant:151",
+      "key": "51-cash-flow-working-capital",
+      "name": "现金流与营运资金",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-151-f39617d1-4aa0-4707-a644-7a98fe13f194",
+      "taskId": 51,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:151:51-cash-flow-working-capital:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-151-51-cash-flow-working-capital-delivery-package",
+      "outputSummary": "# 现金流与营运资金｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:151:51-cash-flow-working-capital:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 51,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 51,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 51,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 51,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "72d9e126a202ecb971232abd76b72f7792c61251b1559e995c0a72dc4c7dbe35",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 152,
+      "employeeId": "restaurant:152",
+      "key": "52-breakeven-scenario-price-elasticity",
+      "name": "盈亏平衡、情景与价格弹性",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-152-494b53fd-fd4c-4737-9954-05aa21955a32",
+      "taskId": 52,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:152:52-breakeven-scenario-price-elasticity:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-152-52-breakeven-scenario-price-elasticity-delivery-package",
+      "outputSummary": "# 盈亏平衡、情景与价格弹性｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:152:52-breakeven-scenario-price-elasticity:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 52,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 52,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 52,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 52,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "b91d71b2f5607cb1f5dc2ac96580d439b65f7a2d43c8867c60b74da35617ddd3",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 153,
+      "employeeId": "restaurant:153",
+      "key": "53-channel-daypart-item-customer-analysis",
+      "name": "渠道、餐段、菜品与顾客分析",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-153-f360ecc2-42ff-4726-b7af-2e6767f0b145",
+      "taskId": 53,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:153:53-channel-daypart-item-customer-analysis:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-153-53-channel-daypart-item-customer-analysis-delivery-package",
+      "outputSummary": "# 渠道、餐段、菜品与顾客分析｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:153:53-channel-daypart-item-customer-analysis:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ##",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 53,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 53,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 53,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 53,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "0b1edd596f09fdc01b9433e8a841c2a00edf48f6d852f2f02069393bb915692e",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 154,
+      "employeeId": "restaurant:154",
+      "key": "54-restaurant-kpi-operating-review",
+      "name": "餐厅 KPI 与经营复盘",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-154-5206f36d-e9e7-4e43-b5cb-0bfb0830ff3c",
+      "taskId": 54,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:154:54-restaurant-kpi-operating-review:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-154-54-restaurant-kpi-operating-review-delivery-package",
+      "outputSummary": "# 餐厅 KPI 与经营复盘｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:154:54-restaurant-kpi-operating-review:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 54,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 54,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 54,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 54,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "9b6904cd0342da43ebb075fc7f042ac4405a86514524a92f4d18bed6bca24dc9",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 155,
+      "employeeId": "restaurant:155",
+      "key": "55-multi-store-sop-benchmarking",
+      "name": "多店 SOP 对标与复制",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-155-aeefce61-31ca-4484-bfcb-e999e476cead",
+      "taskId": 55,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:155:55-multi-store-sop-benchmarking:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-155-55-multi-store-sop-benchmarking-delivery-package",
+      "outputSummary": "# 多店 SOP 对标与复制｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:155:55-multi-store-sop-benchmarking:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 55,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 55,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 55,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 55,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "07b8a8e76e1a44e5c5d1b94eda1f9f84d749b84b9a438cf97a9ae86f0ec1f477",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 156,
+      "employeeId": "restaurant:156",
+      "key": "56-new-store-ramp-playbook",
+      "name": "新店爬坡运营手册",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-156-0ef7f47b-47c0-4411-b82b-ab2cfdf88554",
+      "taskId": 56,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:156:56-new-store-ramp-playbook:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-156-56-new-store-ramp-playbook-delivery-package",
+      "outputSummary": "# 新店爬坡运营手册｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:156:56-new-store-ramp-playbook:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 56,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 56,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 56,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 56,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "9ad081d785aef42b18e37310797325e3621e3517b770cbb5ca5d163cf93dd34f",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 157,
+      "employeeId": "restaurant:157",
+      "key": "57-food-waste-audit-reduction",
+      "name": "食物浪费审计与减量",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-157-22c18680-29e0-4c10-baf3-b626ca270b8d",
+      "taskId": 57,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:157:57-food-waste-audit-reduction:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-157-57-food-waste-audit-reduction-delivery-package",
+      "outputSummary": "# 食物浪费审计与减量｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:157:57-food-waste-audit-reduction:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 57,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 57,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 57,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 57,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "36785d393af3f38b2db96c1a15e954c6ab3a94b9bed2ee0ef8ffba0db59921ff",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 158,
+      "employeeId": "restaurant:158",
+      "key": "58-energy-water-packaging-efficiency",
+      "name": "能源、用水与包装效率",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-158-277b5af2-6761-4f1f-833a-c3874c8443a1",
+      "taskId": 58,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:158:58-energy-water-packaging-efficiency:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-158-58-energy-water-packaging-efficiency-delivery-package",
+      "outputSummary": "# 能源、用水与包装效率｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:158:58-energy-water-packaging-efficiency:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 |",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 58,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 58,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 58,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 58,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "9b653f4b0ae6a50c4b24f024f2369b24df6f99af099aefe8b27955155081590b",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 159,
+      "employeeId": "restaurant:159",
+      "key": "59-business-continuity-data-governance",
+      "name": "业务连续性与数据治理",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-159-61352c1a-6ca7-46db-8e76-d6266b176812",
+      "taskId": 59,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:159:59-business-continuity-data-governance:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-159-59-business-continuity-data-governance-delivery-package",
+      "outputSummary": "# 业务连续性与数据治理｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:159:59-business-continuity-data-governance:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "task": {
+          "id": 59,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 59,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 59,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 59,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "66be8e96136aba2723ff0b5eded6cdf2a22f09caa9e0d9f232cfffdf1866d72e",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "restaurant",
+      "idx": 160,
+      "employeeId": "restaurant:160",
+      "key": "super-manager",
+      "name": "超级店长·活动策划",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "restaurant-160-cb2ad7dd-9e26-4a6e-85fb-b7294c4a7bdc",
+      "taskId": 60,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "urn:nanowork:restaurant-output:160:super-manager:v1",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "restaurant-160-super-manager-delivery-package",
+      "outputSummary": "# 超级店长｜待审阅结构化交付 > 契约：`urn:nanowork:restaurant-output:160:super-manager:v1`。本产出仍为 `draft_pending_human_review`，人工审批前不得执行外部动作或形成财务、食安、法律、监管承诺。 ## 决策上下文 | 项目 | 内容 | | --- | --- | | 问题",
+      "reviewState": "已通过",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "task": {
+          "id": 60,
+          "status": "已完成"
+        },
+        "output": {
+          "id": 60,
+          "status": "可使用"
+        },
+        "approval": {
+          "id": 60,
+          "status": "已通过"
+        },
+        "asset": {
+          "id": 60,
+          "status": "使用中"
+        }
+      },
+      "resultHash": "73f5927beafdc0fc7290806b5d688059fbc89dfe345d23de0f7736d1e4590246",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 0,
+      "employeeId": "content:0",
+      "key": "trend",
+      "name": "趋势官",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-0-9a036f05-e2be-4063-a616-bc2826b6769f",
+      "taskId": 1,
+      "runId": 1,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:0:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "json",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "bf7453bb1b70831fa7cee6d64153b1991ba4332c40552c9681f5d566bfb63687",
+      "outputSummary": "```json { \"briefing\": \"趋势简报\", \"channel_scan\": [ { \"channel\": \"官方公告\", \"finding\": \"发现一项可核验的新信号\" } ], \"topics\": [ { \"title\": \"选题1\", \"angle\": \"从经营者视角切入\", \"hook\": \"一个可验证的开头钩子\", \"reason\"",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "run": {
+          "id": 1,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 1,
+          "snapshotHash": "4cd8145679c81093f8e7c6e6e43e4b1710e90f18e1aaf0fa866a852032538f45"
+        },
+        "content": null
+      },
+      "resultHash": "82695dc9bf86616fa0468d098d97257fe0f5b4ec5dc7f96f9a8e78a473454346",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 1,
+      "employeeId": "content:1",
+      "key": "research",
+      "name": "情报员",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-1-d8df6b1b-06fc-4d52-886c-27fa9509d5f0",
+      "taskId": 2,
+      "runId": 2,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:1:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "json",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "477b2d7d03d42e0e840980ecdd9827dd2792b7d7cfff0896ee40b49f2d81728f",
+      "outputSummary": "```json { \"summary\": \"工作摘要\", \"facts\": [ \"事实一（来源：官方公告）\" ], \"data_points\": [ \"数据点一（来源：官方公告）\" ], \"viewpoints\": [ \"观点一\" ], \"source_coverage\": [ { \"channel\": \"官方公告\", \"got\": \"找到可核验事实\" } ",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "run": {
+          "id": 2,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 2,
+          "snapshotHash": "15354ae3d89c99c2659a23875d65813e42167fb543bc5c35a724ff739e9099ae"
+        },
+        "content": null
+      },
+      "resultHash": "314d166394d93cc1e806037a6be01509e6151ecc87533eea6acdd5d1f0c5cf58",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 2,
+      "employeeId": "content:2",
+      "key": "benchmark",
+      "name": "拆解师",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-2-c13fd865-e8a2-4184-ae13-2a4aabdae28e",
+      "taskId": 3,
+      "runId": 3,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:2:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "json",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "7754c797d05c4c4c65b5a196fcac239912842d59c3e284bb8164b9ae6ead90e9",
+      "outputSummary": "```json { \"benchmarks\": [ { \"title\": \"对标内容1\", \"platform\": \"公众号\", \"account\": \"示例账号\", \"dimensions\": { \"开头\": \"直接说明用户问题\" }, \"why_hot\": \"结构清晰且回应真实问题\" }, { \"title\": \"对标内容2\", \"platform\": ",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": true,
+      "webAttempted": true,
+      "webVerified": true,
+      "database": {
+        "run": {
+          "id": 3,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 3,
+          "snapshotHash": "a8a92e942db79e5854b1afaa2e80b3cbf0b1cba2bc0888164b4052f6231d03b7"
+        },
+        "content": null
+      },
+      "resultHash": "4ee7188a5fb09af629519db45323b076b35185fb56fb3e2d73dd9d9f38dfaff1",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 3,
+      "employeeId": "content:3",
+      "key": "draft",
+      "name": "撰稿人",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-3-736cdd8d-13bd-4e36-af04-f6a48749699d",
+      "taskId": 4,
+      "runId": 4,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:3:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "markdown",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "d5deec7b78c8bd7fa8a9e4e5043c1bb15ffa13caae4ebc0a995dc63a92423170",
+      "outputSummary": "正文 Markdown",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 4,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 4,
+          "snapshotHash": "e39e119fb474d725623a61e978668e103ea58469c7ff68c2d6291c13c3e83373"
+        },
+        "content": null
+      },
+      "resultHash": "d5deec7b78c8bd7fa8a9e4e5043c1bb15ffa13caae4ebc0a995dc63a92423170",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 4,
+      "employeeId": "content:4",
+      "key": "style",
+      "name": "文风师",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-4-25541102-a304-48ab-a168-d8f11373de04",
+      "taskId": 5,
+      "runId": 5,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:4:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "markdown",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "01e2295e3981c79c5581b377192583215661a47af5fb7cbd1fb26d6607b7aa81",
+      "outputSummary": "风格化正文 Markdown",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 5,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 5,
+          "snapshotHash": "fb1952c409e3c391f5a161c5350846f434f5885bf74abd25e5c2b95c9c1a22b4"
+        },
+        "content": null
+      },
+      "resultHash": "01e2295e3981c79c5581b377192583215661a47af5fb7cbd1fb26d6607b7aa81",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 5,
+      "employeeId": "content:5",
+      "key": "media",
+      "name": "多媒体师",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-5-9faf2c86-ad0b-4b02-b858-e208967352ed",
+      "taskId": 6,
+      "runId": 6,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:5:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "images",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "2aa1f48c23ec959dc558468c82f5cc418cbc18b61ed1b704347b48a66b94d508",
+      "outputSummary": "```json { \"images\": [ { \"slot\": \"正文\", \"desc\": \"经营步骤信息图\", \"platform\": \"通用\", \"svg\": \"<svg xmlns=\\\"http://www.w3.org/2000/svg\\\" viewBox=\\\"0 0 1080 1440\\\"><text x=\\\"20\\\" y=\\\"40\\\">步骤</t",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 6,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 6,
+          "snapshotHash": "6df6ec640f89f1e10b8adacdbea73e13c653f9e754c06be1e614e096385cc222"
+        },
+        "content": null
+      },
+      "resultHash": "0ba17d9810bf9ffade5e74653571c3e23eb1d1622d640fc9c21810bd86c14a65",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 6,
+      "employeeId": "content:6",
+      "key": "cover",
+      "name": "封面师",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-6-5ab5e37c-43d5-4b30-a0ca-10ee5ee24921",
+      "taskId": 7,
+      "runId": 7,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:6:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "covers",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "9c61b7753e72ff94814565362ce2e2edd22d7c554ada7e6a9ebe13baa93bca13",
+      "outputSummary": "```json { \"covers\": [ { \"style\": \"简洁商务\", \"platform\": \"公众号\", \"size\": \"1080×1440\", \"html\": \"<!doctype html><html lang=\\\"zh-CN\\\"><head><meta charset=\\\"utf-8\\\"></head><body>封面</body></",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 7,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 7,
+          "snapshotHash": "a1321491129493c0bff37af33772b7648aa75b8fc7f7afe71d92ce2322f2510d"
+        },
+        "content": null
+      },
+      "resultHash": "258fcf7374c3629eb489cd891523ec3114107606a6bce332b80a4b18077d1628",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 7,
+      "employeeId": "content:7",
+      "key": "deck",
+      "name": "演绎师",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-7-f538ca86-4118-4484-8c53-4ce5e6b6f3df",
+      "taskId": 8,
+      "runId": 8,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:7:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "html",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "0da89b9fc1fa75c1df7d429e6ddf8b8b9cb6dde3c74646e81f8ecdd1fc2ccedf",
+      "outputSummary": "演绎稿说明 > HTML 主产物已通过契约校验：`content-employee-07-deck-0da89b9fc1fa.html`",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 8,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 8,
+          "snapshotHash": "8e3f437aa338700f3696247b840c72d669309c36b9b263a3961a71a5f2283a87"
+        },
+        "content": null
+      },
+      "resultHash": "68c7b50a4edefeb24be70c30b9bdd1891b446b524e1f79f9369646f2a9998238",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 8,
+      "employeeId": "content:8",
+      "key": "publish",
+      "name": "分发官",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-8-f2aff6f2-a50f-4906-969b-0d5190aea2fc",
+      "taskId": 9,
+      "runId": 9,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:8:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "publish_packages",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "56f313c040ef5ef0919ce5a417b9670882ed3d666ca91dafed8436132b837df1",
+      "outputSummary": "```json { \"versions\": [ { \"platform\": \"公众号\", \"title\": \"适配标题\", \"body\": \"适配正文\", \"tags\": [ \"经营\" ], \"best_time\": \"工作日 12:00-13:00\", \"checklist\": [ \"检查标题\", \"人工确认发布\" ], \"note\": \"发布前复核事实与",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 9,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 9,
+          "snapshotHash": "3dc0eaaeb59b0a67adb3b9d2e427ac83aa8333196c085c002675c41044d49c61"
+        },
+        "content": {
+          "id": 61,
+          "status": "可使用"
+        }
+      },
+      "resultHash": "c677931f4aa716be49a010ed8df8971bcdc3270ddae778026022d69ae91b6a81",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    },
+    {
+      "domain": "content",
+      "idx": 9,
+      "employeeId": "content:9",
+      "key": "retro",
+      "name": "复盘官",
+      "evidenceLevel": "L4_FULL_PRODUCTION_HTTP",
+      "providerEvidence": "deterministic_mock",
+      "taskNonce": "content-9-29f0c96e-cf07-48f2-b1ad-127545eb75c8",
+      "taskId": 10,
+      "runId": 10,
+      "httpStatus": 200,
+      "initialStatus": "生成中",
+      "terminalStatus": "已完成",
+      "finalStatus": "已完成",
+      "aiMode": "api",
+      "model": "deterministic-mock/no-network",
+      "contractValid": true,
+      "contractId": "content-employee-output:9:paihuo-content-crew.v2",
+      "artifactCount": 1,
+      "primaryArtifactCount": 1,
+      "artifactKind": "markdown",
+      "artifactDownloadStatus": 200,
+      "artifactDownloadHash": "705c44cbf06ff7fbe0ce1a957e4d0c0a1008ac433826aae67aa9ba4d8f3a23fa",
+      "outputSummary": "复盘报告 Markdown",
+      "reviewState": "adopt",
+      "billingState": "settled",
+      "heldRemaining": 0,
+      "webRequired": false,
+      "webAttempted": false,
+      "webVerified": null,
+      "database": {
+        "run": {
+          "id": 10,
+          "status": "已完成"
+        },
+        "material": {
+          "id": 10,
+          "snapshotHash": "ab0dde845550572a5b002700c2af7dda0d6628f90bcc4342d500f910e79bbcfa"
+        },
+        "content": null
+      },
+      "resultHash": "705c44cbf06ff7fbe0ce1a957e4d0c0a1008ac433826aae67aa9ba4d8f3a23fa",
+      "verdict": "PASS_OFFLINE_PIPELINE",
+      "pass": true
+    }
+  ]
+}

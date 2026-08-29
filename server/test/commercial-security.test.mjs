@@ -25,6 +25,8 @@ initSchema();
 migrateV2();
 seed();
 const hqBoss = q.get("SELECT id,name,username,role,tenant_id FROM users WHERE tenant_id=1 AND role='boss' ORDER BY id LIMIT 1");
+const hqOps = q.get("SELECT id,name,username,role,tenant_id FROM users WHERE tenant_id=1 AND role='ops_director' ORDER BY id LIMIT 1");
+const hqAdmin = q.get("SELECT id,name,username,role,tenant_id FROM users WHERE tenant_id=1 AND role='admin' ORDER BY id LIMIT 1");
 const hqSales = q.get("SELECT id,name,username,role,tenant_id FROM users WHERE tenant_id=1 AND role='sales' ORDER BY id LIMIT 1");
 const tenant2 = Number(q.run("INSERT INTO tenants(name,status,credits) VALUES('安全测试企业','已开通',10000)").lastInsertRowid);
 const tenantBossId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
@@ -123,6 +125,20 @@ test('员工不能读取管理层审批、提示词、系统状态和老板经�
     assert.equal(todos.silentPartners, 0);
     assert.equal(todos.bossLeads, 0);
   });
+});
+
+test('提示词载入状态仅老板、管理员和平台超管可读，运营负责人无权访问', async () => {
+  await withServer(hqOps, async base => {
+    await request(base, '/sys/marshal-prompts/status', 'GET', undefined, 403);
+    await request(base, '/sys/prompts', 'GET', undefined, 403);
+  });
+  for (const user of [hqBoss, hqAdmin, platformSuper]) {
+    await withServer(user, async base => {
+      const status = await request(base, '/sys/marshal-prompts/status');
+      assert.ok(Array.isArray(status));
+      await request(base, '/sys/prompts');
+    });
+  }
 });
 
 test('整库备份仅总部运维可执行，快照包含 WAL 最新数据且完整性校验通过', async () => {

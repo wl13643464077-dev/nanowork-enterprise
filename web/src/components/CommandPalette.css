@@ -1,0 +1,219 @@
+/* 命令面板。尺寸与色彩全部走 theme.css token，随密度模式与主题自动适配。 */
+
+.cmdk-modal .ant-modal-content {
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--ui-hairline);
+  background: var(--ui-glass-strong);
+  box-shadow: var(--shadow-3);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+}
+
+.cmdk-modal .ant-modal-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cmdk {
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+/* ===== 输入行 ===== */
+.cmdk-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--ui-hairline);
+}
+
+.cmdk-input-icon {
+  color: var(--ui-muted);
+  font-size: var(--font-4);
+  flex-shrink: 0;
+}
+
+.cmdk-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-family: inherit;
+}
+
+.cmdk-input:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.cmdk-input::placeholder {
+  color: var(--ui-muted);
+}
+
+.cmdk-searching {
+  flex-shrink: 0;
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+}
+
+/* ===== 结果列表 ===== */
+.cmdk-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) 0;
+}
+
+.cmdk-section + .cmdk-section {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+}
+
+.cmdk-section-title {
+  padding: var(--space-1) var(--space-5);
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+  font-weight: 600;
+  letter-spacing: 0.6px;
+}
+
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: calc(100% - var(--space-4));
+  min-height: 40px;
+  margin: 1px var(--space-2);
+  padding: 8px var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--font-2);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.cmdk-item--active {
+  background: color-mix(in srgb, var(--ui-primary-soft) 78%, var(--ui-surface));
+}
+
+.cmdk-item:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: -2px;
+  background: var(--ui-primary-soft);
+}
+
+.cmdk-item-icon {
+  flex-shrink: 0;
+  color: var(--ui-primary);
+  font-size: var(--font-3);
+  display: inline-flex;
+}
+
+.cmdk-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmdk-item-hint {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.cmdk-empty {
+  padding: var(--space-7) var(--space-5);
+  text-align: center;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+}
+
+/* ===== 底部键位提示 ===== */
+.cmdk-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-top: 1px solid var(--ui-hairline);
+  background: color-mix(in srgb, var(--ui-surface-2) 72%, transparent);
+}
+
+.cmdk-foot .ant-tag {
+  margin: 0;
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+  background: var(--ui-surface);
+}
+
+/* 顶栏触发按钮 */
+.os-cmdk-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ui-surface-2) 68%, transparent);
+  color: var(--ui-muted);
+  font: inherit;
+  font-size: var(--font-2);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.os-cmdk-trigger:hover {
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.os-cmdk-trigger:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 2px;
+  border-color: var(--ui-primary);
+  color: var(--ui-primary);
+}
+
+.os-cmdk-kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 4px;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.5;
+}
+
+@media (max-width: 1024px) {
+  .os-cmdk-label,
+  .os-cmdk-kbd {
+    display: none;
+  }
+}

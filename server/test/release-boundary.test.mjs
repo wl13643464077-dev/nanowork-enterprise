@@ -70,8 +70,43 @@ test('Paihuo 内容目录使用可移植相对来源并保留源 SHA', () => {
   assert.equal(catalog.source.referenceProject, '派活AI');
   assert.equal(catalog.source.referencePath, 'app/skills/registry.py');
   assert.equal(path.isAbsolute(catalog.source.referencePath), false);
-  assert.equal(catalog.source.referenceSha256, 'fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce');
+  assert.equal(catalog.source.referenceSha256, '9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc');
   assert.doesNotMatch(read('docs/内容生产仓.md'), /\/Users\//);
+});
+
+test('Paihuo 内容目录原始用户文案不残留发布版本标签，不依赖运行时遮盖', () => {
+  const catalog = JSON.parse(read('server/catalog/content-crew.json'));
+  const visibleText = [];
+  const collectStrings = value => {
+    if (typeof value === 'string') visibleText.push(value);
+    else if (Array.isArray(value)) value.forEach(collectStrings);
+    else if (value && typeof value === 'object') Object.values(value).forEach(collectStrings);
+  };
+  collectStrings(catalog);
+
+  assert.doesNotMatch(visibleText.join('\n'), /\bV1(?:\.0)?\b|(?:产品|系统|发布)版本(?:号|标签)?/u);
+  assert.doesNotMatch(read('server/src/catalog/content-crew.js'), /\.replaceAll\([^\n]*V1/u);
+  assert.equal(catalog.schemaVersion, 'paihuo-content-crew.v2');
+  const publisher = catalog.employees.find(employee => employee.idx === 8);
+  assert.ok(publisher.outputKeys.includes('versions'));
+  assert.match(publisher.outputSchema.contract, /"versions"/u);
+});
+
+test('内容审阅与返工的用户提示不暴露技术版本话术', () => {
+  const visibleRuntimeMessages = [
+    'web/src/data/contentFactoryConstants.tsx',
+    'server/src/routes/content.js',
+    'server/src/routes/content-employee-workbench.js',
+    'server/src/routes/employee-outputs.js',
+    'server/src/engines/delivery-state.js',
+    'server/src/engines/restaurant-output-review.js',
+    'server/src/engines/restaurant-output-contract.js',
+  ].map(read).join('\n');
+
+  assert.doesNotMatch(
+    visibleRuntimeMessages,
+    /(?:return\s+|error:\s+|failureReasons\.push\(|httpError\([^\n]*|description:\s+)[^\n]*版本/u,
+  );
 });
 
 test('根包只做工作流编排，verify 包含租户隔离检查', () => {

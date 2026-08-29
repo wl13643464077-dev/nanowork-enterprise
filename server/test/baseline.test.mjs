@@ -25,9 +25,9 @@ test('生产基础目录独立于演示数据，且重复执行不覆盖现有�
   assert.equal(q.get('SELECT COUNT(*) n FROM activities').n, 0);
   assert.equal(q.get('SELECT COUNT(*) n FROM kb_docs').n, 0);
   assert.equal(q.get(`SELECT COUNT(*) n FROM marshals WHERE code LIKE 'M-__' AND online=1`).n, 8);
-  assert.equal(q.get('SELECT COUNT(*) n FROM specialists WHERE employee_idx IS NOT NULL').n, 60);
+  assert.equal(q.get('SELECT COUNT(*) n FROM specialists WHERE employee_idx IS NOT NULL').n, 61);
   assert.equal(q.get('SELECT MIN(employee_idx) n FROM specialists').n, 101);
-  assert.equal(q.get('SELECT MAX(employee_idx) n FROM specialists').n, 160);
+  assert.equal(q.get('SELECT MAX(employee_idx) n FROM specialists').n, 161);
   assert.equal(q.get('SELECT data_mode FROM tenants WHERE id=1').data_mode, 'live');
   assert.throws(() => q.run(`UPDATE tenants SET data_mode='unknown' WHERE id=1`), /CHECK constraint failed/);
   assert.equal(q.get(`SELECT COUNT(*) n FROM prompts WHERE code IN ('PROMPT-01','PROMPT-02','PROMPT-03')`).n, 3);
@@ -41,7 +41,7 @@ test('生产基础目录独立于演示数据，且重复执行不覆盖现有�
   assert.equal(q.get(`SELECT name FROM marshals WHERE code='M-01'`).name, '企业自定义总指挥');
   assert.equal(q.get(`SELECT style FROM prompts WHERE code='PROMPT-03'`).style, '企业自定义风格');
   assert.equal(q.get(`SELECT COUNT(*) n FROM marshals WHERE code LIKE 'M-__' AND online=1`).n, 8);
-  assert.equal(q.get('SELECT COUNT(*) n FROM specialists WHERE employee_idx IS NOT NULL').n, 60);
+  assert.equal(q.get('SELECT COUNT(*) n FROM specialists WHERE employee_idx IS NOT NULL').n, 61);
 });
 
 test('cleanup', () => {

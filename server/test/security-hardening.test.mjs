@@ -129,16 +129,21 @@ test('内容自动化手动执行入口纳入AI租户限流，配置接口不消
 test('AI 限流：全局并发信号量占满时返回 429，请求结束后释放', async () => {
   const guard = createAiGuard({ ratePerMinute: 1000, burst: 1000, maxConcurrent: 1 });
   let releaseGate;
+  let markEntered;
   const gate = new Promise(resolve => { releaseGate = resolve; });
+  const entered = new Promise(resolve => { markEntered = resolve; });
   await withServer(app => {
     app.use((req, _res, next) => { req.user = { tenant_id: 1 }; next(); });
     app.use('/agents', guard('agents'), async (req, res) => {
-      if (req.query.hang) await gate;
+      if (req.query.hang) {
+        markEntered();
+        await gate;
+      }
       res.json({ ok: true });
     });
   }, async base => {
     const hanging = fetch(`${base}/agents/9/chat?hang=1`, { method: 'POST' });
-    await new Promise(resolve => setTimeout(resolve, 100)); // 等首个请求进入处理占住信号量
+    await entered;
     const rejected = await fetch(`${base}/agents/9/chat`, { method: 'POST' });
     assert.equal(rejected.status, 429, '并发占满时应快速拒绝而不是排队拖死');
     assert.match((await rejected.json()).error, /并发/);
@@ -152,11 +157,16 @@ test('AI 限流：全局并发信号量占满时返回 429，请求结束后释�
 test('AI 限流：全局并发拒绝不消耗租户令牌', async () => {
   const guard = createAiGuard({ ratePerMinute: 1, burst: 1, maxConcurrent: 1 });
   let releaseGate;
+  let markEntered;
   const gate = new Promise(resolve => { releaseGate = resolve; });
+  const entered = new Promise(resolve => { markEntered = resolve; });
   await withServer(app => {
     app.use((req, _res, next) => { req.user = { tenant_id: Number(req.headers['x-tenant'] || 1) }; next(); });
     app.use('/agents', guard('agents'), async (req, res) => {
-      if (req.query.hang) await gate;
+      if (req.query.hang) {
+        markEntered();
+        await gate;
+      }
       res.json({ ok: true });
     });
   }, async base => {
@@ -164,7 +174,7 @@ test('AI 限流：全局并发拒绝不消耗租户令牌', async () => {
       method: 'POST',
       headers: { 'x-tenant': '1' },
     });
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await entered;
     const rejected = await fetch(`${base}/agents/9/chat`, {
       method: 'POST',
       headers: { 'x-tenant': '2' },

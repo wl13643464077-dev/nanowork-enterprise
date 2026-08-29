@@ -1,0 +1,253 @@
+/* ===== AuthEffects：登录页光流 + 员工星阵 + 音效开关 ===== */
+
+.au-streams {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* ---- 音效开关 ---- */
+.au-sound-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    border-color 0.18s,
+    color 0.18s,
+    background 0.18s;
+}
+
+.au-sound-btn:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+  color: var(--ui-primary);
+}
+
+.au-sound-btn[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--ui-primary) 55%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+/* ---- 员工星阵 ---- */
+.au-workforce {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.au-agent {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 13px 7px 8px;
+  border: 1px solid rgba(108, 166, 236, 0.26);
+  border-radius: 999px;
+  background: linear-gradient(120deg, rgba(10, 38, 70, 0.82), rgba(6, 24, 46, 0.72));
+  box-shadow:
+    0 10px 34px rgba(0, 6, 16, 0.4),
+    inset 0 1px rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  animation: au-agent-float 7.2s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -0.93s);
+  animation-fill-mode: forwards;
+}
+
+.au-agent-hidden {
+  display: none;
+}
+
+.au-agent-ring {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 44px;
+  height: 44px;
+  margin-top: -22px;
+  border: 1px solid rgba(96, 178, 255, 0.45);
+  border-radius: 50%;
+  animation: au-agent-ring 3.4s ease-out infinite;
+  animation-delay: calc(var(--i) * 0.41s);
+}
+
+.au-agent img {
+  width: 40px;
+  height: 40px;
+  border: 1.5px solid rgba(129, 190, 255, 0.55);
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgba(60, 140, 235, 0.35);
+  object-fit: cover;
+}
+
+.au-agent-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.au-agent-meta b {
+  color: #e7f1ff;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.3px;
+}
+
+.au-agent-meta i {
+  color: #7fa4cd;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.au-agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ed39b;
+  box-shadow: 0 0 10px #4ed39b;
+  animation: au-agent-pulse 1.9s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 0.37s);
+}
+
+@keyframes au-agent-float {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  6% {
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+  94% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(14px);
+  }
+}
+
+@keyframes au-agent-ring {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+@keyframes au-agent-pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+}
+
+/* 星阵布点：避开左侧主文案与右侧登录卡 */
+.au-agent-0 {
+  top: 9%;
+  left: 5%;
+}
+.au-agent-1 {
+  top: 6%;
+  left: 32%;
+}
+.au-agent-2 {
+  top: 30%;
+  left: 15%;
+  transform: scale(0.9);
+}
+.au-agent-3 {
+  top: 40%;
+  left: 46%;
+  transform: scale(0.92);
+}
+.au-agent-4 {
+  top: 58%;
+  left: 28%;
+  transform: scale(0.88);
+}
+.au-agent-5 {
+  top: 68%;
+  left: 50%;
+  transform: scale(0.86);
+}
+.au-agent-6 {
+  top: 78%;
+  left: 8%;
+}
+.au-agent-7 {
+  top: 86%;
+  left: 34%;
+  transform: scale(0.9);
+}
+.au-agent-8 {
+  top: 18%;
+  left: 52%;
+  transform: scale(0.84);
+}
+.au-agent-9 {
+  top: 90%;
+  left: 55%;
+  transform: scale(0.82);
+}
+
+@media (max-width: 1500px) {
+  .au-agent-3,
+  .au-agent-8 {
+    display: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .au-agent-5,
+  .au-agent-9 {
+    display: none;
+  }
+}
+
+@media (max-width: 1050px) {
+  .au-workforce {
+    opacity: 0.45;
+  }
+}
+
+@media (max-width: 620px) {
+  .au-workforce {
+    display: none;
+  }
+  .au-streams {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .au-agent,
+  .au-agent-ring,
+  .au-agent-dot {
+    animation: none;
+  }
+
+  .au-agent {
+    opacity: 1;
+  }
+
+  .au-sound-btn {
+    transition: none;
+  }
+}

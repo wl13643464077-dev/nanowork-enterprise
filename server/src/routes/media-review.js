@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { db, q, curTenant } from '../db.js';
 import { canAccessOwner } from '../engines/access.js';
 import { twoPhaseBillingSummary } from '../engines/two-phase-delivery.js';
+import { loadContentDeliveryState } from '../engines/delivery-state.js';
 
 const r = Router();
 
@@ -12,16 +13,89 @@ export const MEDIA_REVIEW_ROLES = new Set([
   'boss',
   'admin',
   'platform_super',
-  'super_admin',
 ]);
+
+const INTERNAL_PROFILE_ROLES = new Set(['boss', 'admin', 'platform_super']);
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'heic']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv']);
-const TERMINAL_MEDIA_STATUSES = new Set(['成功', '失败']);
 const REVIEW_ACTION = '人工验收媒体素材';
+const MANUAL_MEDIA_SOURCE_TYPES = new Set([
+  'manual',
+  'manual_upload',
+  'manual_import',
+  'human',
+  'human_upload',
+  'human_import',
+]);
 
 export function canReviewMedia(user) {
   return MEDIA_REVIEW_ROLES.has(String(user?.role || ''));
+}
+
+function canViewInternalProfile(user) {
+  return INTERNAL_PROFILE_ROLES.has(String(user?.role || ''));
+}
+
+function projectLinkedContent(content) {
+  if (!content || typeof content !== 'object' || !content.id) return content;
+  const delivery = loadContentDeliveryState(content.id, {
+    tenantId: curTenant(),
+    requireFlowStatus: false,
+    requireBilling: false,
+  });
+  if (delivery.code !== 'DELIVERY_SUPERSEDED') return content;
+  return {
+    ...content,
+    body: '',
+    snapshot_json: undefined,
+    bodyAvailability: 'superseded',
+    businessUsable: false,
+    deliveryState: delivery.code,
+    supersededBy: delivery.supersededBy || null,
+  };
+}
+
+// Media rows contain the immutable employee execution snapshot.  Never expose a
+// database row wholesale: ordinary employees and operating managers only need
+// the task/result fields required to run and review the business workflow.
+export function projectMediaJob(job, user) {
+  if (!job || typeof job !== 'object') return job;
+  const projected = {
+    id: Number(job.id),
+    user_id: job.user_id == null ? null : Number(job.user_id),
+    kind: String(job.kind || ''),
+    model: job.model || null,
+    prompt: job.prompt || '',
+    status: job.status || '处理中',
+    task_id: job.task_id || null,
+    error: job.error || null,
+    credits: job.credits == null ? null : Number(job.credits),
+    result_id: job.result_id == null ? null : Number(job.result_id),
+    content_employee_idx: job.content_employee_idx == null
+      ? null
+      : Number(job.content_employee_idx),
+    content_employee_key: job.content_employee_key || null,
+    content_employee_name: job.content_employee_name || null,
+    content_employee_group: job.content_employee_group || null,
+    content_run_mode: job.content_run_mode || null,
+    created_at: job.created_at || null,
+  };
+  if (job.canDelete !== undefined) projected.canDelete = Boolean(job.canDelete);
+  if (job.deleteBlockedReason !== undefined) {
+    projected.deleteBlockedReason = job.deleteBlockedReason || null;
+  }
+  if (Array.isArray(job.materialReferences)) {
+    projected.materialReferences = job.materialReferences;
+  }
+  if (job.content !== undefined) projected.content = projectLinkedContent(job.content);
+  if (job.billing !== undefined) projected.billing = job.billing;
+  if (canViewInternalProfile(user)) {
+    projected.profile_version = job.profile_version || null;
+    projected.prompt_hash = job.prompt_hash || null;
+    projected.snapshot_json = job.snapshot_json || null;
+  }
+  return projected;
 }
 
 function safeJson(value, fallback = null) {
@@ -121,15 +195,70 @@ function linkedAsset(jobId) {
 
 function reviewMetaFromMaterial(material) {
   const artifact = safeJson(material?.artifact_snapshot_json, {}) || {};
-  return artifact.manualReview && typeof artifact.manualReview === 'object'
+  const review = artifact.manualReview && typeof artifact.manualReview === 'object'
     ? artifact.manualReview
+    : null;
+  if (!review) return null;
+  return review.decision === 'accepted' && review.source === 'manager_manual_media_review'
+    ? review
     : null;
 }
 
-function mediaBilling(job, fallback = null) {
+function manualMediaBillingExemption(job) {
+  const sourceType = String(job?.source_type || '').trim().toLowerCase();
+  if (!MANUAL_MEDIA_SOURCE_TYPES.has(sourceType)) return null;
+  return {
+    state: 'not_required',
+    code: 'MEDIA_BILLING_NOT_REQUIRED',
+    exempt: true,
+    authoritative: true,
+    evidenceSource: 'media_jobs.source_type',
+    sourceType,
+    holdId: null,
+    estimatedCredits: 0,
+    heldCredits: 0,
+    chargedCredits: 0,
+    credits: 0,
+    balance: null,
+    costYuan: null,
+    pendingReconciliation: false,
+    note: '该媒体由权威来源字段明确标记为人工上传，不涉及 AI 供应商计费。',
+    error: null,
+  };
+}
+
+function missingMediaBilling({
+  code = 'MEDIA_BILLING_MISSING',
+  note = '真实 AI 媒体缺少可核验的正向结算记录，不能进入人工验收或导出。',
+  hold = null,
+} = {}) {
+  return {
+    state: code === 'MEDIA_BILLING_MISSING' ? 'missing' : 'pending_reconciliation',
+    code,
+    exempt: false,
+    authoritative: false,
+    holdId: Number(hold?.id || hold?.holdId || 0) || null,
+    estimatedCredits: Number(hold?.held_credits || hold?.credits || 0),
+    heldCredits: Number(hold?.status === 'held' ? hold?.held_credits : 0),
+    chargedCredits: null,
+    credits: null,
+    balance: null,
+    costYuan: null,
+    pendingReconciliation: true,
+    note,
+    error: null,
+  };
+}
+
+function mediaBilling(job) {
+  const exemption = manualMediaBillingExemption(job);
+  if (exemption) return exemption;
   let holdRow = null;
   try {
-    holdRow = q.get(`SELECT h.*,l.balance_after,l.cost_yuan
+    holdRow = q.get(`SELECT h.*,
+        l.id AS billing_log_id,l.user_id AS billing_log_user_id,
+        l.kind AS billing_log_kind,l.credits AS billing_log_credits,
+        l.ai_mode AS billing_log_ai_mode,l.balance_after,l.cost_yuan
       FROM credit_holds h
       LEFT JOIN credit_logs l ON l.id=h.log_id AND l.tenant_id=h.tenant_id
       WHERE h.tenant_id=? AND h.ref_type='media_job' AND h.ref_id=?
@@ -137,26 +266,7 @@ function mediaBilling(job, fallback = null) {
   } catch {
     // 兼容尚未初始化两阶段计费表的旧数据库；不虚构账务状态。
   }
-  if (!holdRow) {
-    if (fallback?.state) return fallback;
-    if (Number.isFinite(Number(fallback?.credits)) && TERMINAL_MEDIA_STATUSES.has(String(job?.status || ''))) {
-      const amount = Number(fallback.credits);
-      return {
-        state: job.status === '失败' && amount === 0 ? 'released' : 'settled',
-        holdId: null,
-        estimatedCredits: amount,
-        heldCredits: 0,
-        chargedCredits: job.status === '失败' ? 0 : amount,
-        credits: job.status === '失败' ? 0 : amount,
-        balance: fallback.balance ?? null,
-        costYuan: fallback.costYuan ?? null,
-        pendingReconciliation: false,
-        note: '历史任务未保留预授权明细，按既有终态账务记录展示。',
-        error: null,
-      };
-    }
-    return fallback || null;
-  }
+  if (!holdRow) return missingMediaBilling();
   const hold = {
     holdId: holdRow.id,
     credits: Number(holdRow.held_credits || 0),
@@ -174,22 +284,76 @@ function mediaBilling(job, fallback = null) {
   }
   const settledCredits = Number(holdRow.settled_credits || 0);
   const released = String(job?.status || '') === '失败' && settledCredits === 0;
-  return twoPhaseBillingSummary({
-    state: released ? 'released' : 'settled',
-    hold,
-    settled: {
-      credits: settledCredits,
-      balance: holdRow.balance_after ?? null,
-      costYuan: holdRow.cost_yuan ?? null,
-    },
-    note: released
-      ? '媒体任务未交付，预授权已全额退回。'
-      : '媒体任务已技术交付，并完成实扣结算。',
-  });
+  if (released) return {
+    ...twoPhaseBillingSummary({
+      state: 'released',
+      hold,
+      settled: {
+        credits: 0,
+        balance: holdRow.balance_after ?? null,
+        costYuan: holdRow.cost_yuan ?? null,
+      },
+      note: '媒体任务未交付，预授权已全额退回。',
+    }),
+    code: 'MEDIA_BILLING_RELEASED',
+    exempt: false,
+    authoritative: Boolean(holdRow.billing_log_id),
+    evidenceSource: 'credit_holds',
+    evidenceSourceId: Number(holdRow.id),
+  };
+
+  const authoritativeSettlement = holdRow.status === 'settled'
+    && Number(holdRow.billing_log_id) > 0
+    && Number(holdRow.user_id) === Number(job?.user_id)
+    && Number(holdRow.billing_log_user_id) === Number(holdRow.user_id)
+    && String(holdRow.kind || '') === String(job?.kind || '')
+    && String(holdRow.billing_log_kind || '') === String(holdRow.kind || '')
+    && String(holdRow.billing_log_ai_mode || '') === 'api'
+    && settledCredits > 0
+    && Number(holdRow.billing_log_credits) === settledCredits;
+  if (!authoritativeSettlement) {
+    return missingMediaBilling({
+      code: 'MEDIA_BILLING_UNVERIFIED',
+      note: '媒体虽有终态账务行，但缺少与当前任务、账号、媒体类型和实扣金额一致的正向结算证据，需人工对账。',
+      hold: holdRow,
+    });
+  }
+
+  return {
+    ...twoPhaseBillingSummary({
+      state: 'settled',
+      hold,
+      settled: {
+        credits: settledCredits,
+        balance: holdRow.balance_after ?? null,
+        costYuan: holdRow.cost_yuan ?? null,
+      },
+      note: '媒体任务已技术交付，并完成实扣结算。',
+    }),
+    code: 'MEDIA_BILLING_SETTLED',
+    exempt: false,
+    authoritative: true,
+    evidenceSource: 'credit_holds',
+    evidenceSourceId: Number(holdRow.id),
+  };
+}
+
+function billingAllowsReview(billing) {
+  return billing?.state === 'settled'
+    || (billing?.state === 'not_required'
+      && billing?.exempt === true
+      && billing?.authoritative === true);
+}
+
+function billingBlockCode(billing) {
+  return billing?.state === 'missing' || billing?.code === 'MEDIA_BILLING_MISSING'
+    ? 'MEDIA_BILLING_MISSING'
+    : 'MEDIA_BILLING_UNSETTLED';
 }
 
 export function augmentMediaJob(job, user) {
   if (!job || typeof job !== 'object') return job;
+  const publicJob = projectMediaJob(job, user);
   const delivery = validateMediaDelivery(job);
   const material = linkedMaterial(job.id);
   const audit = reviewLog(job.id);
@@ -198,51 +362,84 @@ export function augmentMediaJob(job, user) {
   const reviewer = audit?.username || snapshotReview?.reviewedByName || null;
   const reviewedAt = audit?.created_at || snapshotReview?.reviewedAt || null;
   const roleAllowed = canReviewMedia(user);
-  const reviewStatus = reviewed
-    ? '已人工验收并入库'
-    : material
-      ? '待补人工验收记录'
-      : delivery.ready
-        ? '待人工验收'
-        : '未进入人工验收';
-  const canImport = Boolean(roleAllowed && delivery.ready && !reviewed);
+  const billing = mediaBilling(job);
+  const billingReady = billingAllowsReview(billing);
+  const billingBlocked = !billingReady;
+  const reviewStatus = billingBlocked && delivery.ready
+    ? reviewed
+      ? '人工验收记录存在，但业务暂不可采用（待账务对账）'
+      : '业务暂不可采用（待账务对账）'
+    : reviewed
+      ? '已人工验收（可用于业务）'
+      : material
+        ? '可验收（待补人工验收记录）'
+        : delivery.ready
+          ? '可验收（待管理层审阅）'
+          : '尚未形成可验收产物';
+  const canImport = Boolean(roleAllowed && delivery.ready && !billingBlocked && !reviewed);
   const canImportReason = canImport
     ? null
-    : reviewed
+    : billingBlocked && delivery.ready
+      ? billing?.state === 'missing'
+        ? '媒体已技术生成，但缺少数据库权威正向结算记录；当前业务暂不可采用，也不能人工验收入库'
+        : '媒体已技术生成，但积分尚未完成结算或仍待账务对账；当前业务暂不可采用，也不能人工验收入库'
+      : reviewed
       ? '该媒体已由管理角色人工验收并导入素材库'
       : !roleAllowed
         ? '仅管理角色可人工验收并导入素材库'
         : delivery.reason;
+  const businessUsable = reviewed && billingReady;
+  const previewAllowed = delivery.ready && billingReady && (roleAllowed || businessUsable);
+  const originalUrl = String(job.url || '').trim() || null;
   return {
-    ...job,
+    ...publicJob,
+    url: businessUsable ? originalUrl : null,
     kind: String(job.kind || ''),
     mediaType: mediaTypeLabel(job.kind),
     mimeType: inferMediaMime(job.kind, job.url),
-    previewUrl: job.url || null,
+    previewUrl: previewAllowed ? originalUrl : null,
     urlAvailable: Boolean(String(job.url || '').trim()),
     technicalStatus: String(job.status || '未知'),
     technicalSuccess: delivery.ready,
     businessStatus: reviewStatus,
     reviewStatus,
-    reviewRequired: delivery.ready && !reviewed,
-    businessUsable: reviewed,
+    reviewRequired: delivery.ready && !billingBlocked && !reviewed,
+    businessUsable,
+    canExport: businessUsable && Boolean(originalUrl),
     isImported: Boolean(material),
     importedMaterialId: material ? Number(material.id) : null,
     reviewedBy: reviewer,
     reviewedAt,
     canImport,
     canImportReason,
-    billing: mediaBilling(job, job.billing),
+    billing,
   };
 }
 
 function augmentResponse(req, body) {
   if (!body || typeof body !== 'object') return body;
   if (req.method === 'GET' && req.path === '/media-jobs' && Array.isArray(body)) {
-    return body.map(job => augmentMediaJob(job, req.user));
+    return body.map(job => {
+      const stored = q.get(
+        'SELECT * FROM media_jobs WHERE tenant_id=? AND id=?',
+        curTenant(),
+        Number(job?.id),
+      );
+      return augmentMediaJob(stored ? {
+        ...stored,
+        canDelete: job.canDelete,
+        deleteBlockedReason: job.deleteBlockedReason,
+        materialReferences: job.materialReferences,
+      } : job, req.user);
+    });
   }
   if (req.method === 'GET' && /^\/media-jobs\/\d+$/.test(req.path)) {
-    return augmentMediaJob(body, req.user);
+    const stored = q.get(
+      'SELECT * FROM media_jobs WHERE tenant_id=? AND id=?',
+      curTenant(),
+      Number(body?.id),
+    );
+    return augmentMediaJob(stored ? { ...stored, content: body.content } : body, req.user);
   }
   if (req.method === 'POST' && ['/generate-image', '/generate-video'].includes(req.path) && body.jobId) {
     const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), Number(body.jobId));
@@ -255,7 +452,8 @@ function augmentResponse(req, body) {
       kind: enriched.kind,
       mediaType: enriched.mediaType,
       mimeType: enriched.mimeType,
-      url: enriched.previewUrl,
+      url: enriched.url,
+      previewUrl: enriched.previewUrl,
       urlAvailable: enriched.urlAvailable,
       technicalStatus: enriched.technicalStatus,
       technicalSuccess: enriched.technicalSuccess,
@@ -291,14 +489,14 @@ r.get('/media-jobs/:id', (req, res) => {
   if (!Number.isInteger(jobId) || jobId <= 0) return res.status(404).json({ error: '任务不存在或无权访问' });
   const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), jobId);
   if (!job || (!canAccessOwner(req.user, job.user_id)
-    && !['platform_super', 'super_admin'].includes(String(req.user?.role || '')))) {
+    && String(req.user?.role || '') !== 'platform_super')) {
     return res.status(404).json({ error: '任务不存在或无权访问' });
   }
   const content = job.result_id
     ? q.get(`SELECT id,type,title,body,topic,status,risk_level,ai_mode
       FROM contents WHERE tenant_id=? AND id=?`, curTenant(), job.result_id)
     : null;
-  return res.json({ ...job, content });
+  return res.json(projectMediaJob({ ...job, content }, req.user));
 });
 
 export function importMediaJobMaterial(req, res) {
@@ -313,7 +511,7 @@ export function importMediaJobMaterial(req, res) {
   if (!Number.isInteger(jobId) || jobId <= 0) return res.status(404).json({ error: '媒体任务不存在' });
   const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), jobId);
   if (!job || (!canAccessOwner(req.user, job.user_id)
-    && !['platform_super', 'super_admin'].includes(String(req.user?.role || '')))) {
+    && String(req.user?.role || '') !== 'platform_super')) {
     return res.status(404).json({ error: '媒体任务不存在或无权访问' });
   }
   const delivery = validateMediaDelivery(job);
@@ -321,8 +519,22 @@ export function importMediaJobMaterial(req, res) {
     return res.status(409).json({
       error: `${delivery.reason}，不能导入素材库`,
       technicalStatus: job.status || '未知',
-      businessStatus: '未进入人工验收',
+      businessStatus: '尚未形成可验收产物',
       canImport: false,
+    });
+  }
+  const billing = mediaBilling(job);
+  if (!billingAllowsReview(billing)) {
+    return res.status(409).json({
+      error: billing?.state === 'missing'
+        ? '媒体已技术生成，但缺少数据库权威正向结算记录，不能人工验收入库'
+        : '媒体已技术生成，但积分尚未完成结算或仍待账务对账，不能人工验收入库',
+      code: billingBlockCode(billing),
+      technicalStatus: job.status || '未知',
+      businessStatus: '业务暂不可采用（待账务对账）',
+      reviewStatus: '业务暂不可采用（待账务对账）',
+      canImport: false,
+      billing,
     });
   }
 

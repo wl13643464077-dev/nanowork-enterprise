@@ -3,6 +3,8 @@ import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 import { db, q, getConfig, setConfig, getTenantConfig, setTenantConfig, modulesFor, curTenant, mergeMarshal, tenantOf } from '../db.js';
 import { hashPassword, logOp, requireRole, pageParams, safeJsonParse } from '../util.js';
+import { loadRestaurantCatalog } from '../catalog/restaurant.js';
+import { dispatchPolicy, saveDispatchPolicy } from '../engines/employee-dispatch-policy.js';
 import { billing } from '../engines/credits.js';
 import { adjust, balanceOfTenant } from '../engines/credits.js';
 import {
@@ -40,7 +42,7 @@ const CURRENT_DEPARTMENT_SQL = CURRENT_DEPARTMENT_CODES.map(() => '?').join(',')
 
 function catalogEmployeesForDepartment(marshalId) {
   return q.all(`SELECT id,marshal_id,employee_idx,key,person,name,duty,status,last_output_id
-    FROM specialists WHERE marshal_id=? AND employee_idx BETWEEN 101 AND 160 ORDER BY sort,employee_idx`, marshalId)
+    FROM specialists WHERE marshal_id=? AND employee_idx BETWEEN 101 AND 161 ORDER BY sort,employee_idx`, marshalId)
     .map(employee => ({ ...employee, active: 1 }));
 }
 
@@ -231,11 +233,14 @@ r.get('/org', (req, res) => {
 
 // —— 角色权限矩阵（菜单级勾选，PRD V2 §13）——
 r.get('/permissions', (req, res) => {
+  const restaurantGroups = loadRestaurantCatalog().groups.map(group => group.name);
   res.json({
     modules: ALL_MODULES,
     roleModules: getTenantConfig('role_modules', {}),
     deptModules: getTenantConfig('dept_modules', {}),
     featureFlags: getTenantConfig('feature_flags', {}),
+    employeeDispatchPolicy: dispatchPolicy(),
+    employeeGroups: [...restaurantGroups, '内容生产部'],
     depts: q.all(`SELECT DISTINCT dept FROM users WHERE tenant_id = ${curTenant()} AND dept IS NOT NULL AND dept != ''`).map(x => x.dept),
     roles: [
       { key: 'boss', name: '老板' }, { key: 'ops_director', name: '管理层/运营总监' },
@@ -244,11 +249,15 @@ r.get('/permissions', (req, res) => {
   });
 });
 r.put('/permissions', (req, res) => {
-  const { roleModules, featureFlags, deptModules } = req.body || {};
+  const { roleModules, featureFlags, deptModules, employeeDispatchPolicy } = req.body || {};
   if (roleModules) setTenantConfig('role_modules', roleModules);
   if (featureFlags) setTenantConfig('feature_flags', featureFlags);
   if (deptModules) setTenantConfig('dept_modules', deptModules);
-  logOp(req.user, '管理后台', '修改权限矩阵', [roleModules && '角色矩阵', deptModules && '部门映射', featureFlags && '功能开关'].filter(Boolean).join('+'));
+  if (employeeDispatchPolicy) saveDispatchPolicy(employeeDispatchPolicy);
+  logOp(req.user, '管理后台', '修改权限矩阵', [
+    roleModules && '角色矩阵', deptModules && '部门映射', featureFlags && '功能开关',
+    employeeDispatchPolicy && '员工派活权限',
+  ].filter(Boolean).join('+'));
   res.json({ ok: true });
 });
 

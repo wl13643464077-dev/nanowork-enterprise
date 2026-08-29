@@ -3,7 +3,7 @@ import { Button, Empty, List, message, Modal, Space, Tag, Tooltip } from 'antd';
 import { CloseOutlined, FolderOpenOutlined, PaperClipOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { api, notifyCredits } from '../api/client';
 
-export const BUSINESS_FILE_ACCEPT = '.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.gif';
+export const BUSINESS_FILE_ACCEPT = '.txt,.md,.csv,.tsv,.json,.doc,.docx,.xls,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.gif';
 
 export interface UploadedFileRef {
   id: number;

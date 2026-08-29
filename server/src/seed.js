@@ -1,15 +1,693 @@
 import './env.js';
-import { curTenant, db, initSchema, migrateV2, q, setConfig } from './db.js';
+import crypto from 'node:crypto';
+import { curTenant, db, initSchema, migrateV2, q, runWithTenant, setConfig } from './db.js';
 import { ensureBaselineCatalogs } from './baseline.js';
 import { hashPassword, today, daysAgo, isoWeek } from './util.js';
 import { rescoreAll } from './engines/scoring.js';
 import { generateBattlePlan, generateWeeklyReview } from './engines/plans.js';
+import { loadContentAdoptionAvailability } from './engines/delivery-state.js';
 
 // 可复现伪随机
 let _s = 20260611;
 const rnd = () => (_s = (_s * 1103515245 + 12345) % 2147483648) / 2147483648;
 const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
 const pk = (arr) => arr[Math.floor(rnd() * arr.length)];
+
+// 这些标题只用来识别 2026-06 版本写入的旧演示占位记录。
+// 识别时还会同时核对数字员工编号、创建人、原始状态、执行快照和下游证据，
+// 不会仅凭标题修改用户数据。
+const LEGACY_DEMO_EMPLOYEE_TASKS = Object.freeze([
+  { employeeIdx: 101, title: '新店开业30天行动清单', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 108, title: '本周招牌菜组合建议', status: '待审阅', creator: 'yunying', collab: false },
+  { employeeIdx: 116, title: '后厨日常食安检查表', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 125, title: '核心食材供应风险盘点', status: '执行中', creator: 'yunying', collab: false },
+  { employeeIdx: 132, title: '午市高峰排班优化', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 140, title: '七天短视频选题表', status: '待审阅', creator: 'yunying', collab: false },
+  { employeeIdx: 147, title: '本月现金流滚动表', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 150, title: '单店Prime Cost诊断', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 153, title: '午晚餐与渠道分群分析', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 154, title: '上周经营复盘与本周动作', status: '已完成', creator: 'yunying', collab: false },
+  { employeeIdx: 155, title: '第二家店复制条件清单', status: '待审阅', creator: 'yunying', collab: false },
+  { employeeIdx: 160, title: '周末会员日活动作战板', status: '执行中', creator: 'yunying', collab: false },
+  { employeeIdx: 108, title: '夏季菜单上新协同', status: '执行中', creator: 'guan', collab: true },
+  { employeeIdx: 154, title: '周经营复盘协同', status: '执行中', creator: 'guan', collab: true },
+]);
+
+const LEGACY_DEMO_APPROVALS = Object.freeze([
+  { targetType: 'content', title: '社区联名活动朋友圈（含合作政策表述）', summary: '命中规则：未经确认的收益描述', risk: 'high', rules: '["INVEST_RETURN"]', status: '待审核', submitter: 'sales2' },
+  { targetType: 'content', title: '季节限定套餐功效文案', summary: '命中规则：绝对化用语', risk: 'medium', rules: '["ABS_WORD"]', status: '待审核', submitter: 'sales1' },
+  { targetType: 'content', title: '企业团餐报价沟通话术', summary: '命中规则：价格承诺', risk: 'high', rules: '["PRICE_PROMISE"]', status: '待审核', submitter: 'sales3' },
+  { targetType: 'quote', title: '客户王建华企业团餐方案（金额¥5,800）', summary: '大额方案需老板终审', risk: 'high', rules: '[]', status: '待审核', submitter: 'sales1' },
+  { targetType: 'content', title: '商圈联合会员日邀请函', summary: '活动对外文案需审核', risk: 'medium', rules: '["FORCE"]', status: '已通过', submitter: 'yunying' },
+  { targetType: 'content', title: '招牌套餐短视频脚本（含"最适合"表述）', summary: '命中规则：绝对化用语', risk: 'medium', rules: '["ABS_WORD"]', status: '已驳回', submitter: 'sales2' },
+]);
+
+const DEMO_RECONCILED_ASSET_NOTE = '演示模板未经真实执行与审批，升级时已停用该占位资产';
+const DEMO_UNADOPTABLE_MODE = /(?:^|[_-])(?:template|fallback|failed)(?:$|[_-])/iu;
+const DEMO_QUALITY_RECONCILIATION_CODE = 'DEMO_UNADOPTABLE_CONTENT_RECONCILED';
+const DEMO_QUALITY_RECONCILIATION_REASON =
+  '系统质量对账：历史演示模板/降级/失败底稿未形成可采纳产物，已移出人工审阅队列；请补充材料并恢复真实执行通道后重新派活。';
+const DEMO_QUALITY_RUN_ERROR = '失败需返工（质检未通过）：未形成可验收产物，系统已移出人工审阅队列；修正材料或生成结果后可重跑。';
+
+const DEMO_MANUAL_TASK_TITLES = new Set([
+  '生成今日一键日更包并交门店负责人审核',
+  'A类客户TOP10电话跟进',
+  '企业团餐意向客户触达（TOP30）',
+  '新品试吃会邀约确认',
+  '新品试吃会物料清单采购',
+  '沉默会员分层唤醒（8人）',
+  '上周流失客户原因复盘录入',
+  '社区联名活动议程初稿',
+  '季节限定菜试吃名单确认',
+  '本周内容效果数据登记',
+  '企业客户王总方案修订（价格需老板确认）',
+  '新线索48小时首触清扫',
+]);
+const DEMO_MANUAL_TASK_PATTERN = /^(?:夏季新品|双人招牌套餐|季节限定菜|新品试吃会预热|端午家庭聚餐|企业团餐|社区联名|老板IP日常|顾客证言|午市工作餐)相关任务·(?:[1-9]|1\d|20)$/u;
+const DEMO_MANUAL_SUBMISSION_CONTENTS = new Set([
+  '已完成，截图见素材库',
+  '已按SOP执行，结果回写CRM',
+  '完成80%，剩余明日上午收尾',
+  '已完成并同步相关同事',
+]);
+
+const blankExecutionValue = value => value == null || String(value).trim() === '';
+
+function hasTable(name) {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+}
+
+function countIfTable(table, sql, ...params) {
+  if (!hasTable(table)) return 0;
+  return Number(db.prepare(sql).get(...params)?.n || 0);
+}
+
+function hasRealContentDownstream(tenantId, contentId, ignoredTaskId) {
+  return countIfTable('approvals', `SELECT COUNT(*) n FROM approvals
+      WHERE tenant_id=? AND target_type='content' AND target_id=?`, tenantId, contentId) > 0
+    || countIfTable('content_publish_logs', `SELECT COUNT(*) n FROM content_publish_logs
+      WHERE tenant_id=? AND content_id=?`, tenantId, contentId) > 0
+    || countIfTable('kb_docs', `SELECT COUNT(*) n FROM kb_docs
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('materials', `SELECT COUNT(*) n FROM materials
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('content_material_refs', `SELECT COUNT(*) n FROM content_material_refs
+      WHERE tenant_id=? AND target_type='content' AND target_id=?`, tenantId, contentId) > 0
+    || countIfTable('content_automation_runs', `SELECT COUNT(*) n FROM content_automation_runs
+      WHERE tenant_id=? AND content_id=?`, tenantId, contentId) > 0
+    || countIfTable('media_jobs', `SELECT COUNT(*) n FROM media_jobs
+      WHERE tenant_id=? AND result_id=?`, tenantId, contentId) > 0
+    || countIfTable('generated_artifacts', `SELECT COUNT(*) n FROM generated_artifacts
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('biz_assets', `SELECT COUNT(*) n FROM biz_assets
+      WHERE tenant_id=? AND source_type='content' AND source_id=?
+        AND NOT (status='已归档' AND note=?)`,
+    tenantId, contentId, DEMO_RECONCILED_ASSET_NOTE) > 0
+    || countIfTable('agent_tasks', `SELECT COUNT(*) n FROM agent_tasks
+      WHERE tenant_id=? AND output_id=? AND id<>?`, tenantId, contentId, ignoredTaskId) > 0;
+}
+
+function seededTemplateContent(row) {
+  const body = String(row?.body || '');
+  return row?.ai_mode === 'template'
+    && (body.startsWith('【待企业核验的内容草案】')
+      || body.startsWith('【待企业核验的岗位交付草案】'));
+}
+
+function seededManualTask(row) {
+  const title = String(row?.title || '');
+  return (DEMO_MANUAL_TASK_TITLES.has(title) || DEMO_MANUAL_TASK_PATTERN.test(title))
+    && ['yunying', 'sales1', 'sales2', 'sales3'].includes(String(row?.assignee_username || ''))
+    && row?.assigned_by == null
+    && row?.parent_task_id == null
+    && row?.source_ref_type == null
+    && row?.source_ref_id == null
+    && blankExecutionValue(row?.detail)
+    && /^\d{4}-\d{2}-\d{2} 08:(?:00|30):00$/u.test(String(row?.created_at || ''));
+}
+
+function hasContentRunDownstream(tenantId, runId) {
+  return countIfTable('materials', `SELECT COUNT(*) n FROM materials
+      WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?`, tenantId, runId) > 0
+    || countIfTable('contents', `SELECT COUNT(*) n FROM contents
+      WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?`, tenantId, runId) > 0
+    || countIfTable('biz_assets', `SELECT COUNT(*) n FROM biz_assets
+      WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?`, tenantId, runId) > 0
+    || countIfTable('generated_artifacts', `SELECT COUNT(*) n FROM generated_artifacts
+      WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?`, tenantId, runId) > 0;
+}
+
+function parseJsonObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function hasContentQualityDownstream(tenantId, contentId) {
+  return countIfTable('content_publish_logs', `SELECT COUNT(*) n FROM content_publish_logs
+      WHERE tenant_id=? AND content_id=?`, tenantId, contentId) > 0
+    || countIfTable('kb_docs', `SELECT COUNT(*) n FROM kb_docs
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('materials', `SELECT COUNT(*) n FROM materials
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('content_material_refs', `SELECT COUNT(*) n FROM content_material_refs
+      WHERE tenant_id=? AND target_type='content' AND target_id=?`, tenantId, contentId) > 0
+    || countIfTable('media_jobs', `SELECT COUNT(*) n FROM media_jobs
+      WHERE tenant_id=? AND result_id=?`, tenantId, contentId) > 0
+    || countIfTable('generated_artifacts', `SELECT COUNT(*) n FROM generated_artifacts
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0
+    || countIfTable('biz_assets', `SELECT COUNT(*) n FROM biz_assets
+      WHERE tenant_id=? AND source_type='content' AND source_id=?`, tenantId, contentId) > 0;
+}
+
+function refsHaveActiveOrChargedHolds(tenantId, refType, refIds) {
+  if (!hasTable('credit_holds') || !refIds.length) return false;
+  return refIds.some(refId => countIfTable('credit_holds', `SELECT COUNT(*) n FROM credit_holds
+      WHERE tenant_id=? AND ref_type=? AND ref_id=?
+        AND (status='held' OR COALESCE(settled_credits,0)>0)`,
+  tenantId, refType, refId) > 0);
+}
+
+/**
+ * 幂等清理旧版演示种子造成的假运行/假完成状态。
+ *
+ * 只处理 data_mode=demo 且同时命中全部种子指纹的记录。任务只要有任何
+ * 执行快照、预授权占扣或真实审批/发布/资产等下游证据就原样保留。
+ */
+export function reconcileDemoSeedPlaceholders({ tenantId = curTenant() } = {}) {
+  const tid = Number(tenantId);
+  if (!Number.isInteger(tid) || tid <= 0) throw new TypeError('tenantId must be a positive integer');
+  if (db.prepare(`SELECT data_mode FROM tenants WHERE id=?`).get(tid)?.data_mode !== 'demo') {
+    return {
+      tenantId: tid,
+      skipped: true,
+      approvalsRemoved: 0,
+      tasksRemoved: 0,
+      draftsRepaired: 0,
+      assetsArchived: 0,
+      notificationsRemoved: 0,
+      manualSubmissionsReconciled: 0,
+      contentRunsReconciled: 0,
+      qualityFailedApprovalsReconciled: 0,
+      qualityFailedContentsReconciled: 0,
+      qualityFailedAgentTasksReconciled: 0,
+      qualityFailedAutomationRunsReconciled: 0,
+    };
+  }
+
+  const summary = {
+    tenantId: tid,
+    skipped: false,
+    approvalsRemoved: 0,
+    tasksRemoved: 0,
+    draftsRepaired: 0,
+    assetsArchived: 0,
+    notificationsRemoved: 0,
+    protectedTasks: 0,
+    manualSubmissionsReconciled: 0,
+    contentRunsReconciled: 0,
+    qualityFailedApprovalsReconciled: 0,
+    qualityFailedContentsReconciled: 0,
+    qualityFailedAgentTasksReconciled: 0,
+    qualityFailedAutomationRunsReconciled: 0,
+  };
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (hasTable('approvals')) {
+      const approvalRows = db.prepare(`SELECT a.*,u.username submitter_username,c.ai_mode,c.body,
+          c.snapshot_json content_snapshot_json,c.profile_version content_profile_version,
+          c.prompt_hash content_prompt_hash,c.source_type content_source_type,c.source_id content_source_id
+        FROM approvals a
+        LEFT JOIN users u ON u.id=a.submitter_id AND u.tenant_id=a.tenant_id
+        LEFT JOIN contents c ON a.target_type='content' AND c.id=a.target_id AND c.tenant_id=a.tenant_id
+        WHERE a.tenant_id=?`).all(tid);
+      for (const approval of approvalRows) {
+        const signature = LEGACY_DEMO_APPROVALS.find(item => (
+          item.targetType === approval.target_type
+          && item.title === approval.title
+          && item.summary === approval.summary
+          && item.risk === approval.risk_level
+          && item.rules === approval.rules_hit
+          && item.status === approval.status
+          && item.submitter === approval.submitter_username
+        ));
+        if (!signature) continue;
+        // 内容类的随机 target_id 只有仍指向种子模板（或已成为孤儿）才删；
+        // 如果 ID 后来指向了真实 API 产出，必须保留给人工核对。
+        const targetHasExecutionEvidence = [
+          approval.content_snapshot_json,
+          approval.content_profile_version,
+          approval.content_prompt_hash,
+          approval.content_source_type,
+          approval.content_source_id,
+        ].some(value => !blankExecutionValue(value));
+        if (approval.target_type === 'content' && approval.target_id != null
+          && approval.ai_mode != null
+          && (!seededTemplateContent(approval) || targetHasExecutionEvidence)) continue;
+        const removed = db.prepare(`DELETE FROM approvals WHERE tenant_id=? AND id=?`).run(tid, approval.id);
+        summary.approvalsRemoved += Number(removed.changes || 0);
+      }
+    }
+
+    // 旧种子若曾把模板内容误登记为“使用中”资产，仅归档无创建人、无备注、
+    // 无真实审批/发布的演示资产；保留记录和流转轨迹便于追溯。
+    if (hasTable('biz_assets')) {
+      const archived = db.prepare(`UPDATE biz_assets AS a
+        SET status='已归档',
+            note=?,
+            updated_at=datetime('now','localtime')
+        WHERE a.tenant_id=? AND a.source_type='content' AND a.status<>'已归档'
+          AND a.creator_id IS NULL AND COALESCE(a.note,'')=''
+          AND EXISTS (
+            SELECT 1 FROM contents c
+            WHERE c.tenant_id=a.tenant_id AND c.id=a.source_id AND c.ai_mode='template'
+              AND (c.body LIKE '【待企业核验的内容草案】%'
+                OR c.body LIKE '【待企业核验的岗位交付草案】%')
+              AND COALESCE(c.snapshot_json,'')='' AND COALESCE(c.profile_version,'')=''
+              AND COALESCE(c.prompt_hash,'')='' AND c.source_type IS NULL AND c.source_id IS NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM approvals ap
+            WHERE ap.tenant_id=a.tenant_id AND ap.target_type='content' AND ap.target_id=a.source_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM content_publish_logs pl
+            WHERE pl.tenant_id=a.tenant_id AND pl.content_id=a.source_id
+          )`).run(DEMO_RECONCILED_ASSET_NOTE, tid);
+      summary.assetsArchived += Number(archived.changes || 0);
+    }
+
+    const placeholders = db.prepare(`SELECT t.*,s.employee_idx,u.username creator_username,
+        c.ai_mode output_ai_mode,c.body output_body,c.status output_status,
+        c.snapshot_json output_snapshot_json,c.profile_version output_profile_version,
+        c.prompt_hash output_prompt_hash,c.source_type output_source_type,c.source_id output_source_id
+      FROM agent_tasks t
+      LEFT JOIN specialists s ON s.id=t.specialist_id
+      LEFT JOIN users u ON u.id=t.created_by AND u.tenant_id=t.tenant_id
+      LEFT JOIN contents c ON c.id=t.output_id AND c.tenant_id=t.tenant_id
+      WHERE t.tenant_id=?`).all(tid);
+    for (const task of placeholders) {
+      const signature = LEGACY_DEMO_EMPLOYEE_TASKS.find(item => (
+        item.employeeIdx === Number(task.employee_idx)
+        && item.title === task.title
+        && item.status === task.status
+        && item.creator === task.creator_username
+        && Number(Boolean(item.collab)) === Number(Boolean(task.is_collab))
+      ));
+      if (!signature) continue;
+      const snapshotsAreEmpty = [
+        task.employee_profile_version,
+        task.employee_prompt_hash,
+        task.employee_capabilities_snapshot,
+        task.employee_config_snapshot,
+        task.employee_skills_snapshot,
+        task.employee_input_snapshot,
+        task.employee_web_snapshot,
+      ].every(blankExecutionValue);
+      const hasHold = countIfTable('credit_holds', `SELECT COUNT(*) n FROM credit_holds
+        WHERE tenant_id=? AND ref_type='agent_task' AND ref_id=?`, tid, task.id) > 0;
+      const outputHasExecutionEvidence = [
+        task.output_snapshot_json,
+        task.output_profile_version,
+        task.output_prompt_hash,
+        task.output_source_type,
+        task.output_source_id,
+      ].some(value => !blankExecutionValue(value));
+      if (!snapshotsAreEmpty || outputHasExecutionEvidence || hasHold) {
+        summary.protectedTasks += 1;
+        continue;
+      }
+      if (task.output_id != null) {
+        if (!seededTemplateContent({ ai_mode: task.output_ai_mode, body: task.output_body })
+          || hasRealContentDownstream(tid, Number(task.output_id), Number(task.id))) {
+          summary.protectedTasks += 1;
+          continue;
+        }
+        const drafted = db.prepare(`UPDATE contents SET status='草稿'
+          WHERE tenant_id=? AND id=? AND ai_mode='template' AND status<>'草稿'`).run(tid, task.output_id);
+        summary.draftsRepaired += Number(drafted.changes || 0);
+      }
+      const removed = db.prepare(`DELETE FROM agent_tasks WHERE tenant_id=? AND id=?`).run(tid, task.id);
+      summary.tasksRemoved += Number(removed.changes || 0);
+    }
+
+    // 2026-06 旧演示种子曾对人工任务随机写入“通过/待审核”，
+    // 会造成任务卡显示待审、实际却没有可审提交。只修正全部命中种子
+    // 指纹且没有分派人、审核人、来源引用的单条占位提交；用户真实提交
+    // 与审核记录不会被改写。
+    if (hasTable('tasks') && hasTable('task_submissions')) {
+      const manualRows = db.prepare(`SELECT t.*,u.username assignee_username,
+          s.id submission_id,s.user_id submission_user_id,s.content submission_content,
+          s.result submission_result,s.source_ref_type submission_source_ref_type,
+          s.source_ref_id submission_source_ref_id,s.reviewer_id,s.reviewed_at,s.review_reason,
+          (SELECT COUNT(*) FROM task_submissions sx
+            WHERE sx.tenant_id=t.tenant_id AND sx.task_id=t.id) submission_count
+        FROM tasks t
+        LEFT JOIN users u ON u.tenant_id=t.tenant_id AND u.id=t.assignee_id
+        LEFT JOIN task_submissions s ON s.tenant_id=t.tenant_id AND s.task_id=t.id
+        WHERE t.tenant_id=? AND t.status IN ('待审核','已完成')`).all(tid);
+      for (const task of manualRows) {
+        if (!seededManualTask(task)
+          || Number(task.submission_count) !== 1
+          || Number(task.submission_user_id) !== Number(task.assignee_id)
+          || !DEMO_MANUAL_SUBMISSION_CONTENTS.has(String(task.submission_content || ''))
+          || task.submission_source_ref_type != null
+          || task.submission_source_ref_id != null
+          || task.reviewer_id != null
+          || task.reviewed_at != null
+          || !blankExecutionValue(task.review_reason)) continue;
+        const expected = task.status === '已完成' ? '通过' : '待审核';
+        if (task.submission_result === expected) continue;
+        const changed = db.prepare(`UPDATE task_submissions SET result=?
+          WHERE tenant_id=? AND id=? AND result=?`).run(
+          expected,
+          tid,
+          task.submission_id,
+          task.submission_result,
+        );
+        summary.manualSubmissionsReconciled += Number(changed.changes || 0);
+      }
+      if (summary.manualSubmissionsReconciled > 0 && hasTable('op_logs')) {
+        db.prepare(`INSERT INTO op_logs(
+          tenant_id,user_id,username,module,action,target,ip
+        ) VALUES(?,NULL,'system','系统升级','演示任务状态对账',?,'127.0.0.1')`).run(
+          tid,
+          `按种子指纹修正${summary.manualSubmissionsReconciled}条任务提交结果；未删除任务或提交记录`,
+        );
+      }
+    }
+
+    // 旧版内容员工路由曾把“契约失败+预授权已释放”的运行错留在
+    // 待审队列。这类记录无法采纳，也不应继续占用审核队列：升级时
+    // 将其改为可重跑的失败态。仅处理演示租户中同时命中全部矛盾
+    // 证据的行；有人工审阅、下游素材/内容或未释放 hold 的运行不改写。
+    if (hasTable('content_employee_runs')) {
+      const contentRunRows = db.prepare(`SELECT id,status,result_md,ai_mode,model,snapshot_json
+        FROM content_employee_runs
+        WHERE tenant_id=? AND status='待审阅'`).all(tid);
+      for (const row of contentRunRows) {
+        let snapshot;
+        try {
+          snapshot = JSON.parse(String(row.snapshot_json || ''));
+        } catch {
+          continue;
+        }
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) continue;
+        const nestedContract = snapshot.contract && typeof snapshot.contract === 'object'
+          && !Array.isArray(snapshot.contract)
+          ? snapshot.contract
+          : null;
+        const contractValid = typeof nestedContract?.valid === 'boolean'
+          ? nestedContract.valid
+          : snapshot.contractValid;
+        const billing = snapshot.billing && typeof snapshot.billing === 'object'
+          && !Array.isArray(snapshot.billing)
+          ? snapshot.billing
+          : null;
+        const hasReview = snapshot.review && typeof snapshot.review === 'object'
+          && !Array.isArray(snapshot.review) && Object.keys(snapshot.review).length > 0;
+        const hasHeldCredits = hasTable('credit_holds') && countIfTable(
+          'credit_holds',
+          `SELECT COUNT(*) n FROM credit_holds
+            WHERE tenant_id=? AND ref_type='content_employee_run' AND ref_id=? AND status='held'`,
+          tid,
+          row.id,
+        ) > 0;
+        if (contractValid !== false
+          || billing?.state !== 'released'
+          || !Object.hasOwn(billing, 'chargedCredits')
+          || Number(billing.chargedCredits) !== 0
+          || hasReview
+          || hasHeldCredits
+          || hasContentRunDownstream(tid, Number(row.id))) continue;
+
+        const oldResult = String(row.result_md || '');
+        const reconciledAt = new Date().toISOString();
+        snapshot.previewMarkdown = null;
+        snapshot.artifacts = [];
+        if (nestedContract) {
+          nestedContract.previewMarkdown = null;
+          nestedContract.artifacts = [];
+        }
+        snapshot.failure = {
+          kind: 'demo_reconciliation',
+          code: 'DEMO_CONTENT_RUN_CONTRACT_INVALID',
+          message: '历史演示运行的输出契约未通过，已移出待审队列；请补充或调整材料后重新派活。',
+          retryable: true,
+          failedAt: reconciledAt,
+        };
+        snapshot.reconciliation = {
+          version: 'demo-content-run-v1',
+          reason: 'invalid_contract_released_billing',
+          previousStatus: String(row.status || ''),
+          previousAiMode: row.ai_mode || null,
+          resultSha256: oldResult
+            ? crypto.createHash('sha256').update(oldResult).digest('hex')
+            : null,
+          resultLength: oldResult.length,
+          reconciledAt,
+        };
+        const changed = db.prepare(`UPDATE content_employee_runs
+          SET status='失败',result_md=NULL,ai_mode='failed',model=NULL,snapshot_json=?,
+            updated_at=datetime('now','localtime')
+          WHERE tenant_id=? AND id=? AND status='待审阅' AND snapshot_json=?`).run(
+          JSON.stringify(snapshot),
+          tid,
+          row.id,
+          row.snapshot_json,
+        );
+        summary.contentRunsReconciled += Number(changed.changes || 0);
+      }
+      if (summary.contentRunsReconciled > 0 && hasTable('op_logs')) {
+        db.prepare(`INSERT INTO op_logs(
+          tenant_id,user_id,username,module,action,target,ip
+        ) VALUES(?,NULL,'system','系统升级','演示内容员工状态对账',?,'127.0.0.1')`).run(
+          tid,
+          `将${summary.contentRunsReconciled}条“契约无效且计费已释放”的待审运行改为失败/可重跑；保留运行、计费与供应商证据`,
+        );
+      }
+    }
+
+    // 旧演示版曾把模板/降级/失败底稿连同审批单写成“待审核”，
+    // 甚至把对应自动化运行写成“成功”。只有同时命中以下不可伪造的
+    // 执行指纹才自动收口：demo 租户、不可采纳模式、零实扣、无真实
+    // 来源/下游/人工审阅证据，且来自已锁定快照的内容自动化或餐饮员工。
+    if (hasTable('contents') && hasTable('approvals')) {
+      const qualityCandidates = db.prepare(`SELECT * FROM contents
+        WHERE tenant_id=? AND status='待审核'`).all(tid);
+      for (const content of qualityCandidates) {
+        if (!DEMO_UNADOPTABLE_MODE.test(String(content.ai_mode || ''))
+          || !blankExecutionValue(content.source_type)
+          || content.source_id != null
+          || hasContentQualityDownstream(tid, Number(content.id))) continue;
+
+        const approvalRows = db.prepare(`SELECT * FROM approvals
+          WHERE tenant_id=? AND target_type='content' AND target_id=?
+          ORDER BY id`).all(tid, content.id);
+        const pendingApprovals = approvalRows.filter(row => row.status === '待审核');
+        const hasHumanReviewEvidence = approvalRows.some(row => row.status !== '待审核'
+          || row.reviewer_id != null
+          || !blankExecutionValue(row.reason)
+          || !blankExecutionValue(row.decided_at));
+        if (!pendingApprovals.length || hasHumanReviewEvidence) continue;
+
+        const automationRuns = hasTable('content_automation_runs')
+          ? db.prepare(`SELECT * FROM content_automation_runs
+            WHERE tenant_id=? AND content_id=? ORDER BY id`).all(tid, content.id)
+          : [];
+        const employeeTasks = hasTable('agent_tasks')
+          ? db.prepare(`SELECT * FROM agent_tasks
+            WHERE tenant_id=? AND output_id=? ORDER BY id`).all(tid, content.id)
+          : [];
+        const automationSnapshot = parseJsonObject(content.snapshot_json);
+        const contentEmployeeIdx = Number(content.content_employee_idx);
+        const automationOrigin = ['automation_immediate', 'automation_scheduled']
+          .includes(String(content.content_run_mode || ''))
+          && Number.isInteger(contentEmployeeIdx)
+          && contentEmployeeIdx >= 0
+          && contentEmployeeIdx <= 9
+          && !blankExecutionValue(content.profile_version)
+          && !blankExecutionValue(content.prompt_hash)
+          && Object.keys(automationSnapshot).length > 0
+          && automationRuns.length > 0
+          && employeeTasks.length === 0
+          && automationRuns.every(run => run.status === '成功'
+            && run.profile_version === content.profile_version
+            && run.prompt_hash === content.prompt_hash
+            && Object.keys(parseJsonObject(run.snapshot_json)).length > 0)
+          && !refsHaveActiveOrChargedHolds(
+            tid,
+            'content_automation_run',
+            automationRuns.map(run => Number(run.id)),
+          );
+
+        const employeeTask = employeeTasks.length === 1 ? employeeTasks[0] : null;
+        const employeeEvidence = parseJsonObject(employeeTask?.employee_web_snapshot);
+        const employeeOrigin = automationRuns.length === 0
+          && employeeTask?.status === '待审阅'
+          && !blankExecutionValue(employeeTask.employee_profile_version)
+          && !blankExecutionValue(employeeTask.employee_prompt_hash)
+          && !blankExecutionValue(employeeTask.employee_capabilities_snapshot)
+          && !blankExecutionValue(employeeTask.employee_config_snapshot)
+          && !blankExecutionValue(employeeTask.employee_skills_snapshot)
+          && employeeEvidence.kind === 'restaurant_employee_execution_evidence'
+          && employeeEvidence.web?.attempted === false
+          && employeeEvidence.outputContract?.valid === false
+          && !refsHaveActiveOrChargedHolds(tid, 'agent_task', [Number(employeeTask.id)]);
+        const origin = automationOrigin ? 'content_automation' : employeeOrigin ? 'restaurant_employee' : null;
+        if (!origin) continue;
+
+        const adoption = loadContentAdoptionAvailability(content.id, { tenantId: tid });
+        if (adoption.canAdopt) continue;
+
+        const reconciledAt = new Date().toISOString();
+        const reconciliation = {
+          version: 'demo-unadoptable-content-v1',
+          code: DEMO_QUALITY_RECONCILIATION_CODE,
+          origin,
+          retryable: true,
+          previousContentStatus: String(content.status || ''),
+          previousAiMode: String(content.ai_mode || ''),
+          approvalIds: pendingApprovals.map(row => Number(row.id)),
+          deliveryCode: adoption.state.code,
+          reconciledAt,
+        };
+        const contentSnapshot = parseJsonObject(content.snapshot_json);
+        contentSnapshot.reconciliation = reconciliation;
+        if (!contentSnapshot.failure || typeof contentSnapshot.failure !== 'object') {
+          contentSnapshot.failure = {
+            kind: 'quality_gate',
+            code: DEMO_QUALITY_RECONCILIATION_CODE,
+            message: DEMO_QUALITY_RUN_ERROR,
+            retryable: true,
+            failedAt: reconciledAt,
+          };
+        }
+        const contentChanged = db.prepare(`UPDATE contents
+          SET status='已驳回',snapshot_json=?
+          WHERE tenant_id=? AND id=? AND status='待审核' AND ai_mode=?
+            AND COALESCE(source_type,'')='' AND source_id IS NULL`).run(
+          JSON.stringify(contentSnapshot),
+          tid,
+          content.id,
+          content.ai_mode,
+        );
+        if (!contentChanged.changes) continue;
+        summary.qualityFailedContentsReconciled += Number(contentChanged.changes);
+
+        const approvalsChanged = db.prepare(`UPDATE approvals
+          SET status='已驳回',reviewer_id=NULL,reason=?,decided_at=datetime('now','localtime')
+          WHERE tenant_id=? AND target_type='content' AND target_id=? AND status='待审核'
+            AND reviewer_id IS NULL AND COALESCE(reason,'')='' AND decided_at IS NULL`).run(
+          DEMO_QUALITY_RECONCILIATION_REASON,
+          tid,
+          content.id,
+        );
+        summary.qualityFailedApprovalsReconciled += Number(approvalsChanged.changes || 0);
+
+        if (employeeOrigin) {
+          employeeEvidence.reconciliation = reconciliation;
+          employeeEvidence.failure = {
+            kind: 'quality_gate',
+            code: DEMO_QUALITY_RECONCILIATION_CODE,
+            message: DEMO_QUALITY_RUN_ERROR,
+            retryable: true,
+            failedAt: reconciledAt,
+          };
+          const taskChanged = db.prepare(`UPDATE agent_tasks
+            SET status='失败',employee_web_snapshot=?
+            WHERE tenant_id=? AND id=? AND status='待审阅'`).run(
+            JSON.stringify(employeeEvidence),
+            tid,
+            employeeTask.id,
+          );
+          summary.qualityFailedAgentTasksReconciled += Number(taskChanged.changes || 0);
+        }
+
+        if (automationOrigin) {
+          for (const run of automationRuns) {
+            const runSnapshot = parseJsonObject(run.snapshot_json);
+            runSnapshot.reconciliation = reconciliation;
+            const runChanged = db.prepare(`UPDATE content_automation_runs
+              SET status='失败',snapshot_json=?,error=?,
+                finished_at=COALESCE(finished_at,datetime('now','localtime'))
+              WHERE tenant_id=? AND id=? AND status='成功'`).run(
+              JSON.stringify(runSnapshot),
+              DEMO_QUALITY_RUN_ERROR,
+              tid,
+              run.id,
+            );
+            summary.qualityFailedAutomationRunsReconciled += Number(runChanged.changes || 0);
+            if (runChanged.changes && hasTable('content_automation_rules')) {
+              db.prepare(`UPDATE content_automation_rules
+                SET last_status='失败',last_error=?,updated_at=datetime('now','localtime')
+                WHERE tenant_id=? AND id=? AND last_content_id=?`).run(
+                DEMO_QUALITY_RUN_ERROR,
+                tid,
+                run.rule_id,
+                content.id,
+              );
+            }
+          }
+        }
+      }
+      if (summary.qualityFailedContentsReconciled > 0 && hasTable('op_logs')) {
+        db.prepare(`INSERT INTO op_logs(
+          tenant_id,user_id,username,module,action,target,ip
+        ) VALUES(?,NULL,'system','系统升级','演示无效审批质量对账',?,'127.0.0.1')`).run(
+          tid,
+          `收口不可采纳内容${summary.qualityFailedContentsReconciled}条、审批${summary.qualityFailedApprovalsReconciled}条、餐饮员工任务${summary.qualityFailedAgentTasksReconciled}条、自动化运行${summary.qualityFailedAutomationRunsReconciled}条；未删除任何记录`,
+        );
+      }
+    }
+
+    // 内容生产仓的演示占位稿尚未填入真实正文，不应进入“待审核”队列。
+    // 任何已关联审批、发布或资产的内容都不在自动修复范围内。
+    const drafted = db.prepare(`UPDATE contents AS c SET status='草稿'
+      WHERE c.tenant_id=? AND c.ai_mode='template' AND c.status='待审核'
+        AND c.body LIKE '【待企业核验的内容草案】%'
+        AND COALESCE(c.snapshot_json,'')='' AND COALESCE(c.profile_version,'')=''
+        AND COALESCE(c.prompt_hash,'')='' AND c.source_type IS NULL AND c.source_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM approvals a
+          WHERE a.tenant_id=c.tenant_id AND a.target_type='content' AND a.target_id=c.id)
+        AND NOT EXISTS (SELECT 1 FROM content_publish_logs p
+          WHERE p.tenant_id=c.tenant_id AND p.content_id=c.id)
+        AND NOT EXISTS (SELECT 1 FROM biz_assets b
+          WHERE b.tenant_id=c.tenant_id AND b.source_type='content' AND b.source_id=c.id
+            AND NOT (b.status='已归档' AND b.note=?))`).run(tid, DEMO_RECONCILED_ASSET_NOTE);
+    summary.draftsRepaired += Number(drafted.changes || 0);
+
+    if (hasTable('notifications')) {
+      const removed = db.prepare(`DELETE FROM notifications
+        WHERE tenant_id=? AND user_id=(SELECT id FROM users WHERE tenant_id=? AND username='guan')
+          AND type='approval' AND title='3条高风险内容待您终审'
+          AND body='含未经确认的价格与活动表述，请尽快处理'`).run(tid, tid);
+      summary.notificationsRemoved += Number(removed.changes || 0);
+    }
+    db.exec('COMMIT');
+    return summary;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    throw error;
+  }
+}
+
+export function reconcileDemoSeedPlaceholdersAcrossTenants() {
+  if (!hasTable('tenants')) return [];
+  return db.prepare(`SELECT id FROM tenants WHERE data_mode='demo' ORDER BY id`).all()
+    .map(({ id }) => {
+      try {
+        return runWithTenant(id, () => reconcileDemoSeedPlaceholders({ tenantId: id }));
+      } catch (error) {
+        return { tenantId: Number(id), error: String(error?.message || error).slice(0, 500) };
+      }
+    });
+}
 
 export function seed() {
   initSchema();
@@ -31,6 +709,22 @@ export function seed() {
   ];
   for (const [u, n, r, d, p] of users)
     q.run(`INSERT INTO users(username,password_hash,name,role,dept,phone,last_login_at) VALUES(?,?,?,?,?,?,datetime('now','localtime'))`, u, hashPassword('123456'), n, r, d, p);
+
+  // 演示库第一次启动就必须具备真实的三级组织树，不能依赖“下次重启时迁移回填”。
+  // 老板可向管理层下达任务，管理层只可继续分派给自己的启用成员。
+  const demoBoss = q.get(`SELECT id FROM users WHERE tenant_id=? AND username='guan'`, curTenant());
+  const demoOps = q.get(`SELECT id FROM users WHERE tenant_id=? AND username='yunying'`, curTenant());
+  if (!demoBoss || !demoOps) throw new Error('演示组织负责人初始化失败，已取消本次生成');
+  const linkedOps = q.run(`UPDATE users SET manager_id=?
+    WHERE tenant_id=? AND username='yunying'`, demoBoss.id, curTenant());
+  const linkedStaff = q.run(`UPDATE users SET manager_id=?
+    WHERE tenant_id=? AND role IN ('sales','partner')`, demoOps.id, curTenant());
+  q.run(`UPDATE users SET manager_id=?
+    WHERE tenant_id=? AND username='admin'`, demoBoss.id, curTenant());
+  const expectedStaffLinks = users.filter(([, , role]) => ['sales', 'partner'].includes(role)).length;
+  if (linkedOps.changes !== 1 || linkedStaff.changes !== expectedStaffLinks) {
+    throw new Error('演示组织层级初始化不完整，已取消本次生成');
+  }
   const salesIds = [3, 4, 5];
 
   // ===== 推广伙伴（沿用 partners 表的兼容名称） =====
@@ -180,38 +874,9 @@ export function seed() {
       (i % 2) + 1, l.id, pk(['待邀约', '已邀约', '已报名', '已报名']));
   });
 
-  // ===== 员工任务 =====
-  const employeeTasks = [
-    [101, '新店开业30天行动清单', '开店计划', '已完成', '基于当前门店目标整理开业动作', '输出筹备里程碑、负责人、截止时间与验收口径。'],
-    [108, '本周招牌菜组合建议', '菜单方案', '待审阅', '结合当前销售结构优化菜单', '输出保留、调整与试卖菜品清单，并标注待厨师长确认项。'],
-    [116, '后厨日常食安检查表', '食安检查', '已完成', '建立班前、班中、闭店检查', '输出温控、留样、清洁与异常上报检查表。'],
-    [125, '核心食材供应风险盘点', '供应链', '执行中', '盘点近7日缺货与价格波动', '任务仍在执行，尚无可验证结论。'],
-    [132, '午市高峰排班优化', '门店运营', '已完成', '基于当前客流曲线给出排班动作', '输出11:00—14:00岗位分工、补位规则与现场检查点。'],
-    [140, '七天短视频选题表', '内容增长', '待审阅', '围绕招牌菜与老板日常生成选题', '输出7个选题、镜头提示、口播要点与发布检查项。'],
-    [147, '本月现金流滚动表', '财务分析', '已完成', '基于当前收入成本记录建立滚动预测', '输出未来4周现金流口径、缺口预警与需人工核对的数据项。'],
-    [150, '单店Prime Cost诊断', '成本分析', '已完成', '核对食材与人工两项核心成本', '输出成本结构、异常区间和三项可执行核查动作。'],
-    [153, '午晚餐与渠道分群分析', '经营分析', '已完成', '按餐段和渠道透视当前订单', '输出午市、晚市、到店、外卖四组对比和可穿透明细索引。'],
-    [154, '上周经营复盘与本周动作', '经营复盘', '已完成', '汇总经营KPI与员工任务记录', '输出核心判断、数据依据、三项动作、负责人和检查标准。'],
-    [155, '第二家店复制条件清单', '连锁评估', '待审阅', '评估组织、供应链与现金流准备度', '输出可复制条件、暂不具备条件与老板拍板事项。'],
-    [160, '周末会员日活动作战板', '活动策划', '执行中', '统筹活动目标、内容与现场执行', '任务仍在执行，尚无可验证结论。'],
-  ];
-  for (const [employeeIdx, title, type, status, requirement, output] of employeeTasks) {
-    const employee = q.get('SELECT id specialist_id,marshal_id FROM specialists WHERE employee_idx=?', employeeIdx);
-    if (!employee) throw new Error(`演示任务找不到餐饮数字员工：${employeeIdx}`);
-    let outputId = null;
-    if (status !== '执行中') {
-      outputId = q.run(`INSERT INTO contents(type,title,body,status,ai_mode,creator_id,marshal_id,created_at)
-        VALUES('员工产出',?,?,'待审核','template',2,?,?)`, title, `【待企业核验的岗位交付草案】\n${output}\n输入依据：${requirement}\n本记录需由有权限的企业负责人审核后，方可决定是否采用。`, employee.marshal_id,
-        `${daysAgo(ri(0, 3))} ${ri(7, 18)}:20:00`).lastInsertRowid;
-    }
-    q.run(`INSERT INTO agent_tasks(marshal_id,specialist_id,title,type,requirement,status,output_id,created_by,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?)`, employee.marshal_id, employee.specialist_id, title, type, requirement, status, outputId, 2,
-      `${daysAgo(ri(0, 3))} ${ri(7, 18)}:30:00`);
-  }
-  q.run(`INSERT INTO agent_tasks(marshal_id,specialist_id,title,type,status,is_collab,collab_marshals,created_by)
-    VALUES((SELECT marshal_id FROM specialists WHERE employee_idx=108),(SELECT id FROM specialists WHERE employee_idx=108),'夏季菜单上新协同','菜单战役','执行中',1,'M-02,M-03,M-04,M-05,M-06',1)`);
-  q.run(`INSERT INTO agent_tasks(marshal_id,specialist_id,title,type,status,is_collab,collab_marshals,created_by)
-    VALUES((SELECT marshal_id FROM specialists WHERE employee_idx=154),(SELECT id FROM specialists WHERE employee_idx=154),'周经营复盘协同','经营复盘','执行中',1,'M-05,M-06,M-07',1)`);
+  // ===== 数字员工任务 =====
+  // 新演示库不预造“已完成 / 待审阅 / 执行中”的假运行记录。
+  // 用户真正派活后，任务、调用快照、计费、产出和审批才由执行链路一次生成。
 
   // ===== 餐饮门店待核验知识库 =====
   const kbs = [
@@ -239,7 +904,7 @@ export function seed() {
       q.run(`INSERT INTO contents(type,title,body,topic,status,risk_level,ai_mode,creator_id,marshal_id,channel,effect_views,effect_leads,created_at)
              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         type, `${topic}·${type}${i + 1}`, `【待企业核验的内容草案】\n主题：${topic}\n交付类型：${type}\n请结合企业真实材料补全正文，并由有权限的负责人审核后决定是否使用或发布。`,
-        topic, '待审核', type === '活动文案' ? 'medium' : 'none', 'template',
+        topic, '草稿', type === '活动文案' ? 'medium' : 'none', 'template',
         pk([2, 3, 4]), type.includes('素材包') ? 8 : type === '活动文案' ? 6 : 3,
         null, 0, 0,
         `${daysAgo(ri(0, 30))} ${ri(7, 21)}:${ri(10, 59)}:00`);
@@ -284,26 +949,14 @@ export function seed() {
       pk([2, 3, 4, 5]), `${daysAgo(ri(0, 6))} 18:00`, pk(['作战计划', '手动', '数字员工']),
       `${daysAgo(ri(1, 9))} 08:30:00`, st === '已完成' ? `${daysAgo(ri(0, 5))} 16:00:00` : null);
   }
-  const doneTasks = q.all(`SELECT id, assignee_id FROM tasks WHERE status IN ('已完成','待审核') LIMIT 18`);
+  const doneTasks = q.all(`SELECT id, assignee_id, status FROM tasks WHERE status IN ('已完成','待审核') LIMIT 18`);
   for (const t of doneTasks)
     q.run('INSERT INTO task_submissions(task_id,user_id,content,result,created_at) VALUES(?,?,?,?,?)',
       t.id, t.assignee_id, pk(['已完成，截图见素材库', '已按SOP执行，结果回写CRM', '完成80%，剩余明日上午收尾', '已完成并同步相关同事']),
-      pk(['通过', '通过', '待审核']), `${daysAgo(ri(0, 3))} ${ri(15, 21)}:00:00`);
+      t.status === '已完成' ? '通过' : '待审核', `${daysAgo(ri(0, 3))} ${ri(15, 21)}:00:00`);
 
   // ===== 审批队列 =====
-  const approvals = [
-    ['content', '社区联名活动朋友圈（含合作政策表述）', '命中规则：未经确认的收益描述', 'high', '["INVEST_RETURN"]', '待审核', 4],
-    ['content', '季节限定套餐功效文案', '命中规则：绝对化用语', 'medium', '["ABS_WORD"]', '待审核', 3],
-    ['content', '企业团餐报价沟通话术', '命中规则：价格承诺', 'high', '["PRICE_PROMISE"]', '待审核', 5],
-    ['quote', '客户王建华企业团餐方案（金额¥5,800）', '大额方案需老板终审', 'high', '[]', '待审核', 3],
-    ['content', '商圈联合会员日邀请函', '活动对外文案需审核', 'medium', '["FORCE"]', '已通过', 2],
-    ['content', '招牌套餐短视频脚本（含"最适合"表述）', '命中规则：绝对化用语', 'medium', '["ABS_WORD"]', '已驳回', 4],
-  ];
-  for (const [tt, title, sum, lv, rules, st, sub] of approvals)
-    q.run(`INSERT INTO approvals(target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,reviewer_id,decided_at,created_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-      tt, ri(1, 60), title, sum, lv, rules, st, sub, st === '待审核' ? null : 1,
-      st === '待审核' ? null : `${daysAgo(ri(0, 2))} 11:00:00`, `${daysAgo(ri(0, 2))} 09:${ri(10, 59)}:00`);
+  // 审批必须由真实业务对象提交时创建，演示种子不再用随机 ID 伪造待审事项。
 
   // ===== 数据资产 =====
   const assetSeed = [
@@ -317,7 +970,8 @@ export function seed() {
         n, cat, v, '使用中', ri(20, 200), '总部', daysAgo(ri(20, 100)));
   // 内容资产：从 contents 自动登记
   const baseVal = { '短视频脚本': 200, '朋友圈文案': 50, '社群话题': 40, '私聊邀约话术': 60, '活动文案': 150, '会员复购文案': 80, '员工每日素材包': 120, 'AI图片': 100, 'AIPPT': 300, 'AI音频': 150 };
-  const okContents = q.all(`SELECT id,type,title,effect_leads,created_at FROM contents WHERE status IN ('可使用','已发布')`);
+  const okContents = q.all(`SELECT id,type,title,effect_leads,created_at FROM contents
+    WHERE status IN ('可使用','已发布') AND COALESCE(ai_mode,'')<>'template'`);
   for (const c of okContents)
     q.run('INSERT INTO biz_assets(name,category,value,status,use_count,owner,source_type,source_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
       c.title, '内容资产', Math.round((baseVal[c.type] || 50) * (1 + c.effect_leads * 0.1)), pk(['使用中', '使用中', '闲置']),
@@ -348,7 +1002,6 @@ export function seed() {
 
   // ===== 通知与日志 =====
   const notifs = [
-    [1, 'approval', '3条高风险内容待您终审', '含未经确认的价格与活动表述，请尽快处理'],
     [1, 'lead', '企业团餐客户提醒：王建华（82分）建议您亲自跟进', '预算与用餐时间待确认'],
     [2, 'partner', '8位推广伙伴连续2日无动作', '已生成提醒任务'],
     [3, 'follow', '今日待跟进客户 12 人，其中 3 人已超期', '请优先处理超期客户'],
@@ -386,7 +1039,7 @@ export function seed() {
   rescoreAll();
   generateBattlePlan(today());
   generateWeeklyReview(today());
-  console.log('[seed] 完成：演示用户6 / 推广伙伴28 / 线索480 / 经营数据121天 / 活动14 / 内容128 / 餐饮数字员工60');
+  console.log('[seed] 完成：演示用户6 / 推广伙伴28 / 线索480 / 经营数据121天 / 活动14 / 内容草稿120 / 餐饮数字员工编制60 / 预造员工任务0');
 }
 
 if (process.argv[1] && process.argv[1].endsWith('seed.js')) {

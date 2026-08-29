@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +50,7 @@ const CONNECTOR_STATUS_BY_MODE = Object.freeze({
   employee_generation: 'single_station',
 });
 const ALLOWED_LIVE_DATA_REQUIREMENTS = new Set(['required', 'optional', 'not_required']);
+const SOURCE_FINGERPRINT_ALGORITHM = 'sha256-json-utf8';
 
 function fail(message) {
   throw new Error(`内容生产仓目录无效：${message}`);
@@ -67,6 +69,18 @@ function exactKeys(value, allowed, label) {
   if (extras.length) fail(`${label}包含非白名单字段：${extras.join('、')}`);
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function jsonFingerprint(value) {
+  return `sha256:${sha256(JSON.stringify(value))}`;
+}
+
+function textFingerprint(value) {
+  return `sha256:${sha256(value)}`;
+}
+
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   Object.freeze(value);
@@ -78,26 +92,9 @@ function normalizeCurrentProjectContentWording(value) {
   const normalized = structuredClone(value);
   for (const employee of normalized.employees || []) {
     const replaceLegacyLabels = input => String(input || '')
-      .replaceAll('生成正文配图(V1:SVG 信息图)', '生成正文配图与SVG信息图')
       .replaceAll(
-        'V1 适配层用联网检索近似替代平台爬虫;商业授权闭环后切换为真实采集',
-        '当前运行使用已接通的联网检索核验公开信息;未授权的平台账号或采集连接器不得冒充已经执行',
-      )
-      .replaceAll(
-        '对应开源 Skill:Auto-Redbook-Skills,V1 只用其文案生成职责',
-        '对应开源 Skill:Auto-Redbook-Skills;本岗位完整承担文案生成职责',
-      )
-      .replaceAll(
-        'V1 未接 muapi.ai 付费生图,用精美 SVG 信息图/插画本地渲染,零成本;接入后可切换 AI 生图',
-        '按当前已启用连接器生成视觉素材;没有外部生图连接器时使用可审阅的 SVG 信息图,不得冒充外部生图已经完成',
-      )
-      .replaceAll(
-        'V1 未托管真实平台账号,产出"各平台完整发布包",老板一键复制/打包上传;\n 绑定平台 Cookie 后可切换为真实自动发布',
-        '默认产出各平台完整发布包并进入人工终审;只有账号已授权且发布连接器明确启用时才允许执行平台操作',
-      )
-      .replaceAll(
-        'V1 未接真实平台数据回流,产出"发布后复盘计划+预测性复盘";接入采集后切换为 T+1/3/7 真实数据',
-        '有真实平台数据时按 T+1/3/7 复盘;没有数据时只形成复盘计划和待补数据清单,不得把预测冒充真实成效',
+        '材料不足就合理假设并标注「假设」',
+        '材料不足就列出待确认项,不得猜测、补写或暗示任何未提供事实',
       );
     employee.duty = replaceLegacyLabels(employee.duty);
     if (employee.workMethod?.output) {
@@ -125,11 +122,27 @@ export function validateContentCrewCatalog(value) {
     fail('审查官必须是独立quality_gate服务，不能计入员工总数');
   }
   if (value.qualityGate?.idx !== undefined && value.qualityGate?.idx !== null) fail('审查官不能拥有员工idx');
+  objectValue(value.source, 'source');
+  if (!/^[a-f0-9]{64}$/u.test(value.source.referenceSha256 || '')) {
+    fail('source.referenceSha256不正确');
+  }
+  if (value.source.sourceFingerprintAlgorithm !== SOURCE_FINGERPRINT_ALGORITHM) {
+    fail('source.sourceFingerprintAlgorithm不正确');
+  }
+  if (value.source.capabilityCount !== 45 || value.source.promptCount !== 10) {
+    fail('source必须声明45项源能力与10份源提示词');
+  }
+  if (!/^sha256:[a-f0-9]{64}$/u.test(value.source.capabilitySetFingerprint || '')
+    || !/^sha256:[a-f0-9]{64}$/u.test(value.source.promptSetFingerprint || '')) {
+    fail('source源字段集合指纹不正确');
+  }
 
   const idxSet = new Set();
   const keySet = new Set();
   const connectorKindSet = new Set();
   const groupMembership = new Map();
+  const sourceCapabilitiesByRole = {};
+  const sourcePromptsByRole = {};
   let capabilityTotal = 0;
   for (const group of value.moduleGroups) {
     nonEmpty(group?.key, '模块分组key');
@@ -164,8 +177,30 @@ export function validateContentCrewCatalog(value) {
         fail(`员工${idx}核心能力必须required/enabled/locked`);
       }
       if (capabilityNames.has(capability.name)) fail(`员工${idx}能力名称重复：${capability.name}`);
+      objectValue(capability.sourceDefinition, `员工${idx}.capability.sourceDefinition`);
+      exactKeys(
+        capability.sourceDefinition,
+        ['name', 'emoji', 'desc'],
+        `员工${idx}.capability.sourceDefinition`,
+      );
+      for (const field of ['name', 'emoji', 'desc']) {
+        nonEmpty(
+          capability.sourceDefinition[field],
+          `员工${idx}.capability.sourceDefinition.${field}`,
+        );
+      }
+      if (capability.sourceDefinition.name !== capability.name
+        || capability.sourceDefinition.emoji !== capability.emoji) {
+        fail(`员工${idx}能力源定义与当前安全视图错位`);
+      }
+      if (capability.sourceFingerprint !== jsonFingerprint(capability.sourceDefinition)) {
+        fail(`员工${idx}能力${capability.name}源指纹不一致`);
+      }
       capabilityNames.add(capability.name);
     }
+    sourceCapabilitiesByRole[employee.key] = employee.capabilities.map(
+      capability => capability.sourceDefinition,
+    );
     capabilityTotal += employee.capabilities.length;
     if (!Array.isArray(employee.outputKeys) || !employee.outputKeys.length || employee.outputKeys.some(keyName => typeof keyName !== 'string' || !keyName)) {
       fail(`员工${idx}的outputKeys不完整`);
@@ -187,6 +222,12 @@ export function validateContentCrewCatalog(value) {
     if (!Array.isArray(employee.pipelinePrompt.assemblyOrder) || employee.pipelinePrompt.assemblyOrder.length < 6) {
       fail(`员工${idx}.pipelinePrompt.assemblyOrder不完整`);
     }
+    nonEmpty(employee.pipelinePrompt.sourceTemplate, `员工${idx}.pipelinePrompt.sourceTemplate`);
+    if (employee.pipelinePrompt.sourceFingerprint
+      !== textFingerprint(employee.pipelinePrompt.sourceTemplate)) {
+      fail(`员工${idx}.pipelinePrompt.sourceFingerprint不一致`);
+    }
+    sourcePromptsByRole[employee.key] = employee.pipelinePrompt.sourceTemplate;
     objectValue(employee.soloPrompt, `员工${idx}.soloPrompt`);
     if (employee.soloPrompt.messageMode !== 'single_user') fail(`员工${idx}.soloPrompt.messageMode不正确`);
     nonEmpty(employee.soloPrompt.template, `员工${idx}.soloPrompt.template`);
@@ -296,8 +337,18 @@ export function validateContentCrewCatalog(value) {
       || employee.sourceProvenance.legacyIdx !== idx) {
       fail(`员工${idx}.sourceProvenance不一致`);
     }
+    if (employee.sourceProvenance.sourceCapabilitySetFingerprint
+      !== jsonFingerprint(sourceCapabilitiesByRole[employee.key])
+      || employee.sourceProvenance.sourcePromptFingerprint
+        !== employee.pipelinePrompt.sourceFingerprint) {
+      fail(`员工${idx}.sourceProvenance源字段指纹不一致`);
+    }
   }
   if (capabilityTotal !== 45) fail(`核心能力总数必须为45，当前${capabilityTotal}`);
+  if (value.source.capabilitySetFingerprint !== jsonFingerprint(sourceCapabilitiesByRole)
+    || value.source.promptSetFingerprint !== jsonFingerprint(sourcePromptsByRole)) {
+    fail('source源字段集合指纹与10岗目录不一致');
+  }
   if (connectorKindSet.size !== 13) fail(`连接器必须恰好13种，当前${connectorKindSet.size}`);
   if (groupMembership.size !== 10 || [...idxSet].some(idx => !groupMembership.has(idx))) fail('模块分组没有完整覆盖10名员工');
   const deck = value.employees[7];
@@ -322,6 +373,166 @@ export function loadContentCrewCatalog(catalogPath = CONTENT_CREW_CATALOG_PATH) 
 
 export const CONTENT_CREW = loadContentCrewCatalog();
 export const CONTENT_EMPLOYEES = CONTENT_CREW.employees;
+
+/**
+ * Native content employees are deliberately kept outside `employees`.
+ *
+ * `employees` is the immutable 10-role Paihuo source snapshot and several
+ * parity tests intentionally lock its count, source fingerprints and indexes.
+ * A NanoWork-native role must therefore be additive: it joins the runtime
+ * roster without changing the source snapshot or re-numbering 0-9.
+ */
+function validateNativeContentEmployee(value) {
+  objectValue(value, '原生内容员工');
+  if (value.idx !== 10 || value.key !== 'commerce_video' || value.name !== 'AI带货员') {
+    fail('原生内容员工必须是10/commerce_video/AI带货员');
+  }
+  if (value.person !== null) fail('原生内容员工person必须为null');
+  for (const field of [
+    'group', 'moduleGroup', 'skill', 'emoji', 'color', 'duty', 'intro', 'approval',
+  ]) nonEmpty(value[field], `原生内容员工.${field}`);
+  if (value.optional !== false || !APPROVALS.has(value.approval)) {
+    fail('原生内容员工optional/approval不正确');
+  }
+  if (!Array.isArray(value.capabilities) || value.capabilities.length < 3) {
+    fail('原生内容员工capabilities不完整');
+  }
+  const capabilityNames = new Set();
+  const sourceCapabilities = [];
+  for (const [index, capability] of value.capabilities.entries()) {
+    for (const field of ['name', 'emoji', 'desc']) {
+      nonEmpty(capability?.[field], `原生内容员工.capabilities.${index}.${field}`);
+    }
+    if (capability.required !== true || capability.enabled !== true || capability.locked !== true) {
+      fail(`原生内容员工能力${capability.name}必须required/enabled/locked`);
+    }
+    if (capabilityNames.has(capability.name)) fail(`原生内容员工能力名称重复：${capability.name}`);
+    objectValue(capability.sourceDefinition, `原生内容员工能力${capability.name}.sourceDefinition`);
+    exactKeys(capability.sourceDefinition, ['name', 'emoji', 'desc'], `原生内容员工能力${capability.name}.sourceDefinition`);
+    if (JSON.stringify(capability.sourceDefinition) !== JSON.stringify({
+      name: capability.name,
+      emoji: capability.emoji,
+      desc: capability.desc,
+    })) fail(`原生内容员工能力${capability.name}源定义与当前能力错位`);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(String(capability.sourceFingerprint || ''))) {
+      fail(`原生内容员工能力${capability.name}源指纹不正确`);
+    }
+    if (capability.sourceFingerprint !== jsonFingerprint(capability.sourceDefinition)) {
+      fail(`原生内容员工能力${capability.name}源指纹不一致`);
+    }
+    capabilityNames.add(capability.name);
+    sourceCapabilities.push(capability.sourceDefinition);
+  }
+  if (!Array.isArray(value.outputKeys) || value.outputKeys.length < 3
+    || value.outputKeys.some(key => typeof key !== 'string' || !key.trim())) {
+    fail('原生内容员工outputKeys不完整');
+  }
+  objectValue(value.skillProfile, '原生内容员工.skillProfile');
+  if (value.skillProfile.employeeIdx !== 10
+    || value.skillProfile.expectedSkillCount !== 0
+    || value.skillProfile.verificationStatus !== 'native_verified') {
+    fail('原生内容员工.skillProfile不完整');
+  }
+  for (const promptKey of ['pipelinePrompt', 'soloPrompt']) objectValue(value[promptKey], `原生内容员工.${promptKey}`);
+  if (value.pipelinePrompt.messageMode !== 'single_user'
+    || value.soloPrompt.messageMode !== 'single_user') {
+    fail('原生内容员工提示词必须是single_user');
+  }
+  nonEmpty(value.pipelinePrompt.template, '原生内容员工.pipelinePrompt.template');
+  nonEmpty(value.pipelinePrompt.sourceTemplate, '原生内容员工.pipelinePrompt.sourceTemplate');
+  if (value.pipelinePrompt.sourceFingerprint !== textFingerprint(value.pipelinePrompt.sourceTemplate)) {
+    fail('原生内容员工.pipelinePrompt.sourceFingerprint不一致');
+  }
+  nonEmpty(value.soloPrompt.template, '原生内容员工.soloPrompt.template');
+  objectValue(value.soloPrompt.placeholders, '原生内容员工.soloPrompt.placeholders');
+  objectValue(value.placeholders, '原生内容员工.placeholders');
+  for (const field of ['input', 'execution', 'output', 'approval', 'handoff']) {
+    objectValue(value.workMethod?.[field], `原生内容员工.workMethod.${field}`);
+  }
+  nonEmpty(value.workMethod.execution.handler, '原生内容员工.workMethod.execution.handler');
+  nonEmpty(value.workMethod.output.duty, '原生内容员工.workMethod.output.duty');
+  objectValue(value.defaultWorkConfig, '原生内容员工.defaultWorkConfig');
+  objectValue(value.defaultWorkConfig.common, '原生内容员工.defaultWorkConfig.common');
+  objectValue(value.defaultWorkConfig.roleSpecific, '原生内容员工.defaultWorkConfig.roleSpecific');
+  if (value.defaultWorkConfig.common.capabilitiesRequired !== true
+    || value.defaultWorkConfig.common.capabilitiesEnabled !== true
+    || value.defaultWorkConfig.common.capabilitiesLocked !== true) {
+    fail('原生内容员工defaultWorkConfig没有锁定核心能力');
+  }
+  objectValue(value.dispatchForm, '原生内容员工.dispatchForm');
+  if (!Array.isArray(value.dispatchForm.fields)
+    || !value.dispatchForm.fields.some(field => field?.key === 'direction' && field.required === true)) {
+    fail('原生内容员工dispatchForm缺少必填任务目标');
+  }
+  objectValue(value.outputSchema, '原生内容员工.outputSchema');
+  if (value.outputSchema.format !== 'json_object'
+    || JSON.stringify(value.outputSchema.keys) !== JSON.stringify(value.outputKeys)
+    || !value.outputSchema.contract.includes('"facts"')) {
+    fail('原生内容员工outputSchema不完整');
+  }
+  objectValue(value.connectorPolicy, '原生内容员工.connectorPolicy');
+  if (!Array.isArray(value.connectorPolicy.connectors) || value.connectorPolicy.connectors.length < 2) {
+    fail('原生内容员工connectorPolicy不完整');
+  }
+  const connectorKinds = new Set();
+  for (const connector of value.connectorPolicy.connectors) {
+    objectValue(connector, '原生内容员工.connector');
+    exactKeys(
+      connector,
+      ['kind', 'primary', 'addon', 'legacyHandler', 'newProjectStatus', 'status', 'mode', 'requirements', 'executeBoundary'],
+      '原生内容员工.connector',
+    );
+    for (const field of ['kind', 'newProjectStatus', 'status', 'mode', 'executeBoundary']) nonEmpty(connector[field], `原生内容员工.connector.${field}`);
+    if (connectorKinds.has(connector.kind)) fail(`原生内容员工连接器重复：${connector.kind}`);
+    connectorKinds.add(connector.kind);
+    if (connector.newProjectStatus !== connector.status
+      || !ALLOWED_CONNECTOR_STATUSES.has(connector.status)
+      || !ALLOWED_CONNECTOR_MODES.has(connector.mode)
+      || CONNECTOR_STATUS_BY_MODE[connector.mode] !== connector.status) {
+      fail(`原生内容员工连接器${connector.kind}状态或模式不正确`);
+    }
+    if (typeof connector.primary !== 'boolean' || typeof connector.addon !== 'boolean') {
+      fail(`原生内容员工连接器${connector.kind}主附状态不完整`);
+    }
+    objectValue(connector.requirements, `原生内容员工连接器${connector.kind}.requirements`);
+    if (!Array.isArray(connector.requirements.inputs) || !connector.requirements.inputs.length
+      || !ALLOWED_LIVE_DATA_REQUIREMENTS.has(connector.requirements.liveData)
+      || !Array.isArray(connector.requirements.credentials)
+      || !APPROVALS.has(connector.requirements.humanApproval)) {
+      fail(`原生内容员工连接器${connector.kind}requirements不完整`);
+    }
+  }
+  objectValue(value.sourceProvenance, '原生内容员工.sourceProvenance');
+  if (value.sourceProvenance.native !== true || value.sourceProvenance.legacyIdx !== 10
+    || value.sourceProvenance.sourceCapabilitySetFingerprint !== jsonFingerprint(sourceCapabilities)
+    || value.sourceProvenance.sourcePromptFingerprint !== value.pipelinePrompt.sourceFingerprint) {
+    fail('原生内容员工sourceProvenance不完整');
+  }
+  objectValue(value.systemPrompt, '原生内容员工.systemPrompt');
+  if (value.systemPrompt.messageMode !== 'none' || value.systemPrompt.template !== null) {
+    fail('原生内容员工systemPrompt必须忠实记录单用户运行模式');
+  }
+  nonEmpty(value.systemPrompt.reason, '原生内容员工.systemPrompt.reason');
+  objectValue(value.runtime, '原生内容员工.runtime');
+  objectValue(value.permissions, '原生内容员工.permissions');
+  if (!Array.isArray(value.permissions.profileAudience) || value.permissions.mayDisableRequiredCapabilities !== false) {
+    fail('原生内容员工.permissions不完整');
+  }
+  return deepFreeze(value);
+}
+
+export const NATIVE_CONTENT_EMPLOYEES = deepFreeze(
+  (CONTENT_CREW.nativeEmployees || []).map(validateNativeContentEmployee),
+);
+if (NATIVE_CONTENT_EMPLOYEES.length !== 1) fail('必须恰好包含1名原生内容员工');
+
+// Runtime roster is additive; the legacy export remains the 10-role source
+// snapshot for all parity and source-fingerprint consumers.
+export const CONTENT_EMPLOYEE_ROSTER = deepFreeze([
+  ...CONTENT_EMPLOYEES,
+  ...NATIVE_CONTENT_EMPLOYEES,
+]);
+export const CONTENT_EMPLOYEES_WITH_NATIVE = CONTENT_EMPLOYEE_ROSTER;
 
 export function validateEmployeeSkillCatalog(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('技能目录根节点必须是对象');
@@ -421,7 +632,7 @@ for (const employee of CONTENT_EMPLOYEES) {
   }
 }
 
-const BY_IDX = new Map(CONTENT_EMPLOYEES.map(employee => [employee.idx, employee]));
+const BY_IDX = new Map(CONTENT_EMPLOYEE_ROSTER.map(employee => [employee.idx, employee]));
 
 export class ContentEmployeeSelectionError extends Error {
   constructor(message) {
@@ -479,9 +690,13 @@ export function publicContentCrew() {
       referenceSha256: CONTENT_CREW.source.referenceSha256,
     },
     department: CONTENT_CREW.department,
+    // `department.employeeTotal` intentionally remains the immutable Paihuo
+    // source count (10). The additive roster count is explicit and is what
+    // the content warehouse UI/runtime should display.
+    rosterEmployeeTotal: CONTENT_EMPLOYEE_ROSTER.length,
     moduleGroups: CONTENT_CREW.moduleGroups,
     qualityGate: CONTENT_CREW.qualityGate,
-    employees: CONTENT_CREW.employees.map(employee => ({
+    employees: CONTENT_EMPLOYEE_ROSTER.map(employee => ({
       idx: employee.idx,
       key: employee.key,
       person: employee.person,
@@ -499,6 +714,6 @@ export function publicContentCrew() {
       outputKeys: employee.outputKeys,
       connectorPolicy: employee.connectorPolicy,
     })),
-    executionBoundary: '10位内容员工均有完整工作台和单独派活能力；这不表示十个工位已经自动串行执行。',
+    executionBoundary: '10位Paihuo来源员工 + 1位NanoWork原生AI带货员均有独立工作台和单独派活能力；这不表示十个工位已经自动串行执行，也不表示完整团队已经自动串行执行。',
   };
 }

@@ -4,6 +4,7 @@ import { db, q, curTenant } from '../db.js';
 import { logOp, today } from '../util.js';
 import { embedDoc } from '../engines/rag.js';
 import { archiveAndDelete, tableRows } from '../engines/deletion.js';
+import { loadKbDocSupersession } from '../engines/delivery-state.js';
 
 const r = Router();
 const MANAGER_ROLES = new Set(['boss', 'ops_director', 'admin']);
@@ -631,6 +632,7 @@ function importRow(target, row, user) {
     if (candidates.length > 1) throw new Error(`知识“${title}”在“${category}”分类下存在重名，请先合并或重命名后再导入`);
     const existed = candidates[0] || null;
     if (existed) {
+      assertKnowledgeMutationAllowed(target, existed.id);
       const before = businessRecord('knowledge', existed.id);
       updateProvided('kb_docs', existed.id, row, {
         category: value => String(value).trim(), title: value => String(value).trim(), body: value => String(value),
@@ -729,6 +731,11 @@ function logicalRecord(target, row) {
 function itemView(item) {
   const snapshot = parseJson(item.current_snapshot, {});
   const live = item.status === 'active' ? businessRecord(item.target_table, item.record_id) : null;
+  const supersededBy = item.target_table === 'knowledge'
+    ? loadKbDocSupersession(live || snapshot, { tenantId: curTenant() })
+    : null;
+  const data = logicalRecord(item.target_table, live || snapshot);
+  if (supersededBy && data && Object.prototype.hasOwnProperty.call(data, 'body')) data.body = '';
   return {
     id: Number(item.id),
     jobId: Number(item.job_id),
@@ -740,12 +747,34 @@ function itemView(item) {
     importAction: item.import_action,
     status: item.status,
     recordExists: Boolean(live),
-    data: logicalRecord(item.target_table, live || snapshot),
+    data,
     editableFields: Object.keys(TARGETS[item.target_table]?.fields || {}).map(key => ({ key, label: FIELD_LABELS[key] || key })),
     operatorName: item.last_operator_name,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
+    ...(supersededBy ? {
+      deliveryState: 'DELIVERY_SUPERSEDED',
+      bodyAvailability: 'superseded',
+      businessUsable: false,
+      supersededBy,
+    } : {}),
   };
+}
+
+function assertKnowledgeMutationAllowed(target, recordOrId) {
+  if (target !== 'knowledge') return null;
+  const supersededBy = loadKbDocSupersession(recordOrId, {
+    tenantId: curTenant(),
+  });
+  if (!supersededBy) return null;
+  throw Object.assign(
+    new Error('该旧知识已被安全修订任务取代，不能修改、恢复或重新启用'),
+    {
+      status: 409,
+      code: 'DELIVERY_SUPERSEDED',
+      supersededBy,
+    },
+  );
 }
 
 function trackedItem(itemId) {
@@ -802,6 +831,7 @@ function resolveTaskAssignee(value) {
 }
 
 function updateTrackedRecord(target, recordId, data) {
+  assertKnowledgeMutationAllowed(target, recordId);
   if (target === 'leads') {
     for (const field of ['phone', 'wechat']) {
       if (!data[field]) continue;
@@ -847,6 +877,7 @@ function updateTrackedRecord(target, recordId, data) {
 }
 
 function restoreSnapshot(target, recordId, snapshot) {
+  assertKnowledgeMutationAllowed(target, recordId);
   const table = TARGET_TABLES[target];
   if (!table || !snapshot) throw new Error('原始数据快照不完整，无法撤回');
   const allowed = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
@@ -951,6 +982,8 @@ r.post('/reconcile', (req, res) => {
       if (!TARGETS[item.target_table]) continue;
       const live = businessRecord(item.target_table, item.record_id);
       if (!live) continue;
+      if (item.target_table === 'knowledge'
+        && loadKbDocSupersession(live, { tenantId: curTenant() })) continue;
       const assetId = syncImportedAsset(item.target_table, live, {
         id: Number(item.user_id || req.user.id),
         name: '系统数据同步',
@@ -970,6 +1003,7 @@ r.post('/reconcile', (req, res) => {
 r.put('/items/:id', (req, res) => {
   const item = trackedItem(req.params.id);
   try {
+    if (item) assertKnowledgeMutationAllowed(item.target_table, item.record_id);
     const live = assertEditableItem(item);
     const def = TARGETS[item.target_table];
     const patch = sanitizedEditRow(item.target_table, def, req.body?.data || {});
@@ -995,13 +1029,18 @@ r.put('/items/:id', (req, res) => {
     logOp(req.user, '数据录入中枢', '修改导入数据', `${item.target_table}#${item.record_id} / import-item#${item.id}`);
     res.json({ ok: true, item: itemView(trackedItem(item.id)) });
   } catch (error) {
-    res.status(error.status || 400).json({ error: error.message || '修改失败' });
+    res.status(error.status || 400).json({
+      error: error.message || '修改失败',
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.supersededBy ? { supersededBy: error.supersededBy } : {}),
+    });
   }
 });
 
 r.delete('/items/:id', (req, res) => {
   const item = trackedItem(req.params.id);
   try {
+    if (item) assertKnowledgeMutationAllowed(item.target_table, item.record_id);
     const live = assertEditableItem(item);
     if (item.import_action === '更新') {
       const original = parseJson(item.original_snapshot, null);
@@ -1046,7 +1085,11 @@ r.delete('/items/:id', (req, res) => {
     logOp(req.user, '数据录入中枢', '删除导入数据', `${item.target_table}#${item.record_id} / archive#${archiveId}`);
     res.json({ ok: true, action: 'deleted', archiveId, message: '已删除并进入回收站，老板可在系统管理中恢复' });
   } catch (error) {
-    res.status(error.status || 400).json({ error: error.message || '删除失败' });
+    res.status(error.status || 400).json({
+      error: error.message || '删除失败',
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.supersededBy ? { supersededBy: error.supersededBy } : {}),
+    });
   }
 });
 
@@ -1127,7 +1170,10 @@ r.post('/commit', (req, res) => {
           items.push({ id: Number(tracked.lastInsertRowid), recordId: Number(importedRow.id), rowNumber: rows[i]?.rowNumber || i + 2, action: importedRow.action });
           imported++;
         }
-        catch (e) { errors.push({ row: rows[i]?.rowNumber || i + 2, error: e.message }); }
+        catch (e) {
+          if (e.code === 'DELIVERY_SUPERSEDED') throw e;
+          errors.push({ row: rows[i]?.rowNumber || i + 2, error: e.message });
+        }
       }
       q.run(`UPDATE data_import_jobs SET imported_rows=?,skipped_rows=?,error_rows=? WHERE tenant_id=? AND id=?`,
         imported, errors.length, JSON.stringify(errors.slice(0, 200)), curTenant(), jobId);
@@ -1139,7 +1185,11 @@ r.post('/commit', (req, res) => {
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
-    if (error.status === 409) return res.status(409).json({ error: error.message });
+    if (error.status === 409) return res.status(409).json({
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.supersededBy ? { supersededBy: error.supersededBy } : {}),
+    });
     throw error;
   }
   logOp(req.user, '数据录入中枢', '集中导入', `${batches.length}个工作表 / 成功${response.imported}行`);

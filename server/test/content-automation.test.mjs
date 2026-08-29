@@ -6,6 +6,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 
+import { validContentEmployeeOutput } from './helpers/content-output-fixtures.mjs';
+
 const DBP = path.join(os.tmpdir(), `nanowork-content-automation-${process.pid}.db`);
 for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
   try { fs.rmSync(file, { force: true }); } catch { /* fresh database */ }
@@ -47,6 +49,7 @@ globalThis.fetch = async (url, options) => {
 
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
+const systemRoutes = (await import('../src/routes/system.js')).default;
 const { runScheduledJobs } = await import('../src/engines/scheduler.js');
 
 initSchema();
@@ -65,6 +68,7 @@ function insertUser(tenantId, username, name, role) {
 
 const bossA = { id: insertUser(1, 'automation-boss-a', 'A店老板', 'boss'), name: 'A店老板', role: 'boss', tenant_id: 1 };
 const bossB = { id: insertUser(2, 'automation-boss-b', 'B店老板', 'boss'), name: 'B店老板', role: 'boss', tenant_id: 2 };
+const opsA = { id: insertUser(1, 'automation-ops-a', 'A店运营负责人', 'ops_director'), name: 'A店运营负责人', role: 'ops_director', tenant_id: 1 };
 const salesA = { id: insertUser(1, 'automation-sales-a', 'A店内容员工', 'sales'), name: 'A店内容员工', role: 'sales', tenant_id: 1 };
 runWithTenant(1, () => q.run(`INSERT INTO content_employee_workbench_configs(
   employee_idx,prompt_override,work_config_json,skills_json,revision,updated_by
@@ -89,6 +93,7 @@ function appFor(user) {
     next();
   }));
   app.use('/content', contentRoutes);
+  app.use('/system', systemRoutes);
   return app;
 }
 
@@ -139,31 +144,21 @@ const dailyRule = {
 };
 
 function validTrendOutput() {
-  return {
-    briefing: '基于测试来源形成的趋势简报。',
-    channel_scan: [{ channel: '测试来源', finding: '发现一个可核验信号' }],
-    topics: Array.from({ length: 5 }, (_, index) => ({
-      title: `候选选题${index + 1}`,
-      angle: '经营者视角',
-      hook: '先给可核验结论',
-      reason: '与目标账号定位匹配',
-      heat: '中',
-      evidence: '测试来源',
-    })),
-  };
+  const output = validContentEmployeeOutput(0);
+  output.briefing += ' [来源1]';
+  output.channel_scan.forEach(item => { item.finding += ' [来源1]'; });
+  output.topics.forEach(item => { item.evidence += ' [来源1]'; });
+  return output;
 }
 
 function validReviewOutput() {
-  return {
-    report: '本轮测试内容已按岗位边界复盘。',
-    next_topics: [{ title: '下一轮测试选题', reason: '验证改进动作是否闭环' }],
-    profile_updates: ['继续坚持事实核验后再发布'],
-  };
+  return validContentEmployeeOutput(9);
 }
 
 let ruleAId;
 let ruleBId;
 let riskRuleAId;
+let autoHighRuleAId;
 
 test('只有管理角色可管理自动化，创建接口严格校验完整规则', async () => {
   await withServer(salesA, async base => {
@@ -221,6 +216,23 @@ test('只有管理角色可管理自动化，创建接口严格校验完整规�
     riskRuleAId = weekly.data.rule.id;
     assert.equal(weekly.data.rule.employee.contentEmployeeName, '复盘官');
     assert.equal(weekly.data.rule.weekday, 1);
+
+    const { approvalMode: _legacyExplicitMode, ...autoRuleInput } = dailyRule;
+    const defaultAuto = await jsonRequest(base, '/content/automations', {
+      method: 'POST',
+      body: {
+        ...autoRuleInput,
+        name: '高风险内部自动采用',
+        employeeIdx: 9,
+        topic: '保证稳赚的高风险内部复盘',
+        requirement: '只形成内部复盘底稿，不发布、不付费、不执行不可逆动作。',
+        contentType: '复盘报告',
+        runTime: '09:15',
+      },
+    });
+    assert.equal(defaultAuto.response.status, 201, JSON.stringify(defaultAuto.data));
+    autoHighRuleAId = defaultAuto.data.rule.id;
+    assert.equal(defaultAuto.data.rule.approvalMode, 'auto');
   });
 });
 
@@ -281,7 +293,7 @@ test('规则列表、更新、启停与删除严格按租户隔离', async () =>
   });
 });
 
-test('立即自动运行锁定完整员工快照，产出进入审核且绝不自动发布', async () => {
+test('Boss运行always规则仍锁定完整员工快照，产物停待人工审阅且不外发', async () => {
   await withServer(bossA, async base => {
     const idempotencyKey = randomUUID();
     const accepted = await jsonRequest(base, `/content/automations/${ruleAId}/run`, {
@@ -314,12 +326,14 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.ok(Number(run.billing.chargedCredits) > 0);
 
     const content = q.get(`SELECT * FROM contents WHERE tenant_id=1 AND id=?`, run.contentId);
+    // 自动化产物即使由 Boss 触发也不享受自授权豁免：停待审 + 1张待审单，
+    // 人工采纳前不生成业务资产。
     assert.equal(content.status, '待审核');
     assert.equal(content.channel, null);
     assert.equal(content.content_employee_idx, 0);
     assert.equal(content.content_run_mode, 'automation_immediate');
     assert.equal(q.get(`SELECT COUNT(*) n FROM approvals
-      WHERE tenant_id=1 AND target_type='content' AND target_id=?`, content.id).n, 1);
+      WHERE tenant_id=1 AND target_type='content' AND target_id=? AND status='待审核'`, content.id).n, 1);
     assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets
       WHERE tenant_id=1 AND source_type='content' AND source_id=?`, content.id).n, 0);
     assert.equal(q.get(`SELECT COUNT(*) n FROM notifications
@@ -335,6 +349,7 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.equal(history.data.runs[0].status, '成功');
     assert.equal(history.data.runs[0].contract.status, 'valid');
     assert.equal(history.data.runs[0].contract.valid, true);
+    assert.ok(history.data.runs[0].contract.artifacts[0].sourceKeys.includes('briefing'));
     assert.equal(history.data.runs[0].billing.state, 'settled');
     assert.ok(history.data.runs[0].promptHash);
     assert.equal(history.data.runs[0].profileVersion, 'content-0-r1');
@@ -344,7 +359,44 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.equal(snapshot.identity.idx, 0);
     assert.ok(snapshot.capabilities.length > 0);
     assert.ok(snapshot.skillLibrary.required.length > 0);
-    assert.match(JSON.stringify(snapshot.jobProfile.boundaries), /人类审批/);
+    assert.equal(
+      snapshot.runtimeBindings.currentRuntimeBindings.work.handler,
+      'content-handler-adapter:run_trend',
+    );
+    assert.equal(snapshot.handlerExecution.dispatchMode, 'manual_automation');
+    assert.equal(snapshot.handlerExecution.automationTrigger, 'immediate');
+    assert.equal(snapshot.handlerExecution.invocationCount, 1);
+    assert.equal(snapshot.handlerExecution.finalHandlerId,
+      'content-handler-adapter:run_trend');
+    assert.equal(snapshot.handlerExecution.bindingStatus, 'bound_callable');
+    assert.equal(snapshot.handlerExecution.handlerInvocations.length, 1);
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].kind, 'initial');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].legacyHandler, 'run_trend');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].currentAdapter,
+      'content-handler-adapters.invoke');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].provenance,
+      'reimplemented_verified');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].bindingStatus,
+      'bound_callable');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].webRequired, true);
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].webCadence,
+      'once_per_task_then_reused_for_retries');
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].legacyWebCadence,
+      'every_handler_call');
+    assert.match(
+      snapshot.handlerExecution.handlerInvocations[0].webEvidence.snapshotFingerprint,
+      /^sha256:[a-f0-9]{64}$/u,
+    );
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].prompt.promptTextIncluded,
+      false);
+    assert.equal(snapshot.handlerExecution.handlerInvocations[0].credentialsIncluded, false);
+    assert.doesNotMatch(JSON.stringify(snapshot), /test-only-content-automation-key/u);
+    assert.equal(
+      snapshot.handlerExecution.injectedHistoricalSkillCount,
+      snapshot.skillLibrary.historical.length,
+    );
+    assert.match(snapshot.canonicalProfile.version.aggregateFingerprint, /^sha256:[a-f0-9]{64}$/u);
+    assert.match(JSON.stringify(snapshot.jobProfile.boundaries), /老板执行授权.*不是内容审核/u);
     assert.equal(snapshot.enterpriseOverlay.workConfig.outputLength, 'full');
     assert.equal(snapshot.enterpriseOverlay.customSkills[0].title, 'A店菜品事实核验');
     assert.equal(snapshot.enterpriseOverlay.promptOverrideAppended, true);
@@ -361,13 +413,112 @@ test('立即自动运行锁定完整员工快照，产出进入审核且绝不�
     assert.equal(riskCompleted.run.status, '成功');
     const riskContent = q.get(`SELECT status,channel,content_employee_idx FROM contents
       WHERE tenant_id=1 AND id=?`, riskCompleted.run.contentId);
-    assert.equal(riskContent.status, '可使用');
+    // risk 模式同样不再免审：自动化产物一律停待人工审阅，审阅前不进资产/知识库。
+    assert.equal(riskContent.status, '待审核');
     assert.equal(riskContent.channel, null);
     assert.equal(riskContent.content_employee_idx, 9);
     assert.equal(q.get(`SELECT COUNT(*) n FROM approvals
-      WHERE tenant_id=1 AND target_type='content' AND target_id=?`, riskCompleted.run.contentId).n, 0);
+      WHERE tenant_id=1 AND target_type='content' AND target_id=? AND status='待审核'`,
+      riskCompleted.run.contentId).n, 1);
     assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets
-      WHERE tenant_id=1 AND source_type='content' AND source_id=?`, riskCompleted.run.contentId).n, 1);
+      WHERE tenant_id=1 AND source_type='content' AND source_id=?`, riskCompleted.run.contentId).n, 0);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM kb_docs
+      WHERE tenant_id=1 AND source_type='content' AND source_id=? AND enabled=1`,
+    riskCompleted.run.contentId).n, 0);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM content_publish_logs
+      WHERE tenant_id=1 AND content_id=?`, riskCompleted.run.contentId).n, 0);
+
+    const autoHighRun = await jsonRequest(base, `/content/automations/${autoHighRuleAId}/run`, {
+      method: 'POST', body: { idempotencyKey: randomUUID() },
+    });
+    assert.equal(autoHighRun.response.status, 202, JSON.stringify(autoHighRun.data));
+    const autoHighCompleted = await waitForAutomationRun(
+      base,
+      autoHighRuleAId,
+      autoHighRun.data.runId,
+    );
+    assert.equal(autoHighCompleted.run.status, '成功');
+    const autoHighContent = q.get(`SELECT status,channel,risk_level,content_employee_idx,snapshot_json
+      FROM contents WHERE tenant_id=1 AND id=?`, autoHighCompleted.run.contentId);
+    assert.equal(autoHighContent.risk_level, 'high');
+    // 高风险 + auto 配置同样强制停审：由老板终审，审阅前零资产/零知识库。
+    assert.equal(autoHighContent.status, '待审核');
+    assert.equal(autoHighContent.channel, null);
+    assert.equal(autoHighContent.content_employee_idx, 9);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM approvals
+      WHERE tenant_id=1 AND target_type='content' AND target_id=? AND status='待审核'`,
+    autoHighCompleted.run.contentId).n, 1);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM biz_assets
+      WHERE tenant_id=1 AND source_type='content' AND source_id=?`,
+    autoHighCompleted.run.contentId).n, 0);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM kb_docs
+      WHERE tenant_id=1 AND source_type='content' AND source_id=? AND enabled=1`,
+    autoHighCompleted.run.contentId).n, 0);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM content_publish_logs
+      WHERE tenant_id=1 AND content_id=?`, autoHighCompleted.run.contentId).n, 0);
+    const autoHighSnapshot = JSON.parse(autoHighContent.snapshot_json);
+    assert.equal(autoHighSnapshot.approvalRouting.autoAdopt, false);
+    assert.equal(autoHighSnapshot.approvalRouting.requiresReview, true);
+    assert.equal(autoHighSnapshot.approvalRouting.contentReviewRequired, true);
+    assert.equal(autoHighSnapshot.approvalRouting.executionAuthorizationRequired, false);
+  });
+});
+
+test('自动化运行契约对运营负责人隐藏字段级诊断与源字段，内部角色保留完整证据', async () => {
+  const errorSecret = '__AUTOMATION_CONTRACT_FIELD_ERROR_SECRET__';
+  const sourceKeySecret = '__AUTOMATION_CONTRACT_SOURCE_KEY_SECRET__';
+  const inserted = q.run(`INSERT INTO content_automation_runs(
+    rule_id,trigger,claim_key,scheduled_for,status,initiated_by,
+    profile_version,prompt_hash,snapshot_json,error,finished_at
+  ) VALUES(?,'immediate',?,NULL,'失败',?,?,?,?,?,datetime('now','localtime'))`,
+  ruleAId,
+  `manual:${opsA.id}:${randomUUID()}`,
+  opsA.id,
+  'content-0-internal-revision',
+  'internal-prompt-hash',
+  JSON.stringify({
+    contract: {
+      status: 'invalid',
+      valid: false,
+      incomplete: false,
+      requiresManualRepair: true,
+      errors: [`${errorSecret}：briefing字段缺失`],
+      previewMarkdown: '待修复的业务内容预览',
+      artifacts: [{
+        kind: 'markdown',
+        primary: true,
+        filename: '趋势简报.md',
+        mediaType: 'text/markdown; charset=utf-8',
+        employeeIdx: 0,
+        employeeKey: 'trend',
+        sourceKeys: [sourceKeySecret],
+      }],
+    },
+  }),
+  `${errorSecret}：briefing字段缺失`);
+  const runId = Number(inserted.lastInsertRowid);
+
+  await withServer(opsA, async base => {
+    const history = await jsonRequest(base, `/content/automations/${ruleAId}/runs?runId=${runId}`);
+    assert.equal(history.response.status, 200, JSON.stringify(history.data));
+    const [run] = history.data.runs;
+    assert.deepEqual(run.contract.errors, ['结果格式未通过岗位契约，请联系有权限的审阅人']);
+    assert.equal(run.error, '结果格式未通过岗位契约，请联系有权限的审阅人');
+    assert.equal(Object.hasOwn(run.contract.artifacts[0], 'sourceKeys'), false);
+    assert.equal(Object.hasOwn(run, 'profileVersion'), false);
+    assert.equal(Object.hasOwn(run, 'promptHash'), false);
+    assert.doesNotMatch(JSON.stringify(run), new RegExp(`${errorSecret}|${sourceKeySecret}`, 'u'));
+  });
+
+  await withServer(bossA, async base => {
+    const history = await jsonRequest(base, `/content/automations/${ruleAId}/runs?runId=${runId}`);
+    assert.equal(history.response.status, 200, JSON.stringify(history.data));
+    const [run] = history.data.runs;
+    assert.deepEqual(run.contract.errors, [`${errorSecret}：briefing字段缺失`]);
+    assert.deepEqual(run.contract.artifacts[0].sourceKeys, [sourceKeySecret]);
+    assert.equal(run.error, `${errorSecret}：briefing字段缺失`);
+    assert.equal(run.profileVersion, 'content-0-internal-revision');
+    assert.equal(run.promptHash, 'internal-prompt-hash');
   });
 });
 
@@ -394,6 +545,21 @@ test('定时调度原子认领且同周期幂等，停用规则不会运行', as
     ORDER BY id DESC LIMIT 1`, ruleAId);
   const scheduledSnapshot = JSON.parse(scheduledRun.snapshot_json);
   assert.equal(scheduledSnapshot.billing.state, 'settled');
+  assert.equal(
+    scheduledSnapshot.runtimeBindings.currentRuntimeBindings.work.handler,
+    'content-handler-adapter:run_trend',
+  );
+  assert.equal(scheduledSnapshot.handlerExecution.dispatchMode, 'scheduled_automation');
+  assert.equal(scheduledSnapshot.handlerExecution.automationTrigger, 'scheduled');
+  assert.equal(scheduledSnapshot.handlerExecution.invocationCount, 1);
+  assert.equal(scheduledSnapshot.handlerExecution.finalHandlerId,
+    'content-handler-adapter:run_trend');
+  assert.equal(scheduledSnapshot.handlerExecution.handlerInvocations[0].kind, 'initial');
+  assert.equal(scheduledSnapshot.handlerExecution.handlerInvocations[0].completed, true);
+  assert.equal(scheduledSnapshot.handlerExecution.handlerInvocations[0].bindingStatus,
+    'bound_callable');
+  assert.equal(scheduledSnapshot.handlerExecution.handlerInvocations[0].credentialsIncluded,
+    false);
   assert.ok(Number(scheduledSnapshot.billing.chargedCredits) > 0);
   assert.equal(q.get(`SELECT COUNT(*) n FROM contents
     WHERE tenant_id=2 AND content_run_mode='automation_scheduled'`).n, beforeB);

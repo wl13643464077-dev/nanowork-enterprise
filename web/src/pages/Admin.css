@@ -261,3 +261,18 @@
     display: none;
   }
 }
+
+/* 派活权限面板（AdminDispatchPolicyPanel） */
+.admin-panel-hint {
+  margin-bottom: 10px;
+  color: var(--ui-muted);
+  font-size: var(--font-2, 12px);
+}
+
+.admin-cell-strong {
+  color: var(--ui-text);
+}
+
+.admin-cell-center {
+  text-align: center;
+}

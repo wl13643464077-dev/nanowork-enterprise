@@ -50,21 +50,79 @@ export const STATUS_COLOR: Record<string, string> = {
   已驳回: 'red',
 };
 export const CONTENT_FLOW_STATUSES = new Set(['可使用', '已发布']);
-export const APPROVAL_SUBMIT_STATUSES = new Set(['草稿', '可使用']);
 export const PUBLISH_VIEWS_MAX = 100_000_000;
 export const PUBLISH_LEADS_MAX = 1_000_000;
-export const contentFlowReady = (rec: any) => CONTENT_FLOW_STATUSES.has(String(rec?.status || ''));
-export const canSubmitApproval = (rec: any) => APPROVAL_SUBMIT_STATUSES.has(String(rec?.status || ''));
+const PUBLIC_CONTENT_STATUS: Record<string, string> = {
+  草稿: '草稿（尚未达到业务可用）',
+  待审核: '旧策略/显式策略待处理',
+  // “可使用”是数据库兼容状态，既可能是旧版已采纳记录，也可能只是机器质检通过。
+  // 缺少 delivery 权威投影时不猜结论，避免把未采纳内容误报成可用于业务。
+  可使用: '可使用状态待权威核验',
+  已发布: '已发布',
+  已驳回: '失败需返工（历史策略未通过）',
+};
+export const contentStatusLabel = (rec: any) =>
+  String(rec?.delivery?.displayStatus || PUBLIC_CONTENT_STATUS[String(rec?.status || '')] || '状态未知');
+export const contentStatusColor = (rec: any) => {
+  const presentationKey = String(rec?.delivery?.presentationKey || '');
+  if (['published', 'adopted'].includes(presentationKey)) return presentationKey === 'published' ? 'blue' : 'green';
+  if (['review_pending', 'review_ready'].includes(presentationKey)) return 'gold';
+  if (presentationKey === 'business_blocked') return 'orange';
+  if (presentationKey === 'rework_required') return 'red';
+  if (String(rec?.status || '') === '可使用' && !rec?.delivery) return 'gold';
+  return STATUS_COLOR[String(rec?.status || '')] || 'default';
+};
+const USABLE_CONTENT_MODES = new Set(['api', 'human_adopted', 'manual', 'human', 'human_authored', 'imported']);
+const MANUAL_CONTENT_SOURCES = new Set(['manual', 'manual_import', 'human', 'human_import']);
+const contentDeliveryMode = (rec: any) =>
+  String(rec?.ai_mode ?? rec?.mode ?? '')
+    .trim()
+    .toLowerCase();
+const hasUsableContentMode = (rec: any) => {
+  const mode = contentDeliveryMode(rec);
+  return (
+    USABLE_CONTENT_MODES.has(mode) ||
+    (mode === 'template' && MANUAL_CONTENT_SOURCES.has(String(rec?.source_type || '').toLowerCase()))
+  );
+};
+export const contentFlowReady = (rec: any) =>
+  rec?.delivery?.canUse === true && CONTENT_FLOW_STATUSES.has(String(rec?.status || '')) && hasUsableContentMode(rec);
+export const canSubmitApproval = (rec: any) => rec?.delivery?.canSubmitApproval === true;
 export const approvalBlockedReason = (rec: any) => {
-  if (rec?.status === '待审核') return '该内容已经在待审核队列，无需重复提交';
-  if (rec?.status === '已发布') return '已发布记录不可退回待审核；如需调整请新建修订内容';
-  if (rec?.status === '已驳回') return '已驳回原文不能直接重提；请重新生成修订稿';
-  return `内容当前为“${rec?.status || '未知'}”，不能提交审核`;
+  if (rec?.status === '已驳回') return '当前稿件人工审阅未通过，不能原样重提；请按意见返工并生成新修订稿';
+  if (rec?.status === '已发布' && rec?.delivery?.canUse !== false) {
+    return '已发布记录不能退回审阅；如需调整请新建修订稿';
+  }
+  if (rec?.status === '可使用' && rec?.delivery?.canUse === true) {
+    return '该稿件已经人工采纳，可直接用于业务；如需修改请新建修订稿';
+  }
+  if (rec?.delivery?.reason) {
+    return [rec.delivery.reason, rec.delivery.nextAction && `下一步：${rec.delivery.nextAction}`]
+      .filter(Boolean)
+      .join('；');
+  }
+  if (rec?.status === '待审核') return '该内容已经在人工审阅队列，无需重复提交';
+  if (rec?.status === '已发布') return '已发布记录不能退回审阅；如需调整请新建修订稿';
+  if (rec?.status === '可使用') return '当前接口没有返回人工采纳证据，请刷新后再判断是否需要提交审阅';
+  return `内容当前为“${rec?.status || '未知'}”，还不能提交人工审阅`;
 };
 export const contentFlowBlockedReason = (rec: any) => {
-  if (rec?.status === '待审核') return '内容正在审核；审核通过成为“可使用”后，才能导入素材或登记发布';
-  if (rec?.status === '已驳回') return '内容已驳回；请修改并重新提交审核，通过后才能导入素材或登记发布';
-  return `内容当前为“${rec?.status || '未知'}”；达到“可使用”后才能执行此操作`;
+  if (rec?.delivery?.canUse !== true && rec?.delivery) {
+    return (
+      [rec.delivery.reason, rec.delivery.nextAction && `下一步：${rec.delivery.nextAction}`]
+        .filter(Boolean)
+        .join('；') || '该内容尚未达到可验收或可采用状态'
+    );
+  }
+  if (rec?.status === '待审核') return '内容正在等待人工审阅；采纳后才能导入素材或登记发布';
+  if (rec?.status === '已驳回') return '人工审阅未通过；请按意见返工并提交新修订稿';
+  const mode = contentDeliveryMode(rec);
+  if (!hasUsableContentMode(rec))
+    return mode
+      ? `内容来源为“${mode}”，不是已验证的可交付产物`
+      : '内容缺少可验证的产出来源，暂不能用于复制、导出、导入或发布';
+  if (CONTENT_FLOW_STATUSES.has(String(rec?.status || ''))) return '人工采纳状态尚未同步，请刷新内容列表后再操作';
+  return `内容当前为“${rec?.status || '未知'}”，尚未达到可采用状态`;
 };
 export const TYPE_META: Record<string, { icon: any; color: string }> = {
   短视频脚本: { icon: <VideoCameraOutlined />, color: 'var(--ui-accent)' },
@@ -81,9 +139,6 @@ export const TYPE_META: Record<string, { icon: any; color: string }> = {
 };
 export const TABS = [
   { key: 'AI文案', icon: <FileTextOutlined /> },
-  { key: 'AI图片', icon: <PictureOutlined /> },
-  { key: 'AI视频', icon: <VideoCameraOutlined /> },
-  { key: 'AIPPT', icon: <FundProjectionScreenOutlined /> },
   { key: '素材库', icon: <FolderOpenOutlined /> },
   { key: '模板库', icon: <AppstoreOutlined /> },
 ];

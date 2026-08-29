@@ -1,84 +1,257 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
-import express from 'express';
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import express from "express";
 
 const DBP = path.join(os.tmpdir(), `shanmei-dashboard-scope-${process.pid}.db`);
-for (const f of [DBP, DBP + '-wal', DBP + '-shm']) { try { fs.rmSync(f, { force: true }); } catch {} }
+for (const f of [DBP, DBP + "-wal", DBP + "-shm"]) {
+  try {
+    fs.rmSync(f, { force: true });
+  } catch {}
+}
 process.env.NANOWORK_DB = DBP;
-process.env.YUNWU_API_KEY = '';
-process.env.OPENAI_API_KEY = '';
+process.env.YUNWU_API_KEY = "";
+process.env.OPENAI_API_KEY = "";
 
-const { initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
-const { hashPassword } = await import('../src/util.js');
-const dashboardRoutes = (await import('../src/routes/dashboard.js')).default;
+const { initSchema, migrateV2, q, runWithTenant } =
+  await import("../src/db.js");
+const { hashPassword } = await import("../src/util.js");
+const { holdCredits, settleHold } = await import("../src/engines/credits.js");
+const dashboardRoutes = (await import("../src/routes/dashboard.js")).default;
 
 initSchema();
 migrateV2();
 
-q.run(`INSERT INTO users(username,password_hash,name,role,dept,tenant_id) VALUES(?,?,?,?,?,1)`, 'boss', hashPassword('123456'), '老板', 'boss', '决策层');
-q.run(`INSERT INTO users(username,password_hash,name,role,dept,tenant_id) VALUES(?,?,?,?,?,1)`, 'sales', hashPassword('123456'), '销售', 'sales', '销售部');
-const boss = q.get(`SELECT id,name,role,tenant_id FROM users WHERE username='boss'`);
-const sales = q.get(`SELECT id,name,role,tenant_id FROM users WHERE username='sales'`);
+q.run(
+  `INSERT INTO users(username,password_hash,name,role,dept,tenant_id) VALUES(?,?,?,?,?,1)`,
+  "boss",
+  hashPassword("123456"),
+  "老板",
+  "boss",
+  "决策层",
+);
+q.run(
+  `INSERT INTO users(username,password_hash,name,role,dept,tenant_id) VALUES(?,?,?,?,?,1)`,
+  "sales",
+  hashPassword("123456"),
+  "销售",
+  "sales",
+  "销售部",
+);
+q.run(
+  `INSERT INTO users(username,password_hash,name,role,dept,tenant_id) VALUES(?,?,?,?,?,1)`,
+  "ops",
+  hashPassword("123456"),
+  "运营总监",
+  "ops_director",
+  "运营中心",
+);
+const boss = q.get(
+  `SELECT id,name,role,tenant_id FROM users WHERE username='boss'`,
+);
+const sales = q.get(
+  `SELECT id,name,role,tenant_id FROM users WHERE username='sales'`,
+);
+const ops = q.get(
+  `SELECT id,name,role,tenant_id FROM users WHERE username='ops'`,
+);
 
-function addLead(name, source, createdAt, stage = '新线索') {
-  const ret = q.run(`INSERT INTO leads(name,source,stage,owner_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
-    name, source, stage, sales.id, createdAt, createdAt);
+function addLead(name, source, createdAt, stage = "新线索") {
+  const ret = q.run(
+    `INSERT INTO leads(name,source,stage,owner_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
+    name,
+    source,
+    stage,
+    sales.id,
+    createdAt,
+    createdAt,
+  );
   return ret.lastInsertRowid;
 }
 
-const aprilLead = addLead('四月客户', '社群', '2026-04-10 09:00:00', '已成交');
-const mayLeadA = addLead('五月客户A', '短视频', '2026-05-02 10:00:00', '已成交');
-const mayLeadB = addLead('五月客户B', '转介绍', '2026-05-18 11:00:00', '已沟通');
-const julyLead = addLead('七月客户', '到店', '2026-07-01 12:00:00', '已成交');
+const aprilLead = addLead("四月客户", "社群", "2026-04-10 09:00:00", "已成交");
+const mayLeadA = addLead(
+  "五月客户A",
+  "短视频",
+  "2026-05-02 10:00:00",
+  "已成交",
+);
+const mayLeadB = addLead(
+  "五月客户B",
+  "转介绍",
+  "2026-05-18 11:00:00",
+  "已沟通",
+);
+const julyLead = addLead("七月客户", "到店", "2026-07-01 12:00:00", "已成交");
 
-q.run(`INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`, aprilLead, '青花清', 2000, '零售', '太原', '社群', '2026-04-10 13:00:00');
-q.run(`INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`, mayLeadA, '青花清', 1200, '零售', '太原', '短视频', '2026-05-02 15:00:00');
-q.run(`INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`, mayLeadB, '封坛酒', 1800, '封坛', '太原', '转介绍', '2026-05-18 16:00:00');
-q.run(`INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`, julyLead, '青花清', 9000, '团购', '太原', '到店', '2026-07-01 16:00:00');
+q.run(
+  `INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`,
+  aprilLead,
+  "青花清",
+  2000,
+  "零售",
+  "太原",
+  "社群",
+  "2026-04-10 13:00:00",
+);
+q.run(
+  `INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`,
+  mayLeadA,
+  "青花清",
+  1200,
+  "零售",
+  "太原",
+  "短视频",
+  "2026-05-02 15:00:00",
+);
+q.run(
+  `INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`,
+  mayLeadB,
+  "封坛酒",
+  1800,
+  "封坛",
+  "太原",
+  "转介绍",
+  "2026-05-18 16:00:00",
+);
+q.run(
+  `INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at) VALUES(?,?,?,?,?,?,?)`,
+  julyLead,
+  "青花清",
+  9000,
+  "团购",
+  "太原",
+  "到店",
+  "2026-07-01 16:00:00",
+);
 
-q.run(`INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`, aprilLead, sales.id, '四月跟进', '已成交', '2026-04-10 14:00:00');
-q.run(`INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`, mayLeadA, sales.id, '五月跟进A', '已成交', '2026-05-02 17:00:00');
-q.run(`INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`, mayLeadB, sales.id, '五月跟进B', '已沟通', '2026-05-18 17:00:00');
-q.run(`INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`, julyLead, sales.id, '七月跟进', '已成交', '2026-07-01 17:00:00');
+q.run(
+  `INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`,
+  aprilLead,
+  sales.id,
+  "四月跟进",
+  "已成交",
+  "2026-04-10 14:00:00",
+);
+q.run(
+  `INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`,
+  mayLeadA,
+  sales.id,
+  "五月跟进A",
+  "已成交",
+  "2026-05-02 17:00:00",
+);
+q.run(
+  `INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`,
+  mayLeadB,
+  sales.id,
+  "五月跟进B",
+  "已沟通",
+  "2026-05-18 17:00:00",
+);
+q.run(
+  `INSERT INTO follow_ups(lead_id,user_id,content,stage_after,created_at) VALUES(?,?,?,?,?)`,
+  julyLead,
+  sales.id,
+  "七月跟进",
+  "已成交",
+  "2026-07-01 17:00:00",
+);
 
-q.run(`INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`, '四月品鉴会', '品鉴会', '已结束', '2026-04-12', '酒道馆', boss.id);
-q.run(`INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`, '五月品鉴会', '品鉴会', '已结束', '2026-05-20', '酒道馆', boss.id);
-q.run(`INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`, '七月品鉴会', '品鉴会', '筹备中', '2026-07-02', '酒道馆', boss.id);
+q.run(
+  `INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`,
+  "四月品鉴会",
+  "品鉴会",
+  "已结束",
+  "2026-04-12",
+  "酒道馆",
+  boss.id,
+);
+q.run(
+  `INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`,
+  "五月品鉴会",
+  "品鉴会",
+  "已结束",
+  "2026-05-20",
+  "酒道馆",
+  boss.id,
+);
+q.run(
+  `INSERT INTO activities(title,type,status,date,location,owner_id) VALUES(?,?,?,?,?,?)`,
+  "七月品鉴会",
+  "品鉴会",
+  "筹备中",
+  "2026-07-02",
+  "酒道馆",
+  boss.id,
+);
 
-q.run(`INSERT INTO tasks(title,type,status,assignee_id,created_at,done_at) VALUES(?,?,?,?,?,?)`, '五月成交复盘', '数据', '已完成', sales.id, '2026-05-03 10:00:00', '2026-05-03 18:00:00');
-q.run(`INSERT INTO tasks(title,type,status,assignee_id,created_at,done_at) VALUES(?,?,?,?,?,?)`, '七月客户回访', '跟进', '已完成', sales.id, '2026-07-02 10:00:00', '2026-07-02 18:00:00');
+q.run(
+  `INSERT INTO tasks(title,type,status,assignee_id,created_at,done_at) VALUES(?,?,?,?,?,?)`,
+  "五月成交复盘",
+  "数据",
+  "已完成",
+  sales.id,
+  "2026-05-03 10:00:00",
+  "2026-05-03 18:00:00",
+);
+q.run(
+  `INSERT INTO tasks(title,type,status,assignee_id,created_at,done_at) VALUES(?,?,?,?,?,?)`,
+  "七月客户回访",
+  "跟进",
+  "已完成",
+  sales.id,
+  "2026-07-02 10:00:00",
+  "2026-07-02 18:00:00",
+);
 
 function makeApp(user = boss) {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
-  app.use((req, _res, next) => runWithTenant(1, () => { req.user = user; next(); }));
-  app.use('/dashboard', dashboardRoutes);
+  app.use(express.json({ limit: "2mb" }));
+  app.use((req, _res, next) =>
+    runWithTenant(1, () => {
+      req.user = user;
+      next();
+    }),
+  );
+  app.use("/dashboard", dashboardRoutes);
   return app;
 }
 
 async function withServer(fn) {
   const server = makeApp().listen(0);
-  const port = await new Promise(resolve => server.once('listening', () => resolve(server.address().port)));
-  try { return await fn(`http://127.0.0.1:${port}`); }
-  finally { await new Promise(resolve => server.close(resolve)); }
+  const port = await new Promise((resolve) =>
+    server.once("listening", () => resolve(server.address().port)),
+  );
+  try {
+    return await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function withUserServer(user, fn) {
   const server = makeApp(user).listen(0);
-  const port = await new Promise(resolve => server.once('listening', () => resolve(server.address().port)));
-  try { return await fn(`http://127.0.0.1:${port}`); }
-  finally { await new Promise(resolve => server.close(resolve)); }
+  const port = await new Promise((resolve) =>
+    server.once("listening", () => resolve(server.address().port)),
+  );
+  try {
+    return await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
-test('首页自定义指定月：summary 聚合只包含该自然月', async () => {
-  await withServer(async base => {
-    const data = await fetch(`${base}/dashboard/summary?mode=month&month=2026-05`).then(r => r.json());
-    assert.equal(data.scope.label, '2026年05月');
-    assert.equal(data.scope.start, '2026-05-01');
-    assert.equal(data.scope.end, '2026-05-31');
+test("首页自定义指定月：summary 聚合只包含该自然月", async () => {
+  await withServer(async (base) => {
+    const data = await fetch(
+      `${base}/dashboard/summary?mode=month&month=2026-05`,
+    ).then((r) => r.json());
+    assert.equal(data.scope.label, "2026年05月");
+    assert.equal(data.scope.start, "2026-05-01");
+    assert.equal(data.scope.end, "2026-05-31");
     assert.equal(data.todaySales, 3000);
     assert.equal(data.monthLeads, 2);
     assert.equal(data.followRecords, 2);
@@ -87,51 +260,70 @@ test('首页自定义指定月：summary 聚合只包含该自然月', async () 
   });
 });
 
-test('首页自定义指定日：trend 返回单日连续序列和当日来源数据', async () => {
-  await withServer(async base => {
-    const data = await fetch(`${base}/dashboard/trend?mode=day&date=2026-05-02`).then(r => r.json());
-    assert.equal(data.scope.label, '2026-05-02');
+test("首页自定义指定日：trend 返回单日连续序列和当日来源数据", async () => {
+  await withServer(async (base) => {
+    const data = await fetch(
+      `${base}/dashboard/trend?mode=day&date=2026-05-02`,
+    ).then((r) => r.json());
+    assert.equal(data.scope.label, "2026-05-02");
     assert.equal(data.rows.length, 1);
-    assert.equal(data.rows[0].date, '2026-05-02');
+    assert.equal(data.rows[0].date, "2026-05-02");
     assert.equal(data.rows[0].deal_amount, 1200);
     assert.equal(data.rows[0].deals, 1);
     assert.equal(data.rows[0].new_leads, 1);
   });
 });
 
-test('首页自定义指定季度：summary 与活动列表覆盖完整季度', async () => {
-  await withServer(async base => {
-    const summary = await fetch(`${base}/dashboard/summary?mode=quarter&quarter=2026-Q2`).then(r => r.json());
-    assert.equal(summary.scope.label, '2026年第2季度');
+test("首页自定义指定季度：summary 与活动列表覆盖完整季度", async () => {
+  await withServer(async (base) => {
+    const summary = await fetch(
+      `${base}/dashboard/summary?mode=quarter&quarter=2026-Q2`,
+    ).then((r) => r.json());
+    assert.equal(summary.scope.label, "2026年第2季度");
     assert.equal(summary.todaySales, 5000);
     assert.equal(summary.monthLeads, 3);
     assert.equal(summary.runningActivities, 2);
 
-    const acts = await fetch(`${base}/dashboard/week-activities?mode=quarter&quarter=2026-Q2`).then(r => r.json());
-    assert.equal(acts.scope.label, '2026年第2季度');
-    assert.deepEqual(acts.rows.map(x => x.title), ['四月品鉴会', '五月品鉴会']);
+    const acts = await fetch(
+      `${base}/dashboard/week-activities?mode=quarter&quarter=2026-Q2`,
+    ).then((r) => r.json());
+    assert.equal(acts.scope.label, "2026年第2季度");
+    assert.deepEqual(
+      acts.rows.map((x) => x.title),
+      ["四月品鉴会", "五月品鉴会"],
+    );
   });
 });
 
-test('首页自定义指定月：沟通看板和渠道也跟随范围', async () => {
-  await withServer(async base => {
-    const follow = await fetch(`${base}/dashboard/follow-overview?mode=month&month=2026-05`).then(r => r.json());
-    assert.equal(follow.scope.label, '2026年05月');
+test("首页自定义指定月：沟通看板和渠道也跟随范围", async () => {
+  await withServer(async (base) => {
+    const follow = await fetch(
+      `${base}/dashboard/follow-overview?mode=month&month=2026-05`,
+    ).then((r) => r.json());
+    assert.equal(follow.scope.label, "2026年05月");
+    assert.equal(follow.rankingScope, "team");
     assert.equal(follow.summary.followRecords, 2);
     assert.equal(follow.staff[0].follow_count, 2);
     assert.equal(follow.recent.length, 2);
 
-    const channels = await fetch(`${base}/dashboard/channels?mode=month&month=2026-05`).then(r => r.json());
-    assert.deepEqual(channels.rows.map(x => x.channel).sort(), ['短视频', '转介绍']);
+    const channels = await fetch(
+      `${base}/dashboard/channels?mode=month&month=2026-05`,
+    ).then((r) => r.json());
+    assert.deepEqual(channels.rows.map((x) => x.channel).sort(), [
+      "短视频",
+      "转介绍",
+    ]);
   });
 });
 
-test('首页全部经营数据：默认口径覆盖历史导入日期和所有业务模块', async () => {
-  await withServer(async base => {
-    const data = await fetch(`${base}/dashboard/summary?mode=all`).then(r => r.json());
-    assert.equal(data.scope.label, '全部经营数据');
-    assert.equal(data.scope.start, '2026-04-10');
-    assert.equal(data.scope.end, '2026-07-02');
+test("首页全部经营数据：默认口径覆盖历史导入日期和所有业务模块", async () => {
+  await withServer(async (base) => {
+    const data = await fetch(`${base}/dashboard/summary?mode=all`).then((r) =>
+      r.json(),
+    );
+    assert.equal(data.scope.label, "全部经营数据");
+    assert.equal(data.scope.start, "2026-04-10");
+    assert.equal(data.scope.end, "2026-07-02");
     assert.equal(data.todaySales, 14000);
     assert.equal(data.monthLeads, 4);
     assert.equal(data.salesWow, 0);
@@ -142,33 +334,50 @@ test('首页全部经营数据：默认口径覆盖历史导入日期和所有�
   });
 });
 
-test('普通员工驾驶舱不得用全租户日报补齐本人无数据的指标、趋势、健康度或下钻', async () => {
-  const hiddenLead = Number(q.run(`INSERT INTO leads(name,source,stage,owner_id,created_at,updated_at)
-    VALUES('老板私有客户','老板渠道','已成交',?,'2026-06-15 09:00:00','2026-06-15 09:00:00')`, boss.id).lastInsertRowid);
-  q.run(`INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at)
-    VALUES(?,?,?,?,?,?,?)`, hiddenLead, '老板私有订单', 88888, '团购', '太原', '老板渠道', '2026-06-15 10:00:00');
+test("普通员工驾驶舱不得用全租户日报补齐本人无数据的指标、趋势、健康度或下钻", async () => {
+  const hiddenLead = Number(
+    q.run(
+      `INSERT INTO leads(name,source,stage,owner_id,created_at,updated_at)
+    VALUES('老板私有客户','老板渠道','已成交',?,'2026-06-15 09:00:00','2026-06-15 09:00:00')`,
+      boss.id,
+    ).lastInsertRowid,
+  );
+  q.run(
+    `INSERT INTO orders(lead_id,product,amount,type,region,channel,created_at)
+    VALUES(?,?,?,?,?,?,?)`,
+    hiddenLead,
+    "老板私有订单",
+    88888,
+    "团购",
+    "太原",
+    "老板渠道",
+    "2026-06-15 10:00:00",
+  );
   q.run(`INSERT INTO daily_ops(date,deal_amount,deals,new_leads,tenant_id)
     VALUES('2026-06-15',999999,99,999,1)`);
   try {
-    await withUserServer(sales, async base => {
-      const summary = await fetch(`${base}/dashboard/summary?mode=day&date=2026-06-15`).then(r => r.json());
+    await withUserServer(sales, async (base) => {
+      const summary = await fetch(
+        `${base}/dashboard/summary?mode=day&date=2026-06-15`,
+      ).then((r) => r.json());
       assert.equal(summary.todaySales, 0);
       assert.equal(summary.monthLeads, 0);
       assert.equal(summary.health, null);
       assert.equal(summary.timeScope.latestOps, null);
 
-      const trend = await fetch(`${base}/dashboard/trend?mode=day&date=2026-06-15`).then(r => r.json());
-      assert.deepEqual(
-        trend.rows.map(row => [row.deal_amount, row.deals, row.new_leads]),
-        [[0, 0, 0]],
+      const trend = await fetch(
+        `${base}/dashboard/trend?mode=day&date=2026-06-15`,
       );
+      assert.equal(trend.status, 403);
 
-      const detail = await fetch(`${base}/dashboard/day-detail?date=2026-06-15`).then(r => r.json());
-      assert.equal(detail.ops, null);
-      assert.equal(detail.orders.length, 0);
-      assert.equal(detail.newLeads.length, 0);
+      const detail = await fetch(
+        `${base}/dashboard/day-detail?date=2026-06-15`,
+      );
+      assert.equal(detail.status, 403);
 
-      const salesFunnel = await fetch(`${base}/dashboard/funnel`).then(r => r.json());
+      const salesFunnel = await fetch(`${base}/dashboard/funnel`).then((r) =>
+        r.json(),
+      );
       assert.equal(salesFunnel.funnel[0].count, 4);
     });
   } finally {
@@ -178,20 +387,280 @@ test('普通员工驾驶舱不得用全租户日报补齐本人无数据的指�
   }
 });
 
-test('每日经营日报仅管理层可读，普通员工不得读取全租户经营归因', async () => {
-  await withUserServer(sales, async base => {
+test("每日经营日报仅管理层可读，普通员工不得读取全租户经营归因", async () => {
+  await withUserServer(sales, async (base) => {
     const response = await fetch(`${base}/dashboard/daily-digest`);
     const data = await response.json();
     assert.equal(response.status, 403);
     assert.match(data.error, /无权限/);
   });
 
-  await withUserServer(boss, async base => {
+  await withUserServer(boss, async (base) => {
     const response = await fetch(`${base}/dashboard/daily-digest`);
     assert.equal(response.status, 200);
   });
 });
 
-test('cleanup', () => {
-  for (const f of [DBP, DBP + '-wal', DBP + '-shm']) { try { fs.rmSync(f, { force: true }); } catch {} }
+test("全部范围的接口标签与真实数据权限一致：老板全局、管理层团队、员工本人", async () => {
+  await withUserServer(boss, async (base) => {
+    const data = await fetch(`${base}/dashboard/summary?mode=all`).then(
+      (response) => response.json(),
+    );
+    assert.equal(data.scope.label, "全部经营数据");
+    assert.equal(data.scope.shortLabel, "全部");
+    assert.equal(data.scope.scopeKind, "full");
+    assert.equal(data.scope.allData, true);
+  });
+  await withUserServer(ops, async (base) => {
+    const data = await fetch(`${base}/dashboard/summary?mode=all`).then(
+      (response) => response.json(),
+    );
+    assert.equal(data.scope.label, "团队经营数据");
+    assert.equal(data.scope.shortLabel, "团队");
+    assert.equal(data.scope.scopeKind, "team");
+    assert.equal(data.scope.allData, false);
+  });
+  await withUserServer(sales, async (base) => {
+    const data = await fetch(`${base}/dashboard/summary?mode=all`).then(
+      (response) => response.json(),
+    );
+    assert.equal(data.scope.label, "我的经营记录");
+    assert.equal(data.scope.shortLabel, "我的");
+    assert.equal(data.scope.scopeKind, "self");
+    assert.equal(data.scope.allData, false);
+    const follow = await fetch(
+      `${base}/dashboard/follow-overview?mode=all`,
+    ).then((response) => response.json());
+    assert.equal(follow.rankingScope, "self");
+    assert.equal(follow.staff.length, 1);
+    assert.equal(follow.staff[0].rank, null);
+  });
+});
+
+test("驾驶舱组件与数字员工快捷入口同时服从用户模块权限", async () => {
+  await withUserServer(sales, async (base) => {
+    const widgetsResponse = await fetch(
+      `${base}/dashboard/widgets/preferences`,
+    );
+    const widgets = await widgetsResponse.json();
+    assert.equal(widgetsResponse.status, 200);
+    assert.deepEqual(
+      widgets.available.map((item) => item.key),
+      ["kpi", "follow", "funnel", "customers"],
+    );
+    assert.deepEqual(widgets.selected, [
+      "kpi",
+      "follow",
+      "funnel",
+      "customers",
+    ]);
+
+    const shortcuts = await fetch(`${base}/dashboard/marshal-shortcuts`);
+    const denied = await shortcuts.json();
+    assert.equal(shortcuts.status, 403);
+    assert.match(denied.error, /没有餐饮数字员工模块权限/);
+    assert.equal((await fetch(`${base}/dashboard/trend?mode=all`)).status, 403);
+    assert.equal(
+      (await fetch(`${base}/dashboard/channels?mode=all`)).status,
+      403,
+    );
+    assert.equal(
+      (await fetch(`${base}/dashboard/week-activities?mode=all`)).status,
+      403,
+    );
+  });
+
+  await withUserServer(boss, async (base) => {
+    const widgets = await fetch(`${base}/dashboard/widgets/preferences`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(
+      widgets.available.map((item) => item.key),
+      [
+        "kpi",
+        "follow",
+        "trend",
+        "funnel",
+        "briefing",
+        "channels",
+        "customers",
+        "marshals",
+        "activities",
+      ],
+    );
+    const shortcuts = await fetch(`${base}/dashboard/marshal-shortcuts`);
+    assert.equal(shortcuts.status, 200);
+  });
+});
+
+test("驾驶舱人工任务待办只统计可验收项，并单列本人提交等待验收", async () => {
+  const taskIds = [];
+  const insertWaitingTask = (title, assigneeId) => {
+    const taskId = Number(
+      q.run(
+        `INSERT INTO tasks(tenant_id,title,type,status,assignee_id,assigned_by,source)
+        VALUES(1,?,'数据','待审核',?,?,'手动')`,
+        title,
+        assigneeId,
+        boss.id,
+      ).lastInsertRowid,
+    );
+    q.run(
+      `INSERT INTO task_submissions(tenant_id,task_id,user_id,content,result)
+      VALUES(1,?,?,?,'待审核')`,
+      taskId,
+      assigneeId,
+      `${title}提交结果`,
+    );
+    taskIds.push(taskId);
+  };
+  insertWaitingTask("员工提交等待验收", sales.id);
+  insertWaitingTask("管理者本人提交等待验收", ops.id);
+
+  try {
+    await withUserServer(sales, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) => response.json());
+      assert.equal(todos.reviewTasks, 0);
+      assert.equal(todos.actionableReviewTasks, 0);
+      assert.equal(todos.mySubmittedWaitingReview, 1);
+    });
+    await withUserServer(ops, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) => response.json());
+      assert.equal(todos.actionableReviewTasks, 0, "管理者不能把本人提交算成可操作验收待办");
+      assert.equal(todos.mySubmittedWaitingReview, 1);
+    });
+    await withUserServer(boss, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) => response.json());
+      assert.equal(todos.actionableReviewTasks, 2);
+      assert.equal(todos.reviewTasks, 2);
+      assert.equal(todos.mySubmittedWaitingReview, 0);
+    });
+  } finally {
+    q.run(
+      `DELETE FROM task_submissions WHERE tenant_id=1 AND task_id IN (${taskIds.map(() => "?").join(",")})`,
+      ...taskIds,
+    );
+    q.run(
+      `DELETE FROM tasks WHERE tenant_id=1 AND id IN (${taskIds.map(() => "?").join(",")})`,
+      ...taskIds,
+    );
+  }
+});
+
+test("内容数字员工待审阅进入驾驶舱待办，并按任务快照的实际审阅角色过滤", async () => {
+  q.run("UPDATE tenants SET credits=1000 WHERE id=1");
+  const ids = [];
+  const insertPending = (mode, suffix, {
+    billingState = "settled",
+    aiMode = "api",
+    providerMode = "api",
+    inputTokens = 21,
+    outputTokens = 34,
+  } = {}) => {
+    const snapshot = {
+      workConfig: { effective: { approvalMode: mode } },
+      approvalPolicy: { mode },
+      contractValid: true,
+      contract: { valid: true },
+      billing: { state: billingState, chargedCredits: billingState === "settled" ? 5 : null },
+      providerAttempt: {
+        mode: providerMode,
+        model: aiMode === "api" ? "dashboard-real-provider" : aiMode,
+        usage: { inputTokens, outputTokens },
+      },
+      internalProfileLeakage: { detected: false },
+    };
+    const runId = Number(
+        q.run(
+          `INSERT INTO content_employee_runs(
+      tenant_id,employee_idx,employee_key,employee_name,employee_group,title,type,status,
+      result_md,ai_mode,model,profile_version,prompt_hash,snapshot_json,created_by
+    ) VALUES(1,0,'trend','趋势官','策划中心',?, '选题', '待审阅',?,?,?,'test-v1','hash',?,?)`,
+          `驾驶舱待审-${suffix}`,
+          "真实 API 产出",
+          aiMode,
+          aiMode === "api" ? "dashboard-real-provider" : aiMode,
+          JSON.stringify(snapshot),
+          sales.id,
+        ).lastInsertRowid,
+      );
+    ids.push(runId);
+    if (billingState === "settled") {
+      const hold = holdCredits({
+        userId: sales.id,
+        feature: "内容员工单派·趋势官",
+        kind: "text",
+        model: "dashboard-real-provider",
+        credits: 8,
+        refType: "content_employee_run",
+        refId: runId,
+      });
+      settleHold(hold, {
+        credits: 5,
+        aiMode: "api",
+        model: "dashboard-real-provider",
+        usage: { inputTokens, outputTokens },
+      });
+    } else if (billingState === "pending_reconciliation") {
+      holdCredits({
+        userId: sales.id,
+        feature: "内容员工单派·趋势官",
+        kind: "text",
+        model: "dashboard-real-provider",
+        credits: 8,
+        refType: "content_employee_run",
+        refId: runId,
+      });
+    }
+  };
+  insertPending("老板审核", "owner");
+  insertPending("管理者审核", "manager");
+  insertPending("形成待审阅草稿", "default");
+  insertPending("形成待审阅草稿", "billing-pending", {
+    billingState: "pending_reconciliation",
+  });
+  insertPending("形成待审阅草稿", "fallback-source", {
+    aiMode: "fallback",
+    providerMode: "fallback",
+    inputTokens: 0,
+    outputTokens: 0,
+  });
+
+  try {
+    await withUserServer(boss, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) =>
+        response.json(),
+      );
+      assert.equal(todos.contentEmployeeReviews, 3);
+    });
+    await withUserServer(ops, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) =>
+        response.json(),
+      );
+      assert.equal(todos.contentEmployeeReviews, 0, "运营总监未在创建人的管理链上时不得看到横向待审");
+    });
+    await withUserServer(sales, async (base) => {
+      const todos = await fetch(`${base}/dashboard/todos`).then((response) =>
+        response.json(),
+      );
+      assert.equal(
+        todos.contentEmployeeReviews,
+        0,
+        "创建人无审阅权时不应收到可操作待办",
+      );
+    });
+  } finally {
+    q.run(
+      `DELETE FROM content_employee_runs WHERE tenant_id=1 AND id IN (${ids.map(() => "?").join(",")})`,
+      ...ids,
+    );
+  }
+});
+
+test("cleanup", () => {
+  for (const f of [DBP, DBP + "-wal", DBP + "-shm"]) {
+    try {
+      fs.rmSync(f, { force: true });
+    } catch {}
+  }
 });

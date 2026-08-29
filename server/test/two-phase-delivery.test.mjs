@@ -56,6 +56,49 @@ test('生成与原子落库成功后才结算，并返回真实 settled 状态',
   });
 });
 
+test('requirePositiveApiUsage 在 persist 前拦截真实 API 零用量并释放预授权', async () => {
+  const events = [];
+  await assert.rejects(
+    executeHeldDelivery({
+      hold,
+      generate: async () => {
+        events.push('generate');
+        return {
+          text: '供应商返回了正文但未返回用量',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          model: 'm',
+          mode: 'api',
+        };
+      },
+      persist: () => {
+        events.push('persist');
+        assert.fail('零用量必须在落库前拦截');
+      },
+      settle: () => assert.fail('零用量不得结算为已交付'),
+      release: () => {
+        events.push('release');
+        return { credits: 0, balance: 100 };
+      },
+      settlement: output => ({
+        usage: output.usage,
+        model: output.model,
+        aiMode: output.mode,
+      }),
+      requirePositiveApiUsage: true,
+    }),
+    error => {
+      assert.equal(error.code, 'BILLING_USAGE_MISSING');
+      assert.equal(error.status, 409);
+      assert.equal(error.retryable, false);
+      assert.equal(error.deliveryPhase, 'validate_billing');
+      assert.equal(error.billing.state, 'released');
+      assert.equal(error.billing.chargedCredits, 0);
+      return true;
+    },
+  );
+  assert.deepEqual(events, ['generate', 'release']);
+});
+
 for (const failingPhase of ['generate', 'persist']) {
   test(`${failingPhase}失败视为未交付并全额释放`, async () => {
     const events = [];
@@ -151,52 +194,65 @@ test('held 摘要不会把占扣金额说成已实扣', () => {
 test('日更包三个子任务各自占扣/落库/结算，单项失败只退款本项', async () => {
   let balance = 90;
   let holdSeq = 0;
+  let inFlight = 0;
+  let peakInFlight = 0;
   const events = [];
   const parts = [
     { type: '短视频脚本', count: 3 },
     { type: '朋友圈文案', count: 5 },
     { type: '社群话题', count: 3 },
   ];
-  const run = await executeContentDailyPackParts(parts, async part => {
-    const itemHold = {
-      holdId: ++holdSeq,
-      credits: 20,
-      balance: balance -= 20,
-      model: 'test-model',
-    };
-    events.push(`hold:${part.type}:${balance}`);
-    const result = await executeHeldDelivery({
-      hold: itemHold,
-      generate: async () => {
-        events.push(`generate:${part.type}`);
-        if (part.type === '朋友圈文案') throw new Error('本子任务上游失败');
-        return { text: `${part.type}产物`, usage: {}, mode: 'api', model: 'test-model' };
-      },
-      persist: output => {
-        events.push(`persist:${part.type}`);
-        return { id: itemHold.holdId, body: output.text };
-      },
-      settle: held => {
-        balance += held.credits - 5;
-        events.push(`settle:${part.type}:${balance}`);
-        return { credits: 5, balance };
-      },
-      release: held => {
-        balance += held.credits;
-        events.push(`release:${part.type}:${balance}`);
-        return { credits: 0, balance };
-      },
-      settlement: output => ({ usage: output.usage, model: output.model, aiMode: output.mode }),
-    });
-    return { type: part.type, count: part.count, ...result.delivery, billing: result.billing };
-  });
+  const run = await executeContentDailyPackParts(
+    parts,
+    async part => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      try {
+        const itemHold = {
+          holdId: ++holdSeq,
+          credits: 20,
+          balance: balance -= 20,
+          model: 'test-model',
+        };
+        events.push(`hold:${part.type}:${balance}`);
+        const result = await executeHeldDelivery({
+          hold: itemHold,
+          generate: async () => {
+            events.push(`generate:${part.type}`);
+            if (part.type === '朋友圈文案') throw new Error('本子任务上游失败');
+            return { text: `${part.type}产物`, usage: {}, mode: 'api', model: 'test-model' };
+          },
+          persist: output => {
+            events.push(`persist:${part.type}`);
+            return { id: itemHold.holdId, body: output.text };
+          },
+          settle: held => {
+            balance += held.credits - 5;
+            events.push(`settle:${part.type}:${balance}`);
+            return { credits: 5, balance };
+          },
+          release: held => {
+            balance += held.credits;
+            events.push(`release:${part.type}:${balance}`);
+            return { credits: 0, balance };
+          },
+          settlement: output => ({ usage: output.usage, model: output.model, aiMode: output.mode }),
+        });
+        return { type: part.type, count: part.count, ...result.delivery, billing: result.billing };
+      } finally {
+        inFlight -= 1;
+      }
+    },
+    { concurrency: 2 },
+  );
 
   assert.equal(run.status, 'partial');
+  assert.equal(peakInFlight, 2);
   assert.deepEqual(run.successes.map(item => item.type), ['短视频脚本', '社群话题']);
   assert.deepEqual(run.failures.map(item => item.type), ['朋友圈文案']);
   assert.equal(run.failures[0].billing.state, 'released');
   assert.equal(run.successes.every(item => item.billing.state === 'settled'), true);
   assert.equal(balance, 80, '只实扣两个成功子任务各5分，失败子任务完整退款');
-  assert.ok(events.includes('release:朋友圈文案:85'));
+  assert.ok(events.some(event => event.startsWith('release:朋友圈文案:')));
   assert.equal(events.some(event => event.startsWith('persist:朋友圈文案')), false);
 });

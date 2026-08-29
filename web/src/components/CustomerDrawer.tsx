@@ -84,7 +84,7 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
             }}
           >
             <span>
-              成交概率 <b style={{ color: '#f25b6b', fontSize: 16 }}>{detail.score}</b> 分
+              成交概率 <b style={{ color: 'var(--danger)', fontSize: 16 }}>{detail.score}</b> 分
             </span>
             <span>
               预算 <b>{detail.budget_level || '-'}</b>

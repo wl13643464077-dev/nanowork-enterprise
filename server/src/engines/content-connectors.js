@@ -1,4 +1,7 @@
-import { CONTENT_EMPLOYEES } from '../catalog/content-crew.js';
+import {
+  CONTENT_EMPLOYEE_ROSTER,
+  contentEmployeeByIdx,
+} from '../catalog/content-crew.js';
 import { buildContentEmployeeConnectorExecution } from './content-employee-workbench.js';
 
 function deepFreeze(value) {
@@ -43,7 +46,43 @@ function safeHttpUrl(value) {
   }
 }
 
-const descriptors = CONTENT_EMPLOYEES.flatMap(employee => (
+const EMPLOYEE_GENERATION_ENDPOINTS = Object.freeze({
+  copy: '/api/content/generate',
+  dailyPack: '/api/content/daily-pack',
+  image: '/api/content/generate-image',
+  video: '/api/content/generate-video',
+  ppt: '/api/content/generate-ppt',
+  sales_video_plan: '/api/content/ai-sales-video',
+  sales_video_generation: '/api/content/ai-sales-video',
+});
+
+function connectorBusinessEndpoint(employeeIdx, connector) {
+  if (connector.mode === 'employee_generation') {
+    const endpoint = EMPLOYEE_GENERATION_ENDPOINTS[connector.kind];
+    if (!endpoint) throw new Error(`内容连接器运行登记无效：${connector.kind}缺少真实生成入口`);
+    return endpoint;
+  }
+  return `/api/employee-workbench/content/${employeeIdx}/connectors/${connector.kind}/execute`;
+}
+
+function currentConnectorRequirements(requirements = {}) {
+  const { humanApproval: _legacyHumanApproval, ...current } = clone(requirements);
+  return {
+    ...current,
+    adoptionPolicy: 'central_auto_internal',
+    executionAuthorization: 'external_paid_irreversible_only',
+  };
+}
+
+function currentConnectorBoundary(value) {
+  return String(value || '')
+    .replaceAll('人工复核', '岗位质量门')
+    .replaceAll('人工审核', '中央采用策略')
+    .replaceAll('老板审批', '中央采用策略')
+    .replaceAll('人类审批', '老板执行授权');
+}
+
+const descriptors = CONTENT_EMPLOYEE_ROSTER.flatMap(employee => (
   employee.connectorPolicy.connectors.map(connector => ({
     kind: connector.kind,
     employeeIdx: employee.idx,
@@ -54,16 +93,21 @@ const descriptors = CONTENT_EMPLOYEES.flatMap(employee => (
     addon: connector.addon,
     mode: connector.mode,
     status: connector.status,
-    requirements: clone(connector.requirements),
-    executeBoundary: connector.executeBoundary,
+    executionType: connector.mode === 'employee_generation'
+      ? 'employee_generation'
+      : 'local_connector',
+    businessEndpoint: connectorBusinessEndpoint(employee.idx, connector),
+    requirements: currentConnectorRequirements(connector.requirements),
+    executeBoundary: currentConnectorBoundary(connector.executeBoundary),
   }))
 ));
 
 const descriptorByKind = new Map(descriptors.map(descriptor => [descriptor.kind, descriptor]));
 
 /**
- * 13 种内容连接器的唯一运行登记。目录、工作台公开数据和执行器都读取同一份
- * 静态目录，避免“目录显示可用、运行器仍是占位”的双轨状态。
+ * 15 种内容连接器的唯一运行登记：保留 Paihuo 10 岗位原 13 项，
+ * 并追加 NanoWork 原生 AI 带货员 2 项。目录、工作台与执行器共用同一份登记，
+ * 避免“目录显示可用、运行器仍是占位”的双轨状态。
  */
 export const CONTENT_CONNECTOR_REGISTRY = deepFreeze(descriptors);
 
@@ -88,7 +132,8 @@ function blocked(descriptor, status, code, action, missing = []) {
       inputs: ['supported_connector_kind'],
       liveData: 'not_required',
       credentials: [],
-      humanApproval: 'review',
+      adoptionPolicy: 'central_auto_internal',
+      executionAuthorization: 'external_paid_irreversible_only',
     };
   return deepFreeze({
     ok: false,
@@ -394,8 +439,8 @@ function executePublishPackage(descriptor, input, context) {
       descriptor,
       'requires_credentials',
       'CONTENT_CONNECTOR_EXTERNAL_PUBLISH_DENIED',
-      '本连接器永远不执行真实发布。请在人工终审后，通过具备服务器端平台授权、幂等与审计能力的独立发布适配器操作。',
-      ['server_side_platform_authorization', 'human_final_approval', 'audited_publish_adapter'],
+      '本连接器只生成发布包，不执行真实发布。真实发布请通过具备服务器端平台授权、幂等与审计能力的独立发布适配器；Boss亲自发起时不再产生二次审批。',
+      ['server_side_platform_authorization', 'audited_publish_adapter'],
     );
   }
   const content = safeText(input.content, 50_000);
@@ -408,7 +453,7 @@ function executePublishPackage(descriptor, input, context) {
       descriptor,
       'requires_input',
       'CONTENT_CONNECTOR_INPUT_REQUIRED',
-      '请提供 content 与非空 platforms 数组；只会生成待人工终审的本地发布包。',
+      '请提供 content 与非空 platforms 数组；只会生成可直接进入后续业务流程的本地发布包。',
       [...(!content ? ['content'] : []), ...(!platforms.length ? ['platforms'] : [])],
     );
   }
@@ -543,7 +588,7 @@ export function prepareContentConnectorEmployeeExecution(kind, task, options = {
       + '不得编译或转入单员工模型生成链',
     );
   }
-  const employee = CONTENT_EMPLOYEES[descriptor.employeeIdx];
+  const employee = contentEmployeeByIdx(descriptor.employeeIdx);
   const connectorContract = plainObject(options.connectorContract)
     ? options.connectorContract
     : {

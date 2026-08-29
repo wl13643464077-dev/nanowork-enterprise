@@ -54,6 +54,8 @@ export type EmployeeSkill = {
   description?: string;
   detail?: string;
   source?: string;
+  sourceUrl?: string;
+  learnedAt?: string;
   version?: string;
   enabled?: boolean;
   verified?: boolean;
@@ -77,6 +79,31 @@ export type EmployeeSkill = {
     sha256?: string;
     kind?: string;
   };
+};
+
+export type EmployeeSkillLearningRun = {
+  id: number;
+  domain: EmployeeWorkbenchDomain;
+  employeeIdx: number;
+  employeeName: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'pending_reconciliation' | string;
+  skillsBefore: number;
+  skillsAdded: number;
+  skillsTotal: number | null;
+  progress: Array<{ phase?: string; message?: string; at?: string; batch?: number; requested?: number }>;
+  result?: { skills?: EmployeeSkill[] } | null;
+  error?: { code?: string; message?: string; billingState?: string; retryable?: boolean } | null;
+  billing?: {
+    holdId?: number | null;
+    creditLogId?: number | null;
+    heldCredits?: number | null;
+    chargedCredits?: number | null;
+    costYuan?: number | null;
+    webCostUsd?: number | null;
+  };
+  createdAt?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 export type EmployeeSkillLibrary = {
@@ -190,6 +217,90 @@ export type EmployeeJobProfile = {
   fields?: Array<{ label: string; value: string }>;
 };
 
+export type EmployeeRuntimeTask = {
+  id: string | number;
+  title: string;
+  type?: string;
+  status?: string;
+  displayStatus?: string;
+  remediated?: boolean;
+  remediatedByRunId?: number | null;
+  reviewReady?: boolean;
+  billingState?: string;
+  billing?: {
+    state?: string;
+    label?: string;
+    credits?: number | null;
+    heldCredits?: number | null;
+    settledCredits?: number | null;
+    costYuan?: number | null;
+    authoritative?: boolean;
+  };
+  createdAt?: string;
+  created_at?: string;
+  flow?: string[];
+  stepIndex?: number;
+  failed?: boolean;
+  nextAction?: string;
+  requirement?: string;
+  output_id?: number | null;
+  output_body?: string | null;
+  output_status?: string | null;
+  risk_level?: string | null;
+  risk_flags?: string | string[] | null;
+  employee_profile_version?: string | null;
+  internalProfileApplied?: boolean;
+  generationProgress?: EmployeeExecutionProgress;
+  failure?: {
+    code?: string;
+    retryable?: boolean;
+    message?: string;
+  };
+  aiMode?: string;
+  ai_mode?: string;
+  executionSnapshot?: {
+    webEvidence?: {
+      skillResearchPlan?: Record<string, unknown> | null;
+      sourceQuality?: Record<string, unknown> | null;
+      [key: string]: unknown;
+    } | null;
+    outputContract?: {
+      valid?: boolean;
+      errors?: string[];
+      warnings?: string[];
+      qualityMode?: 'strict' | 'advisory';
+      contractId?: string | null;
+      repair?: Record<string, unknown> | null;
+    } | null;
+    providerAttempt?: {
+      mode?: string | null;
+      model?: string | null;
+      usage?: { inputTokens?: number; outputTokens?: number };
+    } | null;
+  } | null;
+};
+
+export type EmployeeExecutionProgressStep = {
+  stage: string;
+  kind: string;
+  label: string;
+  status: 'pending' | 'active' | 'done' | 'error';
+  at: string;
+  count?: number;
+  attemptNumber?: number;
+};
+
+export type EmployeeExecutionProgress = {
+  receivedChars: number;
+  lastActivityAt: string;
+  attemptNumber: number;
+  phase: 'acquire' | 'repair';
+  currentStage?: string;
+  currentLabel?: string;
+  percent?: number;
+  steps?: EmployeeExecutionProgressStep[];
+};
+
 export type EmployeeRuntime = {
   status?: string;
   runs?: number;
@@ -202,25 +313,87 @@ export type EmployeeRuntime = {
   cost?: number;
   completedRuns?: number;
   reviewPendingRuns?: number;
+  reconciliationPendingRuns?: number;
   runningTasks?: number;
-  lastTask?: {
-    id?: string | number;
-    title?: string;
-    type?: string;
-    status?: string;
-    created_at?: string;
-  } | null;
-  recentTasks?: Array<{
-    id: string | number;
-    title: string;
-    type?: string;
-    status?: string;
-    createdAt?: string;
-    created_at?: string;
-  }>;
+  failedRuns?: number;
+  remediatedRuns?: number;
+  lastTask?: EmployeeRuntimeTask | null;
+  recentTasks?: EmployeeRuntimeTask[];
+  taskPage?: {
+    offset: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+    nextOffset: number | null;
+  };
+};
+
+export type EmployeeRuntimeBindingItem = {
+  id?: string;
+  kind?: string;
+  binding?: string;
+  handler?: string;
+  legacyHandler?: string;
+  route?: string;
+  endpoint?: string;
+  businessEndpoint?: string;
+  status?: string;
+  mode?: string;
+  invocation?: string;
+  credentialPolicy?: string;
+  required?: boolean;
+  primary?: boolean;
+  addon?: boolean;
+  [key: string]: unknown;
+};
+
+export type EmployeeRuntimeBindings = {
+  work?: {
+    mode?: string;
+    handler?: string;
+    legacyHandler?: string;
+    legacyPipelineBuilder?: string;
+    soloMessageMode?: string;
+    async?: boolean;
+    outputValidation?: string;
+    [key: string]: unknown;
+  };
+  models?: Record<
+    string,
+    {
+      route?: string;
+      factoryModel?: string | null;
+      invocation?: string;
+      credentials?: string;
+      [key: string]: unknown;
+    }
+  >;
+  webPolicy?: {
+    defaultMode?: string;
+    cadence?: string;
+    minimumAttempts?: number;
+    evidenceRequired?: boolean;
+    failurePolicy?: string;
+    realtimeSteps?: string[];
+    [key: string]: unknown;
+  };
+  apis?: EmployeeRuntimeBindingItem[];
+  tools?: EmployeeRuntimeBindingItem[];
+  connectors?: EmployeeRuntimeBindingItem[];
+  references?: EmployeeRuntimeBindingItem[];
+  sourceBindings?: {
+    work?: Record<string, unknown>;
+    connectors?: EmployeeRuntimeBindingItem[];
+    safeLegacyConfig?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  currentRuntimeBindings?: EmployeeRuntimeBindings;
+  parityBoundary?: string;
+  [key: string]: unknown;
 };
 
 export type ContentEmployeeRunStatus = '生成中' | '待审阅' | '已完成' | '已驳回' | '失败';
+export type ContentEmployeePublicRunStatus = ContentEmployeeRunStatus | '待账务对账';
 
 export type EmployeeRunReview = {
   decision?: 'adopt' | 'reject' | null;
@@ -231,6 +404,22 @@ export type EmployeeRunReview = {
   opinion?: string;
   materialId?: number | null;
   contentId?: number | null;
+  selection?: {
+    candidateId?: string | null;
+    candidateIndex: number;
+  } | null;
+};
+
+export type EmployeeRunHandlerApproval = {
+  code: 'pick' | 'review' | 'auto' | 'force' | string;
+  candidateSelectionRequired: boolean;
+  forcedFinalReview: boolean;
+  externalPublishAllowed: false;
+  executed: boolean;
+  candidates: Array<{
+    candidateIndex: number;
+    label: string;
+  }>;
 };
 
 export type EmployeeRunBilling = {
@@ -241,6 +430,26 @@ export type EmployeeRunBilling = {
   model?: string;
   note?: string;
 };
+
+export type InternalProfileLeakage = {
+  schemaVersion?: string;
+  detected: true;
+  status?: 'blocked_pending_privileged_review' | string;
+  reasons?: string[];
+  categories?: string[];
+  matchCount?: number;
+  outputHash?: string | null;
+  markerHash?: string | null;
+};
+
+export type EmployeeRunPresentationKey =
+  | 'generating'
+  | 'review_pending'
+  | 'adopted'
+  | 'business_blocked'
+  | 'rework_required'
+  | 'execution_failed'
+  | 'historical';
 
 export type EmployeeWorkbenchRun = {
   id: number;
@@ -264,6 +473,9 @@ export type EmployeeWorkbenchRun = {
   dueAt?: string | null;
   status: ContentEmployeeRunStatus;
   displayStatus?: string;
+  presentationKey?: EmployeeRunPresentationKey | string;
+  remediated?: boolean;
+  remediatedByRunId?: number | null;
   resultMd?: string | null;
   resultPreview?: string | null;
   error?: string | null;
@@ -275,6 +487,7 @@ export type EmployeeWorkbenchRun = {
   createdAt?: string;
   updatedAt?: string;
   billing?: EmployeeRunBilling | null;
+  executionProgress?: EmployeeExecutionProgress | null;
   contract?: {
     valid: boolean;
     errors: string[];
@@ -290,10 +503,18 @@ export type EmployeeWorkbenchRun = {
     }>;
   } | null;
   review?: EmployeeRunReview | null;
+  handlerApproval?: EmployeeRunHandlerApproval | null;
   materialId?: number | null;
   contentId?: number | null;
   canReview?: boolean;
+  canAdopt?: boolean;
+  canReject?: boolean;
+  reviewBlockedReason?: string | null;
+  nextAction?: string;
   terminal?: boolean;
+  internalProfileLeakage?: InternalProfileLeakage;
+  internalProfileApplied?: boolean;
+  internalProfileRedacted?: boolean;
   snapshot?: Record<string, unknown>;
 };
 
@@ -301,6 +522,38 @@ export type EmployeeRunListResponse = {
   runs: EmployeeWorkbenchRun[];
   total: number;
   limit: number;
+};
+
+export type ContentEmployeeQueueResponse = {
+  runs: EmployeeWorkbenchRun[];
+  total: number;
+  visibleTotal: number;
+  limit: number;
+  offset: number;
+  statusFilter: ContentEmployeePublicRunStatus[];
+  statusCounts: Record<ContentEmployeePublicRunStatus, number>;
+  presentationCounts: Partial<Record<EmployeeRunPresentationKey, number>>;
+  remediatedCount: number;
+  employeeCounts: Array<{
+    employeeIdx: number;
+    employeeKey?: string;
+    employeeName: string;
+    employeeGroup?: string;
+    total: number;
+    running: number;
+    reviewPending: number;
+    completed: number;
+    rejected: number;
+    failed: number;
+    remediated: number;
+  }>;
+  scope: {
+    key: 'tenant' | 'team' | 'self';
+    label: string;
+    canViewTenantRuns: boolean;
+    canReviewRuns: boolean;
+    canViewInternalProfile: boolean;
+  };
 };
 
 export type EmployeeDispatch = {
@@ -331,7 +584,14 @@ export type EmployeeDispatch = {
 export type EmployeePermissions = {
   canDispatch?: boolean;
   canReviewRuns?: boolean;
+  canViewInternalProfile?: boolean;
+  canViewCapabilities?: boolean;
+  canViewWorkMethod?: boolean;
+  canViewSkills?: boolean;
   canViewPrompt?: boolean;
+  canViewWorkConfig?: boolean;
+  canViewJobProfile?: boolean;
+  canViewRuntimeBindings?: boolean;
   canEditPrompt?: boolean;
   canEditConfig?: boolean;
   canEditSkills?: boolean;
@@ -361,13 +621,36 @@ export type EmployeeWorkbenchProfile = {
   prompts: EmployeePrompts;
   workConfig: EmployeeWorkConfig;
   jobProfile: EmployeeJobProfile;
+  runtimeBindings: EmployeeRuntimeBindings;
   runtime: EmployeeRuntime;
   dispatch: EmployeeDispatch;
   permissions: EmployeePermissions;
   provenance: EmployeeProvenance;
 };
 
+export type EmployeeWorkbenchBusiness = {
+  intro: string;
+  value: [number, number];
+  typicalValue: number;
+  unit: string;
+  basis: string;
+  reference: string;
+  cost: {
+    minCredits: number;
+    maxCredits: number;
+    minYuan: number;
+    maxYuan: number;
+    typicalCredits: number;
+    typicalYuan: number;
+    typicalBasis: string;
+    note: string;
+  };
+};
+
 export type EmployeeWorkbenchIdentityHint = Pick<
   EmployeeWorkbenchIdentity,
   'idx' | 'name' | 'person' | 'group' | 'emoji' | 'color' | 'status' | 'duty' | 'intro' | 'extension'
->;
+> & {
+  avatar?: string;
+  business?: EmployeeWorkbenchBusiness | null;
+};

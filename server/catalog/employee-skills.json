@@ -2750,7 +2750,7 @@
       "department": "餐饮产业部",
       "learnedAt": 1784201904.0730891,
       "safeLegacyConfig": {
-        "modelText": "deepseek-v4-flash",
+        "modelText": "gpt-5.5",
         "modelImage": null,
         "settings": {}
       },

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import {
   Menu,
   Input,
@@ -22,8 +22,11 @@ import {
   RobotOutlined,
   RiseOutlined,
   CalendarOutlined,
+  CheckSquareOutlined,
+  CommentOutlined,
   ExperimentOutlined,
   ScheduleOutlined,
+  UnorderedListOutlined,
   BarChartOutlined,
   GoldOutlined,
   SettingOutlined,
@@ -32,15 +35,10 @@ import {
   MailOutlined,
   QuestionCircleOutlined,
   LogoutOutlined,
-  ThunderboltOutlined,
   UserOutlined,
   ControlOutlined,
   WalletOutlined,
   MobileOutlined,
-  PictureOutlined,
-  MessageOutlined,
-  HistoryOutlined,
-  RightOutlined,
   SendOutlined,
   SwapOutlined,
   BgColorsOutlined,
@@ -52,46 +50,67 @@ import {
   RocketOutlined,
   TeamOutlined,
   WarningOutlined,
+  SearchOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
 import { PageSkeleton } from '../components/Kit';
+import CommandPalette, { rememberRecent } from '../components/CommandPalette';
+import { RouteErrorBoundary } from '../components/AppErrorBoundary';
 import './MainLayout.css';
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
+// group 字段把 13 个一级项按「老板一天里的动作顺序」聚成 4 组：
+// 先看数据 → 再派活干活 → 产出内容 → 最后才是配置。
+// 此前全部平铺，13 个同级项无任何层次，老板要逐个读完才能找到入口。
 const MENUS = [
-  { key: '/', icon: <DashboardOutlined />, label: '老板驾驶舱', mod: 'dashboard' },
-  { key: '/advisor', icon: <RobotOutlined />, label: '老板参谋', mod: 'advisor' },
-  { key: '/employees', icon: <AppstoreOutlined />, label: '餐饮数字员工', mod: 'marshals' },
-  { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content' },
-  { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth' },
-  { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities' },
-  { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content' },
-  { key: '/execution', icon: <ScheduleOutlined />, label: '今日经营', mod: 'execution' },
-  { key: '/analysis', icon: <BarChartOutlined />, label: '经营洞察', mod: 'analysis' },
-  { key: '/store-data', icon: <ShopOutlined />, label: '门店数据', mod: 'analysis' },
-  { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets' },
-  { key: '/system', icon: <SettingOutlined />, label: '系统管理', mod: 'system' },
-  { key: '/recharge', icon: <WalletOutlined />, label: '充值中心', bossOnly: true },
+  { key: '/', icon: <DashboardOutlined />, label: '老板驾驶舱', mod: 'dashboard', group: 'watch' },
+  { key: '/analysis', icon: <BarChartOutlined />, label: '经营洞察', mod: 'analysis', group: 'watch' },
+  {
+    key: '/store-data',
+    icon: <ShopOutlined />,
+    label: '门店数据',
+    mod: 'analysis',
+    managerOnly: true,
+    group: 'watch',
+  },
+  { key: '/advisor', icon: <RobotOutlined />, label: '老板参谋', mod: 'advisor', group: 'work' },
+  { key: '/employees', icon: <AppstoreOutlined />, label: '餐饮数字员工', mod: 'marshals', group: 'work' },
+  { key: '/tasks', icon: <UnorderedListOutlined />, label: '任务中心', mod: 'execution', group: 'work' },
+  { key: '/execution', icon: <ScheduleOutlined />, label: '经营执行', mod: 'execution', group: 'work' },
+  { key: '/store-ops', icon: <CheckSquareOutlined />, label: '门店日常', mod: 'dashboard', group: 'work' },
+  { key: '/reviews', icon: <CommentOutlined />, label: '评价中心', mod: 'dashboard', group: 'work' },
+  { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities', group: 'work' },
+  { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth', group: 'work' },
+  { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'make' },
+  { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'make' },
+  { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'make' },
+  { key: '/system', icon: <SettingOutlined />, label: '系统管理', mod: 'system', group: 'setup' },
+  { key: '/recharge', icon: <WalletOutlined />, label: '充值中心', bossOnly: true, group: 'setup' },
 ];
 
-// 底部「快捷作战栏」——一键直达对应模块去生成（高频动作入口）
-const QUICK = [
-  { icon: <AppstoreOutlined />, label: '找员工派活', to: '/employees', mod: 'marshals' },
-  { icon: <ThunderboltOutlined />, label: '今日必发', to: '/toolbox?tool=hot', mod: 'content' },
-  { icon: <CalendarOutlined />, label: '做营销活动', to: '/activities', mod: 'activities' },
-  { icon: <MessageOutlined />, label: '会员唤醒话术', to: '/growth', mod: 'growth' },
-  { icon: <PictureOutlined />, label: '做产品海报', to: '/toolbox?tool=shot', mod: 'content' },
-  { icon: <HistoryOutlined />, label: '看经营复盘', to: '/analysis', mod: 'analysis' },
+const MENU_GROUPS: { key: string; label: string }[] = [
+  { key: 'watch', label: '看经营' },
+  { key: 'work', label: '派活干活' },
+  { key: 'make', label: '做内容' },
+  { key: 'setup', label: '配置' },
 ];
 
 const ROLE_NAME: Record<string, string> = {
   boss: '老板',
   ops_director: '门店运营',
+  manager: '管理层',
   sales: '一线员工',
   admin: '系统管理员',
+  partner: '合作伙伴',
 };
 const THEME_KEY = 'nanowork_industry_theme_v1';
+const NAV_COLLAPSED_KEY = 'nanowork_nav_collapsed_v1';
+// 快捷键提示按平台显示（Mac 显示 ⌘K，其余显示 Ctrl K）
+const isMacLike =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
 
 const KEY_OF_PATH: Record<string, string> = {
   '/': 'dashboard',
@@ -103,6 +122,9 @@ const KEY_OF_PATH: Record<string, string> = {
   '/activities': 'activities',
   '/content': 'content',
   '/execution': 'execution',
+  '/tasks': 'execution',
+  '/store-ops': 'dashboard',
+  '/reviews': 'dashboard',
   '/analysis': 'analysis',
   '/store-data': 'analysis',
   '/assets': 'assets',
@@ -128,7 +150,7 @@ function pressable(fn: () => void) {
 function menusFor(modules: string[], role?: string) {
   return MENUS.filter((menu: any) => {
     if (menu.bossOnly && role !== 'boss') return false;
-    if (menu.managerOnly && !['boss', 'ops_director', 'admin'].includes(role || '')) return false;
+    if (menu.managerOnly && !['boss', 'ops_director', 'manager', 'admin'].includes(role || '')) return false;
     return !menu.mod || modules.includes(menu.mod);
   });
 }
@@ -137,12 +159,54 @@ export default function MainLayout() {
   const nav = useNavigate();
   const loc = useLocation();
   const user = getUser();
+  const dailyGuide =
+    user?.role === 'boss'
+      ? {
+          title: '老板每日10分钟',
+          body: '① 老板驾驶舱看 KPI 与异常 ② 点开指标穿刺到订单/会员 ③ 把下一步动作派给对应数字员工',
+        }
+      : user?.role === 'ops_director' || user?.role === 'manager'
+        ? {
+            title: '管理层每日协同',
+            body: '① 经营协同台看团队待办与异常 ② 穿刺到客户、活动和任务 ③ 分派动作并跟进审核结果',
+          }
+        : user?.role === 'admin'
+          ? {
+              title: '管理员每日检查',
+              body: '① 经营管理台核对企业运行状态 ② 检查权限、审批与任务积压 ③ 把业务决策交给对应负责人',
+            }
+          : {
+              title: '我的每日执行',
+              body: '① 我的工作台看待办 ② 进入任务完成工作 ③ 提交结果并跟进审核状态',
+            };
   const [notifs, setNotifs] = useState<any[]>([]);
   const [credits, setCredits] = useState<number>(user?.credits ?? 0);
   const [modules, setModules] = useState<string[]>(user?.modules || Object.values(KEY_OF_PATH));
-  const [aiOpen, setAiOpen] = useState(true);
+  const canUseAdvisor = modules.includes('advisor');
+  const assistantCopy =
+    user?.role === 'boss'
+      ? { title: '老板经营助手', entry: '问老板参谋', todo: '老板待办', short: '经营助手' }
+      : user?.role === 'ops_director' || user?.role === 'manager'
+        ? { title: '经营协同助手', entry: '问经营参谋', todo: '管理层待办', short: '协同助手' }
+        : user?.role === 'admin'
+          ? { title: '经营管理助手', entry: '问经营参谋', todo: '管理待办', short: '管理助手' }
+          : { title: '我的工作助手', entry: '问工作参谋', todo: '我的待办', short: '工作助手' };
+  const assistantSuggestion = modules.includes('analysis')
+    ? { path: '/analysis', label: '查看经营穿刺 →' }
+    : modules.includes('execution')
+      ? { path: '/execution', label: '查看我的任务 →' }
+      : { path: '/advisor', label: '进入完整参谋 →' };
+  const [aiOpen, setAiOpen] = useState(false);
   const [ask, setAsk] = useState('');
   const [uiTheme, setUiTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'nano');
+  const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(NAV_COLLAPSED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const changeAppearance = (key: string) => {
     if (['nano', 'midnight'].includes(key)) {
       localStorage.setItem(THEME_KEY, key);
@@ -151,15 +215,77 @@ export default function MainLayout() {
     }
   };
   const visibleMenus = menusFor(modules, user?.role);
-  const visibleQuick = QUICK.filter(item => modules.includes(item.mod));
   const current = MENUS.find(m => m.key === loc.pathname) || visibleMenus[0] || MENUS[0];
+  const currentGroup = MENU_GROUPS.find(group => group.key === current.group)?.label || '经营工作台';
   const menuLabel = (m: any) => {
-    if (m.mod !== 'dashboard') return m.label;
+    if (m.mod === 'advisor') {
+      if (user?.role === 'boss') return '老板参谋';
+      if (user?.role === 'ops_director' || user?.role === 'manager' || user?.role === 'admin') return '经营参谋';
+      return '我的工作参谋';
+    }
+    // 角色化改名只针对首页（/）：门店日常、评价中心等同挂 dashboard 模块的
+    // 菜单项必须保留各自名称，否则侧栏会出现多个“老板驾驶舱”。
+    if (m.mod !== 'dashboard' || m.key !== '/') return m.label;
     if (user?.role === 'sales') return '我的工作台';
     if (user?.role === 'partner') return '合伙人工作台';
-    if (user?.role === 'ops_director') return '经营协同台';
-    return '老板驾驶舱';
+    if (user?.role === 'ops_director' || user?.role === 'manager') return '经营协同台';
+    if (user?.role === 'admin') return '经营管理台';
+    if (user?.role === 'boss') return '老板驾驶舱';
+    return '我的工作台';
   };
+  // 分组渲染：只保留有可见项的组，避免权限受限用户看到空标题
+  const menuItems = useMemo(
+    () =>
+      MENU_GROUPS.map(g => {
+        const children = visibleMenus
+          .filter(m => m.group === g.key)
+          .map(m => ({ key: m.key, icon: m.icon, label: menuLabel(m) }));
+        return children.length ? { key: `grp-${g.key}`, type: 'group' as const, label: g.label, children } : null;
+      }).filter(Boolean),
+    // menuLabel 只依赖 user.role，随 visibleMenus 一起变化
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleMenus, user?.role],
+  );
+  // 命令面板的导航项：与侧栏同源同权限，带分组名做为副标题
+  const paletteNavItems = useMemo(
+    () =>
+      visibleMenus.map(m => ({
+        key: m.key,
+        label: menuLabel(m),
+        group: MENU_GROUPS.find(g => g.key === m.group)?.label,
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleMenus, user?.role],
+  );
+
+  // 全局 ⌘K / Ctrl+K：在输入框里也生效（用户可能正在填表时想跳走）
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const platformModifier = isMacLike ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (platformModifier && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCmdkOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NAV_COLLAPSED_KEY, String(navCollapsed));
+    } catch {
+      /* 隐私模式下 localStorage 不可写，不影响本次会话使用 */
+    }
+  }, [navCollapsed]);
+
+  // 记录最近访问，供命令面板在空查询时优先展示
+  useEffect(() => {
+    const hit = MENUS.find(m => m.key === loc.pathname);
+    if (hit) rememberRecent(hit.key, menuLabel(hit));
+    // menuLabel 仅依赖 user.role
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.pathname, user?.role]);
 
   useEffect(() => {
     api
@@ -198,13 +324,24 @@ export default function MainLayout() {
   const unread = notifs.filter(n => !n.read).length;
 
   const NOTIF_LINK: Record<string, { link: string; name: string }> = {
-    approval: { link: '/system', name: '审批中心' },
+    approval: { link: '/system?tab=approvals', name: '审批中心' },
     lead: { link: '/growth', name: '会员增长' },
     follow: { link: '/growth', name: '会员增长' },
-    partner: { link: '/execution', name: '今日经营' },
+    partner: { link: '/execution', name: '经营执行' },
     marshal: { link: '/employees', name: '餐饮数字员工' },
     activity: { link: '/activities', name: '营销活动' },
-    task: { link: '/execution', name: '今日经营' },
+    task: { link: '/tasks', name: '任务中心' },
+  };
+  const notificationTarget = (notification: any) => {
+    const fallback = NOTIF_LINK[notification?.type];
+    const explicit =
+      typeof notification?.link === 'string' &&
+      notification.link.length <= 1000 &&
+      /^\/(?!\/)[^\\\r\n]*$/u.test(notification.link)
+        ? notification.link
+        : '';
+    if (explicit) return { link: explicit, name: fallback?.name || '查看详情' };
+    return fallback;
   };
   const reloadNotifs = (size = 20) =>
     api
@@ -217,7 +354,7 @@ export default function MainLayout() {
         .post(`/sys/notifications/${n.id}/read`)
         .then(() => reloadNotifs(mailOpen ? 100 : 20))
         .catch(() => {});
-    const t = NOTIF_LINK[n.type];
+    const t = notificationTarget(n);
     if (t) {
       setMailOpen(false);
       nav(t.link);
@@ -313,6 +450,7 @@ export default function MainLayout() {
   const askBrain = () => {
     nav('/advisor', { state: { q: ask.trim() } });
     setAsk('');
+    setAiOpen(false);
   };
 
   const Logo = <img className="os-brand-mark" src="/brand/nanowork-icon.svg" alt="纳米Work" />;
@@ -330,13 +468,20 @@ export default function MainLayout() {
           <span className="os-brand-div">｜</span>
           <span className="os-brand-tenant">当前门店：{user?.tenant?.name || '当前企业'}</span>
         </div>
+        {/* 原为三条永不变化的静态文案（数据口径/岗位档案/任务产出），占着顶栏黄金位置却不可点。
+            换成命令面板入口：同样的位置，变成真正能用的全局搜索与快捷动作。 */}
         <div className="os-status">
-          <span className="os-dot os-dot-g" />
-          数据口径 当前企业
-          <span className="os-dot os-dot-g" />
-          岗位档案 70岗
-          <span className="os-dot os-dot-g" />
-          任务产出 可追溯
+          <button
+            type="button"
+            className="os-cmdk-trigger"
+            aria-label={`打开全局搜索与命令面板（${isMacLike ? '⌘K' : 'Ctrl+K'}）`}
+            aria-keyshortcuts={isMacLike ? 'Meta+K' : 'Control+K'}
+            onClick={() => setCmdkOpen(true)}
+          >
+            <SearchOutlined />
+            <span className="os-cmdk-label">搜模块、客户、内容…</span>
+            <kbd className="os-cmdk-kbd">{isMacLike ? '⌘K' : 'Ctrl K'}</kbd>
+          </button>
         </div>
         <div className="os-top-actions">
           <Dropdown
@@ -389,23 +534,32 @@ export default function MainLayout() {
               <BgColorsOutlined className="os-ic" />
             </Tooltip>
           </Dropdown>
-          <Tooltip title="企业积分余额 · 点击进入充值中心">
+          <Tooltip
+            title={user?.role === 'boss' ? '企业积分余额 · 点击进入充值中心' : '企业积分余额 · 充值由老板统一管理'}
+          >
             <span
               className="os-credit"
-              aria-label="企业积分余额，点击进入充值中心"
-              {...pressable(() => {
-                if (user?.role === 'boss') nav('/recharge');
-              })}
+              aria-label={user?.role === 'boss' ? '企业积分余额，点击进入充值中心' : '企业积分余额'}
+              {...(user?.role === 'boss' ? pressable(() => nav('/recharge')) : {})}
             >
               ◆ {Number(credits).toLocaleString()} 积分
             </span>
           </Tooltip>
-          <Tooltip title="问老板参谋">
-            <button className="os-ask-brain" aria-label="问老板参谋" onClick={() => nav('/advisor')}>
-              <RobotOutlined />
-              <span className="os-ask-brain-label">问老板参谋</span>
-            </button>
-          </Tooltip>
+          {canUseAdvisor && (
+            <Tooltip title={assistantCopy.entry}>
+              <button
+                type="button"
+                className="os-ask-brain"
+                aria-label={`打开${assistantCopy.title}`}
+                aria-expanded={aiOpen}
+                aria-controls="boss-assistant-inspector"
+                onClick={() => setAiOpen(true)}
+              >
+                <RobotOutlined />
+                <span className="os-ask-brain-label">{assistantCopy.short}</span>
+              </button>
+            </Tooltip>
+          )}
           <Tooltip title="手机版（H5）">
             <button type="button" className="os-icon-btn" aria-label="打开手机版（H5）" onClick={() => nav('/m')}>
               <MobileOutlined className="os-ic" />
@@ -447,9 +601,9 @@ export default function MainLayout() {
                           <span>
                             {!n.read && <Badge status="processing" />} {n.title}
                           </span>
-                          {NOTIF_LINK[n.type] && (
+                          {notificationTarget(n) && (
                             <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0 }}>
-                              {NOTIF_LINK[n.type].name} ›
+                              {notificationTarget(n)?.name} ›
                             </Tag>
                           )}
                         </div>
@@ -531,13 +685,27 @@ export default function MainLayout() {
 
       <div className="os-mid">
         {/* 左侧：企业作战系统 */}
-        <aside className="os-left">
-          <div className="os-left-title">门店经营中心</div>
+        <aside className={`os-left ${navCollapsed ? 'os-left--collapsed' : ''}`} aria-label="经营模块导航">
+          <div className="os-left-head">
+            <span className="os-left-title">门店经营中心</span>
+            <Tooltip title={navCollapsed ? '展开导航' : '收起导航'} placement="right">
+              <button
+                type="button"
+                className="os-nav-toggle"
+                aria-label={navCollapsed ? '展开经营模块导航' : '收起经营模块导航'}
+                aria-expanded={!navCollapsed}
+                onClick={() => setNavCollapsed(value => !value)}
+              >
+                {navCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              </button>
+            </Tooltip>
+          </div>
           <Menu
             mode="inline"
             theme="dark"
+            inlineCollapsed={navCollapsed}
             selectedKeys={[current.key]}
-            items={visibleMenus.map(m => ({ key: m.key, icon: m.icon, label: menuLabel(m) }))}
+            items={menuItems}
             onClick={({ key }) => nav(key)}
           />
           <div className="os-culture">
@@ -555,98 +723,122 @@ export default function MainLayout() {
         {/* 中间：企业经营大屏（内容页保持浅色清晰） */}
         <main className="os-center">
           <div className="os-page-head">
-            <span className="os-page-title">{menuLabel(current)}</span>
+            <div className="os-page-heading">
+              <span className="os-page-context">{currentGroup}</span>
+              <span className="os-page-title">{menuLabel(current)}</span>
+            </div>
+            {canUseAdvisor && (
+              <button
+                type="button"
+                className="os-page-assistant"
+                aria-label={`打开${assistantCopy.title}`}
+                aria-expanded={aiOpen}
+                aria-controls="boss-assistant-inspector"
+                onClick={() => setAiOpen(true)}
+              >
+                <RobotOutlined />
+                <span>{assistantCopy.short}</span>
+              </button>
+            )}
           </div>
           <div className="os-page-body">
-            <Suspense fallback={<PageSkeleton />}>
-              <Outlet />
-            </Suspense>
+            {/* 路由级边界：单页异常不再白屏整站，外壳与导航保持可用 */}
+            <RouteErrorBoundary resetKey={`${loc.pathname}${loc.search}`}>
+              <Suspense fallback={<PageSkeleton />}>
+                <Outlet />
+              </Suspense>
+            </RouteErrorBoundary>
           </div>
         </main>
-
-        {/* 右侧：老板经营助手 */}
-        <aside className={`os-right ${aiOpen ? '' : 'os-right-min'}`}>
-          {aiOpen ? (
-            <>
-              <div className="os-right-head">
-                <span>
-                  <RobotOutlined /> 老板经营助手
-                </span>
-                <button
-                  type="button"
-                  className="os-icon-btn"
-                  aria-label="收起老板经营助手"
-                  onClick={() => setAiOpen(false)}
-                >
-                  <RightOutlined className="os-ic-sm" />
-                </button>
-              </div>
-              <div className="os-sec">
-                <div className="os-sec-t">今日提醒</div>
-                {notifs.slice(0, 3).map((n: any) => (
-                  <div className="os-rmd" key={n.id} {...pressable(() => openNotif(n))}>
-                    <span className="os-rmd-dot" />
-                    {n.title}
-                  </div>
-                ))}
-                {notifs.length === 0 && <div className="os-empty">今日暂无新提醒</div>}
-              </div>
-              <div className="os-sec">
-                <div className="os-sec-t">
-                  老板待办 <Tag className="os-cnt">{todos.length}</Tag>
-                </div>
-                {todos.slice(0, 3).map((n: any) => (
-                  <div className="os-todo" key={n.id} {...pressable(() => openNotif(n))}>
-                    {n.title}
-                  </div>
-                ))}
-                {todos.length === 0 && <div className="os-empty">暂无待办事项</div>}
-              </div>
-              <div className="os-sec os-suggest">
-                <div className="os-sec-t">今日建议</div>
-                <div className="os-suggest-txt">
-                  根据当前已记录的指标与任务，先核对异常，再把下一步动作派给对应数字员工。
-                </div>
-                <button className="os-suggest-btn" onClick={() => nav('/analysis')}>
-                  查看经营穿刺 →
-                </button>
-              </div>
-              <div className="os-ask">
-                <Input.TextArea
-                  value={ask}
-                  onChange={e => setAsk(e.target.value)}
-                  placeholder="请输入你想解决的经营问题…"
-                  autoSize={{ minRows: 2, maxRows: 4 }}
-                  onPressEnter={e => {
-                    e.preventDefault();
-                    askBrain();
-                  }}
-                />
-                <button className="os-ask-send" onClick={askBrain}>
-                  <SendOutlined /> 问老板参谋
-                </button>
-              </div>
-            </>
-          ) : (
-            <button className="os-right-open" onClick={() => setAiOpen(true)} aria-label="展开老板经营助手">
-              <RobotOutlined />
-            </button>
-          )}
-        </aside>
       </div>
 
-      {/* 底部：快捷作战栏 */}
-      <footer className="os-bottom">
-        <span className="os-bottom-label">老板快捷入口</span>
-        <div className="os-quick">
-          {visibleQuick.map(q => (
-            <button className="os-quick-btn" key={q.label} onClick={() => nav(q.to)}>
-              {q.icon}
-              <span>{q.label}</span>
-            </button>
-          ))}
-        </div>
-      </footer>
+      {canUseAdvisor && (
+        <Drawer
+          className="os-ai-drawer"
+          rootClassName="os-ai-drawer-root"
+          title={
+            <span className="os-ai-title">
+              <RobotOutlined /> {assistantCopy.title}
+            </span>
+          }
+          width={400}
+          open={aiOpen}
+          onClose={() => setAiOpen(false)}
+          extra={
+            <Button
+              type="text"
+              size="small"
+              onClick={() => {
+                setAiOpen(false);
+                nav('/advisor');
+              }}
+            >
+              进入完整参谋
+            </Button>
+          }
+        >
+          <div id="boss-assistant-inspector" className="os-ai-inspector">
+            <section className="os-sec" aria-labelledby="assistant-reminders-title">
+              <div id="assistant-reminders-title" className="os-sec-t">
+                今日提醒
+              </div>
+              {notifs.slice(0, 3).map((n: any) => (
+                <div className="os-rmd" key={n.id} {...pressable(() => openNotif(n))}>
+                  <span className="os-rmd-dot" />
+                  {n.title}
+                </div>
+              ))}
+              {notifs.length === 0 && <div className="os-empty">今日暂无新提醒</div>}
+            </section>
+            <section className="os-sec" aria-labelledby="assistant-todos-title">
+              <div id="assistant-todos-title" className="os-sec-t">
+                {assistantCopy.todo} <Tag className="os-cnt">{todos.length}</Tag>
+              </div>
+              {todos.slice(0, 3).map((n: any) => (
+                <div className="os-todo" key={n.id} {...pressable(() => openNotif(n))}>
+                  {n.title}
+                </div>
+              ))}
+              {todos.length === 0 && <div className="os-empty">暂无待办事项</div>}
+            </section>
+            <section className="os-sec os-suggest" aria-labelledby="assistant-suggestion-title">
+              <div id="assistant-suggestion-title" className="os-sec-t">
+                今日建议
+              </div>
+              <div className="os-suggest-txt">
+                根据当前已记录的指标与任务，先核对异常，再把下一步动作派给对应数字员工。
+              </div>
+              <button className="os-suggest-btn" onClick={() => nav(assistantSuggestion.path)}>
+                {assistantSuggestion.label}
+              </button>
+            </section>
+            <div className="os-ask">
+              <div id="boss-assistant-question-label" className="os-ask-label">
+                交给经营助手
+              </div>
+              <Input.TextArea
+                id="boss-assistant-question"
+                aria-labelledby="boss-assistant-question-label"
+                value={ask}
+                onChange={e => setAsk(e.target.value)}
+                placeholder="例如：找出本周最需要老板拍板的问题"
+                autoSize={{ minRows: 3, maxRows: 6 }}
+                onPressEnter={e => {
+                  if (e.shiftKey) return;
+                  e.preventDefault();
+                  askBrain();
+                }}
+              />
+              <div className="os-ask-foot">
+                <span>Shift + Enter 换行</span>
+                <button className="os-ask-send" onClick={askBrain} disabled={!ask.trim()}>
+                  <SendOutlined /> 开始分析
+                </button>
+              </div>
+            </div>
+          </div>
+        </Drawer>
+      )}
 
       <Drawer
         title={
@@ -694,9 +886,9 @@ export default function MainLayout() {
                   <span style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>
                     {!n.read && <Badge status="processing" />} {n.title}
                   </span>
-                  {NOTIF_LINK[n.type] && (
+                  {notificationTarget(n) && (
                     <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0, flexShrink: 0 }}>
-                      来源：{NOTIF_LINK[n.type].name} ›
+                      来源：{notificationTarget(n)?.name} ›
                     </Tag>
                   )}
                 </div>
@@ -732,23 +924,25 @@ export default function MainLayout() {
         >
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>
-              <RocketOutlined /> 老板每日10分钟
+              <RocketOutlined /> {dailyGuide.title}
             </b>
-            <br />① 老板驾驶舱看 KPI 与异常 ② 点开指标穿刺到订单/会员 ③ 把下一步动作派给对应数字员工
+            <br />
+            {dailyGuide.body}
           </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>
               <TeamOutlined /> 餐饮数字员工怎么用
             </b>
             <br />
-            按分部或问题关键词找到员工，先看必要输入和交付物，再派活。任务完成后可以审阅、采纳并沉淀到企业知识库。
+            按分部或问题关键词找到员工，用一句话说明要解决的问题即可派活。岗位会自行补齐公开信息并调用技能、知识库和联网工具；任务进度、结果与费用统一在任务中心查看。
           </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>
               <WalletOutlined /> 积分规则
             </b>
             <br />
-            AI调用按模型计费：员工话术≈1分、老板对话≈11-69分、生图75分。余额不足会被拦截，找管理员充值（管理后台→积分管理）。
+            AI 调用按实际模型和 token
+            计费，提交前会预留额度，交付失败会按结算规则释放。余额不足时请联系老板或企业管理员处理。
           </div>
           <div style={{ background: 'var(--ui-warning-surface)', borderRadius: 10, padding: 14, color: '#8a551d' }}>
             <b>
@@ -845,6 +1039,8 @@ export default function MainLayout() {
           </div>
         ) : null}
       </Modal>
+
+      <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} navItems={paletteNavItems} modules={modules} />
     </div>
   );
 }

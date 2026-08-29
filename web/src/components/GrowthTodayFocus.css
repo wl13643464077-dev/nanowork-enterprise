@@ -1,0 +1,110 @@
+/* 今日必跟：会员增长页第一屏工作面 */
+.gtf {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background:
+    linear-gradient(var(--ui-surface), var(--ui-surface)) padding-box,
+    linear-gradient(
+        115deg,
+        color-mix(in srgb, #f6a02d 45%, transparent),
+        color-mix(in srgb, var(--ui-primary) 32%, transparent) 60%,
+        color-mix(in srgb, var(--ui-primary) 15%, var(--ui-border))
+      )
+      border-box;
+  box-shadow: 0 10px 30px rgba(29, 35, 43, 0.05);
+}
+
+.gtf-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.gtf-head strong {
+  color: var(--ui-text);
+  font-size: 15.5px;
+}
+
+.gtf-head span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.gtf-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.gtf-card {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition:
+    border-color 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.gtf-card:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 42%, var(--ui-border));
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ui-primary) 10%, rgba(29, 35, 43, 0.06));
+}
+
+.gtf-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gtf-card-head strong {
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gtf-card-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.gtf-card-action {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ui-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.gtf-card-cta {
+  color: var(--ui-primary);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.gtf-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ok);
+  font-size: 12.5px;
+}

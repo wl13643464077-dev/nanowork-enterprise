@@ -12,17 +12,28 @@ import rechargeNotifyRoutes from './routes/recharge-notify.js';
 import platformRoutes from './routes/platform.js';
 import authRoutes from './routes/auth.js';
 import dashboardRoutes from './routes/dashboard.js';
+import storeOpsRoutes from './routes/store-ops.js';
+import reviewsRoutes from './routes/reviews.js';
 import growthRoutes from './routes/growth.js';
 import contentRoutes from './routes/content.js';
 import mediaReviewRoutes from './routes/media-review.js';
 import toolboxRoutes from './routes/toolbox.js';
+import imageHuntRoutes from './routes/imagehunt.js';
+import avatarRoutes, { avatarJobService } from './routes/avatar.js';
+import textVideoRoutes from './routes/text-video.js';
+import { textVideoJobService } from './engines/text-video.js';
+import wechatDraftRoutes from './routes/wechat-draft.js';
+import { wechatDraftService } from './engines/wechat-draft.js';
 import activityRoutes from './routes/activities.js';
 import marshalRoutes from './routes/marshals.js';
 import employeeRoutes from './routes/employees.js';
 import employeeWorkbenchRoutes from './routes/employee-workbench.js';
 import contentEmployeeWorkbenchRoutes from './routes/content-employee-workbench.js';
+import contentProductionPipelineRoutes from './routes/content-production-pipeline.js';
+import contentPipelineScheduleRoutes from './routes/content-pipeline-schedules.js';
 import advisorRoutes from './routes/advisor.js';
 import executionRoutes from './routes/execution.js';
+import taskCenterRoutes from './routes/task-center.js';
 import analysisRoutes from './routes/analysis.js';
 import storeDataRoutes from './routes/store-data.js';
 import assetRoutes from './routes/assets.js';
@@ -31,7 +42,9 @@ import agentRoutes from './routes/agents.js';
 import fileRoutes from './routes/files.js';
 import dataIntakeRoutes from './routes/dataintake.js';
 import metaRoutes from './routes/meta.js';
+import businessFlowRoutes from './routes/business-flow.js';
 import { uploadAccessGuard } from './engines/upload-access.js';
+import { serveAvatarProviderAsset } from './engines/avatar-provider-assets.js';
 import { createAiGuard } from './ai-limits.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,8 +213,22 @@ export function createApp({
   aiGuardOptions,
   aiGuardFor,
   serveStatic = true,
+  appLocals = {},
+  contentEmployeeWorkbenchRouter = contentEmployeeWorkbenchRoutes,
+  contentProductionPipelineRouter = contentProductionPipelineRoutes,
+  contentPipelineScheduleRouter = contentPipelineScheduleRoutes,
+  avatarRouter = avatarRoutes,
+  avatarRecovery = () => avatarJobService.recoverAndSchedule(),
+  autoRecoverAvatar = true,
+  textVideoRouter = textVideoRoutes,
+  textVideoRecovery = () => textVideoJobService.recoverAndSchedule(),
+  autoRecoverTextVideo = true,
+  wechatDraftRouter = wechatDraftRoutes,
+  wechatDraftRecovery = () => wechatDraftService.recoverAndSchedule(),
+  autoRecoverWechatDraft = true,
 } = {}) {
   const app = express();
+  Object.assign(app.locals, appLocals);
   const guardFor = aiGuardFor || createAiGuard(aiGuardOptions);
   const trustProxy = String(process.env.TRUST_PROXY || 'loopback').trim();
   app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
@@ -231,26 +258,47 @@ export function createApp({
   app.use(express.json({ limit: '32mb' }));
   app.use(requestLifecycle);
 
+  app.get('/api/avatar/provider-assets/:token', serveAvatarProviderAsset);
   mountPublicRoutes(app);
 
   app.use('/api/auth', authRoutes);
   app.use('/api/platform', authMiddleware, platformRoutes);
   app.use('/api/recharge', authMiddleware, tenantScope, rechargeRoutes);
   app.use('/api/meta', authMiddleware, tenantScope, metaRoutes);
+  app.use('/api/business-flow', authMiddleware, tenantScope, tenantGate, businessFlowRoutes);
   app.use('/api/dashboard', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), dashboardRoutes);
+  // 门店日常操作台与评价中心：店长/员工每日操作，挂 dashboard 模块（全员基础包）
+  app.use('/api/store-ops', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), storeOpsRoutes);
+  app.use('/api/reviews', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), reviewsRoutes);
   app.use('/api/growth', authMiddleware, tenantScope, tenantGate, moduleGuard('growth'), guardFor('growth'), growthRoutes);
-  app.use('/api/content', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), mediaReviewRoutes, guardFor('content'), contentRoutes);
+  app.use(
+    '/api/content',
+    authMiddleware,
+    tenantScope,
+    tenantGate,
+    moduleGuard('content'),
+    mediaReviewRoutes,
+    guardFor('content'),
+    contentPipelineScheduleRouter,
+    contentProductionPipelineRouter,
+    contentRoutes,
+  );
   app.use('/api/toolbox', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), guardFor('toolbox'), toolboxRoutes);
+  app.use('/api/imagehunt', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), imageHuntRoutes);
+  app.use('/api/avatar', authMiddleware, tenantScope, tenantGate, moduleGuard('execution'), avatarRouter);
+  app.use('/api/text-video', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), textVideoRouter);
+  app.use('/api/wechat-draft', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), wechatDraftRouter);
   app.use('/api/activities', authMiddleware, tenantScope, tenantGate, moduleGuard('activities'), guardFor('activities'), activityRoutes);
   app.use('/api/marshals', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), guardFor('marshals'), marshalRoutes);
   app.use('/api/employees', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), employeeRoutes);
-  app.use('/api/employee-workbench/content', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), guardFor('contentWorkbench'), contentEmployeeWorkbenchRoutes);
+  app.use('/api/employee-workbench/content', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), guardFor('contentWorkbench'), contentEmployeeWorkbenchRouter);
   app.use('/api/employee-workbench', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), guardFor('employeeWorkbench'), employeeWorkbenchRoutes);
   app.use('/api/agents', authMiddleware, tenantScope, tenantGate, guardFor('agents'), agentRoutes);
   app.use('/api/files', authMiddleware, tenantScope, tenantGate, guardFor('files'), fileRoutes);
   app.use('/api/data-intake', authMiddleware, tenantScope, tenantGate, moduleGuard('system'), dataIntakeRoutes);
   app.use('/api/advisor', authMiddleware, tenantScope, tenantGate, moduleGuard('advisor'), guardFor('advisor'), advisorRoutes);
   app.use('/api/execution', authMiddleware, tenantScope, tenantGate, moduleGuard('execution'), executionRoutes);
+  app.use('/api/task-center', authMiddleware, tenantScope, tenantGate, moduleGuard('execution'), taskCenterRoutes);
   app.use('/api/analysis', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), analysisRoutes);
   app.use('/api/store-data', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), storeDataRoutes);
   app.use('/api/assets', authMiddleware, tenantScope, tenantGate, moduleGuard('assets'), assetRoutes);
@@ -306,6 +354,45 @@ export function createApp({
       requestId: req.requestId,
     });
   });
+
+  if (autoRecoverAvatar && typeof avatarRecovery === 'function') {
+    queueMicrotask(() => {
+      try {
+        const recovered = avatarRecovery();
+        if (recovered?.length) {
+          console.info('[recovery][avatar]', JSON.stringify({ recovered: recovered.length }));
+        }
+      } catch (error) {
+        console.error('[recovery][avatar]', error?.message || error);
+      }
+    });
+  }
+
+  if (autoRecoverTextVideo && typeof textVideoRecovery === 'function') {
+    queueMicrotask(() => {
+      try {
+        const recovered = textVideoRecovery();
+        if (recovered?.length) {
+          console.info('[recovery][text-video]', JSON.stringify({ recovered: recovered.length }));
+        }
+      } catch (error) {
+        console.error('[recovery][text-video]', error?.message || error);
+      }
+    });
+  }
+
+  if (autoRecoverWechatDraft && typeof wechatDraftRecovery === 'function') {
+    queueMicrotask(async () => {
+      try {
+        const recovered = await wechatDraftRecovery();
+        if (recovered?.length) {
+          console.info('[recovery][wechat-draft]', JSON.stringify({ recovered: recovered.length }));
+        }
+      } catch (error) {
+        console.error('[recovery][wechat-draft]', error?.message || error);
+      }
+    });
+  }
 
   return app;
 }

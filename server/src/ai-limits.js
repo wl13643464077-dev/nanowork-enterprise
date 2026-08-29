@@ -48,6 +48,13 @@ export const AI_GENERATION_ROUTES = {
   content: [
     { method: 'POST', pattern: /^\/(generate(-ppt|-image|-video)?|daily-pack)$/ },
     { method: 'POST', pattern: /^\/automations\/[^/]+\/run$/ },
+    { method: 'POST', pattern: /^\/pipelines\/?$/i },
+    {
+      method: 'POST',
+      pattern:
+        /^\/pipelines\/[^/]+\/(review|retry|recover|resume|paid-media-authorization|metrics)\/?$/i,
+    },
+    { method: 'POST', pattern: /^\/pipeline-schedules\/[^/]+\/run-now\/?$/i },
   ],
   contentWorkbench: [{ method: 'POST', pattern: /^\/[0-9]\/dispatch$/ }],
   marshals: [{ method: 'POST', pattern: /^\/[^/]+\/(chat|tasks|skill-file)$/ }],

@@ -1,0 +1,192 @@
+.employee-execution {
+  overflow: hidden;
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 26%, var(--ui-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 4%, var(--ui-surface));
+}
+
+.employee-execution-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+
+.employee-execution-head > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.employee-execution-kicker {
+  color: var(--ewb-color, var(--ui-primary));
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.employee-execution-head strong {
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.employee-execution-percent {
+  color: var(--ewb-color, var(--ui-primary));
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.employee-execution-track {
+  height: 5px;
+  margin: 0 16px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ui-surface-3, #edf0f3);
+}
+
+.employee-execution-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ewb-color, var(--ui-primary));
+  transition: width 0.35s var(--ease-out);
+}
+
+.employee-execution-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  color: var(--ui-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.employee-execution-current > span:not(.employee-execution-pulse) {
+  min-width: 0;
+}
+
+.employee-execution-current small {
+  margin-left: auto;
+  color: var(--ui-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.employee-execution-pulse {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ewb-color, var(--ui-primary));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 13%, transparent);
+  animation: employee-execution-pulse 1.5s ease-in-out infinite;
+}
+
+.employee-execution-steps {
+  max-height: 290px;
+  overflow: auto;
+  border-top: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.employee-execution-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-border) 72%, transparent);
+  color: var(--ui-muted);
+}
+
+.employee-execution-step:last-child {
+  border-bottom: 0;
+}
+.employee-execution-step.is-active {
+  color: var(--ewb-color, var(--ui-primary));
+  background: color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 5%, transparent);
+}
+.employee-execution-step.is-done {
+  color: var(--ok);
+}
+.employee-execution-step.is-error {
+  color: var(--error);
+}
+
+.employee-execution-icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.employee-execution-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.employee-execution-copy strong {
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 11.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.employee-execution-copy small,
+.employee-execution-step time {
+  color: var(--ui-muted);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+.employee-execution footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--ui-border);
+  color: var(--ui-muted);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.employee-execution.is-compact .employee-execution-steps {
+  max-height: 190px;
+}
+
+@keyframes employee-execution-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .employee-execution-pulse {
+    animation: none;
+  }
+  .employee-execution-track i {
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .employee-execution-current {
+    flex-wrap: wrap;
+  }
+
+  .employee-execution-current small {
+    width: calc(100% - 15px);
+    margin-left: 15px;
+    text-align: left;
+  }
+}

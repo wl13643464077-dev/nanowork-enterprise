@@ -9,13 +9,18 @@ import {
   estimateCallCredits,
   holdCredits,
   settleHold,
-  releaseHold,
 } from '../engines/credits.js';
 import { routing, textModelFor } from '../engines/yunwu.js';
 import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { directivesFor, skillByKey } from '../engines/skills.js';
 import { attachmentRefsForStorage, rehydrateMessageHistory, resolveRequestedAttachments } from '../engines/filehub.js';
 import { canAccessOwner, userScopeClause } from '../engines/access.js';
+import {
+  aiFailurePayload,
+  aiFailureReleaseNote,
+  assertRealAiOutput,
+  releaseFailedAiHold,
+} from '../engines/ai-delivery-status.js';
 
 // ===== 自定义智能体（用户自建；三档：simple 提示词 / normal +技能 / expert +技能+人设）=====
 const r = Router();
@@ -105,6 +110,7 @@ r.get('/chats/:sid/messages', (req, res) => {
 
 // 与智能体对话：把 提示词 + 人设 + 技能指令 合成 system，复用 marshalChat
 r.post('/:id/chat', async (req, res) => {
+  let retrySessionId = null;
   try {
     const a = agentForUser(req.params.id, req.user);
     if (!a) return res.status(404).json({ error: '智能体不存在或无权访问' });
@@ -130,6 +136,7 @@ r.post('/:id/chat', async (req, res) => {
       const created = q.run(`INSERT INTO custom_agent_chat_sessions(agent_id,user_id,title) VALUES(?,?,?)`, a.id, req.user.id, (chatText || files[0]?.name || '新对话').slice(0, 40));
       sid = created.lastInsertRowid;
     }
+    retrySessionId = Number(sid);
     q.run(`INSERT INTO custom_agent_chat_msgs(session_id,role,content,attachments_json) VALUES(?,?,?,?)`, sid, 'user', chatText,
       files.length ? JSON.stringify(attachmentRefsForStorage(files)) : null);
     const history = rehydrateMessageHistory(q.all(`SELECT role,content,attachments_json FROM custom_agent_chat_msgs WHERE tenant_id=? AND session_id=?
@@ -160,17 +167,28 @@ r.post('/:id/chat', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
-      generate: () => marshalChat(pseudo, {
-        message: chatText,
-        originalMessage: chatText,
-        history,
-        role: req.user.role,
-        image,
-        skills,
-        attachments: files,
-        memory: sess.memory || '',
-        signal: req.requestSignal,
-      }),
+      generate: async () => {
+        const output = await marshalChat(pseudo, {
+          message: chatText,
+          originalMessage: chatText,
+          history,
+          role: req.user.role,
+          image,
+          skills,
+          attachments: files,
+          memory: sess.memory || '',
+          signal: req.requestSignal,
+          // 自定义智能体经常承担完整任务，不应沿用普通闲聊的 85 秒上限。
+          timeoutMs: 180000,
+        });
+        // 模板、空文本、模板模型或零 token 都不是真实交付。
+        // 抛错会由两阶段交付释放预授权，且不会落助手消息。
+        assertRealAiOutput(output, {
+          label: `智能体「${a.name}」`,
+          noDelivery: '本次未保存助手回复',
+        });
+        return output;
+      },
       persist: out => withImmediateTransaction(db, () => {
         const msg = q.run(
           `INSERT INTO custom_agent_chat_msgs(session_id,role,content) VALUES(?,?,?)`,
@@ -192,6 +210,8 @@ r.post('/:id/chat', async (req, res) => {
           targetId: msg.lastInsertRowid,
           kb: out.kb,
         });
+        q.run(`UPDATE credit_holds SET ref_type='custom_agent_msg',ref_id=?
+          WHERE tenant_id=? AND id=? AND status='held'`, Number(msg.lastInsertRowid), curTenant(), hold.holdId);
         q.run(
           `UPDATE custom_agent_chat_sessions SET updated_at=datetime('now','localtime') WHERE id=?`,
           sid,
@@ -199,14 +219,14 @@ r.post('/:id/chat', async (req, res) => {
         return { assistantMessageId: Number(msg.lastInsertRowid), risk };
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: out => ({
         usage: out.usage,
         model: out.model,
         aiMode: out.mode,
         note: '智能体助手消息、风控与引用证据已完成业务落库',
       }),
-      releaseNote: '智能体生成或助手消息业务落库失败，预授权全额退回',
+      releaseNote: aiFailureReleaseNote(`智能体「${a.name}」`),
     });
     try {
       logOp(req.user, '智能体', '智能体对话', a.name);
@@ -219,17 +239,20 @@ r.post('/:id/chat', async (req, res) => {
       reply: delivered.output.text,
       mode: delivered.output.mode,
       model: delivered.output.model,
+      usage: delivered.output.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
       risk: delivered.delivery.risk,
       kb: delivered.output.kb,
     });
   } catch (e) {
     if (!req.requestSignal?.aborted && !res.headersSent) {
-      res.status(e.status || 500).json({
-        error: e.message,
+      res.status(e.status || 500).json(aiFailurePayload(e, {
         requestId: req.requestId,
-        ...(e.billing ? { billing: e.billing } : {}),
-      });
+        extra: retrySessionId ? { sessionId: retrySessionId } : {},
+      }));
     }
   }
 });

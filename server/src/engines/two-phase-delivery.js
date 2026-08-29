@@ -65,6 +65,38 @@ function attachBilling(error, billing, phase) {
   return target;
 }
 
+function billingUsageMissing() {
+  return Object.assign(
+    new Error('真实 API 文本交付缺少可结算的有效 token 用量，已在业务落库前停止交付'),
+    { status: 409, code: 'BILLING_USAGE_MISSING', retryable: false },
+  );
+}
+
+function assertPositiveApiUsage(settleArgs) {
+  const args = settleArgs && typeof settleArgs === 'object' ? settleArgs : {};
+  const aiMode = args.aiMode ?? 'api';
+  // 固定单价的图片/视频/向量任务以 credits 作为权威结算证据，
+  // 模板或失败退款也不应被 token 门禁误伤。
+  if (aiMode !== 'api' || args.credits != null) return;
+  const usage = args.usage && typeof args.usage === 'object' ? args.usage : null;
+  const hasInput = usage
+    && Object.prototype.hasOwnProperty.call(usage, 'inputTokens')
+    && usage.inputTokens !== null
+    && usage.inputTokens !== '';
+  const hasOutput = usage
+    && Object.prototype.hasOwnProperty.call(usage, 'outputTokens')
+    && usage.outputTokens !== null
+    && usage.outputTokens !== '';
+  const inputTokens = Number(usage?.inputTokens);
+  const outputTokens = Number(usage?.outputTokens);
+  if (!hasInput || !hasOutput
+    || !Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)
+    || inputTokens < 0 || outputTokens < 0
+    || inputTokens + outputTokens <= 0) {
+    throw billingUsageMissing();
+  }
+}
+
 export async function executeHeldDelivery({
   hold,
   generate,
@@ -74,6 +106,7 @@ export async function executeHeldDelivery({
   settlement,
   releaseNote = '生成或业务落库失败，预授权全额退回',
   settlementNote = '业务产物已交付，按真实用量结算',
+  requirePositiveApiUsage = false,
   onPendingReconciliation = null,
   onBillingFinalized = null,
 }) {
@@ -85,9 +118,17 @@ export async function executeHeldDelivery({
 
   let output;
   let delivery;
+  let prevalidatedSettlementArgs;
   let phase = 'generate';
   try {
     output = await generate();
+    if (requirePositiveApiUsage) {
+      phase = 'validate_billing';
+      prevalidatedSettlementArgs = typeof settlement === 'function'
+        ? settlement(output, null)
+        : (settlement || {});
+      assertPositiveApiUsage(prevalidatedSettlementArgs);
+    }
     phase = 'persist';
     delivery = await persist(output);
   } catch (error) {
@@ -115,9 +156,11 @@ export async function executeHeldDelivery({
 
   let billing;
   try {
-    const settleArgs = typeof settlement === 'function'
-      ? settlement(output, delivery)
-      : (settlement || {});
+    const settleArgs = requirePositiveApiUsage
+      ? prevalidatedSettlementArgs
+      : typeof settlement === 'function'
+        ? settlement(output, delivery)
+        : (settlement || {});
     const settled = settle(hold, {
       ...settleArgs,
       note: settleArgs?.note || settlementNote,

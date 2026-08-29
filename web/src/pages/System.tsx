@@ -9,7 +9,6 @@ import {
   Button,
   Modal,
   Input,
-  InputNumber,
   Select,
   Switch,
   Alert,
@@ -50,200 +49,67 @@ import {
   LinkOutlined,
   CopyOutlined,
   DeleteOutlined,
-  UndoOutlined,
-  EyeOutlined,
   InboxOutlined,
-  ReloadOutlined,
 } from '@ant-design/icons';
 import { notifyCredits, api, getUser } from '../api/client';
 import { Panel } from '../components/Kit';
 import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
+import { SystemBillingPanel } from '../components/SystemBillingPanel';
+import { createSystemConfigPrimitives } from '../components/SystemConfigPrimitives';
+import { SystemDeletionDrawer } from '../components/SystemDeletionDrawer';
+import { SystemDeletionHistoryPanel } from '../components/SystemDeletionHistoryPanel';
+import { SystemErrorState } from '../components/SystemErrorState';
+import {
+  ApprovalRuleEditor,
+  approvalPolicyPayload,
+  type ApprovalRouteKey,
+} from '../components/SystemApprovalRuleEditor';
+import {
+  AB_LABELS,
+  approvalListResult,
+  approvalStatusLabel,
+  barColor,
+  displayList,
+  displayValue,
+  fmtKBSize,
+  fmtUptime,
+  HW_LABELS,
+  interactiveSurfaceStyle,
+  KB_CATS,
+  MiniStat,
+  MT_LABELS,
+  parseJson,
+  parseJsonArray,
+  parseRules,
+  RISK_TAG,
+  ROLE_MAP,
+} from '../components/SystemPrimitives';
 import DataIntake from './DataIntake';
-
-// ===== 枚举与映射 =====
-const ROLE_MAP: Record<string, { label: string; color: string }> = {
-  boss: { label: '老板', color: 'gold' },
-  ops_director: { label: '运营总监', color: 'blue' },
-  sales: { label: '销售', color: 'green' },
-  admin: { label: '管理员', color: 'purple' },
-  partner: { label: '合伙人', color: 'cyan' },
-};
-const RISK_TAG: Record<string, { color: string; label: string }> = {
-  high: { color: 'red', label: '高风险' },
-  medium: { color: 'orange', label: '中风险' },
-  low: { color: 'default', label: '低风险' },
-};
-const RULE_NAMES: Record<string, string> = {
-  PRICE_PROMISE: '价格/返利承诺',
-  INVEST_RETURN: '招商收益描述',
-  ABS_WORD: '广告法绝对化用语',
-  HEALTH_CLAIM: '医疗保健功效暗示',
-  CONTRACT: '合同/政策口径',
-};
-const KB_CATS = ['品牌资料', '招商政策', '产品资料', '话术案例', '客户画像', '数据规范', '员工产出'];
-const MT_LABELS: Record<string, string> = {
-  leads: '新增线索(人)',
-  conversionRate: '成交转化率(%)',
-  repurchaseRate: '复购率(%)',
-  partnerActive: '合伙人活跃(%)',
-  contentPerDay: '日均内容(条)',
-};
-const AB_LABELS: Record<string, string> = {
-  inviteSign: '邀约→报名(%)',
-  signArrive: '报名→到场(%)',
-  arriveDeal: '到场→成交(%)',
-  referral: '转介绍率(%)',
-  roi: 'ROI基准(倍)',
-};
-const HW_LABELS: Record<string, string> = {
-  leads: '线索增长',
-  conversion: '转化效率',
-  repurchase: '复购健康',
-  partner: '合伙人活跃',
-  content: '内容生产',
-};
-const fmtUptime = (min: number) => {
-  const m = Math.max(0, Math.round(min || 0));
-  if (m >= 1440) return `${Math.floor(m / 1440)}天${Math.floor((m % 1440) / 60)}小时`;
-  if (m >= 60) return `${Math.floor(m / 60)}小时${m % 60}分`;
-  return `${m}分钟`;
-};
-const fmtKBSize = (kb: number) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.round(kb || 0)} KB`);
-const parseRules = (s: string): string[] => {
-  try {
-    const arr = JSON.parse(s || '[]');
-    return (Array.isArray(arr) ? arr : []).map((x: any) =>
-      typeof x === 'string' ? RULE_NAMES[x] || x : x?.name || x?.code || '',
-    );
-  } catch {
-    return s ? [s] : [];
-  }
-};
-const parseJson = (s: any, fallback: any = {}) => {
-  if (!s) return fallback;
-  if (typeof s === 'object') return s;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return fallback;
-  }
-};
-const parseJsonArray = (value: any): any[] => {
-  const parsed = parseJson(value, []);
-  return Array.isArray(parsed) ? parsed : [];
-};
-const displayValue = (value: any): string => {
-  if (value === null || value === undefined || value === '') return '';
-  if (Array.isArray(value)) return value.map(displayValue).filter(Boolean).join('、');
-  if (typeof value === 'object') {
-    return Object.entries(value)
-      .map(([key, item]) => `${key}：${displayValue(item)}`)
-      .filter(item => !item.endsWith('：'))
-      .join('；');
-  }
-  return String(value);
-};
-const displayList = (value: any): any[] =>
-  Array.isArray(value) ? value : value === null || value === undefined || value === '' ? [] : [value];
-const barColor = (p: number) => (p >= 80 ? '#f25b6b' : p >= 60 ? '#f6a02d' : 'var(--ui-accent)');
-const interactiveSurfaceStyle = {
-  appearance: 'none',
-  border: 0,
-  padding: 0,
-  margin: 0,
-  width: '100%',
-  background: 'transparent',
-  color: 'inherit',
-  cursor: 'pointer',
-  font: 'inherit',
-  textAlign: 'inherit',
-} as const;
-
-// 核心数据全挂时的错误态（不展示猜测数据，只给明确错误 + 重试）
-function ErrorState({ error, retrying, onRetry }: { error: string; retrying?: boolean; onRetry: () => void }) {
-  return (
-    <Panel>
-      <div style={{ textAlign: 'center', padding: '36px 0' }}>
-        <AlertOutlined style={{ fontSize: 34, color: '#f25b6b' }} />
-        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ui-text)', marginTop: 10 }}>系统数据加载失败</div>
-        <div style={{ fontSize: 12.5, color: 'var(--ui-muted)', margin: '6px 0 16px' }}>
-          {error || '网络异常或服务暂不可用'}，已停止展示过期内容，请重试。
-        </div>
-        <Button type="primary" icon={<ReloadOutlined />} loading={retrying} onClick={onRetry}>
-          重新加载
-        </Button>
-      </div>
-    </Panel>
-  );
-}
-
-// 卡片内小指标块
-function MiniStat({
-  icon,
-  color,
-  label,
-  value,
-  span,
-}: {
-  icon: React.ReactNode;
-  color: string;
-  label: string;
-  value: React.ReactNode;
-  span?: boolean;
-}) {
-  return (
-    <div
-      style={{
-        background: 'var(--ui-surface-2)',
-        borderRadius: 8,
-        padding: '10px 12px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        gridColumn: span ? '1 / -1' : undefined,
-      }}
-    >
-      <div
-        style={{
-          width: 34,
-          height: 34,
-          borderRadius: 8,
-          background: `color-mix(in srgb, ${color} 10%, transparent)`,
-          color,
-          fontSize: 16,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        {icon}
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ui-text)', whiteSpace: 'nowrap' }}>{value}</div>
-        <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', whiteSpace: 'nowrap' }}>{label}</div>
-      </div>
-    </div>
-  );
-}
 
 export default function System() {
   const user = getUser() || {};
   const isAdminish = ['boss', 'ops_director', 'admin'].includes(user.role); // 查看用户/日志/配置
-  const canDecide = ['boss', 'ops_director', 'admin'].includes(user.role); // 审批权限；具体节点仍按行校验
+  const canDecide = ['boss', 'ops_director', 'manager', 'admin'].includes(user.role); // 审批权限；具体节点仍按行校验
+  const canViewApprovalPolicy = ['boss', 'ops_director', 'manager', 'admin', 'platform_super'].includes(user.role);
+  const canEditApprovalPolicy = ['platform_super'].includes(user.role);
   const canManageUsers = ['boss', 'admin'].includes(user.role); // 增改用户
   const canSaveConfig = ['boss', 'admin'].includes(user.role); // 保存配置
   const canBackup = ['boss', 'admin'].includes(user.role); // 数据备份
   const canEditKb = isAdminish; // 知识库维护
+  const canBackfillKb = ['boss', 'admin'].includes(user.role); // 向量回填会产生真实API费用
   const canEditPrompt = ['boss', 'admin', 'platform_super'].includes(user.role); // 提示词维护
   const canRestoreDeleted = ['boss', 'admin'].includes(user.role); // 删除留痕/恢复
-
+  const canResolveBilling = ['boss', 'admin', 'platform_super'].includes(user.role);
   const [tab, setTab] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get('tab');
-    return requested &&
-      ['overview', 'data-intake', 'approvals', 'kb', 'prompts', 'users', 'trash', 'config'].includes(requested)
-      ? requested
-      : 'overview';
+    const knownTab =
+      requested &&
+      ['overview', 'data-intake', 'approvals', 'billing', 'kb', 'prompts', 'users', 'trash', 'config'].includes(
+        requested,
+      );
+    if (!knownTab || (requested === 'prompts' && !canEditPrompt) || (requested === 'billing' && !isAdminish))
+      return 'overview';
+    return requested;
   });
   const changeTab = (next: string) => {
     setTab(next);
@@ -258,6 +124,17 @@ export default function System() {
   const [rejectReason, setRejectReason] = useState('');
   const [approvalView, setApprovalView] = useState<any>(null);
   const [deciding, setDeciding] = useState(false);
+  const [approvalPolicy, setApprovalPolicy] = useState<any>(null);
+  const [approvalPolicyDraft, setApprovalPolicyDraft] = useState<any>(null);
+  const [approvalReviewerCandidates, setApprovalReviewerCandidates] = useState<any[]>([]);
+  const [immutableApprovalSafeguards, setImmutableApprovalSafeguards] = useState<string[]>([]);
+  const [approvalPolicyLoading, setApprovalPolicyLoading] = useState(false);
+  const [approvalPolicySaving, setApprovalPolicySaving] = useState(false);
+  const [approvalPolicyError, setApprovalPolicyError] = useState('');
+  const [approvalPolicyServerCanEdit, setApprovalPolicyServerCanEdit] = useState(false);
+  // AI账务对账：只展示权威 hold、业务主产物、契约与供应商用量的交叉核验结果
+  const [billingReconciliation, setBillingReconciliation] = useState<any>({ rows: [], summary: {} });
+  const [billingLoading, setBillingLoading] = useState(false);
   // 知识库
   const [kbCats, setKbCats] = useState<string[]>(KB_CATS);
   const [kbCat, setKbCat] = useState(KB_CATS[0]);
@@ -329,6 +206,7 @@ export default function System() {
   const [gaps, setGaps] = useState<any[]>([]);
   const [kbReadiness, setKbReadiness] = useState<any>({ categories: [], percent: 0 });
   const [kbInitializing, setKbInitializing] = useState(false);
+  const [kbBackfilling, setKbBackfilling] = useState(false);
   const [kbForm, setKbForm] = useState<any>(null);
   const [kbSaving, setKbSaving] = useState(false);
   // 文件上传（文档/图片，自动提取内容；图片走AI识图）
@@ -559,12 +437,67 @@ export default function System() {
   }, [feishuQr, feishuBind?.state, feishuBindStatus]);
   const loadApprovals = (st = approvalStatus) =>
     api
-      .get(`/sys/approvals?status=${encodeURIComponent(st)}`)
-      .then(l => {
-        setApprovals(l);
-        if (st === '待审核') setPendingCount(l.length);
+      .get(`/sys/approvals?status=${encodeURIComponent(st)}&meta=1`)
+      .then(payload => {
+        const result = approvalListResult(payload);
+        setApprovals(result.rows);
+        if (st === '待审核') setPendingCount(result.total);
       })
       .catch(() => {});
+  const loadApprovalPolicy = () => {
+    if (!canViewApprovalPolicy) return Promise.resolve();
+    setApprovalPolicyLoading(true);
+    setApprovalPolicyError('');
+    setApprovalPolicyServerCanEdit(false);
+    return api
+      .get('/sys/approval-policy', { silent: true })
+      .then((payload: any) => {
+        const nextPolicy = payload?.policy || null;
+        setApprovalPolicy(nextPolicy);
+        setApprovalPolicyDraft(nextPolicy ? approvalPolicyPayload(nextPolicy) : null);
+        setApprovalReviewerCandidates(Array.isArray(payload?.reviewerCandidates) ? payload.reviewerCandidates : []);
+        setApprovalPolicyServerCanEdit(payload?.canEdit === true);
+        setImmutableApprovalSafeguards(
+          Array.isArray(payload?.immutableSafeguards) ? payload.immutableSafeguards.map(String) : [],
+        );
+        if (payload?.canEdit !== canEditApprovalPolicy) {
+          setApprovalPolicyError('当前账号的审批规则权限与服务端不一致，已阻止编辑，请重新登录后再试。');
+        }
+      })
+      .catch((error: any) => setApprovalPolicyError(error?.message || '审批规则加载失败'))
+      .finally(() => setApprovalPolicyLoading(false));
+  };
+  const updateApprovalPolicyRoute = (routeKey: ApprovalRouteKey, patch: any) => {
+    if (!canEditApprovalPolicy || !approvalPolicyServerCanEdit) return;
+    setApprovalPolicyDraft((current: any) => ({
+      ...current,
+      [routeKey]: { ...current?.[routeKey], ...patch },
+    }));
+  };
+  const saveApprovalPolicy = () => {
+    if (!canEditApprovalPolicy || !approvalPolicyServerCanEdit || !approvalPolicyDraft) return;
+    setApprovalPolicySaving(true);
+    setApprovalPolicyError('');
+    api
+      .put('/sys/approval-policy', { policy: approvalPolicyPayload(approvalPolicyDraft) }, { silent: true })
+      .then((payload: any) => {
+        const nextPolicy = payload?.policy || approvalPolicyDraft;
+        setApprovalPolicy(nextPolicy);
+        setApprovalPolicyDraft(approvalPolicyPayload(nextPolicy));
+        message.success(payload?.message || '审批规则已保存');
+      })
+      .catch((error: any) => setApprovalPolicyError(error?.message || '审批规则保存失败'))
+      .finally(() => setApprovalPolicySaving(false));
+  };
+  const loadBillingReconciliation = () => {
+    if (!isAdminish) return Promise.resolve();
+    setBillingLoading(true);
+    return api
+      .get('/sys/billing/reconciliation')
+      .then(setBillingReconciliation)
+      .catch(() => {})
+      .finally(() => setBillingLoading(false));
+  };
 
   // 初始核心数据统一走 allSettled：任一成功则按可用数据渲染；全部失败给明确错误态 + 重试，不再静默吞错
   const [coreError, setCoreError] = useState('');
@@ -575,12 +508,19 @@ export default function System() {
       api.get('/sys/status').then(setStatus),
       api.get('/sys/kb/gaps').then(setGaps),
       api.get('/sys/kb/readiness').then(setKbReadiness),
-      api.get('/sys/prompts').then(setPrompts),
-      api.get('/sys/marshal-naming').then(setMarshalNaming),
-      api.get('/sys/marshal-prompts/status').then(setMarshalPromptStatus),
-      api.get('/sys/approvals?status=待审核').then((l: any[]) => setPendingCount(l.length)),
+      ...(canEditPrompt
+        ? [
+            api.get('/sys/prompts').then(setPrompts),
+            api.get('/sys/marshal-naming').then(setMarshalNaming),
+            api.get('/sys/marshal-prompts/status').then(setMarshalPromptStatus),
+          ]
+        : []),
+      api.get('/sys/approvals?status=待审核&meta=1').then((payload: any) => {
+        setPendingCount(approvalListResult(payload).total);
+      }),
       ...(isAdminish
         ? [
+            api.get('/sys/billing/reconciliation').then(setBillingReconciliation),
             api.get('/sys/users').then((d: any) => {
               setUsers(Array.isArray(d) ? d : d.users || []);
               if (d && !Array.isArray(d)) setSeat({ limit: d.seatLimit, used: d.seatUsed });
@@ -618,16 +558,29 @@ export default function System() {
     };
     // loadCore reads exactly these permission flags; depending on its per-render identity would retrigger after every state update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canBackup, isAdminish]);
+  }, [canBackup, canEditPrompt, isAdminish]);
   useEffect(() => {
     api
-      .get(`/sys/approvals?status=${encodeURIComponent(approvalStatus)}`)
-      .then(l => {
-        setApprovals(l);
-        if (approvalStatus === '待审核') setPendingCount(l.length);
+      .get(`/sys/approvals?status=${encodeURIComponent(approvalStatus)}&meta=1`)
+      .then(payload => {
+        const result = approvalListResult(payload);
+        setApprovals(result.rows);
+        if (approvalStatus === '待审核') setPendingCount(result.total);
       })
       .catch(() => {});
   }, [approvalStatus]);
+  useEffect(() => {
+    if (!canViewApprovalPolicy) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadApprovalPolicy();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // 规则权限只由登录角色决定；加载函数的每次渲染身份不应重复请求。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canViewApprovalPolicy]);
   useEffect(() => {
     api
       .get(`/sys/kb?category=${encodeURIComponent(kbCat)}`)
@@ -667,6 +620,58 @@ export default function System() {
       })
       .catch(() => {}) // 403（高风险需老板终审）等错误 client 已自动 message 提示
       .finally(() => setDeciding(false));
+  };
+
+  const resolveBilling = (row: any, action: 'settle' | 'release') => {
+    let reason = '';
+    const settle = action === 'settle';
+    Modal.confirm({
+      title: settle ? '按真实用量完成积分结算？' : '确认任务没有合格产物并退回预留积分？',
+      okText: settle ? '确认结算' : '确认退款',
+      okButtonProps: settle ? {} : { danger: true },
+      cancelText: '取消',
+      width: 560,
+      content: (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+          <Alert
+            type={settle ? 'info' : 'warning'}
+            showIcon
+            message={
+              settle
+                ? `系统将只按已落库的 ${row.business?.model || '-'} 与真实 token 用量结算，不采用页面自报金额。`
+                : '系统会全额退回本任务临时预留的积分，并隔离无效产物及其下游素材/知识资产；隔离后不能用于业务。'
+            }
+          />
+          <Input.TextArea
+            rows={3}
+            maxLength={300}
+            showCount
+            placeholder="填写对账依据（至少6字），例如：主产物通过共享语义契约且模型/token证据一致"
+            onChange={event => {
+              reason = event.target.value;
+            }}
+          />
+        </div>
+      ),
+      onOk: () => {
+        const finalReason = reason.trim();
+        if (finalReason.length < 6) {
+          message.warning('请填写至少6字的对账依据');
+          return Promise.reject(new Error('billing reconciliation reason required'));
+        }
+        return api
+          .post(`/sys/billing/reconciliation/${row.holdId}/resolve`, {
+            action,
+            reason: finalReason,
+            evidenceHash: row.evidenceHash,
+          })
+          .then((result: any) => {
+            message.success(result.message || '对账完成');
+            notifyCredits();
+            return loadBillingReconciliation();
+          });
+      },
+    });
   };
 
   // ===== 知识库操作 =====
@@ -715,6 +720,17 @@ export default function System() {
         loadKbReadiness();
       })
       .finally(() => setKbInitializing(false));
+  };
+  const backfillKbVectors = () => {
+    setKbBackfilling(true);
+    api
+      .post('/sys/kb/vector/backfill', { confirm: true, limit: 10 })
+      .then((result: any) => {
+        message.info(result.message || `已排队 ${result.accepted || 0} 条知识`);
+        if (result.vector) setKbReadiness((current: any) => ({ ...current, vector: result.vector }));
+        else loadKbReadiness();
+      })
+      .finally(() => setKbBackfilling(false));
   };
 
   const applyMarshalNaming = () => {
@@ -851,20 +867,39 @@ export default function System() {
       .catch(() => {});
   };
 
-  // ===== 快捷入口（对照UI稿：图标按钮格） =====
+  const billingAttentionCount = Number(
+    billingReconciliation?.summary?.requiresAttention ??
+      Math.max(
+        0,
+        Number(billingReconciliation?.summary?.total || 0) -
+          Number(
+            billingReconciliation?.summary?.active ??
+              (Array.isArray(billingReconciliation?.rows)
+                ? billingReconciliation.rows.filter((row: any) => row?.stillActive === true).length
+                : 0),
+          ),
+      ),
+  );
   const QUICK: { label: string; icon: React.ReactNode; color: string; tab: string; badge?: number }[] = [
     { label: '数据录入中枢', icon: <InboxOutlined />, color: '#715b7b', tab: 'data-intake' },
     { label: '用户管理', icon: <TeamOutlined />, color: 'var(--ui-accent)', tab: 'users' },
-    { label: '审批中心', icon: <AuditOutlined />, color: '#f25b6b', tab: 'approvals', badge: pendingCount },
-    { label: '知识库', icon: <BookOutlined />, color: '#22c4a8', tab: 'kb' },
-    { label: '提示词模板', icon: <FileTextOutlined />, color: '#8a7450', tab: 'prompts' },
-    { label: '风控规则', icon: <SafetyCertificateOutlined />, color: '#f6a02d', tab: 'config' },
-    { label: '操作日志', icon: <HistoryOutlined />, color: '#70757a', tab: 'users' },
+    { label: '审批中心', icon: <AuditOutlined />, color: 'var(--danger)', tab: 'approvals', badge: pendingCount },
+    {
+      label: 'AI积分与用量',
+      icon: <DatabaseOutlined />,
+      color: 'var(--warn)',
+      tab: 'billing',
+      badge: billingAttentionCount,
+    },
+    { label: '知识库', icon: <BookOutlined />, color: 'var(--chart-2)', tab: 'kb' },
+    { label: '提示词模板', icon: <FileTextOutlined />, color: 'var(--chart-3)', tab: 'prompts' },
+    { label: '风控规则', icon: <SafetyCertificateOutlined />, color: 'var(--warn)', tab: 'config' },
+    { label: '操作日志', icon: <HistoryOutlined />, color: 'var(--ui-muted)', tab: 'users' },
     { label: '登录日志', icon: <LoginOutlined />, color: 'var(--ui-accent)', tab: 'users' },
-    { label: '删除留痕', icon: <DeleteOutlined />, color: '#f25b6b', tab: 'trash' },
-    { label: '数据备份', icon: <CloudServerOutlined />, color: '#22c4a8', tab: 'config' },
-    { label: '系统配置', icon: <SettingOutlined />, color: '#8a7450', tab: 'config' },
-  ];
+    { label: '删除留痕', icon: <DeleteOutlined />, color: 'var(--danger)', tab: 'trash' },
+    { label: '数据备份', icon: <CloudServerOutlined />, color: 'var(--chart-2)', tab: 'config' },
+    { label: '系统配置', icon: <SettingOutlined />, color: 'var(--chart-3)', tab: 'config' },
+  ].filter(item => (canEditPrompt || item.tab !== 'prompts') && (isAdminish || item.tab !== 'billing'));
 
   const ai = status.ai || {};
   const aiReadiness =
@@ -873,6 +908,14 @@ export default function System() {
     ({ effective: ai.available ? 'configured_unverified' : 'degraded' } as any);
   const aiState = readinessMeta(aiReadiness);
   const aiVerified = aiReadiness.effective === 'connected';
+  const kbVector = kbReadiness.vector || {
+    state: 'unknown',
+    message: '语义向量状态尚未读取',
+    enabledDocs: 0,
+    vectorizedDocs: 0,
+    missingDocs: 0,
+    canBackfill: false,
+  };
   const feishuReadiness = feishuCfg?.readiness;
   const feishuState = readinessMeta(feishuReadiness);
   const usage = ai.usage || {};
@@ -905,25 +948,25 @@ export default function System() {
             />
             <MiniStat
               icon={<DesktopOutlined />}
-              color="#22c4a8"
+              color="var(--chart-2)"
               label="在线用户"
               value={(status.online ?? 0).toLocaleString()}
             />
             <MiniStat
               icon={<UserOutlined />}
-              color="#8a7450"
+              color="var(--chart-3)"
               label="客户数据量"
               value={(status.leads ?? 0).toLocaleString()}
             />
             <MiniStat
               icon={<FileTextOutlined />}
-              color="#f6a02d"
+              color="var(--warn)"
               label="内容数据量"
               value={(status.contents ?? 0).toLocaleString()}
             />
             <MiniStat
               icon={<HddOutlined />}
-              color="#70757a"
+              color="var(--ui-muted)"
               label="数据库大小"
               value={`${(status.dbSizeKB ?? 0).toLocaleString()} KB`}
               span
@@ -935,7 +978,7 @@ export default function System() {
         <Panel
           title={
             <>
-              <ThunderboltOutlined style={{ color: '#f6a02d' }} /> 系统状态
+              <ThunderboltOutlined style={{ color: 'var(--warn)' }} /> 系统状态
             </>
           }
           extra={
@@ -1069,7 +1112,7 @@ export default function System() {
         <Panel
           title={
             <>
-              <SafetyCertificateOutlined style={{ color: '#22c4a8' }} /> 安全概览
+              <SafetyCertificateOutlined style={{ color: 'var(--chart-2)' }} /> 安全概览
             </>
           }
         >
@@ -1106,7 +1149,7 @@ export default function System() {
               }}
             >
               <span style={{ fontSize: 12.5, color: 'var(--ui-text-2)' }}>
-                <CheckCircleFilled style={{ color: '#22c4a8', marginRight: 6 }} />
+                <CheckCircleFilled style={{ color: 'var(--chart-2)', marginRight: 6 }} />
                 {label}
               </span>
               <Tag color="green" style={{ marginRight: 0, fontSize: 11 }}>
@@ -1121,8 +1164,6 @@ export default function System() {
       </Col>
     </Row>
   );
-
-  // ===== ② 审批中心 Tab =====
   const approvalCols: any[] = [
     {
       title: '标题',
@@ -1185,6 +1226,13 @@ export default function System() {
         );
       },
     },
+    {
+      title: '本节点审批人',
+      key: 'assignedReviewerName',
+      width: 120,
+      render: (_: any, r: any) =>
+        r.assignedReviewerName || r.assigned_reviewer || (r.approval_level === 'boss' ? '老板' : '按职责范围匹配'),
+    },
     { title: '提交人', dataIndex: 'submitter', width: 80, render: (v: string) => v || '-' },
     {
       title: '提交时间',
@@ -1200,12 +1248,20 @@ export default function System() {
             width: 156,
             render: (_: any, r: any) => {
               const bossOnly = r.risk_level === 'high' || r.approval_level === 'boss';
-              const rowCanDecide = canDecide && (!bossOnly || user.role === 'boss');
-              const blockedReason = !canDecide
-                ? '需老板、运营总监或企业管理员审批'
-                : bossOnly && user.role !== 'boss'
-                  ? '该事项需老板终审'
-                  : '';
+              const managerContentOnly = user.role === 'manager' && r.target_type !== 'content';
+              const authorityBlockedReason = !canDecide
+                ? '需有权限的管理层审批'
+                : managerContentOnly
+                  ? '直属经理只能处理职责范围内的员工产出审批'
+                  : bossOnly && user.role !== 'boss'
+                    ? '该事项需老板终审'
+                    : '';
+              const rowHasAuthority = !authorityBlockedReason;
+              const passBlockedReason =
+                authorityBlockedReason || (r.canPass === false ? r.passBlockedReason || '当前状态暂不能通过' : '');
+              const rejectBlockedReason =
+                authorityBlockedReason ||
+                (r.canReject === false ? r.rejectBlockedReason || r.reviewBlockedReason || '当前状态暂不能驳回' : '');
               return (
                 <Space size={6}>
                   <Popconfirm
@@ -1213,26 +1269,26 @@ export default function System() {
                     onConfirm={() => decide(r, true)}
                     okText="通过"
                     cancelText="取消"
-                    disabled={!rowCanDecide}
+                    disabled={!rowHasAuthority || r.canPass === false}
                   >
-                    <Tooltip title={blockedReason}>
+                    <Tooltip title={passBlockedReason}>
                       <Button
                         type="primary"
                         size="small"
                         icon={<CheckOutlined />}
-                        disabled={!rowCanDecide}
+                        disabled={!rowHasAuthority || r.canPass === false}
                         loading={deciding}
                       >
                         通过
                       </Button>
                     </Tooltip>
                   </Popconfirm>
-                  <Tooltip title={blockedReason}>
+                  <Tooltip title={rejectBlockedReason}>
                     <Button
                       danger
                       size="small"
                       icon={<CloseOutlined />}
-                      disabled={!rowCanDecide}
+                      disabled={!rowHasAuthority || r.canReject === false}
                       onClick={() => {
                         setRejectRow(r);
                         setRejectReason('');
@@ -1262,7 +1318,7 @@ export default function System() {
                   ellipsis: true,
                   render: (v: string) => (
                     <Tooltip title={v}>
-                      <span style={{ color: '#f25b6b', fontSize: 12 }}>{v || '-'}</span>
+                      <span style={{ color: 'var(--danger)', fontSize: 12 }}>{v || '-'}</span>
                     </Tooltip>
                   ),
                 },
@@ -1270,15 +1326,152 @@ export default function System() {
             : []),
         ]),
   ];
+  const approvalPolicyCanEdit = canEditApprovalPolicy && approvalPolicyServerCanEdit;
+  const approvalPolicyDirty =
+    !!approvalPolicy &&
+    !!approvalPolicyDraft &&
+    JSON.stringify(approvalPolicyPayload(approvalPolicy)) !==
+      JSON.stringify(approvalPolicyPayload(approvalPolicyDraft));
+  const approvalSafeguards = immutableApprovalSafeguards.length
+    ? immutableApprovalSafeguards
+    : ['高风险事项始终由老板终审', '对外发布始终需要人工授权', '付费动作始终需要人工授权'];
+  const approvalPolicySection = canViewApprovalPolicy ? (
+    <div
+      role="region"
+      aria-label="企业审批规则"
+      style={{
+        border: '1px solid var(--ui-border-strong)',
+        borderRadius: 14,
+        padding: 16,
+        marginBottom: 18,
+        background: 'var(--ui-surface-2)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, color: 'var(--ui-text)', fontSize: 15 }}>
+            <SafetyCertificateOutlined style={{ color: 'var(--ui-primary)', marginRight: 6 }} />
+            企业审批规则
+          </div>
+          <div style={{ color: 'var(--ui-muted)', fontSize: 12, marginTop: 4 }}>
+            按数字员工产出、活动方案和活动待确认事项分别设置，不再对所有任务一刀切。
+          </div>
+        </div>
+        {approvalPolicy?.updatedAt && (
+          <div style={{ color: 'var(--ui-muted)', fontSize: 11, textAlign: 'right', lineHeight: 1.6 }}>
+            最后更新：{approvalPolicy.updatedAt}
+            <br />
+            {approvalPolicy.configuredBy?.name ? `操作人：${approvalPolicy.configuredBy.name}` : ''}
+          </div>
+        )}
+      </div>
+
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginTop: 12 }}
+        message="规则仅对保存后的新提交生效"
+        description="已在途的审批会继续使用提交时锁定的不可变规则快照，修改配置不会偷换审批人或跳过现有节点。"
+      />
+      {!approvalPolicyCanEdit && !approvalPolicyLoading && !approvalPolicyError && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 10 }}
+          message="当前为只读视图"
+          description="管理层、老板和企业管理员可以查看企业规则；只有平台超级管理员可以修改规则。"
+        />
+      )}
+      {approvalPolicyError && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginTop: 10 }}
+          message="审批规则未能完成同步"
+          description={approvalPolicyError}
+          action={<Button onClick={loadApprovalPolicy}>重新加载</Button>}
+        />
+      )}
+
+      {approvalPolicyLoading && !approvalPolicyDraft ? (
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--ui-muted)' }}>正在读取企业审批规则…</div>
+      ) : approvalPolicyDraft ? (
+        <>
+          <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
+            {(['employeeOutput', 'activityPlan', 'activityChecklist'] as ApprovalRouteKey[]).map(routeKey => (
+              <Col xs={24} xl={8} key={routeKey}>
+                <ApprovalRuleEditor
+                  routeKey={routeKey}
+                  route={approvalPolicyDraft[routeKey]}
+                  canEdit={approvalPolicyCanEdit}
+                  reviewerCandidates={approvalReviewerCandidates}
+                  onChange={patch => updateApprovalPolicyRoute(routeKey, patch)}
+                />
+              </Col>
+            ))}
+          </Row>
+
+          <div
+            style={{
+              marginTop: 12,
+              border: '1px solid var(--ui-border)',
+              borderRadius: 12,
+              padding: 12,
+              background: 'var(--ui-surface)',
+            }}
+          >
+            <div style={{ fontWeight: 700, color: 'var(--ui-text)', marginBottom: 8 }}>
+              不可关闭的交付安全底线 <Tag color="red">强制执行</Tag>
+            </div>
+            <Space wrap size={[18, 8]}>
+              {approvalSafeguards.map(item => (
+                <span key={item} style={{ color: 'var(--ui-text-2)', fontSize: 12 }}>
+                  <Switch size="small" checked disabled style={{ marginRight: 6 }} />
+                  {item}
+                </span>
+              ))}
+            </Space>
+          </div>
+
+          {approvalPolicyCanEdit && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <Button
+                disabled={!approvalPolicyDirty || approvalPolicySaving}
+                onClick={() => setApprovalPolicyDraft(approvalPolicyPayload(approvalPolicy))}
+              >
+                撤销未保存修改
+              </Button>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={approvalPolicySaving}
+                disabled={!approvalPolicyDirty}
+                onClick={saveApprovalPolicy}
+              >
+                保存审批规则
+              </Button>
+            </div>
+          )}
+        </>
+      ) : (
+        !approvalPolicyError && (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="审批规则证据未返回">
+            <Button onClick={loadApprovalPolicy}>重新加载</Button>
+          </Empty>
+        )
+      )}
+    </div>
+  ) : null;
   const approvalsTab = (
     <Panel
       title={
         <>
-          <AuditOutlined style={{ color: '#f25b6b' }} /> 审批中心
+          <AuditOutlined style={{ color: 'var(--danger)' }} /> 审批中心
         </>
       }
       extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>高风险事项需老板终审 · 驳回必须填写理由</span>}
     >
+      {approvalPolicySection}
       <Tabs
         size="small"
         activeKey={approvalStatus}
@@ -1288,10 +1481,10 @@ export default function System() {
           label:
             s === '待审核' && pendingCount > 0 ? (
               <Badge size="small" count={pendingCount} offset={[8, -2]}>
-                待审核
+                待人工审核
               </Badge>
             ) : (
-              s
+              approvalStatusLabel(s)
             ),
         }))}
       />
@@ -1301,7 +1494,14 @@ export default function System() {
         dataSource={approvals}
         columns={approvalCols}
         pagination={{ pageSize: 10, hideOnSinglePage: true, size: 'small' }}
-        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`暂无${approvalStatus}事项`} /> }}
+        locale={{
+          emptyText: (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={`暂无${approvalStatusLabel(approvalStatus)}事项`}
+            />
+          ),
+        }}
       />
       <Drawer
         title={approvalView?.title || '活动策划方案'}
@@ -1422,6 +1622,16 @@ export default function System() {
     </Panel>
   );
 
+  const billingTab = (
+    <SystemBillingPanel
+      billingLoading={billingLoading}
+      billingReconciliation={billingReconciliation}
+      canResolveBilling={canResolveBilling}
+      loadBillingReconciliation={loadBillingReconciliation}
+      resolveBilling={resolveBilling}
+    />
+  );
+
   // ===== ③ 知识库 Tab =====
   const kbTab = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1433,21 +1643,36 @@ export default function System() {
         }
         extra={
           canEditKb && (
-            <Button
-              type="primary"
-              size="small"
-              icon={<ThunderboltOutlined />}
-              loading={kbInitializing}
-              onClick={initializeKb}
-            >
-              {kbReadiness.initialized ? '补齐初始化资料' : '一键初始化知识库'}
-            </Button>
+            <Space size={8}>
+              {canBackfillKb && kbVector.missingDocs > 0 && (
+                <Popconfirm
+                  title="回填会调用真实向量服务并占用积分，按实际持久化数量结算。确认本次最多处理10条？"
+                  okText="确认回填"
+                  cancelText="取消"
+                  disabled={!kbVector.canBackfill}
+                  onConfirm={backfillKbVectors}
+                >
+                  <Button size="small" loading={kbBackfilling} disabled={!kbVector.canBackfill}>
+                    回填缺失向量
+                  </Button>
+                </Popconfirm>
+              )}
+              <Button
+                type="primary"
+                size="small"
+                icon={<ThunderboltOutlined />}
+                loading={kbInitializing}
+                onClick={initializeKb}
+              >
+                {kbReadiness.initialized ? '补齐初始化资料' : '一键初始化知识库'}
+              </Button>
+            </Space>
           )
         }
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px,260px) 1fr', gap: 18, alignItems: 'center' }}>
           <div>
-            <Progress type="dashboard" percent={kbReadiness.percent || 0} size={112} strokeColor="#22c4a8" />
+            <Progress type="dashboard" percent={kbReadiness.percent || 0} size={112} strokeColor="var(--chart-2)" />
             <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 4 }}>
               已就绪 {kbReadiness.ready || 0}/{kbReadiness.total || 7} 个知识域
             </div>
@@ -1470,9 +1695,9 @@ export default function System() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
                   <b style={{ fontSize: 12.5 }}>{item.category}</b>
                   {item.ready ? (
-                    <CheckCircleFilled style={{ color: '#22c4a8' }} />
+                    <CheckCircleFilled style={{ color: 'var(--chart-2)' }} />
                   ) : (
-                    <AlertOutlined style={{ color: '#f6a02d' }} />
+                    <AlertOutlined style={{ color: 'var(--warn)' }} />
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 3 }}>
@@ -1488,6 +1713,22 @@ export default function System() {
           style={{ marginTop: 12 }}
           message="初始化只补齐基础口径，不会覆盖企业已经上传的资料"
           description="初始化后继续录入品牌故事、产品政策、客户画像和真实案例；资料越完整，战略中枢与餐饮数字员工的回答越贴合企业。"
+        />
+        <Alert
+          type={kbVector.state === 'ready' ? 'success' : kbVector.state === 'processing' ? 'info' : 'warning'}
+          showIcon
+          style={{ marginTop: 10 }}
+          message={`语义向量 ${kbVector.vectorizedDocs || 0}/${kbVector.enabledDocs || 0} 条就绪`}
+          description={
+            <span>
+              {kbVector.message}
+              {kbVector.state === 'disabled' && (
+                <>
+                  。需由部署人员设置 <code>ENABLE_BACKGROUND_EMBEDDINGS=true</code> 并重启服务，再由老板确认回填。
+                </>
+              )}
+            </span>
+          }
         />
       </Panel>
       {gaps.length > 0 && (
@@ -1505,7 +1746,7 @@ export default function System() {
       <Panel
         title={
           <>
-            <BookOutlined style={{ color: '#22c4a8' }} /> 知识库
+            <BookOutlined style={{ color: 'var(--chart-2)' }} /> 知识库
           </>
         }
         extra={
@@ -1560,7 +1801,7 @@ export default function System() {
             type="info"
             showIcon
             style={{ marginBottom: 10 }}
-            message="知识资产闭环：员工产出被「采纳」后自动沉淀到本库，AI 后续回答可随时抽取调度；同时已登记为知识资产。"
+            message="知识资产闭环：员工产出被「采纳」后自动沉淀到本库；语义向量就绪后，AI 才会按相关性召回；同时登记为知识资产。"
           />
         )}
         {canEditKb && (
@@ -1573,17 +1814,15 @@ export default function System() {
                 支持上传 <b>Word/Excel/PDF/TXT/MD/CSV</b>（自动提取正文入库）与 <b>图片</b>
                 （AI识图自动转写为知识要点，按角色模型计费）；附件可随时预览下载，提取内容可再编辑。
                 <br />
-                {aiVerified ? (
+                {kbVector.state === 'ready' && aiVerified ? (
                   <>
                     <b style={{ color: 'var(--ok)' }}>已启用 AI 语义检索</b>
-                    ：上传/录入的文档自动向量化，8个餐饮分部与老板参谋按「语义相关性」召回相关内容。
+                    ：当前 {kbVector.vectorizedDocs || 0} 条已启用知识可按「语义相关性」召回。
                   </>
                 ) : (
                   <>
-                    <b style={{ color: 'var(--warn)' }}>当前不宣称 AI 语义通道可用</b>：
-                    {ai.available
-                      ? '服务端密钥已配置但最近连接验证尚未通过，当前按降级能力展示。'
-                      : '未配置 AI 密钥，暂不做语义向量召回。'}
+                    <b style={{ color: 'var(--warn)' }}>AI 语义召回尚未就绪</b>：{kbVector.message}
+                    {!ai.available && '；同时未配置 AI 密钥。'}
                   </>
                 )}
               </span>
@@ -1727,7 +1966,6 @@ export default function System() {
     </div>
   );
 
-  // ===== ④ 提示词模板 Tab =====
   const marshalPromptReadyCount = marshalPromptStatus.filter(x => x.ready).length;
   const marshalPromptTotalCount = marshalPromptStatus.length;
   const marshalPromptsReady = marshalPromptTotalCount > 0 && marshalPromptReadyCount === marshalPromptTotalCount;
@@ -1771,7 +2009,9 @@ export default function System() {
                 title: '建议名称',
                 dataIndex: 'recommended',
                 width: 150,
-                render: (v: string, r: any) => <b style={{ color: r.changed ? '#22c4a8' : 'var(--ui-text)' }}>{v}</b>,
+                render: (v: string, r: any) => (
+                  <b style={{ color: r.changed ? 'var(--chart-2)' : 'var(--ui-text)' }}>{v}</b>
+                ),
               },
               { title: '调整依据', dataIndex: 'reason' },
               {
@@ -1870,7 +2110,11 @@ export default function System() {
           <>
             <TeamOutlined style={{ color: 'var(--ui-accent)' }} /> 企业账号管理{' '}
             <span
-              style={{ fontSize: 12, fontWeight: 400, color: seat.used >= seat.limit ? '#f25b6b' : 'var(--ui-muted)' }}
+              style={{
+                fontSize: 12,
+                fontWeight: 400,
+                color: seat.used >= seat.limit ? 'var(--danger)' : 'var(--ui-muted)',
+              }}
             >
               （席位 {seat.used}/{seat.limit}）
             </span>
@@ -1989,7 +2233,7 @@ export default function System() {
           <Panel
             title={
               <>
-                <HistoryOutlined style={{ color: '#70757a' }} /> 操作日志
+                <HistoryOutlined style={{ color: 'var(--ui-muted)' }} /> 操作日志
               </>
             }
             extra={<span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>最近50条</span>}
@@ -2084,174 +2328,19 @@ export default function System() {
   const trashTab = !canRestoreDeleted ? (
     noPermTip
   ) : (
-    <Panel
-      title={
-        <>
-          <DeleteOutlined style={{ color: '#f25b6b' }} /> 删除留痕
-        </>
-      }
-      extra={
-        <Space size={8}>
-          <Select
-            size="small"
-            value={deletionStatus}
-            style={{ width: 110 }}
-            options={[
-              { value: 'active', label: '未恢复' },
-              { value: 'restored', label: '已恢复' },
-              { value: '', label: '全部' },
-            ]}
-            onChange={setDeletionStatus}
-          />
-          <Button size="small" onClick={() => loadDeletions()} loading={deletionLoading}>
-            刷新
-          </Button>
-        </Space>
-      }
-    >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="所有业务删除都会进入这里：保留删除人、角色、原因、原始数据快照和关联数据快照；仅老板/管理员可查看与恢复。"
-      />
-      <Table
-        size="small"
-        rowKey="id"
-        loading={deletionLoading}
-        dataSource={deletions}
-        pagination={{ pageSize: 10, size: 'small', hideOnSinglePage: true }}
-        columns={[
-          {
-            title: '删除对象',
-            dataIndex: 'title',
-            render: (v: string, r: any) => (
-              <div>
-                <button
-                  type="button"
-                  className="ui-link-button"
-                  onClick={() => openDeletion(r)}
-                  style={{ fontWeight: 600 }}
-                >
-                  {v || `${r.entity_type}#${r.entity_id}`}
-                </button>
-                <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 2 }}>{r.summary || '-'}</div>
-              </div>
-            ),
-          },
-          {
-            title: '模块',
-            dataIndex: 'module',
-            width: 100,
-            render: (v: string) => <Tag style={{ fontSize: 11 }}>{v || '-'}</Tag>,
-          },
-          {
-            title: '删除人',
-            width: 122,
-            render: (_: any, r: any) => (
-              <span>
-                {r.deleted_by_name || '-'}{' '}
-                <Tag color={ROLE_MAP[r.deleted_by_role]?.color || 'default'} style={{ marginLeft: 4, fontSize: 10 }}>
-                  {ROLE_MAP[r.deleted_by_role]?.label || r.deleted_by_role || '-'}
-                </Tag>
-              </span>
-            ),
-          },
-          {
-            title: '删除原因',
-            dataIndex: 'reason',
-            ellipsis: true,
-            render: (v: string) => (
-              <Tooltip title={v}>
-                <span style={{ color: 'var(--ui-text-2)' }}>{v || '-'}</span>
-              </Tooltip>
-            ),
-          },
-          {
-            title: '删除时间',
-            dataIndex: 'created_at',
-            width: 150,
-            render: (v: string) => <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>{v}</span>,
-          },
-          {
-            title: '状态',
-            width: 112,
-            render: (_: any, r: any) =>
-              r.restored_at ? <Tag color="green">已恢复</Tag> : <Tag color="volcano">回收站</Tag>,
-          },
-          {
-            title: '操作',
-            width: 160,
-            render: (_: any, r: any) => (
-              <Space size={4}>
-                <Button size="small" icon={<EyeOutlined />} onClick={() => openDeletion(r)}>
-                  详情
-                </Button>
-                <Popconfirm
-                  title="确认恢复这条数据？"
-                  description="会按原始快照恢复主数据和关联数据。"
-                  okText="恢复"
-                  cancelText="取消"
-                  disabled={!!r.restored_at}
-                  onConfirm={() => restoreDeletion(r)}
-                >
-                  <Button size="small" type="primary" ghost icon={<UndoOutlined />} disabled={!!r.restored_at}>
-                    恢复
-                  </Button>
-                </Popconfirm>
-              </Space>
-            ),
-          },
-        ]}
-        locale={{
-          emptyText: (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={deletionStatus === 'active' ? '暂无未恢复删除记录' : '暂无删除记录'}
-            />
-          ),
-        }}
-      />
-    </Panel>
+    <SystemDeletionHistoryPanel
+      deletionStatus={deletionStatus}
+      deletionLoading={deletionLoading}
+      deletions={deletions}
+      onStatusChange={setDeletionStatus}
+      onRefresh={() => loadDeletions()}
+      onOpen={openDeletion}
+      onRestore={restoreDeletion}
+    />
   );
 
   // ===== ⑥ 配置与备份 Tab =====
-  const numField = (label: string, value: any, onChange: (v: any) => void, opts: any = {}) => (
-    <div key={label}>
-      <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>{label}</div>
-      <InputNumber
-        size="small"
-        style={{ width: '100%' }}
-        value={value}
-        disabled={!canSaveConfig}
-        min={0}
-        onChange={v => onChange(v ?? 0)}
-        {...opts}
-      />
-    </div>
-  );
-  const cfgGroup = (title: string, body: React.ReactNode) => (
-    <div style={{ marginBottom: 14 }}>
-      <div
-        style={{
-          fontSize: 12.5,
-          fontWeight: 600,
-          color: 'var(--ui-text)',
-          marginBottom: 8,
-          paddingLeft: 8,
-          borderLeft: '3px solid var(--ui-accent)',
-        }}
-      >
-        {title}
-      </div>
-      {body}
-    </div>
-  );
-  const grid = (children: React.ReactNode) => (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10 }}>
-      {children}
-    </div>
-  );
+  const { numField, cfgGroup, grid } = createSystemConfigPrimitives(canSaveConfig);
   const setCfgSub = (key: string, sub: string, v: any) =>
     setCfg((c: any) => ({ ...c, [key]: { ...(c[key] || {}), [sub]: v } }));
   const weightSum = Object.values(cfg.health_weights || {}).reduce((s: number, v: any) => s + Number(v || 0), 0);
@@ -2264,7 +2353,7 @@ export default function System() {
         <Panel
           title={
             <>
-              <SettingOutlined style={{ color: '#8a7450' }} /> 业务系数配置
+              <SettingOutlined style={{ color: 'var(--chart-3)' }} /> 业务系数配置
             </>
           }
           extra={
@@ -2387,7 +2476,7 @@ export default function System() {
           <Panel
             title={
               <>
-                <AlertOutlined style={{ color: '#f6a02d' }} /> 风控规则
+                <AlertOutlined style={{ color: 'var(--warn)' }} /> 风控规则
               </>
             }
             extra={<span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>命中即送审</span>}
@@ -2425,7 +2514,7 @@ export default function System() {
                         style={{
                           fontFamily: 'Consolas,Menlo,monospace',
                           fontSize: 11,
-                          color: '#8a7450',
+                          color: 'var(--chart-3)',
                           background: 'var(--ui-surface)',
                           borderRadius: 4,
                           padding: '1px 6px',
@@ -2442,7 +2531,7 @@ export default function System() {
           <Panel
             title={
               <>
-                <CloudServerOutlined style={{ color: '#22c4a8' }} /> 数据备份
+                <CloudServerOutlined style={{ color: 'var(--chart-2)' }} /> 数据备份
               </>
             }
             extra={
@@ -2872,7 +2961,7 @@ export default function System() {
                   </div>
                   <div>
                     <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                      接收人 ID <span style={{ color: '#f25b6b' }}>*</span>
+                      接收人 ID <span style={{ color: 'var(--danger)' }}>*</span>
                     </div>
                     <Input
                       placeholder={feishuManual.receiveIdType === 'email' ? 'name@company.com' : 'ou_xxxxxxxxxxxxxxxx'}
@@ -2953,7 +3042,7 @@ export default function System() {
 
       {/* 六大区块 Tabs（核心数据全部加载失败时给明确错误态 + 重试，不展示空壳数据） */}
       {coreError ? (
-        <ErrorState error={coreError} retrying={coreLoading} onRetry={loadCore} />
+        <SystemErrorState error={coreError} retrying={coreLoading} onRetry={loadCore} />
       ) : (
         <Tabs
           activeKey={tab}
@@ -2973,8 +3062,24 @@ export default function System() {
                 ),
               children: approvalsTab,
             },
+            ...(isAdminish
+              ? [
+                  {
+                    key: 'billing',
+                    label:
+                      billingAttentionCount > 0 ? (
+                        <Badge size="small" count={billingAttentionCount} offset={[10, -2]}>
+                          AI积分与用量
+                        </Badge>
+                      ) : (
+                        'AI积分与用量'
+                      ),
+                    children: billingTab,
+                  },
+                ]
+              : []),
             { key: 'kb', label: '知识库', children: kbTab },
-            { key: 'prompts', label: '提示词模板', children: promptsTab },
+            ...(canEditPrompt ? [{ key: 'prompts', label: '提示词模板', children: promptsTab }] : []),
             { key: 'users', label: '用户与日志', children: usersTab },
             { key: 'trash', label: '删除留痕', children: trashTab },
             { key: 'config', label: '配置与备份', children: configTab },
@@ -3038,7 +3143,7 @@ export default function System() {
             </div>
             <div>
               <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                标题 <span style={{ color: '#f25b6b' }}>*</span>
+                标题 <span style={{ color: 'var(--danger)' }}>*</span>
               </div>
               <Input
                 placeholder="如：门店品牌故事与核心卖点"
@@ -3049,7 +3154,7 @@ export default function System() {
             </div>
             <div>
               <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                内容 <span style={{ color: '#f25b6b' }}>*</span>
+                内容 <span style={{ color: 'var(--danger)' }}>*</span>
               </div>
               <Input.TextArea
                 rows={8}
@@ -3119,7 +3224,7 @@ export default function System() {
             {!userForm.id && (
               <div>
                 <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                  用户名 <span style={{ color: '#f25b6b' }}>*</span>
+                  用户名 <span style={{ color: 'var(--danger)' }}>*</span>
                 </div>
                 <Input
                   placeholder="登录账号，如 zhangsan"
@@ -3134,7 +3239,7 @@ export default function System() {
                   '重置密码（留空则不修改）'
                 ) : (
                   <>
-                    密码 <span style={{ color: '#f25b6b' }}>*</span>
+                    密码 <span style={{ color: 'var(--danger)' }}>*</span>
                   </>
                 )}
               </div>
@@ -3146,7 +3251,7 @@ export default function System() {
             </div>
             <div>
               <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                姓名 <span style={{ color: '#f25b6b' }}>*</span>
+                姓名 <span style={{ color: 'var(--danger)' }}>*</span>
               </div>
               <Input
                 placeholder="真实姓名"
@@ -3247,7 +3352,7 @@ export default function System() {
         title={
           kbView ? (
             <Space>
-              <BookOutlined style={{ color: '#22c4a8' }} />
+              <BookOutlined style={{ color: 'var(--chart-2)' }} />
               {kbView.title}
               <Tag>{kbView.category}</Tag>
             </Space>
@@ -3326,135 +3431,11 @@ export default function System() {
         )}
       </Drawer>
 
-      {/* ===== 删除快照详情抽屉 ===== */}
-      <Drawer
-        open={!!deletionView}
-        width={680}
+      <SystemDeletionDrawer
+        deletionView={deletionView}
         onClose={() => setDeletionView(null)}
-        title={
-          deletionView ? (
-            <Space>
-              <DeleteOutlined style={{ color: '#f25b6b' }} />
-              删除留痕 · {deletionView.title}
-              <Tag>{deletionView.module}</Tag>
-            </Space>
-          ) : (
-            ''
-          )
-        }
-        extra={
-          deletionView &&
-          !deletionView.restored_at && (
-            <Popconfirm
-              title="确认恢复这条数据？"
-              description="会按原始快照恢复主数据和关联数据。"
-              okText="恢复"
-              cancelText="取消"
-              onConfirm={() => restoreDeletion(deletionView)}
-            >
-              <Button type="primary" ghost icon={<UndoOutlined />}>
-                恢复数据
-              </Button>
-            </Popconfirm>
-          )
-        }
-      >
-        {deletionView && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <Alert
-              type={deletionView.restored_at ? 'success' : 'warning'}
-              showIcon
-              message={
-                deletionView.restored_at
-                  ? `已由 ${deletionView.restored_by_name || '-'} 恢复：${deletionView.restored_at}`
-                  : '该数据当前在回收站，业务页面不可见。'
-              }
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10 }}>
-              {[
-                [
-                  '删除人',
-                  `${deletionView.deleted_by_name || '-'}（${ROLE_MAP[deletionView.deleted_by_role]?.label || deletionView.deleted_by_role || '-'}）`,
-                ],
-                ['删除时间', deletionView.created_at || '-'],
-                [
-                  '所需权限',
-                  deletionView.required_role === 'boss'
-                    ? '老板/管理员'
-                    : deletionView.required_role === 'manager'
-                      ? '管理层'
-                      : '本人',
-                ],
-              ].map(([k, v]) => (
-                <div key={k} style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '9px 11px' }}>
-                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{k}</div>
-                  <div style={{ fontSize: 13, color: 'var(--ui-text)', fontWeight: 600, marginTop: 3 }}>{v}</div>
-                </div>
-              ))}
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>删除原因</div>
-              <div
-                style={{
-                  background: 'var(--ui-surface)',
-                  border: '1px solid var(--ui-border)',
-                  borderRadius: 8,
-                  padding: '9px 11px',
-                  fontSize: 12.5,
-                  color: 'var(--ui-text-2)',
-                  lineHeight: 1.8,
-                }}
-              >
-                {deletionView.reason || '-'}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>主数据快照</div>
-              <pre
-                style={{
-                  whiteSpace: 'pre-wrap',
-                  maxHeight: 260,
-                  overflow: 'auto',
-                  background: 'var(--ui-surface-2)',
-                  border: '1px solid var(--ui-border)',
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 11.5,
-                  color: 'var(--ui-text-2)',
-                }}
-              >
-                {JSON.stringify(deletionView.snapshot?.row || {}, null, 2)}
-              </pre>
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>关联数据快照</div>
-              <Space wrap>
-                {Object.entries(deletionView.child_snapshot || {}).map(([table, rows]: any) => (
-                  <Tag key={table} color={Array.isArray(rows) && rows.length ? 'blue' : 'default'}>
-                    {table}：{Array.isArray(rows) ? rows.length : 0} 条
-                  </Tag>
-                ))}
-              </Space>
-              <pre
-                style={{
-                  whiteSpace: 'pre-wrap',
-                  maxHeight: 260,
-                  overflow: 'auto',
-                  background: 'var(--ui-surface-2)',
-                  border: '1px solid var(--ui-border)',
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 11.5,
-                  color: 'var(--ui-text-2)',
-                  marginTop: 8,
-                }}
-              >
-                {JSON.stringify(deletionView.child_snapshot || {}, null, 2)}
-              </pre>
-            </div>
-          </div>
-        )}
-      </Drawer>
+        onRestore={restoreDeletion}
+      />
     </div>
   );
 }

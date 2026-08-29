@@ -19,9 +19,7 @@ import {
   Tooltip,
   Segmented,
   message,
-  Timeline,
   Alert,
-  Popconfirm,
 } from 'antd';
 import {
   AimOutlined,
@@ -33,17 +31,13 @@ import {
   ReloadOutlined,
   SendOutlined,
   PlusOutlined,
-  PlayCircleOutlined,
   CheckOutlined,
-  CloseOutlined,
   TrophyOutlined,
   FormOutlined,
   TeamOutlined,
   LockOutlined,
-  EditOutlined,
   UploadOutlined,
   PaperClipOutlined,
-  DeleteOutlined,
   DownloadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -51,16 +45,24 @@ import { api, fmtMoney, fmtWan, getUser } from '../api/client';
 import { loadXlsx } from '../utils/xlsx';
 import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
+import BusinessFlowTrace from '../components/BusinessFlowTrace';
+import ExecutionTaskCard, {
+  executionSubmissionStatusLabel,
+  executionTaskBoardStatus,
+  executionTaskStatusLabel,
+} from '../components/ExecutionTaskCard';
+import ExecutionTaskTraceDialog from '../components/ExecutionTaskTraceDialog';
+import ExecutionWorkflowDialogs from '../components/ExecutionWorkflowDialogs';
 import { CHART_COLORS } from '../components/Charts';
-
-const TASK_STATUSES = ['待执行', '进行中', '待审核', '已完成'];
+import './Execution.css';
+const TASK_STATUSES = ['待执行', '进行中', '返工中', '待审核', '已完成'];
 const STATUS_COLOR: Record<string, string> = {
   待执行: 'var(--ui-muted)',
   进行中: 'var(--ui-accent)',
-  待审核: '#f6a02d',
-  已完成: '#22c4a8',
+  返工中: 'var(--ui-warning-text)',
+  待审核: 'var(--warn)',
+  已完成: 'var(--chart-2)',
 };
-const PRIORITY_COLOR: Record<string, string> = { 高: '#f25b6b', 中: '#f6a02d', 低: '#22c4a8' };
 const TYPE_COLOR: Record<string, string> = {
   跟进: 'blue',
   邀约: 'purple',
@@ -73,10 +75,10 @@ const TYPE_COLOR: Record<string, string> = {
 const typeColor = (t: string) => TYPE_COLOR[t] || 'geekblue';
 const TASK_TYPES = ['跟进', '邀约', '内容', '活动', '培训', '督导', '其他'];
 const LEVEL_COLOR: Record<string, string> = { 区域运营商: 'purple', 城市合伙人: 'blue', 馆主: 'cyan' };
-const MEDAL = ['#f6a02d', 'var(--ui-muted)', '#cd8a4d'];
+const MEDAL = ['var(--warn)', 'var(--ui-muted)', '#cd8a4d'];
 const resultColor = (v: string) =>
   (v || '').includes('驳') ? 'red' : /通过|合格|完成/.test(v || '') ? 'green' : 'orange';
-const TASK_FILE_ACCEPT = '.doc,.docx,.xls,.xlsx,.csv,.pdf,.txt,.md,.json,.png,.jpg,.jpeg,.webp';
+const TASK_FILE_ACCEPT = '.doc,.docx,.xls,.xlsx,.csv,.tsv,.pdf,.txt,.md,.json,.png,.jpg,.jpeg,.webp';
 const fallbackTaskBasis = (t: any) => {
   const map: Record<string, any> = {
     内容: {
@@ -135,15 +137,12 @@ const buttonResetStyle = {
   font: 'inherit',
   textAlign: 'inherit',
 } as const;
-
 export default function Execution() {
   const user = getUser() || {};
   const isManager = ['boss', 'ops_director', 'manager', 'admin'].includes(user.role);
-  const canApprove = user.role === 'boss' || user.role === 'ops_director';
+  const canApprove = ['boss', 'ops_director', 'manager', 'admin'].includes(user.role);
   const canManagePartners = isManager;
   const canIssuePlan = canApprove;
-  const canOperateTask = (t: any) => isManager || Number(t.assignee_id) === Number(user.id);
-
   const [summary, setSummary] = useState<any>({});
   const [goals, setGoals] = useState<any[]>([]);
   const [plan, setPlan] = useState<any>(null);
@@ -157,7 +156,6 @@ export default function Execution() {
   const [rankPeriod, setRankPeriod] = useState('week');
   const [silent, setSilent] = useState<any[]>([]);
   const [supportList, setSupportList] = useState<any[]>([]);
-
   const [taskModal, setTaskModal] = useState(false);
   const [rejectTask, setRejectTask] = useState<any>(null);
   const [checkinOpen, setCheckinOpen] = useState(false);
@@ -168,8 +166,11 @@ export default function Execution() {
   const [rejecting, setRejecting] = useState(false);
   const [savingCheckin, setSavingCheckin] = useState(false);
   const [superviseLoading, setSuperviseLoading] = useState(false);
+  const [decomposeTask, setDecomposeTask] = useState<any>(null);
+  const [reopenTask, setReopenTask] = useState<any>(null);
+  const [businessFlowTaskId, setBusinessFlowTaskId] = useState<number | null>(null);
 
-  // 目标钻取 / 合伙人四档 / 提醒卡 / 合伙人明细（V1.2 表格业务逻辑）
+  // 目标钻取 / 合伙人四档 / 提醒卡 / 合伙人明细（表格业务逻辑）
   const [drill, setDrill] = useState<{ open: boolean; data: any }>({ open: false, data: null });
   const [tiers, setTiers] = useState<any>(null);
   const [pDetail, setPDetail] = useState<{ open: boolean; data: any }>({ open: false, data: null });
@@ -282,13 +283,17 @@ export default function Execution() {
   const [checkinForm] = Form.useForm();
 
   const loadSummary = () => api.get('/execution/summary').then(setSummary);
-  const loadGoals = () => api.get('/execution/goals').then(d => setGoals(d || []));
-  const loadPlan = () => api.get('/execution/battle-plan/today').then(setPlan);
+  const loadGoals = () =>
+    isManager ? api.get('/execution/goals').then(d => setGoals(d || [])) : Promise.resolve(setGoals([]));
+  const loadPlan = () =>
+    isManager ? api.get('/execution/battle-plan/today').then(setPlan) : Promise.resolve(setPlan(null));
   const loadPlanRollup = () =>
-    api
-      .get('/execution/battle-plan/rollup')
-      .then(setPlanRollup)
-      .catch(() => {});
+    isManager
+      ? api
+          .get('/execution/battle-plan/rollup')
+          .then(setPlanRollup)
+          .catch(() => {})
+      : Promise.resolve(setPlanRollup(null));
   const loadTasks = () => api.get('/execution/tasks').then(d => setTasks(d || []));
   const loadSubmissions = () => api.get('/execution/submissions').then(d => setSubmissions(d || []));
   // 与总裁驾驶舱共用同一套员工综合评分数据，避免两个页面出现两份排名。
@@ -328,11 +333,20 @@ export default function Execution() {
     queueMicrotask(() => {
       if (cancelled) return;
       loadSummary();
-      loadGoals();
-      loadPlan();
       loadTasks();
       loadSubmissions();
-      loadPlanRollup();
+      if (isManager) {
+        api.get('/execution/goals').then(d => setGoals(d || []));
+        api.get('/execution/battle-plan/today').then(setPlan);
+        api
+          .get('/execution/battle-plan/rollup')
+          .then(setPlanRollup)
+          .catch(() => {});
+      } else {
+        setGoals([]);
+        setPlan(null);
+        setPlanRollup(null);
+      }
       if (canManagePartners) {
         api.get('/execution/partners').then(d => setPartners(d || []));
         api.get('/execution/partners/silent').then(d => setSilent(d || []));
@@ -351,7 +365,18 @@ export default function Execution() {
     return () => {
       cancelled = true;
     };
-  }, [canManagePartners]);
+  }, [canManagePartners, isManager]);
+  useEffect(() => {
+    const revealTaskBoard = () => {
+      if (window.location.hash !== '#task-board') return;
+      const taskBoard = document.getElementById('task-board');
+      taskBoard?.scrollIntoView({ block: 'start' });
+      taskBoard?.focus({ preventScroll: true });
+    };
+    revealTaskBoard();
+    window.addEventListener('hashchange', revealTaskBoard);
+    return () => window.removeEventListener('hashchange', revealTaskBoard);
+  }, []);
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -503,7 +528,7 @@ export default function Execution() {
             content: v.content || '',
             attachments: workFiles,
           });
-          message.success('执行数据已上传，任务已提交审核');
+          message.success('执行数据已上传，任务已提交人工验收');
           setWorkTask(null);
           setWorkFiles([]);
           workForm.resetFields();
@@ -526,7 +551,7 @@ export default function Execution() {
       content: '通过后任务会进入已完成状态，并计入执行统计与员工荣誉评分。',
       onOk: () =>
         api.post(`/execution/tasks/${t.id}/review`, { pass: true }).then(() => {
-          message.success(`「${t.title}」已通过审核`);
+          message.success(`「${t.title}」已通过人工验收`);
           loadTasks();
           loadSubmissions();
           loadSummary();
@@ -569,6 +594,11 @@ export default function Execution() {
         })
         .finally(() => setSavingTask(false));
     });
+
+  const openDecomposeTask = (task: any) => {
+    setDecomposeTask(task);
+  };
+
   const deleteTask = (t: any) => {
     api
       .del(`/execution/tasks/${t.id}`)
@@ -714,9 +744,10 @@ export default function Execution() {
             }}
           >
             <span>总 {d.total || 0}</span>
-            <span>待 {status['待执行'] || 0}</span>
+            <span>待执行 {status['待执行'] || 0}</span>
             <span>进行 {status['进行中'] || 0}</span>
-            <span>待审 {status['待审核'] || 0}</span>
+            <span>返工 {status['返工中'] || 0}</span>
+            <span>待人工验收 {status['待审核'] || 0}</span>
             <span>完成 {status['已完成'] || 0}</span>
           </div>
           <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--ui-muted)' }}>
@@ -727,194 +758,142 @@ export default function Execution() {
     );
   };
 
-  const parseSubmitContent = (content: string) => {
-    try {
-      const o = JSON.parse(content || '{}');
-      if (o && o.kind === 'task_submit_v2') return o;
-    } catch {
-      /* plain text */
-    }
-    return { note: content || '', attachments: [] };
-  };
-
-  /* ---------- 看板任务卡 ---------- */
-  const taskCard = (t: any) => {
-    const operable = canOperateTask(t);
-    const lockedTip = operable ? '' : '只能操作本人负责的任务；管理层可操作全员任务';
-    return (
-      <div
-        key={t.id}
-        style={{
-          background: 'var(--ui-surface)',
-          border: '1px solid var(--ui-border)',
-          borderRadius: 8,
-          padding: '10px 12px',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'flex-start' }}>
-          <Tooltip title={t.detail}>
-            <span style={{ fontWeight: 600, fontSize: 12.5, color: 'var(--ui-text)', lineHeight: 1.5 }}>{t.title}</span>
-          </Tooltip>
-          <Tooltip title={`优先级：${t.priority}`}>
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: PRIORITY_COLOR[t.priority] || 'var(--ui-muted)',
-                flexShrink: 0,
-                marginTop: 5,
-              }}
-            />
-          </Tooltip>
-        </div>
-        <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap' }}>
-          <Tag color={typeColor(t.type)} style={{ fontSize: 11, lineHeight: '18px' }}>
-            {t.type}
-          </Tag>
-          {t.source && (
-            <Tag color={t.source === '活动策划' ? 'purple' : 'default'} style={{ fontSize: 11, lineHeight: '18px' }}>
-              {t.source}
-            </Tag>
-          )}
-          {t.risk && (
-            <Tag color="red" style={{ fontSize: 11, lineHeight: '18px' }}>
-              风险
-            </Tag>
-          )}
-          {!operable && (
-            <Tag icon={<LockOutlined />} color="default" style={{ fontSize: 11, lineHeight: '18px' }}>
-              只读
-            </Tag>
-          )}
-        </div>
-        <div
-          style={{
-            fontSize: 11.5,
-            color: 'var(--ui-muted)',
-            marginTop: 6,
-            display: 'flex',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <span>{t.assignee || '未分配'}</span>
-          <span>截止 {(t.due_at || '').slice(5, 16)}</span>
-        </div>
-        <Button
-          size="small"
-          block
-          icon={<PaperClipOutlined />}
-          style={{ marginTop: 8 }}
-          onClick={() => openTaskTrace(t)}
-        >
-          查看执行记录
-        </Button>
-        {t.status === '待执行' && (
-          <Tooltip title={lockedTip}>
-            <Button
-              size="small"
-              type="primary"
-              ghost
-              block
-              icon={<PlayCircleOutlined />}
-              style={{ marginTop: 8 }}
-              disabled={!operable}
-              onClick={() => startTask(t)}
-            >
-              开始
-            </Button>
-          </Tooltip>
-        )}
-        {t.status === '进行中' && (
-          <Tooltip title={lockedTip}>
-            <Button
-              size="small"
-              type="primary"
-              block
-              icon={<EditOutlined />}
-              style={{ marginTop: 8 }}
-              disabled={!operable}
-              onClick={() => openTaskWork(t)}
-            >
-              编辑/上传数据
-            </Button>
-          </Tooltip>
-        )}
-        {t.status === '待审核' &&
-          (canApprove ? (
-            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              <Button
-                size="small"
-                type="primary"
-                icon={<CheckOutlined />}
-                style={{ flex: 1 }}
-                onClick={() => approveTask(t)}
-              >
-                通过
-              </Button>
-              <Button size="small" danger icon={<CloseOutlined />} style={{ flex: 1 }} onClick={() => setRejectTask(t)}>
-                驳回
-              </Button>
-            </div>
-          ) : (
-            <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--ui-muted)', textAlign: 'center' }}>
-              等待总监/老板审核
-            </div>
-          ))}
-        <Popconfirm
-          title={`删除任务「${t.title}」？`}
-          description="删除后进入回收站，老板/管理员可恢复。"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={() => deleteTask(t)}
-        >
-          <Button size="small" danger ghost block icon={<DeleteOutlined />} style={{ marginTop: 8 }}>
-            删除任务
-          </Button>
-        </Popconfirm>
-      </div>
-    );
+  const focusTaskBoard = () => {
+    const board = document.getElementById('task-board');
+    board?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    window.setTimeout(() => board?.focus(), 350);
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="execution-page">
+      <header className="execution-command-head">
+        <div className="execution-command-copy">
+          <span>{isManager ? '经营执行 · 分层任务闭环' : '任务执行 · 我的待办'}</span>
+          <h1>{isManager ? '经营任务指挥台' : '我的任务'}</h1>
+          <p>
+            {isManager
+              ? '从目标和会诊接单，拆到负责人；执行人提交结果后，再由管理层验收关闭。'
+              : '只看分配给你的任务：先接单、再执行、提交结果，等待管理层验收。'}
+          </p>
+        </div>
+        <div className="execution-command-actions" aria-label="任务快捷入口">
+          {TASK_STATUSES.map(status => {
+            const count = tasks.filter(task => executionTaskBoardStatus(task) === status).length;
+            return (
+              <button type="button" key={status} onClick={focusTaskBoard}>
+                <span style={{ background: STATUS_COLOR[status] }} aria-hidden="true" />
+                <strong>{count}</strong>
+                <small>{executionTaskStatusLabel(status)}</small>
+              </button>
+            );
+          })}
+          {isManager && (
+            <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>
+              新建任务
+            </Button>
+          )}
+        </div>
+      </header>
+      {/* 员工第一屏：现在就干——最紧急的三件事直接给操作按钮，不用先看报表 */}
+      {!isManager &&
+        (() => {
+          const actionable = tasks
+            .filter(task => ['待执行', '进行中', '返工中'].includes(executionTaskBoardStatus(task)))
+            .sort((a, b) => {
+              const rank = (task: any) =>
+                ({ 返工中: 0, 待执行: 1, 进行中: 2 })[executionTaskBoardStatus(task) as string] ?? 3;
+              if (rank(a) !== rank(b)) return rank(a) - rank(b);
+              return String(a.due_at || '9999').localeCompare(String(b.due_at || '9999'));
+            })
+            .slice(0, 3);
+          if (!actionable.length) return null;
+          return (
+            <div className="execution-my-day" role="region" aria-label="现在就干">
+              <div className="execution-my-day-head">
+                <strong>现在就干</strong>
+                <span>按急迫度排好了，点右边按钮直接开工</span>
+              </div>
+              {actionable.map(task => {
+                const status = executionTaskBoardStatus(task);
+                const overdue =
+                  task.due_at && String(task.due_at).slice(0, 10) < new Date().toLocaleDateString('sv-SE');
+                return (
+                  <div className="execution-my-day-row" key={task.id}>
+                    <span className="execution-my-day-dot" style={{ background: STATUS_COLOR[status] }} />
+                    <div className="execution-my-day-copy">
+                      <strong>{task.title}</strong>
+                      <small>
+                        {executionTaskStatusLabel(status)}
+                        {task.due_at ? ` · 截止 ${String(task.due_at).slice(5, 10)}` : ''}
+                        {overdue ? ' · 已超期' : ''}
+                      </small>
+                    </div>
+                    {status === '待执行' ? (
+                      <Button type="primary" size="small" onClick={() => startTask(task)}>
+                        接单开工
+                      </Button>
+                    ) : (
+                      <Button size="small" onClick={() => openTaskWork(task)}>
+                        继续干
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       {/* 顶部 KPI（逐卡可点钻取） */}
       <Row gutter={[12, 12]}>
-        <Col xs={12} md={8} xl={4}>
-          <StatCard
-            icon={<AimOutlined />}
-            color="var(--ui-accent)"
-            label="本月目标完成率"
-            value={summary.goalRate == null ? (summary.goalStatus === 'zero' ? '目标为0' : '未设置') : summary.goalRate}
-            suffix={summary.goalRate == null ? '' : '%'}
-            onClick={openGoalsDrill}
-          />
-        </Col>
+        {isManager && (
+          <Col xs={12} md={8} xl={4}>
+            <StatCard
+              icon={<AimOutlined />}
+              color="var(--ui-accent)"
+              label="本月目标完成率"
+              value={
+                summary.goalRate == null ? (summary.goalStatus === 'zero' ? '目标为0' : '未设置') : summary.goalRate
+              }
+              suffix={summary.goalRate == null ? '' : '%'}
+              onClick={openGoalsDrill}
+            />
+          </Col>
+        )}
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<CheckCircleOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="本周任务完成率"
             value={`${summary.weekTaskRate ?? '-'}%`}
             onClick={() => openExecDrill('week-tasks')}
           />
         </Col>
+        {canApprove && (
+          <Col xs={12} md={8} xl={4}>
+            <StatCard
+              icon={<AuditOutlined />}
+              color="var(--chart-3)"
+              label="待我人工验收"
+              value={summary.actionableReviewTasks ?? summary.pendingReview ?? '-'}
+              suffix="个"
+              onClick={() => openExecDrill('pending')}
+            />
+          </Col>
+        )}
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<AuditOutlined />}
-            color="#8a7450"
-            label="待审任务"
-            value={summary.pendingReview ?? '-'}
+            color="var(--ui-warning-text)"
+            label="我的提交待人工验收"
+            value={summary.mySubmittedWaitingReview ?? '-'}
             suffix="个"
-            onClick={() => openExecDrill('pending')}
+            onClick={() => openExecDrill('waiting-review')}
           />
         </Col>
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<AlertOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="风险任务"
             value={summary.riskTasks ?? '-'}
             suffix="个"
@@ -924,7 +903,7 @@ export default function Execution() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<StarOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="重点跟进"
             value={summary.keyFollows ?? '-'}
             suffix="人"
@@ -934,7 +913,7 @@ export default function Execution() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<ThunderboltOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="执行力评分"
             value={summary.execScore ?? '-'}
             suffix="分"
@@ -943,270 +922,299 @@ export default function Execution() {
         </Col>
       </Row>
 
-      {/* 第二行：目标拆解 + 今日作战计划 */}
-      <Row gutter={[12, 12]}>
-        <Col xs={24} lg={8}>
-          <Panel
-            title="目标拆解"
-            extra={
-              <Space size={6}>
-                <button type="button" className="ui-link-button" style={{ fontSize: 12 }} onClick={openGoalsDrill}>
-                  三层拆解 ›
-                </button>
-              </Space>
-            }
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {goals.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无目标数据" />}
-              {goals.map((g, i) => (
-                <button
-                  type="button"
-                  key={g.label}
-                  onClick={openGoalsDrill}
-                  style={{
-                    ...buttonResetStyle,
-                    background: 'var(--ui-surface-2)',
-                    borderRadius: 8,
-                    padding: '10px 12px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 13, color: 'var(--ui-text)' }}>
-                      <Badge color={CHART_COLORS[i % CHART_COLORS.length]} />
-                      <b style={{ margin: '0 6px 0 4px' }}>{g.label}目标</b>
-                      <span style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{g.period}</span>
-                    </span>
-                    <span>
-                      {g.rate == null ? (
-                        <Tag style={{ margin: 0 }}>{g.status === 'zero' ? '目标为0' : '未设置'}</Tag>
-                      ) : (
-                        <>
-                          {g.risk && (
-                            <Tag color="red" style={{ fontSize: 11 }}>
-                              风险
-                            </Tag>
-                          )}
-                          <b style={{ color: g.risk ? '#f25b6b' : 'var(--ui-accent)', fontSize: 14 }}>{g.rate}%</b>
-                        </>
-                      )}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', margin: '6px 0 2px' }}>
-                    目标 {g.status === 'missing' ? '未设置' : fmtWan(g.target)} · 实际{' '}
-                    <b style={{ color: 'var(--ui-text)' }}>{fmtWan(g.actual)}</b>
-                  </div>
-                  {g.rate == null ? (
-                    <div style={{ color: 'var(--ui-muted)', fontSize: 11.5, lineHeight: 1.6 }}>{g.statusText}</div>
-                  ) : (
-                    <Progress
-                      percent={Math.min(g.rate, 100)}
-                      showInfo={false}
-                      size="small"
-                      strokeColor={g.risk ? '#f25b6b' : 'var(--ui-accent)'}
-                    />
-                  )}
-                </button>
-              ))}
-            </div>
-          </Panel>
-        </Col>
-        <Col xs={24} lg={16}>
-          <Panel
-            title={
-              <>
-                <ThunderboltOutlined style={{ color: 'var(--ui-accent)' }} /> 今日作战计划
-                {plan?.festival && (
-                  <Tag color="orange" style={{ marginLeft: 8, fontSize: 11 }}>
-                    {plan.festival.name}·{plan.festival.theme}
-                  </Tag>
-                )}
-              </>
-            }
-            extra={
-              <Space>
-                <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{plan?.date}</span>
-                {isManager && (
-                  <Button size="small" icon={<ReloadOutlined />} loading={genLoading} onClick={regenPlan}>
-                    重新生成
-                  </Button>
-                )}
-                {canIssuePlan && (
-                  <Button size="small" icon={<SendOutlined />} loading={applyLoading} onClick={applyPlan}>
-                    管理层下发
-                  </Button>
-                )}
-                <Tag color={plan?.confirmation?.confirmed ? 'green' : 'blue'} style={{ margin: 0 }}>
-                  {plan?.confirmation?.confirmed ? `今日已同步${plan?.confirmation?.synced || 0}项` : '逐条确认同步'}
-                </Tag>
-              </Space>
-            }
-          >
-            {!plan ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="作战计划生成中..." />
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--ui-text)' }}>{plan.theme}</span>
-                  <Tag color="blue" style={{ fontSize: 11 }}>
-                    主推人群：{plan.audience}
-                  </Tag>
-                  {plan.bottleneck && (
-                    <Tag color="red" style={{ fontSize: 11 }}>
-                      <AlertOutlined /> 卡点：{plan.bottleneck}
-                    </Tag>
-                  )}
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
-                  昨日战果：新增线索 {yest.newLeads ?? 0} · 邀约 {yest.invited ?? 0} · 到店 {yest.arrived ?? 0} · 成交{' '}
-                  {yest.deals ?? 0} 单 · 回款 {fmtMoney(yest.amount)}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 252, overflow: 'auto' }}>
-                  {(plan.tasks || []).map((t: any, i: number) => {
-                    const itemState = (plan.confirmation?.items || []).find((x: any) => x.index === i);
-                    const confirmed = !!itemState?.confirmed;
-                    return (
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        key={i}
-                        onClick={e => {
-                          if ((e.target as HTMLElement).closest('[data-plan-task-action]')) return;
-                          setPlanTask(t);
-                        }}
-                        onKeyDown={e => {
-                          if (
-                            (e.target as HTMLElement).closest('[data-plan-task-action]') ||
-                            (e.key !== 'Enter' && e.key !== ' ')
-                          )
-                            return;
-                          e.preventDefault();
-                          setPlanTask(t);
-                        }}
-                        style={{
-                          display: 'flex',
-                          gap: 8,
-                          padding: '8px 10px',
-                          background: 'var(--ui-surface-2)',
-                          borderRadius: 8,
-                          alignItems: 'flex-start',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <Tag color={typeColor(t.type)} style={{ flexShrink: 0, marginTop: 1 }}>
-                          {t.type}
-                        </Tag>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ui-text)' }}>
-                            {t.action}
-                            {t.count ? <span style={{ color: 'var(--ui-accent)' }}> ×{t.count}</span> : null}
-                          </div>
-                          <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 2 }}>
-                            负责人：{t.owner} · 截止 {t.due} · 检查标准：{t.check}
-                          </div>
-                          <div style={{ fontSize: 11.5, color: 'var(--ui-text-2)', marginTop: 3 }}>
-                            目标来源：{t.basis?.shortSource || fallbackTaskBasis(t).shortSource}
-                          </div>
-                        </div>
-                        <div
-                          data-plan-task-action
-                          style={{ flexShrink: 0, display: 'flex', alignItems: 'center', minHeight: 28 }}
-                        >
-                          {confirmed ? (
-                            <Tag color="green" style={{ margin: 0 }}>
-                              已同步
-                            </Tag>
-                          ) : (
-                            <Button
-                              size="small"
-                              type="primary"
-                              ghost
-                              icon={<CheckOutlined />}
-                              loading={confirmPlanLoading === i}
-                              onClick={() => confirmPlanItem(i)}
-                            >
-                              确认同步
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {plan.bossItems?.length > 0 && (
-                  <div
+      {/* 公司经营目标与作战计划仅供管理层查看；员工直接进入本人任务。 */}
+      {isManager && (
+        <Row gutter={[12, 12]}>
+          <Col xs={24} lg={8}>
+            <Panel
+              title="目标拆解"
+              extra={
+                <Space size={6}>
+                  <button type="button" className="ui-link-button" style={{ fontSize: 12 }} onClick={openGoalsDrill}>
+                    三层拆解 ›
+                  </button>
+                </Space>
+              }
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {goals.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无目标数据" />}
+                {goals.map((g, i) => (
+                  <button
+                    type="button"
+                    key={g.label}
+                    onClick={openGoalsDrill}
                     style={{
-                      background: 'var(--ui-warning-surface)',
+                      ...buttonResetStyle,
+                      background: 'var(--ui-surface-2)',
                       borderRadius: 8,
-                      padding: '8px 10px',
-                      fontSize: 12,
-                      color: '#e0a253',
+                      padding: '10px 12px',
+                      cursor: 'pointer',
                     }}
                   >
-                    <b>待老板确认：</b>
-                    {plan.bossItems.map((x: string, i: number) => (
-                      <div key={i}>· {x}</div>
-                    ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 13, color: 'var(--ui-text)' }}>
+                        <Badge color={CHART_COLORS[i % CHART_COLORS.length]} />
+                        <b style={{ margin: '0 6px 0 4px' }}>{g.label}目标</b>
+                        <span style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{g.period}</span>
+                      </span>
+                      <span>
+                        {g.rate == null ? (
+                          <Tag style={{ margin: 0 }}>{g.status === 'zero' ? '目标为0' : '未设置'}</Tag>
+                        ) : (
+                          <>
+                            {g.risk && (
+                              <Tag color="red" style={{ fontSize: 11 }}>
+                                风险
+                              </Tag>
+                            )}
+                            <b style={{ color: g.risk ? 'var(--danger)' : 'var(--ui-accent)', fontSize: 14 }}>
+                              {g.rate}%
+                            </b>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', margin: '6px 0 2px' }}>
+                      目标 {g.status === 'missing' ? '未设置' : fmtWan(g.target)} · 实际{' '}
+                      <b style={{ color: 'var(--ui-text)' }}>{fmtWan(g.actual)}</b>
+                    </div>
+                    {g.rate == null ? (
+                      <div style={{ color: 'var(--ui-muted)', fontSize: 11.5, lineHeight: 1.6 }}>{g.statusText}</div>
+                    ) : (
+                      <Progress
+                        percent={Math.min(g.rate, 100)}
+                        showInfo={false}
+                        size="small"
+                        strokeColor={g.risk ? 'var(--danger)' : 'var(--ui-accent)'}
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </Panel>
+          </Col>
+          <Col xs={24} lg={16}>
+            <Panel
+              title={
+                <>
+                  <ThunderboltOutlined style={{ color: 'var(--ui-accent)' }} /> 今日作战计划
+                  {plan?.festival && (
+                    <Tag color="orange" style={{ marginLeft: 8, fontSize: 11 }}>
+                      {plan.festival.name}·{plan.festival.theme}
+                    </Tag>
+                  )}
+                </>
+              }
+              extra={
+                <Space>
+                  <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{plan?.date}</span>
+                  {isManager && (
+                    <Button size="small" icon={<ReloadOutlined />} loading={genLoading} onClick={regenPlan}>
+                      重新生成
+                    </Button>
+                  )}
+                  {canIssuePlan && (
+                    <Button size="small" icon={<SendOutlined />} loading={applyLoading} onClick={applyPlan}>
+                      管理层下发
+                    </Button>
+                  )}
+                  <Tag color={plan?.confirmation?.confirmed ? 'green' : 'blue'} style={{ margin: 0 }}>
+                    {plan?.confirmation?.confirmed ? `今日已同步${plan?.confirmation?.synced || 0}项` : '逐条确认同步'}
+                  </Tag>
+                </Space>
+              }
+            >
+              {!plan ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="作战计划生成中..." />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--ui-text)' }}>{plan.theme}</span>
+                    <Tag color="blue" style={{ fontSize: 11 }}>
+                      主推人群：{plan.audience}
+                    </Tag>
+                    {plan.bottleneck && (
+                      <Tag color="red" style={{ fontSize: 11 }}>
+                        <AlertOutlined /> 卡点：{plan.bottleneck}
+                      </Tag>
+                    )}
                   </div>
-                )}
-                {planRollup && (
-                  <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
+                    昨日战果：新增线索 {yest.newLeads ?? 0} · 邀约 {yest.invited ?? 0} · 到店 {yest.arrived ?? 0} · 成交{' '}
+                    {yest.deals ?? 0} 单 · 回款 {fmtMoney(yest.amount)}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 252, overflow: 'auto' }}>
+                    {(plan.tasks || []).map((t: any, i: number) => {
+                      const itemState = (plan.confirmation?.items || []).find((x: any) => x.index === i);
+                      const confirmed = !!itemState?.confirmed;
+                      return (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          key={i}
+                          onClick={e => {
+                            if ((e.target as HTMLElement).closest('[data-plan-task-action]')) return;
+                            setPlanTask(t);
+                          }}
+                          onKeyDown={e => {
+                            if (
+                              (e.target as HTMLElement).closest('[data-plan-task-action]') ||
+                              (e.key !== 'Enter' && e.key !== ' ')
+                            )
+                              return;
+                            e.preventDefault();
+                            setPlanTask(t);
+                          }}
+                          style={{
+                            display: 'flex',
+                            gap: 8,
+                            padding: '8px 10px',
+                            background: 'var(--ui-surface-2)',
+                            borderRadius: 8,
+                            alignItems: 'flex-start',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <Tag color={typeColor(t.type)} style={{ flexShrink: 0, marginTop: 1 }}>
+                            {t.type}
+                          </Tag>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ui-text)' }}>
+                              {t.action}
+                              {t.count ? <span style={{ color: 'var(--ui-accent)' }}> ×{t.count}</span> : null}
+                            </div>
+                            <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 2 }}>
+                              负责人：{t.owner} · 截止 {t.due} · 检查标准：{t.check}
+                            </div>
+                            <div style={{ fontSize: 11.5, color: 'var(--ui-text-2)', marginTop: 3 }}>
+                              目标来源：{t.basis?.shortSource || fallbackTaskBasis(t).shortSource}
+                            </div>
+                          </div>
+                          <div
+                            data-plan-task-action
+                            style={{ flexShrink: 0, display: 'flex', alignItems: 'center', minHeight: 28 }}
+                          >
+                            {confirmed ? (
+                              <Tag color="green" style={{ margin: 0 }}>
+                                已同步
+                              </Tag>
+                            ) : (
+                              <Button
+                                size="small"
+                                type="primary"
+                                ghost
+                                icon={<CheckOutlined />}
+                                loading={confirmPlanLoading === i}
+                                onClick={() => confirmPlanItem(i)}
+                              >
+                                确认同步
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {plan.bossItems?.length > 0 && (
                     <div
                       style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: 8,
+                        background: 'var(--ui-warning-surface)',
+                        borderRadius: 8,
+                        padding: '8px 10px',
+                        fontSize: 12,
+                        color: '#e0a253',
                       }}
                     >
-                      <b style={{ fontSize: 13, color: 'var(--ui-text)' }}>作战计划闭环</b>
-                      <span style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{planRollup.scope}</span>
+                      <b>待老板确认：</b>
+                      {plan.bossItems.map((x: string, i: number) => (
+                        <div key={i}>· {x}</div>
+                      ))}
                     </div>
-                    <Row gutter={[8, 8]}>
-                      {renderPlanRollupCard('yesterday', '昨日复盘', '#8a7450')}
-                      {renderPlanRollupCard('week', '本周情况', 'var(--ui-accent)')}
-                      {renderPlanRollupCard('month', '本月情况', '#22c4a8')}
-                    </Row>
-                  </div>
-                )}
-              </div>
-            )}
-          </Panel>
-        </Col>
-      </Row>
+                  )}
+                  {planRollup && (
+                    <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 10 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginBottom: 8,
+                        }}
+                      >
+                        <b style={{ fontSize: 13, color: 'var(--ui-text)' }}>作战计划闭环</b>
+                        <span style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{planRollup.scope}</span>
+                      </div>
+                      <Row gutter={[8, 8]}>
+                        {renderPlanRollupCard('yesterday', '昨日复盘', 'var(--chart-3)')}
+                        {renderPlanRollupCard('week', '本周情况', 'var(--ui-accent)')}
+                        {renderPlanRollupCard('month', '本月情况', 'var(--chart-2)')}
+                      </Row>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Panel>
+          </Col>
+        </Row>
+      )}
 
-      {/* 第三行：任务看板 */}
       <Panel
-        title="任务看板"
+        title="经营任务看板 · 人工经营任务"
         extra={
           <Space size={6}>
             <Button size="small" icon={<DownloadOutlined />} loading={exportingTasks} onClick={exportTasks}>
               导出 Excel
             </Button>
-            <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>
-              新建任务
-            </Button>
+            {isManager && (
+              <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>
+                新建任务
+              </Button>
+            )}
           </Space>
         }
       >
-        <Row gutter={[12, 12]}>
+        <Row id="task-board" tabIndex={-1} gutter={[12, 12]}>
           {TASK_STATUSES.map(s => {
-            const list = tasks.filter(t => t.status === s);
+            const list = tasks.filter(t => executionTaskBoardStatus(t) === s);
             return (
               <Col xs={24} md={12} xl={6} key={s}>
-                <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 10, height: '100%' }}>
+                <div
+                  className="execution-board-column"
+                  style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 10, height: '100%' }}
+                >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_COLOR[s] }} />
-                    <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)' }}>{s}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)' }}>
+                      {s === '待执行' ? '经营任务 · 待执行' : executionTaskStatusLabel(s)}
+                    </span>
                     <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{list.length}</span>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflow: 'auto' }}>
                     {list.length === 0 ? (
-                      <div style={{ textAlign: 'center', color: '#c1c9d4', fontSize: 12, padding: '20px 0' }}>
+                      <div style={{ textAlign: 'center', color: 'var(--ui-muted)', fontSize: 12, padding: '20px 0' }}>
                         暂无任务
                       </div>
                     ) : (
-                      list.map(taskCard)
+                      list.map(task => (
+                        <ExecutionTaskCard
+                          key={task.id}
+                          task={task}
+                          tasks={tasks}
+                          submissions={submissions}
+                          user={user}
+                          isManager={isManager}
+                          canApprove={canApprove}
+                          onOpenTrace={openTaskTrace}
+                          onOpenBusinessFlow={setBusinessFlowTaskId}
+                          onStart={startTask}
+                          onOpenWork={openTaskWork}
+                          onApprove={approveTask}
+                          onReject={setRejectTask}
+                          onDecompose={openDecomposeTask}
+                          onReopen={setReopenTask}
+                          onDelete={deleteTask}
+                        />
+                      ))
                     )}
                   </div>
                 </div>
@@ -1222,7 +1230,7 @@ export default function Execution() {
           <Panel
             title={
               <>
-                <TeamOutlined style={{ color: '#8a7450' }} /> 合伙人活跃四档（本周检查项自动分类）
+                <TeamOutlined style={{ color: 'var(--chart-3)' }} /> 合伙人活跃四档（本周检查项自动分类）
               </>
             }
             extra={
@@ -1315,7 +1323,7 @@ export default function Execution() {
               <Panel
                 title={
                   <>
-                    <TrophyOutlined style={{ color: '#f6a02d' }} /> 合伙人排行榜
+                    <TrophyOutlined style={{ color: 'var(--warn)' }} /> 合伙人排行榜
                   </>
                 }
                 extra={
@@ -1391,7 +1399,7 @@ export default function Execution() {
                       dataIndex: 'deals',
                       align: 'right',
                       width: 48,
-                      render: (v: number) => <b style={{ color: v > 0 ? '#f25b6b' : 'var(--ui-text-2)' }}>{v}</b>,
+                      render: (v: number) => <b style={{ color: v > 0 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v}</b>,
                     },
                   ]}
                 />
@@ -1436,7 +1444,9 @@ export default function Execution() {
                         </Tag>
                       </span>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: 11.5, color: '#f25b6b' }}>最后活跃 {s.last_active || '无记录'}</span>
+                        <span style={{ fontSize: 11.5, color: 'var(--danger)' }}>
+                          最后活跃 {s.last_active || '无记录'}
+                        </span>
                         <Button
                           size="small"
                           type="primary"
@@ -1523,9 +1533,9 @@ export default function Execution() {
                   title: '结果',
                   dataIndex: 'result',
                   width: 76,
-                  render: (v: string) => (
+                  render: (v: string, row: any) => (
                     <Tag color={resultColor(v)} style={{ fontSize: 11 }}>
-                      {v}
+                      {row.display_result || executionSubmissionStatusLabel(v)}
                     </Tag>
                   ),
                 },
@@ -1543,7 +1553,7 @@ export default function Execution() {
         </Col>
         <Col xs={24} lg={8}>
           <Panel
-            title="员工任务竞赛榜"
+            title={isManager ? '员工任务竞赛榜' : '我的任务表现'}
             extra={
               <Segmented
                 size="small"
@@ -1558,20 +1568,28 @@ export default function Execution() {
             }
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {ranking.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无排名数据" />}
+              {ranking.length === 0 && (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={isManager ? '暂无排名数据' : '当前周期暂无任务表现'}
+                />
+              )}
               {ranking.map((r, i) => (
                 <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span
-                    style={{
-                      width: 18,
-                      textAlign: 'center',
-                      fontWeight: 700,
-                      fontSize: 12,
-                      color: i < 3 ? MEDAL[i] : 'var(--ui-muted)',
-                    }}
-                  >
-                    {i + 1}
-                  </span>
+                  {isManager && (
+                    <span
+                      style={{
+                        width: 18,
+                        textAlign: 'center',
+                        fontWeight: 700,
+                        fontSize: 12,
+                        color: i < 3 ? MEDAL[i] : 'var(--ui-muted)',
+                      }}
+                    >
+                      {i + 1}
+                    </span>
+                  )}
+                  {!isManager && <CheckCircleOutlined style={{ width: 18, color: 'var(--chart-2)' }} />}
                   <span
                     style={{
                       width: 64,
@@ -1582,7 +1600,7 @@ export default function Execution() {
                       textOverflow: 'ellipsis',
                     }}
                   >
-                    {r.name}
+                    {isManager ? r.name : '我的任务'}
                   </span>
                   <Progress
                     percent={Math.min(100, Number(r.rate || 0))}
@@ -1614,9 +1632,11 @@ export default function Execution() {
                   合伙人打卡录入
                 </Button>
               </Tooltip>
-              <Button block icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>
-                新建任务
-              </Button>
+              {isManager && (
+                <Button block icon={<PlusOutlined />} onClick={() => setTaskModal(true)}>
+                  新建任务
+                </Button>
+              )}
               <Button
                 block
                 icon={<ReloadOutlined />}
@@ -1698,6 +1718,21 @@ export default function Execution() {
         </Form>
       </Modal>
 
+      <ExecutionWorkflowDialogs
+        decomposeTask={decomposeTask}
+        reopenTask={reopenTask}
+        tasks={tasks}
+        user={user}
+        taskTypes={TASK_TYPES}
+        onCloseDecompose={() => setDecomposeTask(null)}
+        onCloseReopen={() => setReopenTask(null)}
+        onChanged={kind => {
+          loadTasks();
+          loadSummary();
+          if (kind === 'reopened') loadSubmissions();
+        }}
+      />
+
       <Modal
         title={`编辑执行任务：${workTask?.title || ''}`}
         open={!!workTask}
@@ -1729,16 +1764,25 @@ export default function Execution() {
             icon={<CheckOutlined />}
             onClick={() => saveTaskWork(true)}
           >
-            提交审核
+            提交人工验收
           </Button>,
         ]}
       >
         <Form form={workForm} layout="vertical">
           <Alert
-            type="info"
+            type={workTask?.workflow_state === 'rework' ? 'warning' : 'info'}
             showIcon
             style={{ marginBottom: 12 }}
-            message="进行中的任务可以先编辑要求、补充执行说明，也可以上传表格、文档、图片等执行资料后提交审核。"
+            message={
+              workTask?.workflow_state === 'rework'
+                ? `人工验收退回：${workTask.last_review_reason || '请按执行记录中的验收意见修改'}`
+                : '进行中的任务可以先编辑要求、补充执行说明，也可以上传表格、文档、图片等执行资料后提交人工验收。'
+            }
+            description={
+              workTask?.workflow_state === 'rework'
+                ? '修改结果、补齐证据后点击“提交人工验收”，任务会重新进入待人工验收。'
+                : undefined
+            }
           />
           <Form.Item name="title" label="任务标题" rules={[{ required: true, message: '请输入任务标题' }]}>
             <Input maxLength={80} />
@@ -2039,7 +2083,7 @@ export default function Execution() {
                   >
                     <b style={{ color: 'var(--ui-text)' }}>本月执行力评分过程</b>
                     <span>
-                      总分 <b style={{ color: '#f25b6b', fontSize: 20 }}>{execDrill.data.formula.score}</b> 分
+                      总分 <b style={{ color: 'var(--danger)', fontSize: 20 }}>{execDrill.data.formula.score}</b> 分
                     </span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
@@ -2109,7 +2153,7 @@ export default function Execution() {
                       ),
                     },
                     {
-                      title: '提交/审核',
+                      title: '提交/验收',
                       dataIndex: 'last_result',
                       width: 92,
                       render: (v: string) =>
@@ -2128,7 +2172,7 @@ export default function Execution() {
                       width: 92,
                       render: (v: any, r: any) =>
                         v ? (
-                          <span style={{ color: r.due_at && v > r.due_at ? '#f25b6b' : 'var(--ui-text-2)' }}>
+                          <span style={{ color: r.due_at && v > r.due_at ? 'var(--danger)' : 'var(--ui-text-2)' }}>
                             {(v || '').slice(5, 16)}
                           </span>
                         ) : (
@@ -2139,7 +2183,7 @@ export default function Execution() {
                 />
               </>
             )}
-            {['week-tasks', 'pending', 'risk'].includes(execDrill.kind) &&
+            {['week-tasks', 'pending', 'waiting-review', 'risk'].includes(execDrill.kind) &&
               ((execDrill.data.rows || []).length === 0 ? (
                 <Empty description="暂无记录" />
               ) : (
@@ -2178,36 +2222,44 @@ export default function Execution() {
                       title: '状态',
                       dataIndex: 'status',
                       width: 76,
-                      render: (v: any) => (
+                      render: (v: any, r: any) => (
                         <Tag
                           color={
-                            { 待执行: 'default', 进行中: 'processing', 待审核: 'gold', 已完成: 'green' }[v as string]
+                            r.workflow_state === 'rework'
+                              ? 'volcano'
+                              : { 待执行: 'default', 进行中: 'processing', 待审核: 'gold', 已完成: 'green' }[
+                                  v as string
+                                ]
                           }
                           style={{ margin: 0 }}
                         >
-                          {v}
+                          {r.display_status || executionTaskStatusLabel(v, r.last_submission_result)}
                         </Tag>
                       ),
                     },
                     { title: '截止', dataIndex: 'due_at', width: 96, render: (v: any) => (v || '').slice(5, 16) },
-                    ...(execDrill.kind === 'pending'
+                    ...(['pending', 'waiting-review'].includes(execDrill.kind)
                       ? [
                           { title: '最近提交', dataIndex: 'last_submit', ellipsis: true },
-                          ...(canApprove
+                          ...(execDrill.kind === 'pending' && canApprove
                             ? [
                                 {
                                   title: '操作',
                                   width: 110,
-                                  render: (r: any) => (
-                                    <Space size={4} onClick={(e: any) => e.stopPropagation()}>
-                                      <Button size="small" type="primary" onClick={() => reviewInline(r.id, true)}>
-                                        通过
-                                      </Button>
-                                      <Button size="small" danger onClick={() => reviewInline(r.id, false)}>
-                                        驳回
-                                      </Button>
-                                    </Space>
-                                  ),
+                                  render: (r: any) => {
+                                    return r.can_review === true ? (
+                                      <Space size={4} onClick={(e: any) => e.stopPropagation()}>
+                                        <Button size="small" type="primary" onClick={() => reviewInline(r.id, true)}>
+                                          通过
+                                        </Button>
+                                        <Button size="small" danger onClick={() => reviewInline(r.id, false)}>
+                                          驳回
+                                        </Button>
+                                      </Space>
+                                    ) : (
+                                      <span style={{ color: 'var(--ui-muted)', fontSize: 11 }}>等待有权限人员验收</span>
+                                    );
+                                  },
                                 },
                               ]
                             : []),
@@ -2237,7 +2289,7 @@ export default function Execution() {
                     title: '评分',
                     dataIndex: 'score',
                     width: 64,
-                    render: (v: any) => <b style={{ color: '#f25b6b' }}>{v}</b>,
+                    render: (v: any) => <b style={{ color: 'var(--danger)' }}>{v}</b>,
                   },
                   { title: '阶段', dataIndex: 'stage', width: 76 },
                   { title: '预算', dataIndex: 'budget_level', width: 60 },
@@ -2312,11 +2364,11 @@ export default function Execution() {
                 </span>
               </div>
               {drill.data.month.rate != null && (
-                <Progress percent={Math.min(drill.data.month.rate, 100)} strokeColor="#22c4a8" />
+                <Progress percent={Math.min(drill.data.month.rate, 100)} strokeColor="var(--chart-2)" />
               )}
               {drill.data.month.gap != null && (
                 <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginTop: 6, lineHeight: 1.9 }}>
-                  缺口 <b style={{ color: '#f25b6b' }}>{fmtMoney(drill.data.month.gap)}</b>÷ 客单价{' '}
+                  缺口 <b style={{ color: 'var(--danger)' }}>{fmtMoney(drill.data.month.gap)}</b>÷ 客单价{' '}
                   {fmtMoney(drill.data.month.avgDeal)} ÷ 剩余 {drill.data.month.daysLeft} 天 = 日均需成交{' '}
                   <b>{drill.data.month.needDealsPerDay}</b> 单 → 反推今日邀约目标{' '}
                   <b style={{ color: 'var(--ui-accent)' }}>{drill.data.month.inviteTarget}</b> 人
@@ -2365,7 +2417,7 @@ export default function Execution() {
                         <Progress
                           percent={Math.min(v, 100)}
                           size="small"
-                          strokeColor={v >= 80 ? '#22c4a8' : v >= 40 ? '#f6a02d' : '#f25b6b'}
+                          strokeColor={v >= 80 ? 'var(--chart-2)' : v >= 40 ? 'var(--warn)' : 'var(--danger)'}
                           format={() => `${v}%`}
                         />
                       ),
@@ -2498,7 +2550,7 @@ export default function Execution() {
         title={
           pDetail.data ? (
             <Space>
-              <TeamOutlined style={{ color: '#8a7450' }} />
+              <TeamOutlined style={{ color: 'var(--chart-3)' }} />
               {pDetail.data.name}
               <Tag>{pDetail.data.level}</Tag>
               <Tag
@@ -2546,7 +2598,7 @@ export default function Execution() {
                 到店 <b>{pDetail.data.month.arrives || 0}</b>
               </span>
               <span>
-                成交 <b style={{ color: '#f25b6b' }}>{pDetail.data.month.deals || 0}</b>
+                成交 <b style={{ color: 'var(--danger)' }}>{pDetail.data.month.deals || 0}</b>
               </span>
               <span>区域 {pDetail.data.region || '-'}</span>
             </div>
@@ -2602,7 +2654,7 @@ export default function Execution() {
         title={
           remindCard ? (
             <Space>
-              <AlertOutlined style={{ color: '#f25b6b' }} />
+              <AlertOutlined style={{ color: 'var(--danger)' }} />
               提醒卡 · {remindCard.partner}
               <Tag color={remindCard.priority === '高' ? 'red' : remindCard.priority === '中' ? 'orange' : 'default'}>
                 {remindCard.priority}优先级
@@ -2644,108 +2696,28 @@ export default function Execution() {
               <br />
               {remindCard.script}
             </div>
-            <div style={{ fontSize: 11.5, color: '#22c4a8' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--chart-2)' }}>
               ✓ 已同步站内通知给老板与运营总监（口径：PAR-06 未行动提醒动作表）
             </div>
           </div>
         )}
       </Modal>
 
-      {/* ===== 二层：任务执行提交时间线 ===== */}
-      <Modal
+      <ExecutionTaskTraceDialog
         open={taskTrace.open}
-        width={560}
-        footer={null}
-        onCancel={() => setTaskTrace({ open: false, task: null, subs: [], loading: false })}
-        title={
-          taskTrace.task ? (
-            <span>
-              执行记录 · {taskTrace.task.title}{' '}
-              <Tag color="blue" style={{ fontSize: 10.5 }}>
-                执行提交 › 审核
-              </Tag>
-            </span>
-          ) : (
-            ''
-          )
-        }
-      >
-        {taskTrace.loading ? (
-          <div style={{ textAlign: 'center', padding: 24 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {taskTrace.task && (
-              <div
-                style={{
-                  background: 'var(--ui-surface-2)',
-                  borderRadius: 8,
-                  padding: '10px 12px',
-                  fontSize: 12.5,
-                  lineHeight: 2,
-                }}
-              >
-                <div>{taskTrace.task.detail || taskTrace.task.title}</div>
-                <div style={{ color: 'var(--ui-muted)' }}>
-                  负责人 {taskTrace.task.assignee || '-'} ｜ 截止 {(taskTrace.task.due_at || '').slice(5, 16)} ｜ 状态{' '}
-                  {taskTrace.task.status || '-'}
-                </div>
-              </div>
-            )}
-            {taskTrace.subs.length === 0 ? (
-              <Empty description="员工尚未提交执行结果" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : (
-              <Timeline
-                items={taskTrace.subs.map((s: any) => ({
-                  color: s.result === '通过' ? 'green' : s.result === '驳回' ? 'red' : 'blue',
-                  children: (() => {
-                    const body = parseSubmitContent(s.content);
-                    return (
-                      <div style={{ fontSize: 12.5 }}>
-                        <b>{s.user_name || '员工'}</b>{' '}
-                        <span style={{ color: 'var(--ui-muted)', fontSize: 11 }}>
-                          {(s.created_at || '').slice(5, 16)}
-                        </span>
-                        {s.result && (
-                          <Tag
-                            color={s.result === '通过' ? 'green' : s.result === '驳回' ? 'red' : 'gold'}
-                            style={{ marginLeft: 6, fontSize: 10 }}
-                          >
-                            {s.result}
-                          </Tag>
-                        )}
-                        <div style={{ color: 'var(--ui-text-2)', whiteSpace: 'pre-wrap' }}>
-                          {body.note || '已上传执行资料'}
-                        </div>
-                        {(body.attachments || []).length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                            {body.attachments.map((a: any, i: number) => (
-                              <a
-                                key={`${a.url}-${i}`}
-                                href={a.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                onClick={e => e.stopPropagation()}
-                              >
-                                <Tag color="blue" icon={<PaperClipOutlined />} style={{ cursor: 'pointer', margin: 0 }}>
-                                  {a.name}
-                                </Tag>
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })(),
-                }))}
-              />
-            )}
-          </div>
-        )}
-      </Modal>
+        task={taskTrace.task}
+        submissions={taskTrace.subs}
+        loading={taskTrace.loading}
+        onClose={() => setTaskTrace({ open: false, task: null, subs: [], loading: false })}
+      />
 
       <CustomerDrawer leadId={custId} open={!!custId} onClose={() => setCustId(null)} />
+      <BusinessFlowTrace
+        sourceType="manual_task"
+        sourceId={businessFlowTaskId}
+        open={businessFlowTaskId !== null}
+        onClose={() => setBusinessFlowTaskId(null)}
+      />
     </div>
   );
 }

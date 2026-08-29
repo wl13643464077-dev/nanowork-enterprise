@@ -51,11 +51,14 @@ export default function AuthShell({
   layout = 'center',
   aside,
   ariaLabel,
+  backdrop,
   children,
 }: {
   layout?: 'split' | 'center';
   aside?: ReactNode;
   ariaLabel: string;
+  /** 页面级增强动效层（光流、员工星阵等），渲染在 mesh 背景之上、内容之下 */
+  backdrop?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -75,6 +78,7 @@ export default function AuthShell({
           </svg>
         )}
       </div>
+      {backdrop}
       {layout === 'split' && aside ? (
         <section className="au-story" aria-label="产品介绍">
           {aside}

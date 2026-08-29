@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveContentApprovalPolicy } from '../src/engines/content-approval-policy.js';
+import {
+  resolveContentApprovalPolicy,
+  resolveEmployeeReviewAccess,
+} from '../src/engines/content-approval-policy.js';
 
 const clean = { needsApproval: false, level: 'none', hits: [] };
 
@@ -40,4 +43,35 @@ test('未知审批方式会被拒绝，不能静默降级', () => {
     () => resolveContentApprovalPolicy('随便通过', clean),
     /未知的内容审批方式/,
   );
+});
+
+test('员工审批角色统一遵循锁定策略：老板专审、管理层审阅、高风险老板终审', () => {
+  for (const role of ['ops_director', 'manager', 'admin', 'platform_super', 'staff']) {
+    assert.equal(resolveEmployeeReviewAccess({ role, approvalMode: 'owner_review' }).allowed, false, role);
+  }
+  assert.equal(resolveEmployeeReviewAccess({ role: 'boss', approvalMode: 'owner_review' }).allowed, true);
+
+  for (const role of ['boss', 'ops_director', 'manager', 'admin']) {
+    assert.equal(resolveEmployeeReviewAccess({ role, approvalMode: 'manager_review' }).allowed, true, role);
+    assert.equal(resolveEmployeeReviewAccess({ role, approvalMode: '管理者审核' }).allowed, true, role);
+  }
+  assert.equal(resolveEmployeeReviewAccess({
+    role: 'platform_super',
+    approvalMode: 'manager_review',
+  }).allowed, false);
+
+  for (const role of ['ops_director', 'manager', 'admin', 'platform_super']) {
+    assert.equal(resolveEmployeeReviewAccess({
+      role,
+      approvalMode: '岗位默认',
+      approvalLevel: 'boss',
+      riskLevel: 'high',
+    }).allowed, false, role);
+  }
+  assert.equal(resolveEmployeeReviewAccess({
+    role: 'boss',
+    approvalMode: '岗位默认',
+    approvalLevel: 'boss',
+    riskLevel: 'high',
+  }).allowed, true);
 });

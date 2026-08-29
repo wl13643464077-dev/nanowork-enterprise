@@ -73,6 +73,17 @@ function yunwuBaseUrl() {
     || 'https://yunwu.ai/v1';
 }
 
+function publicBaseUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (!['https:', 'http:'].includes(url.protocol)) return null;
+    if (url.username || url.password || url.search || url.hash) return null;
+    return url.href.replace(/\/$/u, '');
+  } catch {
+    return null;
+  }
+}
+
 function aiConfigurationFacts() {
   const yunwuKey = String(yunwuApiKey() || '').trim();
   const anthropicKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
@@ -256,7 +267,10 @@ function readinessItem({
   verified = false,
   lastCheck = null,
   canExecute = false,
+  canGenerateLocalDraft = false,
+  canDeliverForHumanReview = false,
   canPerformExternalAction = false,
+  capabilitySummary = '',
   missing = [],
   conditions = [],
   nextAction,
@@ -275,8 +289,17 @@ function readinessItem({
     verified,
     effective,
     connected: effective === 'connected',
+    // 三维能力是前端展示和业务判断的权威口径。canExecute 仅保留给旧客户端兼容，
+    // 不能再用它推断“可交付”或“可执行外部动作”。
     canExecute: Boolean(canExecute),
+    canGenerateLocalDraft: Boolean(canGenerateLocalDraft),
+    canDeliverForHumanReview: Boolean(canDeliverForHumanReview),
     canPerformExternalAction: Boolean(canPerformExternalAction),
+    capabilitySummary: capabilitySummary || [
+      canGenerateLocalDraft ? '具备本地辅助处理能力' : '不生成本地替代产物',
+      canDeliverForHumanReview ? '具备可交付产物' : '尚不具备可交付产物',
+      canPerformExternalAction ? '能执行外部动作' : '不执行外部动作',
+    ].join('；'),
     missing: [...missing],
     conditions: [...conditions],
     nextAction,
@@ -296,7 +319,7 @@ function aiReadiness({ tenantId, now }) {
     applicable: configured,
   });
   const effective = !configured
-    ? 'degraded'
+    ? 'blocked'
     : check.verified
       ? 'connected'
       : 'configured_unverified';
@@ -305,13 +328,20 @@ function aiReadiness({ tenantId, now }) {
     label: 'AI 生成通道',
     description: configured
       ? '服务端已发现通道配置；只有最近一次显式连接测试通过才视为已连接。'
-      : '当前使用本地模板底稿，不会调用真实 AI 服务。',
+      : '真实 AI 生成通道未配置；任务不会启动，也不会形成替代业务产物。',
     configuration: configured ? 'ready' : 'missing',
-    activation: configured ? 'enabled' : 'fallback',
+    activation: configured ? 'enabled' : 'blocked',
     effective,
     ...check,
-    canExecute: true,
-    canPerformExternalAction: check.verified,
+    canExecute: configured,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: check.verified,
+    canPerformExternalAction: false,
+    capabilitySummary: !configured
+      ? '真实生成通道未配置；任务不会启动，也不会形成业务产物'
+      : check.verified
+        ? '真实内容生成已就绪；内部产出通过质量与账务门后按企业策略采用；不执行外部业务动作'
+        : '真实生成通道已配置但连接尚未验证；任务结果以真实调用证据为准，不生成替代产物',
     missing: configured ? [] : ['服务端 AI 通道凭证'],
     conditions: [
       '凭证只从服务端环境或受控兼容配置读取',
@@ -326,7 +356,10 @@ function aiReadiness({ tenantId, now }) {
     details: {
       provider: facts.provider,
       keySource: facts.keySource,
-      executionMode: configured ? 'external_provider' : 'local_template',
+      baseUrl: publicBaseUrl(facts.baseUrl),
+      // 只公开不可逆配置指纹，不公开任何密钥；用于把长时间验收与同一服务端配置绑定。
+      configFingerprint: fingerprint,
+      executionMode: configured ? 'external_provider' : 'blocked_missing_provider',
     },
   });
 }
@@ -343,12 +376,14 @@ function schedulerReadiness() {
     activation: enabled ? 'enabled' : 'disabled',
     effective: enabled ? 'local_ready' : 'disabled',
     canExecute: enabled,
+    canGenerateLocalDraft: enabled,
+    canDeliverForHumanReview: false,
     canPerformExternalAction: false,
     missing: enabled ? [] : ['ENABLE_SCHEDULER=true 并重启服务'],
     conditions: [
       'Scheduler 只由服务端环境开关控制',
       `最大并发 ${schedulerMaxConcurrent(process.env)}`,
-      '自动内容仍进入待审核或可使用状态，不自动对外发布',
+      '自动内容仍进入人工审阅与交付门禁，不自动对外发布',
     ],
     nextAction: enabled
       ? '调度器已按进程配置启动；继续观察规则最近运行结果。'
@@ -385,6 +420,8 @@ function searchReadiness({ tenantId, now }) {
         : 'configured_unverified',
     ...check,
     canExecute: true,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: false,
     canPerformExternalAction: false,
     missing: configured ? [] : ['博查、Tavily 或 Serper 至少一个服务端凭证'],
     conditions: [
@@ -460,6 +497,8 @@ function paymentReadiness(channelKey, { tenantId, now }) {
         : 'configured_unverified',
     ...check,
     canExecute: config.configured,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: false,
     canPerformExternalAction: check.verified,
     missing: config.missing,
     conditions: wechat
@@ -524,6 +563,8 @@ function feishuReadiness({ tenantId, now }) {
           : 'configured_unverified',
     ...check,
     canExecute: configured && enabled,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: false,
     canPerformExternalAction: configured && enabled && check.verified,
     missing,
     conditions: [
@@ -558,7 +599,10 @@ function externalPublishReadiness() {
     activation: 'manual',
     effective: 'manual_only',
     canExecute: true,
+    canGenerateLocalDraft: true,
+    canDeliverForHumanReview: true,
     canPerformExternalAction: false,
+    capabilitySummary: '仅登记发布包，不能代发',
     missing: ['服务器端平台授权', '幂等且可审计的发布适配器', '人工终审后的执行入口'],
     conditions: [
       '现有“发布登记”只记录人已在外部完成的发布及效果数据',
@@ -602,18 +646,23 @@ function contentConnectorsReadiness(ai, search) {
       canPerformExternalAction: false,
     };
   });
-  const registryReady = counts.total === 13
+  const registryReady = counts.total === 15
     && items.every(item => item.catalogStatus && item.catalogStatus !== 'catalog_only');
   return readinessItem({
     key: 'content_connectors',
     label: '内容连接器',
-    description: '13 项连接器登记完整；本地辅助、调用方实时数据与员工生成链是三种不同能力，均不等同于外部平台已连接。',
+    description: '15 项连接器登记完整；原 Paihuo 13 项保持不变，AI 带货员追加 2 项。本地辅助、调用方实时数据与员工生成链均不等同于外部平台已连接。',
     implementation: registryReady ? 'ready' : 'partial',
     configuration: registryReady ? 'ready' : 'partial',
     activation: 'enabled',
     effective: registryReady ? 'local_ready' : 'blocked',
     canExecute: registryReady && counts.localAssist > 0,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: registryReady && ai.canDeliverForHumanReview,
     canPerformExternalAction: false,
+    capabilitySummary: registryReady && ai.canDeliverForHumanReview
+      ? '内容生成已就绪；内部产出通过质量与账务门后按企业策略采用；不执行外部发布'
+      : '本地辅助连接器可运行，但依赖真实模型的生成任务被阻断；不形成替代业务产物，也不执行外部发布',
     missing: registryReady ? [] : ['完整且非 catalog_only 的连接器运行登记'],
     conditions: [
       `${counts.localAssist} 项可离线辅助`,

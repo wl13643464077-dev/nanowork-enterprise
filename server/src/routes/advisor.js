@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { db, q, curTenant, mergeMarshal, mergeMarshals } from '../db.js';
 import { logOp, daysAgo, monthStart, pct } from '../util.js';
 import { advisorReply } from '../engines/ai.js';
@@ -7,16 +8,22 @@ import { recordKbCitations } from '../engines/rag.js';
 import { funnel } from '../engines/scoring.js';
 import { healthScore } from '../engines/health.js';
 import { nextFestival } from '../engines/plans.js';
-import { precheckByRole, estimateCallCredits, holdCredits, settleHold, releaseHold } from '../engines/credits.js';
+import { precheckByRole, estimateCallCredits, holdCredits, settleHold } from '../engines/credits.js';
 import { textModelFor, routing } from '../engines/yunwu.js';
 import { webSearch } from '../engines/websearch.js';
 import { attachmentRefsForStorage, rehydrateMessageHistory, resolveAttachments } from '../engines/filehub.js';
-import { userScopeClause } from '../engines/access.js';
+import { canAccessOwner, userScopeClause } from '../engines/access.js';
 import {
   executeHeldDelivery,
   twoPhaseBillingSummary,
   withImmediateTransaction,
 } from '../engines/two-phase-delivery.js';
+import {
+  aiFailurePayload,
+  aiFailureReleaseNote,
+  assertRealAiOutput,
+  releaseFailedAiHold,
+} from '../engines/ai-delivery-status.js';
 
 const r = Router();
 
@@ -124,7 +131,7 @@ const ADVISOR_CHAT_DEPS = Object.freeze({
   holdCreditsFn: holdCredits,
   precheckByRoleFn: precheckByRole,
   recordKbCitationsFn: recordKbCitations,
-  releaseHoldFn: releaseHold,
+  releaseHoldFn: releaseFailedAiHold,
   settleHoldFn: settleHold,
   webSearchFn: webSearch,
 });
@@ -134,6 +141,7 @@ export function createAdvisorChatHandler(overrides = {}) {
   return async (req, res) => {
     let hold = null;
     let sendEvent = null;
+    let cid = 0;
     try {
       const { conversationId, attachments, fileIds } = req.body || {};
       if (typeof req.body?.question !== 'string') return res.status(400).json({ error: '问题必须是文本' });
@@ -156,7 +164,7 @@ export function createAdvisorChatHandler(overrides = {}) {
         const parsed = Number(conversationId);
         if (!Number.isInteger(parsed) || parsed <= 0) return res.status(400).json({ error: '会话编号格式不正确' });
       }
-      let cid = Number(conversationId || 0);
+      cid = Number(conversationId || 0);
       if (cid) {
         const current = q.get(
           `SELECT id FROM ai_conversations
@@ -334,6 +342,10 @@ export function createAdvisorChatHandler(overrides = {}) {
             onDelta: useStream ? (text => { bufferedText += String(text || ''); }) : undefined,
             onReset: useStream ? (() => { bufferedText = ''; }) : undefined,
           });
+          assertRealAiOutput(output, {
+            label: '老板参谋会诊',
+            noDelivery: '本轮不会保存助手答案或进入任务流',
+          });
           return { ...output, webRefs, webNote };
         },
         persist: output => withImmediateTransaction(db, () => {
@@ -394,7 +406,7 @@ export function createAdvisorChatHandler(overrides = {}) {
           aiMode: output.mode,
           note: '顾问助手消息、风控、引用证据与会话摘要已完成业务落库',
         }),
-        releaseNote: '顾问联网、生成或业务产物落库失败，预授权全额退回',
+        releaseNote: aiFailureReleaseNote('老板参谋会诊'),
       });
 
       // 会诊正文、风控、引用与计费均已完成；审计日志是旁路记录，
@@ -415,6 +427,10 @@ export function createAdvisorChatHandler(overrides = {}) {
         reply: delivered.output.text,
         mode: delivered.output.mode,
         model: delivered.output.model,
+        usage: delivered.output.usage,
+        aiStatus: 'succeeded',
+        deliveryState: 'succeeded',
+        retryable: false,
         recommended,
         billing: delivered.billing,
         risk: delivered.delivery.risk,
@@ -445,7 +461,7 @@ export function createAdvisorChatHandler(overrides = {}) {
         try {
           const released = deps.releaseHoldFn(
             hold,
-            `会诊未完成（${String(error?.message || '').slice(0, 60)}），预授权全额退回`,
+            aiFailureReleaseNote('老板参谋会诊')(error, 'preflight'),
           );
           billing = twoPhaseBillingSummary({
             state: 'released',
@@ -467,11 +483,12 @@ export function createAdvisorChatHandler(overrides = {}) {
         if (res.headersSent && !res.writableEnded) res.end();
         return;
       }
-      const errorPayload = {
-        error: error.message,
+      const payloadError = error instanceof Error ? error : new Error(String(error || 'AI任务未完成'));
+      if (billing && !payloadError.billing) payloadError.billing = billing;
+      const errorPayload = aiFailurePayload(payloadError, {
         requestId: req.requestId,
-        ...(billing ? { billing } : {}),
-      };
+        extra: cid ? { conversationId: cid } : {},
+      });
       if (res.headersSent) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
@@ -505,9 +522,57 @@ function parseActionLines(text) {
   return out;
 }
 
+const ADVISOR_HANDOFF_ROLES = new Set(['boss', 'ops_director', 'manager', 'admin', 'platform_super']);
+
+function assertAdvisorHandoffRole(user) {
+  if (!ADVISOR_HANDOFF_ROLES.has(user?.role)) {
+    throw Object.assign(new Error('只有老板或管理层可以下发会诊任务'), { status: 403 });
+  }
+}
+
+function activeTenantUsers() {
+  return q.all(`SELECT id,name,role,dept,manager_id FROM users
+    WHERE tenant_id=? AND COALESCE(status,'启用')!='停用'
+    ORDER BY CASE role
+      WHEN 'ops_director' THEN 0 WHEN 'manager' THEN 1 WHEN 'boss' THEN 2
+      WHEN 'admin' THEN 3 ELSE 4 END,id`, curTenant());
+}
+
+function resolveActionOwner(ownerLabel, requester, users = activeTenantUsers()) {
+  const scopedManagers = users.filter(user => (
+    ADVISOR_HANDOFF_ROLES.has(user.role) && canAccessOwner(requester, user.id)
+  ));
+  const label = String(ownerLabel || '').replace(/\s+/g, '').trim();
+  if (label) {
+    const exact = scopedManagers.filter(user => String(user.name || '').replace(/\s+/g, '') === label);
+    if (exact.length > 1) throw Object.assign(new Error('执行人姓名不唯一，请指定明确的管理层账号'), { status: 409 });
+    if (exact.length === 1) return exact[0];
+    if (/运营|管理层|总监|经理/.test(label)) {
+      const manager = scopedManagers.find(user => ['ops_director', 'manager'].includes(user.role));
+      if (manager) return manager;
+    }
+    if (/老板|总裁|总经理|门店负责人/.test(label)) {
+      const boss = scopedManagers.find(user => user.role === 'boss');
+      if (boss) return boss;
+    }
+    const dept = scopedManagers.find(user => String(user.dept || '').replace(/\s+/g, '').includes(label));
+    if (dept) return dept;
+  }
+  if (requester.role === 'boss' || requester.role === 'admin' || requester.role === 'platform_super') {
+    const manager = scopedManagers.find(user => ['ops_director', 'manager'].includes(user.role));
+    if (manager) return manager;
+  }
+  return scopedManagers.find(user => Number(user.id) === Number(requester.id)) || requester;
+}
+
+function handoffFingerprint(kind, ...parts) {
+  return createHash('sha256').update([kind, ...parts].join('|')).digest('hex').slice(0, 20);
+}
+
 // 会诊结果一键转任务（看建议→落执行闭环）：把 AI 回复中的执行动作落成待办，执行中心可见可跟
 r.post('/messages/:id/to-tasks', (req, res) => {
   try {
+    assertAdvisorHandoffRole(req.user);
     const msg = q.get(`SELECT m.id, m.content, c.user_id FROM ai_messages m
       JOIN ai_conversations c ON c.id = m.conversation_id AND c.tenant_id = m.tenant_id
       WHERE m.tenant_id = ${curTenant()} AND m.id = ? AND m.role = 'assistant'`, req.params.id);
@@ -518,26 +583,60 @@ r.post('/messages/:id/to-tasks', (req, res) => {
       title: `会诊待办：${String(msg.content).replace(/\s+/g, ' ').trim().slice(0, 60)}`,
       owner: null, due: null, check: null, raw: String(msg.content).slice(0, 500),
     }];
+    const users = activeTenantUsers();
     const created = [];
-    for (const a of items.slice(0, 10)) {
-      const detail = [
-        a.owner ? `执行人：${a.owner}` : null,
-        a.due ? `截止：${a.due}` : null,
-        a.check ? `检查标准：${a.check}` : null,
-        `来源：AI会诊 #${msg.id}`,
-        a.raw,
-      ].filter(Boolean).join('\n');
-      const r0 = q.run(`INSERT INTO tasks(title,detail,type,status,priority,assignee_id,source) VALUES(?,?,?,?,?,?,?)`,
-        a.title, detail, '其他', '待执行', '中', req.user.id, '会诊');
-      created.push({ id: r0.lastInsertRowid, title: a.title });
+    const existing = [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const a of items.slice(0, 10)) {
+        const owner = resolveActionOwner(a.owner, req.user, users);
+        const fingerprint = handoffFingerprint('advisor-message', msg.id, a.title, a.raw);
+        const previous = q.get(`SELECT id,title,status,assignee_id FROM tasks
+          WHERE tenant_id=? AND source='会诊' AND detail LIKE ? ORDER BY id LIMIT 1`,
+        curTenant(), `%协同单：${fingerprint}%`);
+        if (previous) {
+          const previousOwner = users.find(user => Number(user.id) === Number(previous.assignee_id));
+          existing.push({ ...previous, owner: previousOwner?.name || '原接单负责人' });
+          continue;
+        }
+        const detail = [
+          a.owner ? `执行人：${a.owner}` : null,
+          a.due ? `截止：${a.due}` : null,
+          a.check ? `检查标准：${a.check}` : null,
+          `来源：AI会诊 #${msg.id}`,
+          `协同单：${fingerprint}`,
+          '下一步：负责人在任务看板接单、拆解，并按需要派给具体数字员工。',
+          a.raw,
+        ].filter(Boolean).join('\n');
+        const r0 = q.run(`INSERT INTO tasks(
+          title,detail,type,status,priority,assignee_id,assigned_by,source,source_ref_type,source_ref_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        a.title, detail, '其他', '待执行', '中', owner.id, req.user.id, '会诊', 'advisor_message', msg.id);
+        created.push({ id: r0.lastInsertRowid, title: a.title, status: '待执行', assigneeId: owner.id, owner: owner.name });
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+      throw error;
     }
-    logOp(req.user, '老板参谋', '会诊转任务', `${created.length}条`);
-    res.json({ created });
+    logOp(req.user, '老板参谋', '会诊转任务', `新增${created.length}条，已有${existing.length}条`);
+    res.json({
+      created,
+      existing,
+      nextAction: '请负责人到任务看板接单并拆解到具体岗位。',
+      nextUrl: '/execution#task-board',
+    });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-// 转派数字员工分部（会诊 → 协同任务；marshalCodes 字段保留接口兼容）
+// 转派数字员工分部：先形成管理层可领取的分部接单任务，再由负责人派给具体岗位。
+// 没有真实 worker/岗位任务时不得直接制造“执行中”的 agent_tasks。
 r.post('/dispatch', (req, res) => {
+  try {
+    assertAdvisorHandoffRole(req.user);
+  } catch (error) {
+    return res.status(error.status || 403).json({ error: error.message });
+  }
   if (!Array.isArray(req.body?.marshalCodes)) return res.status(400).json({ error: '数字员工分部列表格式不正确' });
   const marshalCodes = [...new Set(req.body.marshalCodes.map(code => String(code).trim()))];
   const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
@@ -546,21 +645,85 @@ r.post('/dispatch', (req, res) => {
     return res.status(400).json({ error: '一次最多转派8个有效数字员工分部' });
   }
   if (title.length > 200) return res.status(400).json({ error: '会诊议题最长200字' });
+  const sourceMessageId = req.body?.sourceMessageId == null || req.body?.sourceMessageId === ''
+    ? null
+    : Number(req.body.sourceMessageId);
+  if (sourceMessageId != null && (!Number.isInteger(sourceMessageId) || sourceMessageId <= 0)) {
+    return res.status(400).json({ error: '会诊消息编号格式不正确' });
+  }
+  if (sourceMessageId != null) {
+    const sourceMessage = q.get(`SELECT m.id FROM ai_messages m
+      JOIN ai_conversations c ON c.tenant_id=m.tenant_id AND c.id=m.conversation_id
+      WHERE m.tenant_id=? AND m.id=? AND m.role='assistant' AND c.user_id=?`,
+    curTenant(), sourceMessageId, req.user.id);
+    if (!sourceMessage) return res.status(404).json({ error: '会诊消息不存在或无权访问' });
+  }
   const ms = mergeMarshals(q.all(`SELECT id, code, name FROM marshals WHERE online = 1 AND code IN (${marshalCodes.map(() => '?').join(',')})`, ...marshalCodes));
   if (ms.length !== marshalCodes.length) return res.status(400).json({ error: '数字员工分部列表中包含不存在的编号' });
+  if (req.body?.owner != null && typeof req.body.owner !== 'string') {
+    return res.status(400).json({ error: '接单负责人必须使用姓名或岗位文本' });
+  }
+  if (String(req.body?.owner || '').trim().length > 60) return res.status(400).json({ error: '接单负责人最长60字' });
+  const users = activeTenantUsers();
+  const owner = resolveActionOwner(req.body?.owner, req.user, users);
+  const created = [];
+  const existing = [];
   try {
     db.exec('BEGIN IMMEDIATE');
     for (const m of ms) {
-      q.run(`INSERT INTO agent_tasks(marshal_id,title,type,status,is_collab,collab_marshals,created_by) VALUES(?,?,?,?,1,?,?)`,
-        m.id, `【会诊】${title}`, '会诊', '执行中', marshalCodes.join(','), req.user.id);
+      const fingerprint = handoffFingerprint('advisor-department', sourceMessageId || 'direct', m.code, title);
+      const previous = q.get(`SELECT id,title,status,assignee_id FROM tasks
+        WHERE tenant_id=? AND source='会诊分派' AND detail LIKE ? ORDER BY id LIMIT 1`,
+      curTenant(), `%协同单：${fingerprint}%`);
+      if (previous) {
+        const previousOwner = users.find(user => Number(user.id) === Number(previous.assignee_id));
+        existing.push({
+          ...previous,
+          department: m.name,
+          code: m.code,
+          owner: previousOwner?.name || '原接单负责人',
+        });
+        continue;
+      }
+      const detail = [
+        sourceMessageId ? `来源：AI会诊 #${sourceMessageId}` : '来源：老板参谋会诊',
+        `接单分部：${m.name}（${m.code}）`,
+        `协同分部：${ms.map(item => `${item.name}（${item.code}）`).join('、')}`,
+        `发起人：${req.user.name || req.user.username || req.user.id}`,
+        `协同单：${fingerprint}`,
+        '下一步：负责人接单，选择分部内具体数字员工派活；产出后进入统一审阅。',
+        '检查标准：形成岗位任务、可追踪产出与明确审核终态。',
+      ].join('\n');
+      const inserted = q.run(`INSERT INTO tasks(
+        title,detail,type,status,priority,assignee_id,assigned_by,source,source_ref_type,source_ref_id
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      `【分部接单】${m.name}：${title}`, detail, '其他', '待执行', '高', owner.id, req.user.id,
+      '会诊分派', sourceMessageId ? 'advisor_message' : null, sourceMessageId);
+      created.push({
+        id: inserted.lastInsertRowid,
+        title: `【分部接单】${m.name}：${title}`,
+        status: '待执行',
+        assigneeId: owner.id,
+        owner: owner.name,
+        department: m.name,
+        code: m.code,
+      });
     }
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw error;
   }
-  logOp(req.user, '老板参谋', '转派数字员工分部', marshalCodes.join(','));
-  res.json({ dispatched: ms.map(m => m.name) });
+  logOp(req.user, '老板参谋', '转派数字员工分部', `${marshalCodes.join(',')}→${owner.name || owner.id}`);
+  res.json({
+    dispatched: ms.map(m => m.name),
+    created,
+    existing,
+    owner: { id: owner.id, name: owner.name, role: owner.role },
+    nextAction: '管理层接单后，请进入具体数字员工工作台派活。',
+    nextUrl: '/execution#task-board',
+    traceUrl: sourceMessageId ? `/business-flow/advisor_message/${sourceMessageId}` : null,
+  });
 });
 
 // 能力矩阵（FR-ADV-06：健康度子项映射五维）

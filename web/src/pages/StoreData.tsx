@@ -34,7 +34,11 @@ const BIZ_TYPES = ['快餐', '正餐', '茶饮', '火锅', '其他'];
 const STORE_STATUSES = ['营业中', '筹备中', '已关店'];
 const DISH_STATUSES = ['在售', '下架'];
 const COST_CATEGORIES = ['食材', '人力', '房租', '水电', '营销', '其他'];
-const storeStatusColor: Record<string, string> = { 营业中: '#22c4a8', 筹备中: '#f6a02d', 已关店: 'var(--ui-muted)' };
+const storeStatusColor: Record<string, string> = {
+  营业中: 'var(--chart-2)',
+  筹备中: 'var(--warn)',
+  已关店: 'var(--ui-muted)',
+};
 const costCatColor: Record<string, string> = {
   食材: 'green',
   人力: 'blue',
@@ -66,6 +70,7 @@ function LoadState({ error, onRetry, emptyText }: { error: boolean; onRetry: () 
 
 export default function StoreData() {
   // ===== 门店 =====
+  const [activeTab, setActiveTab] = useState('stores');
   const [stores, setStores] = useState<any[]>([]);
   const [storesLoading, setStoresLoading] = useState(false);
   const [storesError, setStoresError] = useState(false);
@@ -335,7 +340,7 @@ export default function StoreData() {
     <Panel
       title={
         <>
-          <CoffeeOutlined style={{ color: '#22c4a8' }} /> 菜品目录
+          <CoffeeOutlined style={{ color: 'var(--chart-2)' }} /> 菜品目录
         </>
       }
       extra={
@@ -460,7 +465,7 @@ export default function StoreData() {
     <Panel
       title={
         <>
-          <PayCircleOutlined style={{ color: '#f6a02d' }} /> 成本台账
+          <PayCircleOutlined style={{ color: 'var(--warn)' }} /> 成本台账
         </>
       }
       extra={
@@ -573,6 +578,15 @@ export default function StoreData() {
     </Panel>
   );
 
+  const monthCostRows = costs.rows.filter(
+    (row: any) => String(row.cost_date || row.date || '').slice(0, 7) === dayjs().format('YYYY-MM'),
+  ).length;
+  const completeness = [
+    { key: 'stores', label: '门店', count: stores.length, unit: '家', lights: '门店 KPI 与分店对比' },
+    { key: 'dishes', label: '菜品', count: dishes.length, unit: '个', lights: '菜品 TOP 与客单价' },
+    { key: 'costs', label: '本月成本', count: monthCostRows, unit: '条', lights: '毛利率与经营利润率' },
+  ];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div
@@ -587,9 +601,41 @@ export default function StoreData() {
         <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginTop: 4 }}>
           门店、订单明细与成本台账是驾驶舱客单价、毛利率和经营利润率的事实来源；没有录入的数据不会被估算或编造。
         </div>
+        {/* 数据完成度：缺哪样、影响驾驶舱哪张卡、一键去补录 */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+          {completeness.map(item => (
+            <button
+              type="button"
+              key={item.key}
+              onClick={() => setActiveTab(item.key)}
+              title={`${item.label}数据点亮驾驶舱的：${item.lights}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 12px',
+                border: `1px solid ${item.count > 0 ? 'var(--ui-border)' : 'color-mix(in srgb, var(--warn) 45%, var(--ui-border))'}`,
+                borderRadius: 999,
+                background:
+                  item.count > 0 ? 'var(--ui-surface)' : 'color-mix(in srgb, var(--warn) 8%, var(--ui-surface))',
+                color: item.count > 0 ? 'var(--ui-text-2)' : 'var(--ui-warning-text, var(--warn))',
+                font: 'inherit',
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              {item.label}
+              <b style={{ fontVariantNumeric: 'tabular-nums' }}>
+                {item.count} {item.unit}
+              </b>
+              {item.count === 0 && <span>· 待补录，影响{item.lights}</span>}
+            </button>
+          ))}
+        </div>
       </div>
       <Tabs
-        defaultActiveKey="stores"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           { key: 'stores', label: '门店', children: storesTab },
           { key: 'dishes', label: '菜品', children: dishesTab },

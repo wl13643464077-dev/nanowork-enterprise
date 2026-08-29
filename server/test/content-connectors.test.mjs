@@ -34,11 +34,30 @@ const catalogConnectors = CONTENT_CREW.employees.flatMap(employee => (
   }))
 ));
 
+const rosterConnectors = [
+  ...CONTENT_CREW.employees,
+  ...(Array.isArray(CONTENT_CREW.nativeEmployees) ? CONTENT_CREW.nativeEmployees : []),
+].flatMap(employee => (
+  employee.connectorPolicy.connectors.map(connector => ({
+    ...connector,
+    employeeIdx: employee.idx,
+    employeeName: employee.name,
+  }))
+));
+
 function assertLocalFacts(result) {
   assert.equal(result.networkAccess, false);
   assert.deepEqual(result.externalActionsPerformed, []);
   assert.equal(result.costIncurred, false);
   assert.equal(result.credentialsAccepted, false);
+}
+
+function runtimeBoundaryProjection(value) {
+  return String(value || '')
+    .replaceAll('人工复核', '岗位质量门')
+    .replaceAll('人工审核', '中央采用策略')
+    .replaceAll('老板审批', '中央采用策略')
+    .replaceAll('人类审批', '老板执行授权');
 }
 
 test('历史8个catalog_only连接器全部归零且逐项进入明确运行状态', () => {
@@ -69,31 +88,48 @@ test('历史8个catalog_only连接器全部归零且逐项进入明确运行状�
   );
 });
 
-test('目录、公开工作台数据与13项运行登记严格一致', () => {
+test('原13项Paihuo连接器保持不变，组合岗位与15项运行登记严格一致', () => {
   const publicConnectors = publicContentCrew().employees.flatMap(employee => (
     employee.connectorPolicy.connectors
   ));
   assert.equal(catalogConnectors.length, 13);
-  assert.equal(publicConnectors.length, 13);
-  assert.equal(CONTENT_CONNECTOR_REGISTRY.length, 13);
-  assert.equal(new Set(CONTENT_CONNECTOR_REGISTRY.map(item => item.kind)).size, 13);
-  for (const connector of catalogConnectors) {
+  assert.equal(rosterConnectors.length, 15);
+  assert.equal(publicConnectors.length, 15);
+  assert.equal(CONTENT_CONNECTOR_REGISTRY.length, 15);
+  assert.equal(new Set(CONTENT_CONNECTOR_REGISTRY.map(item => item.kind)).size, 15);
+  for (const connector of rosterConnectors) {
     const descriptor = connectorDescriptor(connector.kind);
     assert.ok(descriptor, connector.kind);
     assert.equal(descriptor.employeeIdx, connector.employeeIdx);
     assert.equal(descriptor.employeeName, connector.employeeName);
     assert.equal(descriptor.mode, connector.mode);
     assert.equal(descriptor.status, connector.status);
-    assert.deepEqual(descriptor.requirements, connector.requirements);
-    assert.equal(descriptor.executeBoundary, connector.executeBoundary);
+    // The catalog remains the source/provenance record (including its legacy
+    // humanApproval value), while the runtime descriptor projects the current
+    // central adoption and execution-authorization policy.  Keep both layers
+    // explicit so a stale catalog field cannot silently re-introduce a second
+    // human approval gate in the Boss test phase.
+    const { humanApproval: catalogHumanApproval, ...catalogRequirements } = connector.requirements;
+    const {
+      adoptionPolicy,
+      executionAuthorization,
+      ...runtimeRequirements
+    } = descriptor.requirements;
+    assert.equal(typeof catalogHumanApproval, 'string');
+    assert.deepEqual(runtimeRequirements, catalogRequirements);
+    assert.equal(adoptionPolicy, 'central_auto_internal');
+    assert.equal(executionAuthorization, 'external_paid_irreversible_only');
+    assert.equal(descriptor.requirements.humanApproval, undefined);
+    assert.equal(descriptor.executeBoundary, runtimeBoundaryProjection(connector.executeBoundary));
     assert.ok(['verified_input_assist', 'local_contract_assist', 'employee_generation'].includes(descriptor.mode));
     assert.ok(descriptor.requirements.inputs.length > 0);
     assert.ok(descriptor.executeBoundary.length > 20);
     const publicConnector = publicConnectors.find(item => item.kind === connector.kind);
     assert.equal(publicConnector.status, descriptor.status);
     assert.equal(publicConnector.mode, descriptor.mode);
-    assert.deepEqual(publicConnector.requirements, descriptor.requirements);
-    assert.equal(publicConnector.executeBoundary, descriptor.executeBoundary);
+    assert.deepEqual(publicConnector.requirements, connector.requirements);
+    assert.equal(publicConnector.requirements.humanApproval, catalogHumanApproval);
+    assert.doesNotMatch(descriptor.executeBoundary, /人工复核|人工审核|老板审批|人类审批/u);
   }
 
   const invalid = structuredClone(CONTENT_CREW);
@@ -274,7 +310,9 @@ test('分发官可生成待终审发布包，但任何真实发布请求都因�
   assert.equal(denied.status, 'requires_credentials');
   assert.equal(denied.code, 'CONTENT_CONNECTOR_EXTERNAL_PUBLISH_DENIED');
   assert.ok(denied.requirements.credentials.includes('platform_authorization_only_for_actual_publish'));
-  assert.ok(denied.missing.includes('human_final_approval'));
+  assert.deepEqual(denied.missing, ['server_side_platform_authorization', 'audited_publish_adapter']);
+  assert.doesNotMatch(denied.missing.join(','), /human_final_approval/u);
+  assert.match(denied.action, /Boss亲自发起时不再产生二次审批/u);
   assertLocalFacts(denied);
 });
 

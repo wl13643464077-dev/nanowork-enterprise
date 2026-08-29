@@ -1,6 +1,6 @@
 // 移动端 H5（私域命脉）：底部 Tab 精简版，聚焦手机高频场景——看数据 / 跟客户 / 发素材 / 我的
 // 复用 PC 端全部后端 API，移动优先卡片式布局；PC 预览时居中 480px 模拟手机
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { List, Card, Button, Drawer, Input, Tag, Spin, Empty, message, Avatar } from 'antd';
 import {
   HomeOutlined,
@@ -38,7 +38,10 @@ export default function Mobile() {
   const user = getUser() || {};
   // 按企业开通的模块权限过滤底部 Tab（无 growth 权限的员工不显示「客户」，无 content 不显示「内容」）
   const mods: string[] = Array.isArray(user.modules) ? user.modules : [];
-  const tabs = TABS.filter(t => !t.mod || mods.includes(t.mod));
+  const hasHomeAccess =
+    mods.includes('dashboard') ||
+    CORE_WORKSPACES.some(item => mods.includes(item.mod) && item.roles.includes(String(user.role || '')));
+  const tabs = TABS.filter(t => (t.key === 'home' ? hasHomeAccess : !t.mod || mods.includes(t.mod)));
   const [tab, setTab] = useState(tabs[0]?.key || 'me');
 
   return (
@@ -164,12 +167,22 @@ const CORE_WORKSPACES = [
   {
     key: 'employees',
     mod: 'marshals',
-    roles: ['boss', 'ops_director', 'manager'],
+    roles: ['boss', 'ops_director', 'manager', 'sales'],
     title: '餐饮数字员工',
     description: '查看岗位数字员工与当前状态',
     path: '/employees',
     icon: <AppstoreOutlined />,
     color: '#1769e0',
+  },
+  {
+    key: 'execution',
+    mod: 'execution',
+    roles: ['boss', 'ops_director', 'manager', 'sales', 'admin'],
+    title: '任务看板',
+    description: '接收、完成并提交本人或团队任务',
+    path: '/execution',
+    icon: <ClockCircleOutlined />,
+    color: '#c07020',
   },
   {
     key: 'toolbox',
@@ -205,30 +218,39 @@ const CORE_WORKSPACES = [
 
 function MHome({ nav, user, mods }: { nav: (path: string) => void; user: any; mods: string[] }) {
   // useQuery：loading/empty/error/retry 四态，失败可见可重试（此前 .catch(()=>{}) 会永远转圈）
-  const canViewManagementBriefing = ['boss', 'ops_director', 'admin'].includes(user.role);
+  const hasDashboard = mods.includes('dashboard');
+  const canViewManagementBriefing = hasDashboard && ['boss', 'ops_director', 'manager', 'admin'].includes(user.role);
   const workspaces = CORE_WORKSPACES.filter(item => mods.includes(item.mod) && item.roles.includes(user.role));
-  const summaryQ = useQuery<DashboardSummary>('/dashboard/summary');
+  const summaryQ = useQuery<DashboardSummary>('/dashboard/summary', [], { enabled: hasDashboard });
   const briefQ = useQuery<DashboardBriefing>('/dashboard/briefing', [], {
     enabled: canViewManagementBriefing,
     isEmpty: d => !d?.briefing?.length,
   });
   const s = summaryQ.data;
-  if (!s) return <QueryStatus q={summaryQ} height={200} />;
+  if (hasDashboard && !s) return <QueryStatus q={summaryQ} height={200} />;
   const briefing = briefQ.data?.briefing || [];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Stat icon={<DollarOutlined />} color="var(--ui-accent)" label="今日销售" value={fmtMoney(s.todaySales)} />
-        <Stat icon={<RiseOutlined />} color="#22c4a8" label="本月新客" value={s.monthLeads ?? 0} suffix="人" />
-        <Stat icon={<ClockCircleOutlined />} color="#f6a02d" label="待跟进" value={s.pendingFollow ?? 0} suffix="人" />
-        <Stat
-          icon={<CalendarOutlined />}
-          color="#8a7450"
-          label="进行活动"
-          value={s.runningActivities ?? 0}
-          suffix="场"
-        />
-      </div>
+      {s && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <Stat icon={<DollarOutlined />} color="var(--ui-accent)" label="今日销售" value={fmtMoney(s.todaySales)} />
+          <Stat icon={<RiseOutlined />} color="var(--chart-2)" label="本月新客" value={s.monthLeads ?? 0} suffix="人" />
+          <Stat
+            icon={<ClockCircleOutlined />}
+            color="var(--warn)"
+            label="待跟进"
+            value={s.pendingFollow ?? 0}
+            suffix="人"
+          />
+          <Stat
+            icon={<CalendarOutlined />}
+            color="var(--chart-3)"
+            label="进行活动"
+            value={s.runningActivities ?? 0}
+            suffix="场"
+          />
+        </div>
+      )}
       {workspaces.length > 0 && (
         <Card size="small" title="核心工作台" style={{ borderRadius: 12 }} styles={{ body: { padding: 10 } }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
@@ -295,19 +317,35 @@ function MCustomers() {
   const rows = leadsQ.data?.rows || [];
   const [cur, setCur] = useState<Lead | null>(null);
   const [detail, setDetail] = useState<Lead | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const detailRequestRef = useRef(0);
   const [note, setNote] = useState('');
   const [ai, setAi] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const loadDetail = (lead: Lead) => {
+    const serial = ++detailRequestRef.current;
+    setDetail(null);
+    setDetailError('');
+    setDetailLoading(true);
+    api
+      .get(`/growth/leads/${lead.id}`, { silent: true })
+      .then(data => {
+        if (serial === detailRequestRef.current) setDetail(data);
+      })
+      .catch((error: any) => {
+        if (serial === detailRequestRef.current) setDetailError(error?.message || '客户详情加载失败');
+      })
+      .finally(() => {
+        if (serial === detailRequestRef.current) setDetailLoading(false);
+      });
+  };
   const open = (r: Lead) => {
     setCur(r);
-    setDetail(null);
     setNote('');
     setAi('');
-    api
-      .get(`/growth/leads/${r.id}`)
-      .then(setDetail)
-      .catch(() => {});
+    loadDetail(r);
   };
   const addFollow = () => {
     if (!note.trim() || saving || !cur) return; // 防连点重复提交
@@ -367,11 +405,25 @@ function MCustomers() {
         open={!!cur}
         placement="bottom"
         height="86%"
-        onClose={() => setCur(null)}
+        onClose={() => {
+          detailRequestRef.current += 1;
+          setCur(null);
+          setDetail(null);
+          setDetailError('');
+          setDetailLoading(false);
+        }}
         title={cur ? `${cur.name}（${cur.grade}类 · ${cur.stage}）` : ''}
       >
-        {!detail ? (
+        {detailLoading ? (
           <Spin />
+        ) : detailError ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={detailError}>
+            <Button type="primary" disabled={!cur} onClick={() => cur && loadDetail(cur)}>
+              重新加载
+            </Button>
+          </Empty>
+        ) : !detail ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="客户详情证据未返回" />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Card size="small" style={{ borderRadius: 10 }}>
@@ -457,11 +509,17 @@ function MContent() {
     '/content/list?status=' + encodeURIComponent('可使用') + '&size=30',
   );
   if (contentQ.loading || contentQ.error) return <QueryStatus q={contentQ} height={200} />;
+  const usableRows = (contentQ.data?.rows || []).filter(item => item.delivery?.canUse === true);
   return (
     <List
-      dataSource={contentQ.data?.rows || []}
+      dataSource={usableRows}
       locale={{
-        emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用内容，去PC端内容生产仓生成" />,
+        emptyText: (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="暂无已人工采纳内容，请先到内容生产仓生成并完成审阅"
+          />
+        ),
       }}
       renderItem={(r: ContentItem) => (
         <Card size="small" style={{ borderRadius: 12, marginBottom: 8 }} styles={{ body: { padding: 12 } }}>
@@ -472,6 +530,7 @@ function MContent() {
             <Button
               size="small"
               icon={<CopyOutlined />}
+              disabled={r.delivery?.canUse !== true}
               onClick={() => {
                 navigator.clipboard?.writeText(r.body || '');
                 message.success('已复制，去微信粘贴发布');

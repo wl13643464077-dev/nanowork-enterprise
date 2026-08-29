@@ -96,7 +96,7 @@ async function request(base, pathname, method = 'GET', body) {
   return { response, json: await response.json().catch(() => ({})) };
 }
 
-test('无凭证矩阵诚实区分本地能力、禁用状态与外部能力边界', () => {
+test('无凭证矩阵诚实阻断模型生成，不用本地替代文本冒充业务产物', () => {
   clearRuntimeReadinessChecks();
   const matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1 }));
   assert.equal(matrix.schemaVersion, 'runtime-readiness.v1');
@@ -106,9 +106,20 @@ test('无凭证矩阵诚实区分本地能力、禁用状态与外部能力边�
   const ai = channel(matrix, 'ai');
   assert.equal(ai.configured, false);
   assert.equal(ai.verified, false);
-  assert.equal(ai.effective, 'degraded');
+  assert.equal(ai.effective, 'blocked');
+  assert.equal(ai.canExecute, false, '兼容字段也必须反映真实阻断状态');
+  assert.equal(ai.canGenerateLocalDraft, false);
+  assert.equal(ai.canDeliverForHumanReview, false);
   assert.equal(ai.canPerformExternalAction, false);
+  assert.equal(ai.capabilitySummary, '真实生成通道未配置；任务不会启动，也不会形成业务产物');
   assert.match(ai.nextAction, /密钥|凭证/);
+
+  for (const item of matrix.channels) {
+    assert.equal(typeof item.canGenerateLocalDraft, 'boolean', `${item.key}缺少本地底稿能力维度`);
+    assert.equal(typeof item.canDeliverForHumanReview, 'boolean', `${item.key}缺少人工审阅交付维度`);
+    assert.equal(typeof item.canPerformExternalAction, 'boolean', `${item.key}缺少外部动作能力维度`);
+    assert.equal(typeof item.canExecute, 'boolean', `${item.key}必须保留旧客户端兼容字段`);
+  }
 
   const scheduler = channel(matrix, 'scheduler');
   assert.equal(scheduler.configured, true);
@@ -121,18 +132,25 @@ test('无凭证矩阵诚实区分本地能力、禁用状态与外部能力边�
   assert.equal(search.effective, 'degraded');
   assert.equal(search.verified, false);
 
-  assert.equal(channel(matrix, 'external_publish').effective, 'manual_only');
-  assert.equal(channel(matrix, 'external_publish').canPerformExternalAction, false);
+  const externalPublish = channel(matrix, 'external_publish');
+  assert.equal(externalPublish.effective, 'manual_only');
+  assert.equal(externalPublish.canGenerateLocalDraft, true);
+  assert.equal(externalPublish.canDeliverForHumanReview, true);
+  assert.equal(externalPublish.canPerformExternalAction, false);
+  assert.equal(externalPublish.capabilitySummary, '仅登记发布包，不能代发');
 
   const connectors = channel(matrix, 'content_connectors');
   assert.deepEqual(connectors.details.counts, {
-    total: 13,
+    total: 15,
     localAssist: 6,
     verifiedInputAssist: 2,
-    employeeGeneration: 5,
+    employeeGeneration: 7,
     externalPublish: 0,
   });
   assert.equal(connectors.canExecute, true);
+  assert.equal(connectors.canGenerateLocalDraft, false);
+  assert.equal(connectors.canDeliverForHumanReview, false);
+  assert.equal(connectors.capabilitySummary, '本地辅助连接器可运行，但依赖真实模型的生成任务被阻断；不形成替代业务产物，也不执行外部发布');
   assert.equal(connectors.canPerformExternalAction, false);
 
   recordRuntimeReadinessCheck('ai', {
@@ -173,6 +191,9 @@ test('只有当前配置最近一次显式测试通过才叫 connected，失败�
   assert.equal(channel(matrix, 'ai').verified, true);
   assert.equal(channel(matrix, 'ai').verification, 'passed');
   assert.equal(channel(matrix, 'ai').effective, 'connected');
+  assert.equal(channel(matrix, 'ai').canGenerateLocalDraft, false);
+  assert.equal(channel(matrix, 'ai').canDeliverForHumanReview, true);
+  assert.equal(channel(matrix, 'ai').canPerformExternalAction, false);
   assert.equal(channel(matrix, 'ai').lastCheck.scope, 'process');
   assert.doesNotMatch(JSON.stringify(matrix), /password|do-not-leak|config-secret/);
 

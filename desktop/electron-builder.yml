@@ -1,0 +1,90 @@
+{
+  "appId": "ai.nanowork.industry.desktop",
+  "productName": "纳米Work",
+  "electronVersion": "43.4.1",
+  "toolsets": {
+    "winCodeSign": "1.1.0",
+    "nsis": "1.2.1",
+    "wine": "1.0.1"
+  },
+  "artifactName": "NanoWork-${version}-${os}-${arch}.${ext}",
+  "asar": true,
+  "compression": "normal",
+  "npmRebuild": false,
+  "directories": {
+    "output": "dist",
+    "buildResources": "assets"
+  },
+  "files": [
+    {
+      "from": ".",
+      "filter": [
+        "src/**/*",
+        "renderer/**/*",
+        "assets/icon.png",
+        "package.json"
+      ]
+    }
+  ],
+  "mac": {
+    "category": "public.app-category.business",
+    "icon": "assets/icon.icns",
+    "hardenedRuntime": true,
+    "entitlements": "assets/entitlements.mac.plist",
+    "entitlementsInherit": "assets/entitlements.mac.plist",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64", "arm64"]
+      }
+    ]
+  },
+  "dmg": {
+    "sign": false,
+    "window": {
+      "width": 560,
+      "height": 380
+    },
+    "contents": [
+      {
+        "x": 150,
+        "y": 190,
+        "type": "file"
+      },
+      {
+        "x": 410,
+        "y": 190,
+        "type": "link",
+        "path": "/Applications"
+      }
+    ]
+  },
+  "win": {
+    "icon": "assets/icon.ico",
+    "requestedExecutionLevel": "asInvoker",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": true,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "纳米Work",
+    "deleteAppDataOnUninstall": false
+  }
+}

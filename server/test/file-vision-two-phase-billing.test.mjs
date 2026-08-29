@@ -41,10 +41,14 @@ const user = { id: userId, name: '文件识图用户', role: 'boss', tenant_id: 
 
 const providerApp = express();
 providerApp.use(express.json({ limit: '2mb' }));
-providerApp.post('/v1/chat/completions', (_req, res) => {
+providerApp.post('/v1/chat/completions', (req, res) => {
+  const requestText = JSON.stringify(req.body?.messages || []);
+  const zeroUsage = requestText.includes('识图零token.png');
   res.json({
     choices: [{ message: { content: '图片说明：门店经营表。\\n识别内容：本月到店 28 人。\\n可引用字段：到店人数=28。' } }],
-    usage: { prompt_tokens: 160, completion_tokens: 90 },
+    usage: zeroUsage
+      ? { prompt_tokens: 0, completion_tokens: 0 }
+      : { prompt_tokens: 160, completion_tokens: 90 },
   });
 });
 const providerServer = providerApp.listen(0, '127.0.0.1');
@@ -101,6 +105,20 @@ test('文件识图在供应商调用前预授权，识别正文落库后按真�
   assert.equal(result.payload.file.readable, true);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
+});
+
+test('文件识图 API 返回正文但 usage 为0时，落库前阻断且正文不可引用', async () => {
+  const before = balanceOfTenant(tenantId);
+  const result = await upload('识图零token.png');
+
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'released');
+  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(result.payload.file.readable, false);
+  assert.equal(result.payload.file.preview, '');
+  assert.match(result.payload.file.extract_mode, /识图待重试/);
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
 });
 
 test('文件识图正文落库失败时释放预授权并保留可重试文件', async () => {

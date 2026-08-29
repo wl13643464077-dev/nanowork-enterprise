@@ -18,6 +18,18 @@ const DEFAULT_BILLING = {
   },
   image: { 'gpt-image-2': 0.5, default: 0.5 },
   video: {
+    'runninghub-avatar-15': 12,
+    'runninghub-avatar-30': 12,
+    'runninghub-avatar-60': 24,
+    'heygen-avatar-15': 12,
+    'heygen-avatar-30': 12,
+    'heygen-avatar-60': 24,
+    'kling-avatar-15': 16,
+    'kling-avatar-30': 16,
+    'kling-avatar-60': 32,
+    'avatar-auto-15': 16,
+    'avatar-auto-30': 16,
+    'avatar-auto-60': 32,
     'kling-video': 14,
     'kling-omni-video': 20,
     'kling-avatar-image2video': 16,
@@ -213,6 +225,172 @@ export function estimateCallCredits({ kind = 'text', model, texts = [], outputTo
   return Math.max(1, Math.ceil((yuan * b.marginMultiplier) / b.creditYuan));
 }
 
+const EMPLOYEE_TRANSPORT_FAILOVER_REASON = 'retryable_zero_usage_transport_failure';
+
+function normalizedModel(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function sameEmployeeFailover(value, expected) {
+  if (!value || typeof value !== 'object' || !expected) return false;
+  return normalizedModel(value.from) === expected.from
+    && normalizedModel(value.to) === expected.to
+    && String(value.reason || '') === EMPLOYEE_TRANSPORT_FAILOVER_REASON
+    && Number(value.attempt) === expected.attempt;
+}
+
+function legalEmployeeFailoverTrigger(failure) {
+  if (!failure || typeof failure !== 'object') return false;
+  const code = String(failure.code || '');
+  const status = Number(failure.status);
+  // 必须使用规范化后彼此一致的机器码与HTTP状态，不能用诸如
+  // provider_request_failed + 502 的拼接证据骗过账务门。
+  if (code === 'provider_timeout') {
+    return status === 504 && failure.timedOut === true;
+  }
+  if (code === 'provider_upstream_error') {
+    return (status === 502 || status === 500) && failure.timedOut !== true;
+  }
+  return false;
+}
+
+/**
+ * 餐饮员工允许 hold(requested primary) 与 ledger(actual final) 模型不同的
+ * 唯一权威门。相同模型沿用历史账务语义；不同模型则必须由持久化执行快照
+ * 完整证明“主模型 acquire 阶段始终零 Token、零响应字符，最后一轮出现规范化的
+ * timeout/504或upstream/502 → 下一轮固定切到备用模型 → 备用模型真实正
+ * Token 成功”，并且供应商汇总用量与积分流水相等。
+ * 契约失败、正 Token 响应、鉴权/限流/请求错误或任意二次换模均不能通过。
+ */
+export function employeeModelSettlementBindingValid({
+  holdModel,
+  ledgerModel,
+  executionEvidence,
+  ledgerUsage = {},
+} = {}) {
+  const requested = normalizedModel(holdModel);
+  const actual = normalizedModel(ledgerModel);
+  if (!requested || !actual) return false;
+  if (requested === actual) return true;
+
+  const snapshot = executionEvidence && typeof executionEvidence === 'object'
+    ? executionEvidence
+    : null;
+  const contract = snapshot?.outputContract && typeof snapshot.outputContract === 'object'
+    ? snapshot.outputContract
+    : null;
+  const provider = snapshot?.providerAttempt && typeof snapshot.providerAttempt === 'object'
+    ? snapshot.providerAttempt
+    : null;
+  const budget = contract?.providerBudget && typeof contract.providerBudget === 'object'
+    ? contract.providerBudget
+    : null;
+  const attempts = Array.isArray(contract?.providerAttempts)
+    ? contract.providerAttempts
+    : [];
+  const transition = contract?.modelFailover && typeof contract.modelFailover === 'object'
+    ? contract.modelFailover
+    : null;
+  const transitionAttempt = Number(transition?.attempt);
+  const expectedFailover = {
+    from: requested,
+    to: actual,
+    attempt: transitionAttempt,
+  };
+  if (
+    contract?.valid !== true
+    || normalizedModel(contract.requestedModel) !== requested
+    || normalizedModel(contract.effectiveModel) !== actual
+    || !Number.isSafeInteger(transitionAttempt)
+    || transitionAttempt < 2
+    || !sameEmployeeFailover(transition, expectedFailover)
+    || normalizedModel(provider?.requestedModel) !== requested
+    || normalizedModel(provider?.effectiveModel) !== actual
+    || normalizedModel(provider?.model) !== actual
+    || String(provider?.mode || '').trim().toLowerCase() !== 'api'
+    || !sameEmployeeFailover(provider?.modelFailover, expectedFailover)
+    || normalizedModel(budget?.requestedModel) !== requested
+    || normalizedModel(budget?.effectiveModel) !== actual
+    || !sameEmployeeFailover(budget?.modelFailover, expectedFailover)
+    || attempts.length < transitionAttempt
+  ) {
+    return false;
+  }
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let positiveActualApiAttempt = false;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index] || {};
+    const number = Number(attempt.number);
+    const attemptModel = normalizedModel(attempt.model);
+    const effectiveModel = normalizedModel(attempt.effectiveModel);
+    const usageInput = Number(attempt.usage?.inputTokens);
+    const usageOutput = Number(attempt.usage?.outputTokens);
+    if (
+      number !== index + 1
+      || normalizedModel(attempt.requestedModel) !== requested
+      || !Number.isFinite(usageInput)
+      || !Number.isFinite(usageOutput)
+      || usageInput < 0
+      || usageOutput < 0
+      || attemptModel !== effectiveModel
+    ) {
+      return false;
+    }
+    inputTokens += usageInput;
+    outputTokens += usageOutput;
+
+    if (number < transitionAttempt) {
+      if (
+        effectiveModel !== requested
+        || attempt.modelFailover != null
+        || String(attempt.phase || '') !== 'acquire'
+        || String(attempt.budgetClass || '') !== 'transport'
+        || attempt.apiObtained === true
+        || Number(attempt.receivedChars) !== 0
+        || usageInput + usageOutput !== 0
+        || attempt.failure?.retryable !== true
+      ) {
+        return false;
+      }
+      // 更早的503/429等可重试零Token传输尝试并不会触发切换，运行时仍可
+      // 继续用首选模型；只有紧邻transition的最后一轮必须是规范的
+      // timeout/504或upstream/502，且它才是切换授权事实。
+      if (
+        number === transitionAttempt - 1
+        && !legalEmployeeFailoverTrigger(attempt.failure)
+      ) {
+        return false;
+      }
+      continue;
+    }
+
+    if (
+      effectiveModel !== actual
+      || !sameEmployeeFailover(attempt.modelFailover, expectedFailover)
+    ) {
+      return false;
+    }
+    if (
+      String(attempt.mode || '').trim().toLowerCase() === 'api'
+      && usageInput + usageOutput > 0
+    ) {
+      positiveActualApiAttempt = true;
+    }
+  }
+
+  const ledgerInput = Number(ledgerUsage.inputTokens);
+  const ledgerOutput = Number(ledgerUsage.outputTokens);
+  return positiveActualApiAttempt
+    && inputTokens === ledgerInput
+    && outputTokens === ledgerOutput
+    && Number(provider.usage?.inputTokens) === ledgerInput
+    && Number(provider.usage?.outputTokens) === ledgerOutput
+    && ledgerInput > 0
+    && ledgerOutput > 0;
+}
+
 // 占扣（两段式第一段）：条件更新原子扣减，并发多路同时占扣不会把积分池扣成负数（不超卖）。
 // 余额不足 → 402（此刻尚未开流、尚未发起外部调用，从源头杜绝"答案已交付却收不到钱"）。
 export function holdCredits({
@@ -279,16 +457,52 @@ export function holdCredits({
   }
 }
 
-// 结算（两段式第二段）：按真实用量改写占扣流水并多退少补。
-// - aiMode='template' 或零用量 → 全额退回（保留 0 分流水审计）
+// 结算（两段式第二段）：按真实用量改写占扣流水，实扣不得超过已授权额度。
+// - aiMode='template' → 全额退回（保留 0 分流水审计）
+// - 真实 API 文本无有效 token 证据 → 失败关闭，hold 保持 held 待查，不得落成“实扣0分”
 // - credits 显式传入时按传入值实扣（视频按提交时报价结算，防止结算窗口内价格变动）
-// - 实扣 > 占扣（估算偏低）→ 差额无条件补扣：答案已交付必须计费，允许余额穿透为负（坏账可见、可催缴）
+// - 实扣 > 占扣（估算偏低）→ 失败关闭：hold 保持 held，由业务层转待对账，不追加未授权扣款
 // - 幂等：同一笔占扣只能结算一次，重复结算/释放返回 null 不动账
 function holdIntegrityMismatch(field) {
   return Object.assign(
     new Error(`预授权占扣完整性校验失败：${field} 与数据库权威记录不一致`),
     { status: 409, code: 'CREDIT_HOLD_INTEGRITY_MISMATCH' },
   );
+}
+
+function holdExceeded() {
+  return Object.assign(
+    new Error('实际结算金额超过预授权额度，未追加扣款，已保留占扣待账务对账'),
+    { status: 409, code: 'BILLING_HOLD_EXCEEDED', retryable: false },
+  );
+}
+
+function billingUsageMissing() {
+  return Object.assign(
+    new Error('真实 API 文本交付缺少可结算的有效 token 用量，未完成结算，已保留预授权待核对'),
+    { status: 409, code: 'BILLING_USAGE_MISSING', retryable: false },
+  );
+}
+
+function assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits }) {
+  if (String(row?.kind || '') !== 'text' || aiMode !== 'api' || fixedCredits != null) return;
+  const source = usage && typeof usage === 'object' ? usage : null;
+  const hasInput = source
+    && Object.prototype.hasOwnProperty.call(source, 'inputTokens')
+    && source.inputTokens !== null
+    && source.inputTokens !== '';
+  const hasOutput = source
+    && Object.prototype.hasOwnProperty.call(source, 'outputTokens')
+    && source.outputTokens !== null
+    && source.outputTokens !== '';
+  const inputTokens = Number(source?.inputTokens);
+  const outputTokens = Number(source?.outputTokens);
+  if (!hasInput || !hasOutput
+    || !Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)
+    || inputTokens < 0 || outputTokens < 0
+    || inputTokens + outputTokens <= 0) {
+    throw billingUsageMissing();
+  }
 }
 
 function assertSuppliedHoldMatches(row, supplied) {
@@ -337,11 +551,14 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       throw holdIntegrityMismatch('tenantId');
     }
 
+    assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits });
+
     const finalModel = model || row.model || '';
     const yuan = aiMode === 'api' ? costYuan(row.kind, finalModel, usage, b) : 0;
     const actual = fixedCredits != null
       ? Math.max(0, Math.ceil(Number(fixedCredits) || 0))
       : aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
+    if (actual > Number(row.held_credits)) throw holdExceeded();
     const claimed = q.run(`UPDATE credit_holds
       SET status='settled',settled_credits=?,settled_at=datetime('now','localtime')
       WHERE tenant_id=? AND id=? AND status='held'`,
@@ -375,6 +592,65 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
 // 释放占扣（调用失败/上游任务失败，未交付任何产出）：全额退回，保留 0 分流水审计
 export function releaseHold(hold, note = '调用失败，预授权全额退回') {
   return settleHold(hold, { credits: 0, aiMode: 'api', note });
+}
+
+/**
+ * 在调用方已经开启的写事务中，按业务引用释放全部仍处于 held 的预授权。
+ * 用于“驳回任务 + 退款”必须同成同败的状态迁移，避免先写已驳回、进程随后
+ * 崩溃而把积分永久冻结。该函数不会自行 BEGIN/COMMIT。
+ */
+export function releaseHeldCreditsByRefInCurrentTransaction({
+  tenantId,
+  refType,
+  refId,
+  note = '业务终止，预授权全额退回',
+} = {}) {
+  const tid = Number(tenantId);
+  const rid = Number(refId);
+  const type = String(refType || '').trim();
+  if (!Number.isInteger(tid) || tid <= 0 || !Number.isInteger(rid) || rid <= 0 || !type) {
+    throw Object.assign(new Error('预授权业务引用不正确'), { status: 400 });
+  }
+  ensureHoldTable();
+  const rows = q.all(`SELECT * FROM credit_holds
+    WHERE tenant_id=? AND ref_type=? AND ref_id=? AND status='held'
+    ORDER BY id`, tid, type, rid);
+  let balance = Number(q.get('SELECT credits FROM tenants WHERE id=?', tid)?.credits || 0);
+  let releasedCredits = 0;
+  const holdIds = [];
+  for (const row of rows) {
+    const log = q.get(`SELECT id FROM credit_logs
+      WHERE tenant_id=? AND id=?`, tid, row.log_id);
+    if (!log) throw holdIntegrityMismatch('logId');
+    const claimed = q.run(`UPDATE credit_holds
+      SET status='settled',settled_credits=0,settled_at=datetime('now','localtime')
+      WHERE tenant_id=? AND id=? AND status='held'`, tid, row.id);
+    if (!claimed.changes) continue;
+    const tenantUpdated = q.run(
+      'UPDATE tenants SET credits=credits+? WHERE id=?',
+      Number(row.held_credits || 0),
+      tid,
+    );
+    if (tenantUpdated.changes !== 1) throw holdIntegrityMismatch('tenantId');
+    balance = Number(q.get('SELECT credits FROM tenants WHERE id=?', tid)?.credits || 0);
+    const finalNote = `${String(note || '').slice(0, 500)}；预授权${Number(row.held_credits || 0)}分→实扣0分`;
+    const logUpdated = q.run(`UPDATE credit_logs
+      SET credits=0,input_tokens=0,output_tokens=0,cost_yuan=0,balance_after=?,
+        ai_mode='api',note=?
+      WHERE tenant_id=? AND id=?`,
+    balance, finalNote, tid, row.log_id);
+    if (logUpdated.changes !== 1) throw holdIntegrityMismatch('logId');
+    releasedCredits += Number(row.held_credits || 0);
+    holdIds.push(Number(row.id));
+  }
+  return {
+    releasedCount: holdIds.length,
+    releasedCredits,
+    holdIds,
+    credits: 0,
+    balance,
+    costYuan: 0,
+  };
 }
 
 // 按业务关联找回占扣中的 hold（异步视频任务成功回填/失败退分用）

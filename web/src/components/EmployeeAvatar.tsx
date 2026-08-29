@@ -1,9 +1,12 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 
-// 数字员工头像 v3：姓氏印章徽章（零外部素材，按 idx 确定性微调色调）。
-// 迭代记录：v1 参数化五官插画 → 观感粗糙；v2 白色人形剪影 → 像"未上传头像"占位图。
-// v3 采用 Linear/Notion 字母头像的中文形态——高饱和渐变徽章 + 姓氏大字，
-// 类似个人印章：不会踩恐怖谷、不会像占位图、每人凭姓氏即有身份识别度。
+import './EmployeeAvatar.css';
+
+// 数字员工头像 v4：真实职业肖像（云雾 gpt-image-2 生成，按部门定制着装/气质）+ 印章徽章降级。
+// 迭代记录：v1 参数化五官插画 → 观感粗糙；v2 白色人形剪影 → 像"未上传头像"占位图；
+// v3 姓氏印章徽章（Linear/Notion 字母头像的中文形态）；
+// v4 在 v3 之上叠加真实肖像：/avatars/employees/emp-XX.jpg 存在则展示照片，
+// 加载失败（未生成/被删）自动降级 v3 印章，保证任何环境下都不出现破图。
 
 function hashOf(seed: number) {
   let h = (seed * 2654435761) >>> 0;
@@ -11,6 +14,14 @@ function hashOf(seed: number) {
   h = (h * 2246822519) >>> 0;
   h ^= h >>> 13;
   return h;
+}
+
+// 餐饮员工 idx 101-161 → emp-01..61；内容员工工位 0-10 → crew-00..10。
+// idx10 是纳米Work原生 AI 带货员，也使用专属职业肖像，不再降级为通用占位头像。
+export function employeePortraitUrl(idx: number): string | null {
+  if (idx >= 101 && idx <= 161) return `/avatars/employees/emp-${String(idx - 100).padStart(2, '0')}.jpg`;
+  if (idx >= 0 && idx <= 10) return `/avatars/employees/crew-${String(idx).padStart(2, '0')}.jpg`;
+  return null;
 }
 
 export default function EmployeeAvatar({
@@ -26,6 +37,29 @@ export default function EmployeeAvatar({
   size?: number;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const portrait = employeePortraitUrl(idx);
+  if (portrait && !photoFailed) {
+    // 部门色调证件照体系：静态规则在 EmployeeAvatar.css；这里只注入
+    // 动态尺寸与部门色变量。
+    return (
+      <span
+        aria-hidden="true"
+        className="emp-avatar"
+        style={
+          {
+            width: size,
+            height: size,
+            borderRadius: Math.round(size * 0.27),
+            '--avatar-color': color,
+          } as import('react').CSSProperties
+        }
+      >
+        <img src={portrait} alt="" width={size} height={size} loading="lazy" onError={() => setPhotoFailed(true)} />
+        <i />
+      </span>
+    );
+  }
   const h = hashOf(idx);
   const glyph = (name || '员').trim().charAt(0) || '员';
   // 同分部同色系，但每人深浅与光源方位略有差异，避免千人一面

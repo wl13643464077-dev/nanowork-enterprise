@@ -173,6 +173,88 @@ test('业务已交付但结算异常时保留预授权待对账，不虚构实�
   assert.equal(held(), 0);
 });
 
+test('真实用量超过预授权时两阶段交付转待对账，不追加占扣或超额扣款', async () => {
+  setBalance(100);
+  const before = balance();
+  const logsBefore = Number(db.prepare(
+    'SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=?',
+  ).get(tenantId).n);
+  const holdsBefore = Number(db.prepare(
+    'SELECT COUNT(*) n FROM credit_holds WHERE tenant_id=?',
+  ).get(tenantId).n);
+  const itemHold = holdCredits({
+    userId,
+    feature: '内容超额结算专项',
+    kind: 'text',
+    model: 'deepseek-v4-flash',
+    credits: 5,
+    refType: 'delivery_probe',
+    refId: 9001,
+  });
+  const afterHold = balance();
+  const holdBefore = db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+    FROM credit_holds WHERE id=?`).get(itemHold.holdId);
+  const logBefore = db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+    FROM credit_logs WHERE id=?`).get(itemHold.logId);
+
+  const result = await executeHeldDelivery({
+    hold: itemHold,
+    generate: async () => ({
+      text: '已生成但账务未完成的内容',
+      usage: { inputTokens: 100000, outputTokens: 100000 },
+      model: 'deepseek-v4-flash',
+      mode: 'api',
+    }),
+    persist: output => withImmediateTransaction(db, () => {
+      const inserted = db.prepare('INSERT INTO delivery_probe(value) VALUES(?)').run(output.text);
+      return { id: Number(inserted.lastInsertRowid) };
+    }),
+    settle: settleHold,
+    release: releaseHold,
+    settlement: output => ({
+      usage: output.usage,
+      model: output.model,
+      aiMode: output.mode,
+    }),
+  });
+
+  assert.equal(result.billing.state, 'pending_reconciliation');
+  assert.equal(result.billing.pendingReconciliation, true, '业务层必须据此阻断采纳');
+  assert.equal(result.billing.chargedCredits, null);
+  assert.equal(result.billing.heldCredits, 5);
+  assert.match(result.billing.error, /超过预授权.*待账务对账/u);
+  assert.equal(balance(), afterHold, '结算过程不得在已占扣 5 分之外再扣款');
+  assert.deepEqual(
+    db.prepare(`SELECT status,held_credits,settled_credits,settled_at
+      FROM credit_holds WHERE id=?`).get(itemHold.holdId),
+    holdBefore,
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
+      FROM credit_logs WHERE id=?`).get(itemHold.logId),
+    logBefore,
+  );
+  assert.equal(
+    Number(db.prepare('SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=?').get(tenantId).n),
+    logsBefore + 1,
+    '不得追加扣款流水',
+  );
+  assert.equal(
+    Number(db.prepare('SELECT COUNT(*) n FROM credit_holds WHERE tenant_id=?').get(tenantId).n),
+    holdsBefore + 1,
+    '不得自动新建第二笔 hold',
+  );
+  assert.equal(
+    db.prepare('SELECT value FROM delivery_probe WHERE id=?').get(result.delivery.id).value,
+    '已生成但账务未完成的内容',
+    '业务产物可保留用于对账，但 pending_reconciliation 不得被视为可采纳',
+  );
+
+  releaseHold(itemHold, '专项测试清理超额待对账占扣');
+  assert.equal(balance(), before);
+  assert.equal(held(), 0);
+});
+
 after(() => {
   try { db.close(); } catch { /* already closed */ }
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {

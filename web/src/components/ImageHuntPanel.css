@@ -1,0 +1,142 @@
+.imagehunt-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.imagehunt-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.imagehunt-heading span {
+  color: var(--ui-primary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.imagehunt-heading h3 {
+  margin: 4px 0;
+  font-size: 19px;
+}
+
+.imagehunt-heading p {
+  max-width: 700px;
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.imagehunt-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.imagehunt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.imagehunt-card {
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface-2);
+}
+
+.imagehunt-preview {
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ui-primary) 7%, var(--ui-surface));
+}
+
+.imagehunt-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.imagehunt-card-body {
+  display: flex;
+  min-height: 122px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+}
+
+.imagehunt-card-body > strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 11px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.imagehunt-meta,
+.imagehunt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.imagehunt-meta span,
+.imagehunt-actions > span,
+.imagehunt-actions a {
+  color: var(--ui-muted);
+  font-size: 9px;
+}
+
+.imagehunt-actions {
+  margin-top: auto;
+}
+
+.imagehunt-placeholder {
+  min-height: 250px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px dashed var(--ui-border);
+  border-radius: 12px;
+  color: var(--ui-muted);
+  text-align: center;
+}
+
+.imagehunt-placeholder > .anticon {
+  color: var(--ui-primary);
+  font-size: 30px;
+}
+
+.imagehunt-placeholder strong {
+  color: var(--ui-text-2);
+  font-size: 12px;
+}
+
+.imagehunt-placeholder span {
+  max-width: 520px;
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+@media (max-width: 1080px) {
+  .imagehunt-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .imagehunt-search,
+  .imagehunt-grid {
+    grid-template-columns: 1fr;
+  }
+}

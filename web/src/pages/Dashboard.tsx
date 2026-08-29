@@ -36,10 +36,7 @@ import {
   AlertOutlined,
   RobotOutlined,
   MessageOutlined,
-  CrownFilled,
-  TrophyFilled,
   StarFilled,
-  FireFilled,
   GiftOutlined,
   PlusOutlined,
   SettingOutlined,
@@ -51,8 +48,18 @@ import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, fmtMoney, getUser } from '../api/client';
 import { StatCard, Panel, StageTag, GradeTag, ErrorState } from '../components/Kit';
+import DashboardInspectionCard from '../components/DashboardInspectionCard';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import StreamingOutput from '../components/StreamingOutput';
+import BossGlance from '../components/BossGlance';
+import StaffDailyGuide from '../components/StaffDailyGuide';
+import DashboardRoleHeader, {
+  buildDashboardGuide,
+  dashboardRoleView,
+  DASHBOARD_ROLE_NAMES,
+} from '../components/DashboardRoleHeader';
+import { dashboardRankMeta } from '../components/DashboardRankingMeta';
+import { dashboardFeishuPresentation } from '../components/statusPresentation.js';
 import { useStreamingTask, type StreamStage } from '../hooks/useStreamingTask';
 
 // 数字员工协同分析的阶段轴：与后端事件对齐，不编造中间态
@@ -135,9 +142,18 @@ export default function Dashboard() {
   const scopeRequestRef = useRef(0);
   const currentUser = getUser();
   const role = currentUser?.role;
-  const canViewManagementBriefing = ['boss', 'ops_director', 'admin'].includes(role || '');
+  const userModules: string[] = Array.isArray(currentUser?.modules) ? currentUser.modules : ['dashboard'];
+  const hasModule = (module: string) => userModules.includes(module);
+  const canViewGrowth = hasModule('growth');
+  const canViewAnalysis = hasModule('analysis');
+  const canViewActivities = hasModule('activities');
+  const canViewMarshals = hasModule('marshals');
+  const canViewSystem = hasModule('system');
+  const canViewStoreData = canViewAnalysis && ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
+  const { name: dashboardName, summary: dashboardSummary } = dashboardRoleView(role);
+  const canViewManagementBriefing = ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
   const canEvaluateEmployees = ['boss', 'admin'].includes(role || '');
-  const canViewEmployeeDetail = ['boss', 'ops_director', 'admin'].includes(role || '');
+  const canViewEmployeeDetail = ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
   const scopeQuery = useMemo(() => {
     const v = scopeValue || dayjs();
     if (scopeMode === 'all') return 'mode=all';
@@ -147,40 +163,46 @@ export default function Dashboard() {
     return `period=${scopeMode}`;
   }, [scopeMode, scopeValue]);
   const scopePath = `?${scopeQuery}`;
+  const allScopeLabel = ['boss', 'admin'].includes(role || '')
+    ? '全部'
+    : ['ops_director', 'manager'].includes(role || '')
+      ? '团队'
+      : '我的';
   const scopeLabel =
-    summary.scope?.shortLabel ||
-    ({ all: '全部', week: '本周', month: '本月', quarter: '本季' } as Record<string, string>)[scopeMode] ||
-    '当前范围';
-  const scopeFullLabel = summary.scope?.label || scopeLabel;
+    scopeMode === 'all'
+      ? summary.scope?.shortLabel || allScopeLabel
+      : summary.scope?.shortLabel ||
+        ({ week: '本周', month: '本月', quarter: '本季' } as Record<string, string>)[scopeMode] ||
+        '当前范围';
+  const scopeFullLabel = summary.scope?.label || (scopeMode === 'all' ? `${allScopeLabel}经营数据` : scopeLabel);
   const scopeRangeText = summary.scope?.rangeText || '';
   const loadFollowOverview = () => api.get(`/dashboard/follow-overview${scopePath}`).then(setFollowOverview);
 
   useEffect(() => {
-    api.get('/dashboard/funnel').then(setFunnel);
-    api.get('/dashboard/key-customers').then(setKeyCustomers);
+    if (canViewGrowth) {
+      api.get('/dashboard/funnel').then(setFunnel);
+      api.get('/dashboard/key-customers').then(setKeyCustomers);
+    }
     if (canViewManagementBriefing) api.get('/dashboard/briefing').then(setBriefing);
     api.get('/dashboard/todos').then(setTodos);
-    api.get('/dashboard/marshal-shortcuts').then(setMarshals);
+    if (canViewMarshals) api.get('/dashboard/marshal-shortcuts').then(setMarshals);
     api
       .get('/dashboard/widgets/preferences')
       .then(setWidgetPrefs)
       .catch(() => {});
-    api
-      .get('/analysis/insights')
-      .then((d: any) => setDiagnosis(Array.isArray(d) ? d : []))
-      .catch(() => setDiagnosis(null));
+    if (canViewAnalysis) {
+      api
+        .get('/analysis/insights')
+        .then((d: any) => setDiagnosis(Array.isArray(d) ? d : []))
+        .catch(() => setDiagnosis(null));
+    }
     if (canViewManagementBriefing) {
       api
         .get('/dashboard/daily-digest')
         .then((d: any) => setDigest(d && !d.empty ? d : null))
         .catch(() => setDigest(null));
-    } else {
-      queueMicrotask(() => {
-        setBriefing(null);
-        setDigest(null);
-      });
     }
-  }, [canViewManagementBriefing]);
+  }, [canViewAnalysis, canViewGrowth, canViewManagementBriefing, canViewMarshals]);
 
   const dataMarshal = marshals.find((m: any) => m.code === 'M-07');
   useEffect(() => {
@@ -198,18 +220,24 @@ export default function Dashboard() {
       .catch(() => {
         if (current()) setLoadError(true);
       });
-    api.get(`/dashboard/trend${scopePath}`).then((d: any) => {
-      if (current()) setTrend(Array.isArray(d) ? d : d.rows || []);
-    });
-    api.get(`/dashboard/channels${scopePath}`).then((d: any) => {
-      if (current()) setChannels(Array.isArray(d) ? d : d.rows || []);
-    });
-    api.get(`/dashboard/week-activities${scopePath}`).then((d: any) => {
-      if (current()) setWeekActs(Array.isArray(d) ? d : d.rows || []);
-    });
-    api.get(`/dashboard/follow-overview${scopePath}`).then(data => {
-      if (current()) setFollowOverview(data);
-    });
+    if (canViewAnalysis) {
+      api.get(`/dashboard/trend${scopePath}`).then((d: any) => {
+        if (current()) setTrend(Array.isArray(d) ? d : d.rows || []);
+      });
+      api.get(`/dashboard/channels${scopePath}`).then((d: any) => {
+        if (current()) setChannels(Array.isArray(d) ? d : d.rows || []);
+      });
+    }
+    if (canViewActivities) {
+      api.get(`/dashboard/week-activities${scopePath}`).then((d: any) => {
+        if (current()) setWeekActs(Array.isArray(d) ? d : d.rows || []);
+      });
+    }
+    if (canViewGrowth) {
+      api.get(`/dashboard/follow-overview${scopePath}`).then(data => {
+        if (current()) setFollowOverview(data);
+      });
+    }
     // 轮询带可见性门控：后台标签页不发请求，回到前台立即刷新一次
     const poll = () =>
       api
@@ -230,10 +258,14 @@ export default function Dashboard() {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [scopePath, reloadKey]);
+  }, [canViewActivities, canViewAnalysis, canViewGrowth, reloadKey, scopePath]);
 
   const totalTodos =
-    (todos.approvals || 0) + (todos.overdueLeads || 0) + (todos.silentPartners || 0) + (todos.reviewTasks || 0);
+    (todos.approvals || 0) +
+    (todos.overdueLeads || 0) +
+    (todos.silentPartners || 0) +
+    (todos.actionableReviewTasks ?? todos.reviewTasks ?? 0) +
+    (todos.contentEmployeeReviews || 0);
 
   // —— 多重交互：下钻/AI分析/客户档案 ——
   const [dayDetail, setDayDetail] = useState<any>(null); // 趋势某日来源明细
@@ -250,16 +282,22 @@ export default function Dashboard() {
   const lastAiRef = useRef<{ title: string; summary: string } | null>(null);
   const [feishu, setFeishu] = useState<any>(null);
   useEffect(() => {
-    api
-      .get('/sys/feishu')
-      .then(setFeishu)
-      .catch(() => {});
-  }, []);
+    if (canViewActivities && canViewSystem) {
+      api
+        .get('/sys/feishu')
+        .then(setFeishu)
+        .catch(() => {});
+    }
+  }, [canViewActivities, canViewSystem]);
+  const feishuStatus = dashboardFeishuPresentation(feishu);
 
   // 门店真数据 KPI（当月真实客单价/毛利率/经营利润率）：值为 null 时整卡不渲染；调用失败静默隐藏。
   // 用原生 fetch 而非 api.get：api 封装会对失败请求弹全局错误提示，这里必须完全静默。
   const [storeKpi, setStoreKpi] = useState<any>(null);
   useEffect(() => {
+    if (!canViewStoreData) {
+      return;
+    }
     let cancelled = false;
     fetch(`/api/store-data/kpi?month=${dayjs().format('YYYY-MM')}`, { credentials: 'same-origin' })
       .then(r => (r.ok ? r.json() : null))
@@ -272,7 +310,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canViewStoreData]);
 
   const openDayDetail = (date: string) => {
     setDayDetail({ loading: true, date });
@@ -320,69 +358,8 @@ export default function Dashboard() {
 
   // 新企业空数据 → 按角色给对应上手路径，避免员工被引导到无权限模块
   const isEmpty = Boolean(summary.scope || summary.timeScope) && Number(summary.businessRows ?? 0) === 0;
-  const roleName: Record<string, string> = {
-    boss: '老板',
-    ops_director: '运营总监',
-    sales: '员工',
-    partner: '合伙人',
-    admin: '管理员',
-  };
-  const GUIDE = (() => {
-    if (role === 'boss')
-      return [
-        { icon: '💳', title: '1. 充值积分', desc: 'AI生成/识图/视频按量计费，老板先充值开通', to: '/recharge' },
-        { icon: '👥', title: '2. 录入客户', desc: '增长中心新建客户线索，开始经营你的客户资产', to: '/growth' },
-        { icon: '📅', title: '3. 创建活动', desc: '活动中心策划主题试吃/会员活动，邀约顾客到店', to: '/activities' },
-        { icon: '✍️', title: '4. AI生成内容', desc: '内容生产仓一键生成短视频/朋友圈/海报', to: '/content' },
-        { icon: '📚', title: '5. 上传知识库', desc: '系统管理上传品牌/产品资料，让AI更懂你的生意', to: '/system' },
-      ];
-    if (role === 'sales')
-      return [
-        { icon: '👥', title: '1. 录入客户', desc: '增长中心新建线索，完善电话、来源和兴趣点', to: '/growth' },
-        { icon: '📝', title: '2. 保存跟进', desc: '记录微信/电话沟通结果，设置下次跟进动作', to: '/growth' },
-        { icon: '💬', title: '3. 生成话术', desc: '点击确认后再生成私域话术，复制给客户使用', to: '/growth' },
-        { icon: '✅', title: '4. 提交执行', desc: '在组织协同舱提交任务结果，等待上级审核', to: '/execution' },
-      ];
-    return [
-      { icon: '👥', title: '1. 查看客户', desc: '查看授权范围内的客户、跟进和待办事项', to: '/growth' },
-      { icon: '📅', title: '2. 跟进活动', desc: '管理活动筹备、邀约和复盘进度', to: '/activities' },
-      { icon: '✍️', title: '3. 内容审核', desc: '查看待审核内容，处理通过或驳回', to: '/content' },
-      { icon: '📊', title: '4. 查看复盘', desc: '从复盘中心追踪团队执行和经营结果', to: '/analysis' },
-    ];
-  })();
-  const rankMeta = (rank: number) => {
-    if (rank === 1)
-      return {
-        icon: <CrownFilled />,
-        label: '冠军',
-        color: '#b7791f',
-        bg: 'linear-gradient(135deg,var(--ui-surface),var(--ui-surface))',
-        border: '#f5c542',
-      };
-    if (rank === 2)
-      return {
-        icon: <TrophyFilled />,
-        label: '亚军',
-        color: '#64748b',
-        bg: 'linear-gradient(135deg,var(--ui-surface),var(--ui-surface))',
-        border: 'var(--ui-surface)',
-      };
-    if (rank === 3)
-      return {
-        icon: <StarFilled />,
-        label: '季军',
-        color: '#e0a253',
-        bg: 'linear-gradient(135deg,var(--ui-surface),var(--ui-surface))',
-        border: '#fdba74',
-      };
-    return {
-      icon: <FireFilled />,
-      label: `第${rank}名`,
-      color: 'var(--ui-accent)',
-      bg: 'var(--ui-surface)',
-      border: 'var(--ui-border-strong)',
-    };
-  };
+  const guide = buildDashboardGuide(role, userModules);
+  const roleName = DASHBOARD_ROLE_NAMES;
   const fmtDate = (v?: string) => (v ? String(v).slice(0, 16) : '-');
   const openEmployee = async (id: number) => {
     if (!id) return;
@@ -425,17 +402,31 @@ export default function Dashboard() {
     loadFollowOverview();
   };
   const topStaffScore = Math.max(1, ...(followOverview.staff || []).map((s: any) => Number(s.score || 0)));
+  const showTeamRanking =
+    followOverview.rankingScope === 'team' ||
+    (!followOverview.rankingScope && ['boss', 'ops_director', 'manager', 'admin'].includes(role || ''));
+  const widgetModules: Record<string, string> = {
+    follow: 'growth',
+    trend: 'analysis',
+    funnel: 'growth',
+    channels: 'analysis',
+    customers: 'growth',
+    marshals: 'marshals',
+    activities: 'activities',
+  };
   const shown = (key: string) =>
-    (widgetPrefs.selected || []).includes(key) && (key !== 'briefing' || canViewManagementBriefing);
+    (widgetPrefs.selected || []).includes(key) &&
+    (key !== 'briefing' || canViewManagementBriefing) &&
+    (!widgetModules[key] || hasModule(widgetModules[key]));
   const secondVisible = Math.max(1, ['trend', 'funnel', 'briefing'].filter(shown).length);
   const thirdVisible = Math.max(1, ['channels', 'customers', 'marshals'].filter(shown).length);
   const saveWidgets = async () => {
-    if (!(widgetPrefs.selected || []).length) return message.warning('老板驾驶舱至少保留一个模块');
+    if (!(widgetPrefs.selected || []).length) return message.warning(`${dashboardName}至少保留一个模块`);
     setWidgetSaving(true);
     try {
       const out = await api.put('/dashboard/widgets/preferences', { widgets: widgetPrefs.selected });
       setWidgetPrefs((p: any) => ({ ...p, selected: out.selected }));
-      message.success('老板驾驶舱呈现内容已保存');
+      message.success(`${dashboardName}呈现内容已保存`);
       setWidgetOpen(false);
     } finally {
       setWidgetSaving(false);
@@ -479,76 +470,27 @@ export default function Dashboard() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* 第一屏欢迎语：按当前登录用户的真实姓名动态问候 */}
-      <div
-        style={{
-          background: 'linear-gradient(100deg, rgba(218,179,105,.14), rgba(218,179,105,.03) 55%, transparent)',
-          border: '1px solid rgba(218,179,105,.22)',
-          borderRadius: 14,
-          padding: '15px 20px',
-        }}
-      >
-        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ui-text)', letterSpacing: 0.5 }}>
-          {(() => {
-            const h = new Date().getHours();
-            return h < 11 ? '早上好' : h < 18 ? '下午好' : '晚上好';
-          })()}
-          ，{getUser()?.name || roleName[role || ''] || '伙伴'}　
-          <span style={{ color: 'var(--ui-primary)' }}>欢迎回来</span>
-        </div>
-        <div style={{ fontSize: 13, color: 'var(--ui-text-2)', marginTop: 5 }}>
-          {role === 'sales'
-            ? '系统已为你整理客户跟进、任务提交和可用AI工具，所有客户与任务只展示你的授权范围。'
-            : '老板驾驶舱已汇总当前可用的企业经营记录；请先核对数据范围，再处理风险与增长机会。'}
-        </div>
-      </div>
-      {isEmpty && (
-        <div
-          style={{
-            background: 'linear-gradient(135deg,var(--ui-surface),var(--ui-surface))',
-            border: '1px solid var(--ui-border-strong)',
-            borderRadius: 14,
-            padding: '16px 18px',
-          }}
-        >
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)', marginBottom: 4 }}>
-            欢迎使用纳米Work行业版！按下面 {GUIDE.length} 步快速上手
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--ui-muted)', marginBottom: 14 }}>
-            系统已为你的企业准备好干净的工作台，跟着引导把生意跑起来
-          </div>
-          <Row gutter={[12, 12]}>
-            {GUIDE.map(g => (
-              <Col xs={12} md={role === 'boss' ? 8 : 6} key={g.title}>
-                <button
-                  type="button"
-                  onClick={() => nav(g.to)}
-                  aria-label={`${g.title}：${g.desc}`}
-                  style={{
-                    appearance: 'none',
-                    display: 'block',
-                    width: '100%',
-                    cursor: 'pointer',
-                    background: 'var(--ui-surface)',
-                    border: '1px solid var(--ui-surface)',
-                    borderRadius: 10,
-                    padding: '12px 14px',
-                    height: '100%',
-                    textAlign: 'left',
-                    font: 'inherit',
-                    color: 'inherit',
-                  }}
-                >
-                  <div style={{ fontSize: 22, marginBottom: 6 }}>{g.icon}</div>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ui-accent)' }}>{g.title}</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 4, lineHeight: 1.6 }}>
-                    {g.desc}
-                  </div>
-                </button>
-              </Col>
-            ))}
-          </Row>
-        </div>
+      <DashboardRoleHeader
+        role={role}
+        userName={currentUser?.name}
+        summary={dashboardSummary}
+        isEmpty={isEmpty}
+        guide={guide}
+        onNavigate={nav}
+      />
+      {/* 员工/店长层级是驾驶舱数据的填报责任人：登录第一屏给填报引导卡 */}
+      {['sales', 'manager', 'ops_director'].includes(String(role)) && <StaffDailyGuide />}
+      {/* 老板/管理层首屏锚点：4 个关键数 + 最要紧的事 + 堵着的待办，3 秒看完 */}
+      {['boss', 'admin', 'ops_director', 'manager'].includes(String(role)) && !isEmpty && (
+        <BossGlance
+          summary={summary}
+          todos={todos}
+          diagnosis={diagnosis}
+          scopeLabel={scopeLabel}
+          canViewGrowth={canViewGrowth}
+          canViewExecution={hasModule('execution')}
+          onNavigate={nav}
+        />
       )}
       {summary.timeScope?.hasHistoricalSamples && (
         <Alert
@@ -564,7 +506,7 @@ export default function Dashboard() {
       {loadError && (
         <ErrorState description="经营概览拉取失败，页面数字可能过期。" onRetry={() => setReloadKey(k => k + 1)} />
       )}
-      {!diagDismissed && (digest || (diagnosis !== null && diagnosis.length > 0)) && (
+      {hasModule('analysis') && !diagDismissed && (digest || (diagnosis !== null && diagnosis.length > 0)) && (
         <Panel
           title={
             <>
@@ -639,7 +581,7 @@ export default function Dashboard() {
                 <button
                   key={index}
                   type="button"
-                  onClick={() => nav('/advisor')}
+                  onClick={() => nav(hasModule('advisor') ? '/advisor' : '/analysis')}
                   style={{
                     appearance: 'none',
                     textAlign: 'left',
@@ -651,7 +593,7 @@ export default function Dashboard() {
                     padding: 'var(--space-3) var(--space-4)',
                     color: 'inherit',
                   }}
-                  aria-label={`经营诊断：${item.issue}，点击咨询老板参谋`}
+                  aria-label={`经营诊断：${item.issue}，${hasModule('advisor') ? '点击咨询数据员工' : '点击查看完整分析'}`}
                 >
                   <Tag color="blue" style={{ marginBottom: 'var(--space-1)' }}>
                     {item.dimension}
@@ -670,7 +612,8 @@ export default function Dashboard() {
                     {item.suggestion}
                   </div>
                   <div style={{ color: 'var(--ui-primary)', fontSize: 'var(--font-1)', marginTop: 'var(--space-2)' }}>
-                    问老板参谋怎么做 <RightOutlined style={{ fontSize: 10 }} />
+                    {hasModule('advisor') ? '问数据员工怎么做' : '查看完整分析'}{' '}
+                    <RightOutlined style={{ fontSize: 10 }} />
                   </div>
                 </button>
               ))}
@@ -678,6 +621,7 @@ export default function Dashboard() {
           )}
         </Panel>
       )}
+      <DashboardInspectionCard />
       <Panel
         title="经营数据时间范围"
         extra={
@@ -686,7 +630,7 @@ export default function Dashboard() {
             <Tag color="blue">{scopeFullLabel}</Tag>
             {widgetPrefs.canEdit && (
               <Button size="small" icon={<SettingOutlined />} onClick={() => setWidgetOpen(true)}>
-                自定义老板驾驶舱
+                自定义{dashboardName}
               </Button>
             )}
           </Space>
@@ -729,61 +673,71 @@ export default function Dashboard() {
               value={fmtMoney(summary.todaySales)}
               trend={summary.salesWow}
               trendLabel={summary.scope?.compareLabel || '较上期'}
-              onClick={() => nav('/analysis')}
+              onClick={hasModule('analysis') ? () => nav('/analysis') : undefined}
             />
           </Col>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<UserAddOutlined />}
-              color="#22c4a8"
-              label={`${scopeLabel}新增客户`}
-              value={summary.monthLeads ?? '-'}
-              trend={summary.leadsWow}
-              trendLabel={summary.scope?.compareLabel || '较上期'}
-              onClick={() => nav('/growth')}
-            />
-          </Col>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<ClockCircleOutlined />}
-              color="#8a7450"
-              label="当前待跟进客户"
-              value={summary.pendingFollow ?? '-'}
-              suffix={summary.overdue ? `${summary.overdue}人超期` : ''}
-              onClick={() => nav('/growth')}
-            />
-          </Col>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<CalendarOutlined />}
-              color="#f6a02d"
-              label={`${scopeLabel}活动`}
-              value={summary.runningActivities ?? '-'}
-              suffix="场"
-              onClick={() => nav('/activities')}
-            />
-          </Col>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<CheckCircleOutlined />}
-              color="#70757a"
-              label={`${scopeLabel}任务完成率`}
-              value={`${summary.taskRate ?? '-'}%`}
-              onClick={() => nav('/execution')}
-            />
-          </Col>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<HeartOutlined />}
-              color="#f25b6b"
-              label="当前经营健康度"
-              value={summary.health ? summary.health.level : '仅管理层可见'}
-              suffix={summary.health ? `${summary.health.score}分` : undefined}
-              onClick={summary.health ? () => nav('/analysis') : undefined}
-            />
-          </Col>
+          {canViewGrowth && (
+            <>
+              <Col xs={12} md={8} xl={4}>
+                <StatCard
+                  icon={<UserAddOutlined />}
+                  color="var(--chart-2)"
+                  label={`${scopeLabel}新增客户`}
+                  value={summary.monthLeads ?? '-'}
+                  trend={summary.leadsWow}
+                  trendLabel={summary.scope?.compareLabel || '较上期'}
+                  onClick={() => nav('/growth')}
+                />
+              </Col>
+              <Col xs={12} md={8} xl={4}>
+                <StatCard
+                  icon={<ClockCircleOutlined />}
+                  color="var(--chart-3)"
+                  label="当前待跟进客户"
+                  value={summary.pendingFollow ?? '-'}
+                  suffix={summary.overdue ? `${summary.overdue}人超期` : ''}
+                  onClick={() => nav('/growth')}
+                />
+              </Col>
+            </>
+          )}
+          {hasModule('activities') && (
+            <Col xs={12} md={8} xl={4}>
+              <StatCard
+                icon={<CalendarOutlined />}
+                color="var(--warn)"
+                label={`${scopeLabel}活动`}
+                value={summary.runningActivities ?? '-'}
+                suffix="场"
+                onClick={() => nav('/activities')}
+              />
+            </Col>
+          )}
+          {hasModule('execution') && (
+            <Col xs={12} md={8} xl={4}>
+              <StatCard
+                icon={<CheckCircleOutlined />}
+                color="var(--ui-muted)"
+                label={`${scopeLabel}任务完成率`}
+                value={`${summary.taskRate ?? '-'}%`}
+                onClick={() => nav('/execution')}
+              />
+            </Col>
+          )}
+          {summary.health && (
+            <Col xs={12} md={8} xl={4}>
+              <StatCard
+                icon={<HeartOutlined />}
+                color="var(--danger)"
+                label="当前经营健康度"
+                value={summary.health.level}
+                suffix={`${summary.health.score}分`}
+                onClick={hasModule('analysis') ? () => nav('/analysis') : undefined}
+              />
+            </Col>
+          )}
           {/* 门店真数据卡：只在真实录入了订单明细/成本时出现，null 一律不渲染（不显示 '-' 冒充有数） */}
-          {storeKpi?.avgTicket != null && (
+          {hasModule('analysis') && storeKpi?.avgTicket != null && (
             <Col xs={12} md={8} xl={4}>
               <StatCard
                 icon={<PayCircleOutlined />}
@@ -795,7 +749,7 @@ export default function Dashboard() {
               />
             </Col>
           )}
-          {storeKpi?.grossMargin != null && (
+          {hasModule('analysis') && storeKpi?.grossMargin != null && (
             <Col xs={12} md={8} xl={4}>
               <StatCard
                 icon={<FundOutlined />}
@@ -807,11 +761,11 @@ export default function Dashboard() {
               />
             </Col>
           )}
-          {storeKpi?.operatingMargin != null && (
+          {hasModule('analysis') && storeKpi?.operatingMargin != null && (
             <Col xs={12} md={8} xl={4}>
               <StatCard
                 icon={<FundOutlined />}
-                color="#8a7450"
+                color="var(--chart-3)"
                 label="本月经营利润率"
                 value={`${storeKpi.operatingMargin}%`}
                 suffix="扣全部登记成本"
@@ -826,7 +780,7 @@ export default function Dashboard() {
         <Panel
           title={
             <>
-              <MessageOutlined style={{ color: '#22c4a8' }} /> {scopeLabel}沟通跟进看板
+              <MessageOutlined style={{ color: 'var(--chart-2)' }} /> {scopeLabel}沟通跟进看板
             </>
           }
           extra={
@@ -860,7 +814,7 @@ export default function Dashboard() {
                       type: 'bar',
                       barWidth: 12,
                       data: (followOverview.daily || []).map((x: any) => x.records),
-                      itemStyle: { borderRadius: [5, 5, 0, 0], color: '#22c4a8' },
+                      itemStyle: { borderRadius: [5, 5, 0, 0], color: 'var(--chart-2)' },
                     },
                     {
                       name: '沟通客户',
@@ -876,8 +830,10 @@ export default function Dashboard() {
             </Col>
             <Col xs={24} lg={6}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-text)' }}>员工竞赛榜</div>
-                <Tooltip title="综合分 = 跟进、客户、线索、任务、内容、成交与荣誉调控">
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-text)' }}>
+                  {showTeamRanking ? '员工竞赛榜' : '我的工作表现'}
+                </div>
+                <Tooltip title="综合分 = 跟进、客户、线索、已验收终态任务、已人工采纳内容、成交与荣誉调控">
                   <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>
                     评分透明
                   </Tag>
@@ -894,14 +850,22 @@ export default function Dashboard() {
                 }}
               >
                 {(followOverview.staff || []).map((s: any, i: number) => {
-                  const meta = rankMeta(Number(s.rank || i + 1));
+                  const meta = showTeamRanking
+                    ? dashboardRankMeta(Number(s.rank || i + 1))
+                    : {
+                        icon: <StarFilled />,
+                        label: '个人表现',
+                        color: 'var(--ui-accent)',
+                        bg: 'var(--ui-surface-2)',
+                        border: 'var(--ui-border)',
+                      };
                   const canOpen = canViewEmployeeDetail || Number(currentUser?.id) === Number(s.user_id);
                   return (
                     <button
                       type="button"
                       key={s.user_id || s.name}
                       onClick={() => openEmployee(s.user_id)}
-                      aria-label={`${canOpen ? '查看' : ''}${s.name || '员工'}竞赛档案，综合分 ${s.score || 0}`}
+                      aria-label={`${canOpen ? '查看' : ''}${s.name || '员工'}${showTeamRanking ? '竞赛档案' : '个人表现'}，综合分 ${s.score || 0}`}
                       style={{
                         appearance: 'none',
                         display: 'block',
@@ -988,7 +952,7 @@ export default function Dashboard() {
                       >
                         <span>跟进 {s.follow_count || 0}次</span>
                         <span>客户 {s.customer_count || 0}人</span>
-                        <span>任务 {s.completed_tasks || 0}个</span>
+                        <span>已验收任务 {s.completed_tasks || 0}个</span>
                         <span>
                           荣誉 {Number(s.bonus_points || 0) >= 0 ? '+' : ''}
                           {s.bonus_points || 0}
@@ -1066,22 +1030,24 @@ export default function Dashboard() {
                   </>
                 }
                 extra={
-                  <Space size={8}>
-                    <Button
-                      size="small"
-                      type="primary"
-                      ghost
-                      icon={<RobotOutlined />}
-                      onClick={() =>
-                        runAi(
-                          '销售趋势AI分析',
-                          `请分析本门店${scopeLabel}（${scopeRangeText}）销售趋势并给出判断与动作：${JSON.stringify(trend.slice(-14).map(x => ({ 日期: x.date, 成交额: x.deal_amount, 单数: x.deals, 新线索: x.new_leads })))}`,
-                        )
-                      }
-                    >
-                      AI分析
-                    </Button>
-                  </Space>
+                  hasModule('marshals') ? (
+                    <Space size={8}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<RobotOutlined />}
+                        onClick={() =>
+                          runAi(
+                            '销售趋势AI分析',
+                            `请分析本门店${scopeLabel}（${scopeRangeText}）销售趋势并给出判断与动作：${JSON.stringify(trend.slice(-14).map(x => ({ 日期: x.date, 成交额: x.deal_amount, 单数: x.deals, 新线索: x.new_leads })))}`,
+                          )
+                        }
+                      >
+                        AI分析
+                      </Button>
+                    </Space>
+                  ) : undefined
                 }
               >
                 <Chart
@@ -1135,20 +1101,22 @@ export default function Dashboard() {
                 title="客户阶段漏斗"
                 extra={
                   <Space size={8}>
-                    <Button
-                      size="small"
-                      type="primary"
-                      ghost
-                      icon={<RobotOutlined />}
-                      onClick={() =>
-                        runAi(
-                          '客户漏斗AI分析',
-                          `请诊断本门店当前线索漏斗的卡点，并结合${scopeLabel}（${scopeRangeText}）经营数据给出下一步动作：${JSON.stringify((funnel.funnel || []).map((x: any) => ({ 阶段: x.stage, 人数: x.count, 转化率: x.rate, 基准: x.baseline })))}，当前卡点提示：${funnel.bottleneck || '无'}`,
-                        )
-                      }
-                    >
-                      AI分析
-                    </Button>
+                    {hasModule('marshals') && (
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<RobotOutlined />}
+                        onClick={() =>
+                          runAi(
+                            '客户漏斗AI分析',
+                            `请诊断本门店当前线索漏斗的卡点，并结合${scopeLabel}（${scopeRangeText}）经营数据给出下一步动作：${JSON.stringify((funnel.funnel || []).map((x: any) => ({ 阶段: x.stage, 人数: x.count, 转化率: x.rate, 基准: x.baseline })))}，当前卡点提示：${funnel.bottleneck || '无'}`,
+                          )
+                        }
+                      >
+                        AI分析
+                      </Button>
+                    )}
                     <Link style={{ fontSize: 12 }} to="/growth">
                       查看明细 <RightOutlined />
                     </Link>
@@ -1180,14 +1148,20 @@ export default function Dashboard() {
                           fontSize: 12,
                         },
                         itemStyle: { borderRadius: 4 },
-                        color: ['var(--ui-accent)', '#70757a', '#22c4a8', '#f6a02d', '#f25b6b'],
+                        color: [
+                          'var(--ui-accent)',
+                          'var(--ui-muted)',
+                          'var(--chart-2)',
+                          'var(--warn)',
+                          'var(--danger)',
+                        ],
                         data: (funnel.funnel || []).map((x: any) => ({ name: x.stage, value: x.count })),
                       },
                     ],
                   }}
                 />
                 {funnel.bottleneck && (
-                  <div style={{ fontSize: 12, color: '#f25b6b' }}>
+                  <div style={{ fontSize: 12, color: 'var(--danger)' }}>
                     <AlertOutlined /> 当前卡点：「{funnel.bottleneck}」环节低于基准
                   </div>
                 )}
@@ -1303,7 +1277,7 @@ export default function Dashboard() {
                         color: '#e0a253',
                       }}
                     >
-                      <b>待老板拍板：</b>
+                      <b>待负责人确认：</b>
                       {briefing.bossItems.slice(0, 2).map((x: string, i: number) => (
                         <div key={i}>· {x}</div>
                       ))}
@@ -1324,9 +1298,11 @@ export default function Dashboard() {
               <Panel
                 title={`${scopeLabel}渠道效果分析`}
                 extra={
-                  <Link style={{ fontSize: 12 }} to="/analysis">
-                    查看全部 <RightOutlined />
-                  </Link>
+                  hasModule('analysis') ? (
+                    <Link style={{ fontSize: 12 }} to="/analysis">
+                      查看全部 <RightOutlined />
+                    </Link>
+                  ) : undefined
                 }
               >
                 <Table
@@ -1334,7 +1310,7 @@ export default function Dashboard() {
                   rowKey="channel"
                   pagination={false}
                   dataSource={channels.slice(0, 6)}
-                  onRow={(r: any) => interactiveRow(() => openChannel(r.channel))}
+                  onRow={canViewGrowth ? (r: any) => interactiveRow(() => openChannel(r.channel)) : undefined}
                   columns={[
                     {
                       title: '渠道',
@@ -1398,7 +1374,9 @@ export default function Dashboard() {
                       dataIndex: 'score',
                       align: 'right',
                       render: (v: number) => (
-                        <span style={{ color: v >= 70 ? '#f25b6b' : 'var(--ui-text-2)', fontWeight: 600 }}>{v}分</span>
+                        <span style={{ color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)', fontWeight: 600 }}>
+                          {v}分
+                        </span>
                       ),
                     },
                     { title: '负责人', dataIndex: 'owner', width: 70 },
@@ -1413,17 +1391,17 @@ export default function Dashboard() {
                 title="数字员工分部快捷入口"
                 extra={
                   <Link style={{ fontSize: 12 }} to="/employees">
-                    60名员工 <RightOutlined />
+                    61名餐饮员工 <RightOutlined />
                   </Link>
                 }
               >
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(54px, 1fr))', gap: 8 }}>
                   {marshals.map(m => (
-                    <Tooltip key={m.id} title={`${m.name}（今日产出 ${m.today_outputs}）`}>
+                    <Tooltip key={m.id} title={`${m.name}（今日已验收产出 ${m.today_outputs}）`}>
                       <button
                         type="button"
                         onClick={() => nav(`/employees?group=${encodeURIComponent(m.name)}`)}
-                        aria-label={`进入${m.name}，今日产出 ${m.today_outputs || 0}`}
+                        aria-label={`进入${m.name}，今日已验收产出 ${m.today_outputs || 0}`}
                         style={{
                           appearance: 'none',
                           width: '100%',
@@ -1465,14 +1443,20 @@ export default function Dashboard() {
                   style={{ marginTop: 14, background: 'var(--ui-surface-2)', borderRadius: 8, padding: '10px 12px' }}
                 >
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 6 }}>
-                    待处理事项 <Badge count={totalTodos} size="small" />
+                    待办与进度 <Badge count={totalTodos} size="small" />
                   </div>
                   {[
-                    ['待审批内容', todos.approvals, '/system'],
+                    ['待审批事项', todos.approvals, '/system?tab=approvals'],
                     ['超期未跟进', todos.overdueLeads, '/growth'],
                     ['沉默合伙人', todos.silentPartners, '/execution'],
-                    ['待审核任务', todos.reviewTasks, '/execution'],
-                    ['建议老板介入', todos.bossLeads, '/growth'],
+                    ['待我人工验收任务', todos.actionableReviewTasks ?? todos.reviewTasks, '/execution#task-board'],
+                    ['我的提交待人工验收', todos.mySubmittedWaitingReview, '/execution#task-board'],
+                    [
+                      '内容员工产出待处理 / 需策略确认',
+                      todos.contentEmployeeReviews,
+                      '/content#content-employee-task-center',
+                    ],
+                    ['建议负责人介入', todos.bossLeads, '/growth'],
                   ].map(([label, n, to]: any) => (
                     <button
                       type="button"
@@ -1495,7 +1479,9 @@ export default function Dashboard() {
                       }}
                     >
                       <span>{label}</span>
-                      <span style={{ color: n > 0 ? '#f25b6b' : 'var(--ui-muted)', fontWeight: 600 }}>{n ?? 0}</span>
+                      <span style={{ color: n > 0 ? 'var(--danger)' : 'var(--ui-muted)', fontWeight: 600 }}>
+                        {n ?? 0}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1513,16 +1499,22 @@ export default function Dashboard() {
             <Space size={10}>
               <Tooltip
                 title={
-                  feishu?.enabled
-                    ? '活动创建/状态变更将通过飞书应用机器人单独推送'
-                    : '未连接：到 系统管理→配置与备份→飞书集成，绑定飞书应用机器人即可接通'
+                  hasModule('system')
+                    ? `${feishuStatus.description} 到“系统管理 → 配置与备份 → 飞书集成”处理。`
+                    : `${feishuStatus.description} 飞书由老板或管理层统一配置。`
                 }
               >
-                <Link to="/system" aria-label={feishu?.enabled ? '已连接飞书，前往系统管理' : '连接飞书，前往系统管理'}>
-                  <Tag color={feishu?.enabled ? 'success' : 'default'} style={{ cursor: 'pointer', fontSize: 11 }}>
-                    {feishu?.enabled ? '✓ 已连接飞书' : '○ 连接飞书'}
+                {hasModule('system') ? (
+                  <Link to="/system" aria-label={`${feishuStatus.label}，前往系统管理`}>
+                    <Tag color={feishuStatus.color} style={{ cursor: 'pointer', fontSize: 11 }}>
+                      {feishuStatus.label}
+                    </Tag>
+                  </Link>
+                ) : (
+                  <Tag color={feishuStatus.color} style={{ cursor: 'pointer', fontSize: 11 }}>
+                    {feishuStatus.label}
                   </Tag>
-                </Link>
+                )}
               </Tooltip>
               <Link style={{ fontSize: 12 }} to="/activities">
                 活动中心 <RightOutlined />
@@ -1596,7 +1588,7 @@ export default function Dashboard() {
         title={
           <Space>
             <AppstoreOutlined />
-            自定义老板驾驶舱
+            自定义{dashboardName}
           </Space>
         }
         width={440}
@@ -1612,7 +1604,7 @@ export default function Dashboard() {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="老板可自由选择老板驾驶舱呈现内容；关闭模块不会删除任何经营数据。"
+          message={`老板或管理员可自由选择${dashboardName}呈现内容；关闭模块不会删除任何经营数据。`}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(widgetPrefs.available || []).map((item: any) => {
@@ -1886,7 +1878,7 @@ export default function Dashboard() {
                     { key: '4', label: '手机号', children: employeeDetail.profile.phone || '-' },
                     { key: '5', label: '入职/开通时间', children: fmtDate(employeeDetail.profile.created_at) },
                     { key: '6', label: '最近登录', children: fmtDate(employeeDetail.profile.last_login_at) },
-                    { key: '7', label: '内容产出', children: `${employeeDetail.score?.content_count || 0}条` },
+                    { key: '7', label: '已人工采纳内容', children: `${employeeDetail.score?.content_count || 0}条` },
                     { key: '8', label: '成交金额', children: fmtMoney(employeeDetail.score?.deal_amount || 0) },
                   ] as any
                 }

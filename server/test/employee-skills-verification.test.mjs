@@ -6,6 +6,7 @@ import {
   EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH,
   EMPLOYEE_SKILL_FINGERPRINT_ALGORITHM,
   EMPLOYEE_SKILL_ID_ALGORITHM,
+  EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS,
   EMPLOYEE_SKILL_VERIFICATION_LEVEL,
   EMPLOYEE_SKILLS_VERIFICATION_SCHEMA,
   employeeSkillContentFingerprint,
@@ -104,7 +105,8 @@ test("证据只证明目录完整与执行注入契约，不把历史资料冒�
       assert.equal(injected.title, original.title);
       assert.equal(injected.detail, original.detail);
       assert.equal(injected.source, original.source);
-      assert.equal(injected.verificationStatus, "legacy_unverified");
+      assert.equal(injected.verificationStatus, EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS);
+      assert.equal(injected.legacyVerificationStatus, "legacy_unverified");
       assert.equal(fixture.skillId, injected.id);
       assert.equal(fixture.employeeIdx, injected.employeeIdx);
       assert.equal(fixture.roleKey, injected.roleKey);

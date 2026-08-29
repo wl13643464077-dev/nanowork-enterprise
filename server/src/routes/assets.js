@@ -3,6 +3,7 @@ import { q, curTenant } from '../db.js';
 import { logOp, monthStart, pct, daysAgo, pageParams } from '../util.js';
 import { hasFullDataAccess, isManagerRole, scopedUserIds } from '../engines/access.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, tableRows } from '../engines/deletion.js';
+import { loadContentDeliveryState } from '../engines/delivery-state.js';
 
 const r = Router();
 const VALID_CATEGORIES = new Set(['内容资产', '知识资产', '客户资产', '数据资产', '品牌资产']);
@@ -587,22 +588,69 @@ r.get('/:id/trace', (req, res) => {
   let source = { type: a.source_type || '手动登记', label: '未标注来源', preview: null, leadId: null, link: null };
   if (a.source_type === 'content' && a.source_id) {
     const c = q.get(`SELECT type, title, topic, body, status, ai_mode, created_at FROM contents WHERE tenant_id = ${curTenant()} AND id = ?`, a.source_id);
-    if (c) source = {
-      type: '内容生产仓产出',
-      label: `${c.type}｜${c.title}`,
-      preview: String(c.body || '').slice(0, 400),
-      meta: `状态 ${c.status} · ${c.ai_mode === 'api' ? 'AI生成' : '模板生成'} · ${(c.created_at || '').slice(0, 16)}`,
-      link: '/content',
-    };
+    if (c) {
+      const delivery = loadContentDeliveryState(a.source_id, {
+        tenantId: curTenant(),
+      });
+      const superseded = delivery.code === 'DELIVERY_SUPERSEDED';
+      const replacement = delivery.supersededBy || null;
+      const replacementLink = replacement?.employeeIdx != null
+        ? `/employees?employee=${encodeURIComponent(String(replacement.employeeIdx))}&task=${encodeURIComponent(String(replacement.taskId))}`
+        : replacement?.taskId
+          ? `/tasks?kind=restaurant&id=${encodeURIComponent(String(replacement.taskId))}`
+          : '/content';
+      source = {
+        type: '内容生产仓产出',
+        label: `${c.type}｜${c.title}`,
+        // 已被安全修订版取代的正文只保留在审计存储，普通资产溯源不是
+        // 审计出口，不能继续通过400字预览旁路读取旧报告。
+        preview: superseded ? null : String(c.body || '').slice(0, 400),
+        meta: superseded
+          ? `状态 ${delivery.reason}`
+          : `状态 ${c.status} · ${c.ai_mode === 'api' ? 'AI生成' : '模板生成'} · ${(c.created_at || '').slice(0, 16)}`,
+        link: superseded ? replacementLink : '/content',
+        ...(superseded
+          ? {
+              bodyAvailability: 'superseded',
+              deliveryState: delivery.code,
+              supersededBy: replacement,
+            }
+          : {}),
+      };
+    }
   } else if (a.source_type === 'kb' && a.source_id) {
-    const k = q.get(`SELECT category, title, body, updated_at FROM kb_docs WHERE tenant_id = ${curTenant()} AND id = ?`, a.source_id);
-    if (k) source = {
-      type: '知识库文档',
-      label: `${k.category}｜${k.title}`,
-      preview: String(k.body || '').slice(0, 400),
-      meta: `更新于 ${(k.updated_at || '').slice(0, 16)}`,
-      link: '/system',
-    };
+    const k = q.get(`SELECT category,title,body,source_type,source_id,enabled,updated_at
+      FROM kb_docs WHERE tenant_id = ${curTenant()} AND id = ?`, a.source_id);
+    if (k) {
+      const delivery = k.source_type === 'content' && k.source_id
+        ? loadContentDeliveryState(k.source_id, { tenantId: curTenant() })
+        : null;
+      const superseded = delivery?.code === 'DELIVERY_SUPERSEDED';
+      const replacement = delivery?.supersededBy || null;
+      const replacementLink = replacement?.employeeIdx != null
+        ? `/employees?employee=${encodeURIComponent(String(replacement.employeeIdx))}&task=${encodeURIComponent(String(replacement.taskId))}`
+        : replacement?.taskId
+          ? `/tasks?kind=restaurant&id=${encodeURIComponent(String(replacement.taskId))}`
+          : '/system';
+      source = {
+        type: '知识库文档',
+        label: `${k.category}｜${k.title}`,
+        // 关联旧报告的知识文档会在取代事务中禁用；资产溯源
+        // 仍可看见它的存在，但不能再成为旧正文的读取旁路。
+        preview: superseded ? null : String(k.body || '').slice(0, 400),
+        meta: superseded
+          ? `状态 ${delivery.reason}`
+          : `更新于 ${(k.updated_at || '').slice(0, 16)}`,
+        link: superseded ? replacementLink : '/system',
+        ...(superseded
+          ? {
+              bodyAvailability: 'superseded',
+              deliveryState: delivery.code,
+              supersededBy: replacement,
+            }
+          : {}),
+      };
+    }
   } else if (a.source_type === 'lead' && a.source_id) {
     const l = q.get(`SELECT id, name, identity_tag, stage, grade, score, deal_amount FROM leads WHERE tenant_id = ${curTenant()} AND id = ?`, a.source_id);
     if (l) source = {

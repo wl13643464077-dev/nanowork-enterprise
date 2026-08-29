@@ -16,7 +16,7 @@ process.env.OPENAI_API_KEY = '';
 process.env.ANTHROPIC_API_KEY = '';
 process.env.SEED_DEMO = 'false';
 
-const { db, qRaw, initSchema, migrateV2, runWithTenant } = await import('../src/db.js');
+const { db, qRaw, initSchema, migrateV2, runWithTenant, setConfig } = await import('../src/db.js');
 const { balanceOfTenant, releaseHold } = await import('../src/engines/credits.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
 
@@ -24,7 +24,7 @@ initSchema();
 migrateV2();
 
 const tenantId = Number(qRaw.run(
-  "INSERT INTO tenants(name,status,credits) VALUES('内容路由计费企业','已开通',500)",
+  "INSERT INTO tenants(name,status,credits) VALUES('内容路由计费企业','已开通',10000)",
 ).lastInsertRowid);
 const userId = Number(qRaw.run(
   `INSERT INTO users(username,password_hash,name,role,tenant_id)
@@ -33,6 +33,31 @@ const userId = Number(qRaw.run(
 ).lastInsertRowid);
 const user = { id: userId, name: '内容路由计费用户', role: 'boss', tenant_id: tenantId };
 const contentLeaseEvents = [];
+let providerReturnsZeroUsage = true;
+
+const providerApp = express();
+providerApp.use(express.json({ limit: '2mb' }));
+providerApp.post('/v1/chat/completions', (req, res) => {
+  const requestText = JSON.stringify(req.body?.messages || []);
+  const text = requestText.includes('只输出一个合法JSON对象')
+    ? JSON.stringify({
+        title: '零token PPT',
+        subtitle: '仅用于账务门禁测试',
+        pages: [{ title: '核心结论', bullets: ['事实待人工核验'], note: '不得外发' }],
+      })
+    : '【零token测试正文】供应商返回了非空内容，但没有可结算的 token 证据。';
+  res.json({
+    choices: [{ message: { content: text } }],
+    usage: providerReturnsZeroUsage
+      ? { prompt_tokens: 0, completion_tokens: 0 }
+      : { prompt_tokens: 120, completion_tokens: 180 },
+  });
+});
+const providerServer = providerApp.listen(0, '127.0.0.1');
+const providerPort = await new Promise(resolve => {
+  providerServer.once('listening', () => resolve(providerServer.address().port));
+});
+setConfig('yunwu_base_url', `http://127.0.0.1:${providerPort}/v1`);
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -69,28 +94,90 @@ const heldRows = () => db.prepare(
   `SELECT * FROM credit_holds WHERE tenant_id=? AND status='held' ORDER BY id`,
 ).all(tenantId);
 
-test('同步文案与PPT先占扣后落库，模板降级按0分结算且不留悬挂占扣', async () => {
+test('同步文案与PPT先占扣，模板降级不得交付并全额释放占扣', async () => {
   const before = balanceOfTenant(tenantId);
+  const contentBefore = db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n;
   const copy = await post('/content/generate', {
     type: '朋友圈文案',
     topic: '两阶段同步文案验收',
     employeeIdx: 3,
   });
-  assert.equal(copy.response.status, 200);
-  assert.equal(copy.payload.billing.state, 'settled');
+  assert.equal(copy.response.status, 409);
+  assert.match(copy.payload.error, /模板|降级|不是真实可交付/u);
+  assert.equal(copy.payload.billing.state, 'released');
   assert.equal(copy.payload.billing.chargedCredits, 0);
-  assert.equal(JSON.parse(db.prepare(
-    'SELECT snapshot_json FROM contents WHERE tenant_id=? AND id=?',
-  ).get(tenantId, copy.payload.id).snapshot_json).billing.state, 'settled');
+  assert.equal(copy.payload.id, undefined);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n, contentBefore);
 
   const ppt = await post('/content/generate-ppt', {
     topic: '两阶段PPT验收',
     pages: 5,
     employeeIdx: 7,
   });
-  assert.equal(ppt.response.status, 200);
-  assert.equal(ppt.payload.billing.state, 'settled');
+  assert.equal(ppt.response.status, 409);
+  assert.equal(ppt.payload.billing.state, 'released');
   assert.equal(ppt.payload.billing.chargedCredits, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n, contentBefore);
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
+});
+
+test('内容、PPT与日更包 API 返回正文但 usage 为0时，均在持久化前失败关闭', async () => {
+  const before = balanceOfTenant(tenantId);
+  const contentBefore = db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?')
+    .get(tenantId).n;
+  process.env.YUNWU_API_KEY = 'sk-local-content-zero-usage-test';
+  providerReturnsZeroUsage = true;
+  try {
+    const copy = await post('/content/generate', {
+      type: '朋友圈文案',
+      topic: '同步文案零token',
+      employeeIdx: 3,
+    });
+    assert.equal(copy.response.status, 409, JSON.stringify(copy.payload));
+    assert.equal(copy.payload.billing.state, 'released');
+
+    const ppt = await post('/content/generate-ppt', {
+      topic: 'PPT零token',
+      pages: 3,
+      employeeIdx: 7,
+    });
+    assert.equal(ppt.response.status, 409, JSON.stringify(ppt.payload));
+    assert.equal(ppt.payload.billing.state, 'released');
+
+    const daily = await post('/content/daily-pack', {
+      topic: '日更包零token',
+      employeeIdx: 3,
+    });
+    assert.equal(daily.response.status, 502, JSON.stringify(daily.payload));
+    assert.equal(daily.payload.status, 'failed');
+    assert.equal(daily.payload.results.length, 0);
+    assert.equal(daily.payload.failures.length, 3);
+    assert.ok(daily.payload.failures.every(item => item.billing.state === 'released'));
+
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?')
+      .get(tenantId).n, contentBefore);
+    assert.equal(heldRows().length, 0);
+    assert.equal(balanceOfTenant(tenantId), before);
+  } finally {
+    process.env.YUNWU_API_KEY = '';
+    providerReturnsZeroUsage = true;
+  }
+});
+
+test('自定义内容类型没有内置提示词代码时仍走通用契约，不向SQLite绑定undefined', async () => {
+  const before = balanceOfTenant(tenantId);
+  const contentBefore = db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n;
+  const generated = await post('/content/generate', {
+    type: '经营复盘文案',
+    topic: '自定义类型验收',
+    requirement: '只整理已知事实，未知项标记待确认。',
+    employeeIdx: 3,
+  });
+  assert.equal(generated.response.status, 409, JSON.stringify(generated.payload));
+  assert.doesNotMatch(String(generated.payload.error || ''), /SQLite|cannot be bound/iu);
+  assert.equal(generated.payload.billing.state, 'released');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n, contentBefore);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
 });
@@ -131,6 +218,8 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
       SELECT RAISE(ABORT,'injected settlement failure');
     END`);
   let pendingHold;
+  process.env.YUNWU_API_KEY = 'sk-local-content-settlement-test';
+  providerReturnsZeroUsage = false;
   try {
     const pending = await post('/content/generate', {
       type: '朋友圈文案',
@@ -150,6 +239,8 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
     assert.ok(pendingHold);
     assert.equal(balanceOfTenant(tenantId), before - pendingHold.held_credits);
   } finally {
+    process.env.YUNWU_API_KEY = '';
+    providerReturnsZeroUsage = true;
     db.exec('DROP TRIGGER IF EXISTS injected_content_settlement_failure');
     if (pendingHold) {
       releaseHold({
@@ -169,7 +260,7 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
   assert.equal(heldRows().length, 0);
 });
 
-test('后台文案在返回jobId前已占扣，终态按模板0分结算且快照可对账', async () => {
+test('后台文案在返回jobId前已占扣，模板终态必须失败并退回预授权', async () => {
   const before = balanceOfTenant(tenantId);
   const leaseBefore = contentLeaseEvents.length;
   const queued = await post('/content/generate', {
@@ -190,7 +281,7 @@ test('后台文案在返回jobId前已占扣，终态按模板0分结算且快�
     assert.equal(balanceOfTenant(tenantId), before - queued.payload.billing.heldCredits);
   } else {
     // setImmediate 可能在客户端读完响应体前已完成；此时以终态账本为准。
-    assert.equal(immediateJob.status, '成功');
+    assert.equal(immediateJob.status, '失败');
     assert.equal(balanceOfTenant(tenantId), before);
   }
 
@@ -202,34 +293,60 @@ test('后台文案在返回jobId前已占扣，终态按模板0分结算且快�
     if (job?.status !== '处理中') break;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  assert.equal(job?.status, '成功');
-  assert.ok(job.result_id);
-  assert.equal(JSON.parse(job.snapshot_json).billing.state, 'settled');
+  assert.equal(job?.status, '失败');
+  assert.equal(job.result_id, null);
+  assert.equal(JSON.parse(job.snapshot_json).billing.state, 'released');
   assert.equal(job.credits, 0);
+  // 失败记录写入与退款在后台同一条链路上，轮询至“失败 + 无 held”再判定退款完成。
+  for (let i = 0; i < 100 && heldRows().length; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
   assert.equal(contentLeaseEvents.slice(leaseBefore).filter(event => event.action === 'release').length, 1);
 });
 
-test('日更包三个子任务分别结算并返回逐项可对账账本', async () => {
+test('日更包逐项结算，模板子任务全部失败且逐项退款', async () => {
   const before = balanceOfTenant(tenantId);
+  const leaseBefore = contentLeaseEvents.length;
   const daily = await post('/content/daily-pack', {
     topic: '日更逐子任务两阶段验收',
     employeeIdx: 3,
   });
-  assert.equal(daily.response.status, 200, JSON.stringify(daily.payload));
-  assert.equal(daily.payload.status, 'success');
-  assert.equal(daily.payload.results.length, 3);
+  assert.equal(daily.response.status, 502, JSON.stringify(daily.payload));
+  assert.equal(daily.payload.status, 'failed');
+  assert.equal(daily.payload.results.length, 0);
+  assert.equal(daily.payload.failures.length, 3);
+  assert.ok(daily.payload.failures.every(item => item.billing.state === 'released'));
   assert.equal(daily.payload.billing.items.length, 3);
-  assert.ok(daily.payload.billing.items.every(item => item.state === 'settled'));
+  assert.deepEqual(daily.payload.billing.items.map(item => item.type), [
+    '短视频脚本',
+    '朋友圈文案',
+    '社群话题',
+  ]);
+  assert.equal(daily.payload.billing.items.filter(item => item.state === 'released').length, 3);
   assert.ok(daily.payload.billing.items.every(item => item.chargedCredits === 0));
+  assert.equal(daily.payload.summary.producedItems, 0);
   assert.equal(daily.payload.billing.pendingReconciliation, 0);
+  assert.equal(daily.payload.billing.balance, before, '并发结算后必须返回企业最终余额，不能取某个子任务的中间余额');
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM biz_assets
+    WHERE tenant_id=? AND source_type='content'`).get(tenantId).n, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM kb_docs
+    WHERE tenant_id=? AND source_type='content'`).get(tenantId).n, 0);
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before);
+  const lease = contentLeaseEvents.slice(leaseBefore);
+  assert.equal(lease.filter(event => event.action === 'defer').length, 1);
+  assert.ok(
+    lease.find(event => event.action === 'defer').timeoutMs >= 1_260_000,
+    '两个并发worker的请求租约必须覆盖两波上游及备用通道终态',
+  );
+  assert.equal(lease.filter(event => event.action === 'release').length, 1);
 });
 
 after(async () => {
   await new Promise(resolve => server.close(resolve));
+  await new Promise(resolve => providerServer.close(resolve));
   try { db.close(); } catch { /* already closed */ }
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch { /* clean test database */ }

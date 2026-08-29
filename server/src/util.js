@@ -201,8 +201,14 @@ export function logOp(user, module, action, target) {
   } catch { /* logging must never break business flow */ }
 }
 
-export function notify(userId, type, title, body) {
-  q.run('INSERT INTO notifications(user_id,type,title,body) VALUES(?,?,?,?)', userId, type, title, body ?? '');
+export function notify(userId, type, title, body, link = null) {
+  const safeLink = typeof link === 'string'
+    && link.length <= 1000
+    && /^\/(?!\/)[^\\\r\n]*$/u.test(link)
+    ? link
+    : null;
+  q.run('INSERT INTO notifications(user_id,type,title,body,link) VALUES(?,?,?,?,?)',
+    userId, type, title, body ?? '', safeLink);
 }
 
 export const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD 本地时区

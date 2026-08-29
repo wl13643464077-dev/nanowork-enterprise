@@ -54,9 +54,19 @@ import {
   DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import { api, fmtMoney, fmtWan } from '../api/client';
+import { api, fmtMoney, fmtWan, getUser } from '../api/client';
 import { loadXlsx } from '../utils/xlsx';
 import { StatCard, Panel, StageTag, GradeTag } from '../components/Kit';
+import {
+  asList,
+  assignmentDrafts,
+  cloneJson,
+  displayText,
+  listText,
+  normalizePlanView,
+  textList,
+} from '../components/ActivitiesPlanHelpers';
+import { activityCalendarSyncPresentation } from '../components/statusPresentation.js';
 
 // 后端沿用既有活动类型值，前端只替换用户可见名称，避免影响历史数据与日历联动。
 const ACT_TYPES = [
@@ -75,10 +85,10 @@ const TYPE_COLOR: Record<string, string> = {
   品鉴会: 'var(--ui-accent)',
   沙龙会: '#13c2c2',
   回厂游: '#d4380d',
-  封坛仪式: '#8a7450',
-  企业团购沙龙: '#f6a02d',
+  封坛仪式: 'var(--chart-3)',
+  企业团购沙龙: 'var(--warn)',
   招商说明会: '#52c41a',
-  会员日: '#22c4a8',
+  会员日: 'var(--chart-2)',
 };
 const TYPE_TAG: Record<string, string> = {
   品鉴会: 'blue',
@@ -130,87 +140,11 @@ const KEY_ZH: Record<string, string> = {
   ...RATE_LABEL,
 };
 const KANBAN_COLS = [
-  { title: '筹备中', sts: ['策划中', '筹备中'], color: '#f6a02d' },
+  { title: '筹备中', sts: ['策划中', '筹备中'], color: 'var(--warn)' },
   { title: '进行中', sts: ['报名中', '进行中'], color: 'var(--ui-accent)' },
-  { title: '已复盘', sts: ['已结束', '已复盘'], color: '#22c4a8' },
+  { title: '已复盘', sts: ['已结束', '已复盘'], color: 'var(--chart-2)' },
 ];
 
-const PLAN_FIELD_LABELS: Record<string, string> = {
-  totalBudget: '总预算',
-  allocation: '预算明细',
-  approvalNote: '审批说明',
-  item: '项目',
-  amount: '金额',
-  targetCount: '目标到场',
-  targetAudience: '目标人群',
-  inviteTotalSuggested: '建议邀约',
-  confirmationTarget: '确认目标',
-  arrivalTarget: '到场目标',
-  channels: '邀约渠道',
-  inviteScript: '邀约话术',
-  confirmationScript: '确认话术',
-  reminderPlan: '提醒计划',
-  time: '时间',
-  action: '动作',
-  owner: '负责人',
-  output: '交付物',
-  name: '名称',
-  step: '步骤',
-};
-const isRecord = (v: any) => !!v && typeof v === 'object' && !Array.isArray(v);
-const displayText = (v: any): string => {
-  if (v == null || v === '') return '';
-  if (typeof v === 'string' || typeof v === 'number') return String(v);
-  if (typeof v === 'boolean') return v ? '是' : '否';
-  if (Array.isArray(v)) return v.map(displayText).filter(Boolean).join('；');
-  if (!isRecord(v)) return String(v);
-  return Object.entries(v)
-    .map(([k, value]) => {
-      const text = displayText(value);
-      return text ? `${PLAN_FIELD_LABELS[k] || k}：${text}` : '';
-    })
-    .filter(Boolean)
-    .join('；');
-};
-const asList = (v: any): string[] =>
-  Array.isArray(v) ? v.map(displayText).filter(Boolean) : v == null || v === '' ? [] : [displayText(v)];
-const normalizePlanView = (input: any) => {
-  const p = isRecord(input) ? input : {};
-  const flowRows = Array.isArray(p.flow) ? p.flow : isRecord(p.flow) ? Object.values(p.flow) : [];
-  const flow = flowRows
-    .map((row: any, i: number) =>
-      isRecord(row)
-        ? {
-            time: displayText(row.time ?? row.start ?? row.duration),
-            item: displayText(row.item ?? row.action ?? row.name ?? row.title ?? row.content ?? row),
-          }
-        : { time: '', item: displayText(row) || `活动环节${i + 1}` },
-    )
-    .filter((row: any) => row.time || row.item);
-  const sop = (Array.isArray(p.sop) ? p.sop : p.sop == null || p.sop === '' ? [] : [p.sop])
-    .map((row: any, i: number) => {
-      if (!isRecord(row)) return displayText(row);
-      return [
-        `${displayText(row.step) || i + 1}. ${displayText(row.name ?? row.title) || '执行步骤'}`,
-        displayText(row.action ?? row.content ?? row.detail),
-        row.owner ? `负责人：${displayText(row.owner)}` : '',
-        row.output ? `交付物：${displayText(row.output)}` : '',
-      ]
-        .filter(Boolean)
-        .join('｜');
-    })
-    .filter(Boolean);
-  return {
-    ...p,
-    theme: displayText(p.theme ?? p.title) || '活动策划案',
-    flow,
-    materials: asList(p.materials),
-    invites: displayText(p.invites),
-    sop,
-    kpi: isRecord(p.kpi) ? Object.fromEntries(Object.entries(p.kpi).map(([k, v]) => [k, displayText(v)])) : {},
-    budgetNote: displayText(p.budgetNote),
-  };
-};
 const PLAN_STATUS_COLOR: Record<string, string> = {
   未提交: 'default',
   草稿: 'default',
@@ -225,13 +159,6 @@ const CHECK_STATUS_COLOR: Record<string, string> = {
   已通过: 'green',
   已驳回: 'red',
 };
-const cloneJson = (v: any) => JSON.parse(JSON.stringify(v || {}));
-const listText = (v: any) => asList(v).join('\n');
-const textList = (v: string) =>
-  String(v || '')
-    .split(/\r?\n|[；;]/)
-    .map(s => s.trim())
-    .filter(Boolean);
 const buttonResetStyle = {
   appearance: 'none',
   border: 0,
@@ -244,61 +171,6 @@ const buttonResetStyle = {
   textAlign: 'inherit',
 } as const;
 
-function assignmentDrafts(plan: any, activity: any) {
-  const baseDate = dayjs(activity?.date);
-  const dueAt = (offsetDays: number, hour: number) =>
-    baseDate.isValid()
-      ? baseDate.add(offsetDays, 'day').hour(hour).minute(0).second(0)
-      : dayjs()
-          .add(Math.max(1, offsetDays + 2), 'day')
-          .hour(hour)
-          .minute(0)
-          .second(0);
-  const flow = (plan?.flow || [])
-    .map((x: any) => `${x.time || ''} ${x.item || ''}`.trim())
-    .filter(Boolean)
-    .join('\n');
-  const sop = asList(plan?.sop);
-  return [
-    {
-      key: 'invite',
-      title: '客户邀约与到场确认',
-      priority: '高',
-      assigneeId: undefined,
-      dueAt: dueAt(-3, 18),
-      detail:
-        [displayText(plan?.invites), ...sop.slice(0, 3)].filter(Boolean).join('\n') ||
-        '完成目标客户筛选、首邀、二次确认和到场提醒，并回传名单。',
-    },
-    {
-      key: 'materials',
-      title: '场地与活动物料准备',
-      priority: '高',
-      assigneeId: undefined,
-      dueAt: dueAt(-1, 18),
-      detail: asList(plan?.materials).join('、') || '完成场地、试吃菜品、物料、设备和签到工具准备，并逐项检查。',
-    },
-    {
-      key: 'onsite',
-      title: '现场流程与人员协同',
-      priority: '高',
-      assigneeId: undefined,
-      dueAt: dueAt(0, 12),
-      detail: flow || '按活动流程完成签到、主持、试吃体验、成交与现场数据记录。',
-    },
-    {
-      key: 'followup',
-      title: '会后跟进与活动复盘',
-      priority: '中',
-      assigneeId: undefined,
-      dueAt: dueAt(1, 18),
-      detail:
-        [...sop.slice(3), plan?.kpi ? `复盘指标：${displayText(plan.kpi)}` : ''].filter(Boolean).join('\n') ||
-        '会后24小时回访，录入成交与未成交原因，并完成活动复盘。',
-    },
-  ];
-}
-
 function Sect({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -309,6 +181,8 @@ function Sect({ title, children }: { title: ReactNode; children: ReactNode }) {
 }
 
 export default function Activities() {
+  const user = getUser();
+  const canManageActivityAssignments = ['boss', 'ops_director', 'manager', 'admin'].includes(user?.role || '');
   const [stats, setStats] = useState<any>({});
   const [acts, setActs] = useState<any[]>([]);
   const [selDate, setSelDate] = useState<Dayjs>(dayjs());
@@ -317,13 +191,23 @@ export default function Activities() {
   // 新建活动
   const [createOpen, setCreateOpen] = useState(false);
   // 飞书日历关联（FR-ACT-07）
-  const [calSync, setCalSync] = useState<{ open: boolean; info: any }>({ open: false, info: null });
+  const [calSync, setCalSync] = useState<{ open: boolean; info: any; error: string }>({
+    open: false,
+    info: null,
+    error: '',
+  });
   const openCalSync = () => {
-    setCalSync({ open: true, info: null });
+    if (!canManageActivityAssignments) {
+      message.warning('只有老板或管理层可以查看企业日历关联');
+      return;
+    }
+    setCalSync({ open: true, info: null, error: '' });
     api
-      .get('/activities/calendar-sync')
-      .then(info => setCalSync({ open: true, info }))
-      .catch(() => {});
+      .get('/activities/calendar-sync', { silent: true })
+      .then(info => setCalSync({ open: true, info, error: '' }))
+      .catch((error: any) =>
+        setCalSync({ open: true, info: null, error: error?.message || '企业日历关联状态加载失败' }),
+      );
   };
   const [creating, setCreating] = useState(false);
   const [createForm] = Form.useForm();
@@ -779,6 +663,10 @@ export default function Activities() {
     }));
 
   const openAssignments = async () => {
+    if (!canManageActivityAssignments) {
+      message.warning('只有老板或管理层可以分配活动工作');
+      return;
+    }
     if (!selected || !planDraft) return message.warning('请先生成活动策划案');
     setAssignmentLoading(true);
     try {
@@ -1050,6 +938,7 @@ export default function Activities() {
   const plan = normalizePlanView(planDraft || planData?.plan || {});
   const rv = reviewData || {};
   const rvBaseline = rv.baseline || baseline;
+  const calendarSyncStatus = activityCalendarSyncPresentation(calSync.info);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1068,7 +957,7 @@ export default function Activities() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<TeamOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="报名人数"
             value={stats.signedUp ?? '-'}
             suffix="人"
@@ -1078,7 +967,7 @@ export default function Activities() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<CheckCircleOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="到场率"
             value={stats.arriveRate != null ? `${stats.arriveRate}%` : '-'}
             onClick={() => openStatsDrill('arrive')}
@@ -1087,7 +976,7 @@ export default function Activities() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<DollarOutlined />}
-            color="#8a7450"
+            color="var(--chart-3)"
             label="活动收入"
             value={fmtWan(stats.revenue || 0)}
             onClick={() => openStatsDrill('revenue')}
@@ -1096,7 +985,7 @@ export default function Activities() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<RiseOutlined />}
-            color="#70757a"
+            color="var(--ui-muted)"
             label="转化率"
             value={stats.convRate != null ? `${stats.convRate}%` : '-'}
             onClick={() => openStatsDrill('conv')}
@@ -1105,7 +994,7 @@ export default function Activities() {
         <Col xs={12} md={8} xl={4}>
           <StatCard
             icon={<SmileOutlined />}
-            color="#f25b6b"
+            color="var(--danger)"
             label="客户满意度"
             value={stats.satisfaction ?? '-'}
             suffix="分"
@@ -1129,9 +1018,11 @@ export default function Activities() {
                   <Button size="small" icon={<RobotOutlined />} onClick={openStudio}>
                     AI活动策划室
                   </Button>
-                  <Button size="small" onClick={openCalSync}>
-                    📅 关联飞书日历
-                  </Button>
+                  {canManageActivityAssignments && (
+                    <Button size="small" onClick={openCalSync}>
+                      📅 关联飞书日历
+                    </Button>
+                  )}
                   <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
                     新建活动
                   </Button>
@@ -1371,7 +1262,7 @@ export default function Activities() {
                                 报名 {a.signed_up ?? 0}/{a.target_join ?? '-'}
                               </span>
                               {a.revenue > 0 && (
-                                <span style={{ color: '#f25b6b', fontWeight: 600 }}>{fmtWan(a.revenue)}</span>
+                                <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{fmtWan(a.revenue)}</span>
                               )}
                             </div>
                           </button>
@@ -1449,7 +1340,7 @@ export default function Activities() {
                   loading={planLoading}
                   onClick={genPlan}
                   style={{
-                    background: 'linear-gradient(135deg,var(--ui-primary-strong),#8a7450)',
+                    background: 'linear-gradient(135deg,var(--ui-primary-strong),var(--chart-3))',
                     border: 'none',
                     color: '#fff',
                     fontWeight: 600,
@@ -1488,7 +1379,9 @@ export default function Activities() {
               title="待确认事项"
               extra={
                 checklist.length > 0 && (
-                  <span style={{ fontSize: 12, color: checkDone === checklist.length ? '#16a34a' : 'var(--ui-muted)' }}>
+                  <span
+                    style={{ fontSize: 12, color: checkDone === checklist.length ? 'var(--ok)' : 'var(--ui-muted)' }}
+                  >
                     {checkDone}/{checklist.length} 已完成
                   </span>
                 )
@@ -1502,7 +1395,7 @@ export default function Activities() {
                     size="small"
                     showInfo={false}
                     percent={Math.round((checkDone / checklist.length) * 100)}
-                    strokeColor="#22c4a8"
+                    strokeColor="var(--chart-2)"
                   />
                   {checklist.map((c: any, i: number) => {
                     const status = c.approvalStatus;
@@ -1560,7 +1453,7 @@ export default function Activities() {
             <Panel
               title={
                 <>
-                  <HistoryOutlined style={{ color: '#8a7450' }} /> 历史活动复盘
+                  <HistoryOutlined style={{ color: 'var(--chart-3)' }} /> 历史活动复盘
                 </>
               }
               extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>{reviewed.length} 场</span>}
@@ -1670,7 +1563,7 @@ export default function Activities() {
                         ? (b.satisfaction || 0) - (a.satisfaction || 0)
                         : String(b.date).localeCompare(String(a.date)),
             );
-            const hl = (cond: boolean) => (cond ? { color: '#f25b6b', fontWeight: 700 } : { fontWeight: 600 });
+            const hl = (cond: boolean) => (cond ? { color: 'var(--danger)', fontWeight: 700 } : { fontWeight: 600 });
             return (
               <>
                 <Table
@@ -1719,7 +1612,7 @@ export default function Activities() {
                       width: 60,
                       align: 'right',
                       render: (v: any, r: any) => (
-                        <span style={k === 'signed' ? { fontWeight: 700, color: '#22c4a8' } : {}}>
+                        <span style={k === 'signed' ? { fontWeight: 700, color: 'var(--chart-2)' } : {}}>
                           {v ?? 0}/{r.target_join ?? '-'}
                         </span>
                       ),
@@ -1752,7 +1645,7 @@ export default function Activities() {
                       width: 88,
                       align: 'right',
                       render: (v: any) => (
-                        <span style={k === 'revenue' ? { fontWeight: 700, color: '#8a7450' } : {}}>
+                        <span style={k === 'revenue' ? { fontWeight: 700, color: 'var(--chart-3)' } : {}}>
                           {fmtMoney(v || 0)}
                         </span>
                       ),
@@ -1771,7 +1664,7 @@ export default function Activities() {
                       width: 66,
                       align: 'right',
                       render: (v: any) => (
-                        <span style={k === 'sat' ? { fontWeight: 700, color: '#f25b6b' } : {}}>{v || '-'}</span>
+                        <span style={k === 'sat' ? { fontWeight: 700, color: 'var(--danger)' } : {}}>{v || '-'}</span>
                       ),
                     },
                   ]}
@@ -1920,27 +1813,32 @@ export default function Activities() {
         open={calSync.open}
         width={560}
         footer={null}
-        onCancel={() => setCalSync({ open: false, info: null })}
+        onCancel={() => setCalSync({ open: false, info: null, error: '' })}
         title={
           <Space>
             📅 关联飞书日历<Tag color="blue">{calSync.info?.eventCount ?? '-'} 个活动可同步</Tag>
           </Space>
         }
       >
-        {!calSync.info ? (
+        {calSync.error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="企业日历关联状态加载失败"
+            description={calSync.error}
+            action={<Button onClick={openCalSync}>重新加载</Button>}
+          />
+        ) : !calSync.info ? (
           <div style={{ textAlign: 'center', padding: 30 }}>
             <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Alert
-              type={calSync.info.autoSyncReady ? 'success' : 'info'}
+              type={calendarSyncStatus.ready ? 'success' : calendarSyncStatus.state === 'failed' ? 'error' : 'info'}
               showIcon
-              message={
-                calSync.info.autoSyncReady
-                  ? `企业应用直写已启用：活动创建/更新会自动进飞书日历，并推送给 ${calSync.info.managers?.count || 0} 位老板/管理层`
-                  : '还未启用企业应用直写，可先用 .ics 导入或订阅作为备用方案'
-              }
+              message={calendarSyncStatus.label}
+              description={calendarSyncStatus.message}
             />
             <div
               style={{
@@ -1956,11 +1854,13 @@ export default function Activities() {
                 2小时前提醒，并把门店老板、运营负责人、管理员加入日程参与人。
               </div>
               <Space wrap style={{ marginTop: 8 }}>
-                <Tag color={calSync.info.autoSyncReady ? 'green' : 'default'}>
-                  {calSync.info.autoSyncReady ? '日历直写可用' : calSync.info.appMode ? '应用凭据已配置' : '待配置应用'}
-                </Tag>
-                <Tag color={calSync.info.appBotReady ? 'green' : 'default'}>
-                  {calSync.info.appBotReady ? '应用机器人已绑定' : '待扫码绑定'}
+                <Tag color={calendarSyncStatus.color}>{calendarSyncStatus.label}</Tag>
+                <Tag color={calendarSyncStatus.ready && calSync.info.appBotReady ? 'green' : 'default'}>
+                  {calendarSyncStatus.ready && calSync.info.appBotReady
+                    ? '机器人已验证就绪'
+                    : calSync.info.appBotReady
+                      ? '机器人配置已启用，需验证'
+                      : '机器人待配置'}
                 </Tag>
                 <Tag color={(calSync.info.managers?.calendarCount || 0) > 0 ? 'green' : 'orange'}>
                   日历参与人 {calSync.info.managers?.calendarCount || 0}
@@ -2390,7 +2290,9 @@ export default function Activities() {
               width: 90,
               align: 'right',
               render: (v: number) => (
-                <span style={{ color: v >= 70 ? '#f25b6b' : 'var(--ui-text-2)', fontWeight: 600 }}>{v ?? '-'}分</span>
+                <span style={{ color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)', fontWeight: 600 }}>
+                  {v ?? '-'}分
+                </span>
               ),
             },
             { title: '阶段', dataIndex: 'stage', width: 90, render: (v: string) => <StageTag stage={v} /> },
@@ -2562,7 +2464,8 @@ export default function Activities() {
       >
         <div
           style={{
-            background: 'linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 7%, transparent),#8a745012)',
+            background:
+              'linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 7%, transparent),color-mix(in srgb, var(--chart-3) 7%, transparent))',
             border: '1px solid var(--ui-surface)',
             borderRadius: 10,
             padding: '12px 14px',
@@ -2786,9 +2689,11 @@ export default function Activities() {
           >
             当前：{selected?.plan_status || '未提交'}
           </Tag>
-          <Button icon={<TeamOutlined />} loading={assignmentLoading} onClick={openAssignments}>
-            工作分配
-          </Button>
+          {canManageActivityAssignments && (
+            <Button icon={<TeamOutlined />} loading={assignmentLoading} onClick={openAssignments}>
+              工作分配
+            </Button>
+          )}
           <Button loading={planSaving} onClick={savePlanDraft}>
             保存草稿
           </Button>
@@ -2989,7 +2894,7 @@ export default function Activities() {
         styles={{ body: { maxHeight: '72vh', overflow: 'auto' } }}
         title={
           <>
-            <FileDoneOutlined style={{ color: '#8a7450' }} /> 活动复盘 · {reviewAct?.title || ''}
+            <FileDoneOutlined style={{ color: 'var(--chart-3)' }} /> 活动复盘 · {reviewAct?.title || ''}
           </>
         }
       >
@@ -3227,7 +3132,7 @@ export default function Activities() {
                     >
                       <span style={{ color: 'var(--ui-text-2)' }}>{RATE_LABEL[k]}</span>
                       <span>
-                        <b style={{ color: below ? '#f25b6b' : '#16a34a', fontSize: 14 }}>
+                        <b style={{ color: below ? 'var(--danger)' : 'var(--ok)', fontSize: 14 }}>
                           {a ?? '-'}
                           {sfx}
                         </b>
@@ -3250,7 +3155,7 @@ export default function Activities() {
                 description={
                   <div>
                     {asList(rv.gaps).map((g, i) => (
-                      <div key={i} style={{ color: '#f25b6b', fontSize: 12.5, lineHeight: 1.8 }}>
+                      <div key={i} style={{ color: 'var(--danger)', fontSize: 12.5, lineHeight: 1.8 }}>
                         · {g}
                       </div>
                     ))}
@@ -3266,7 +3171,7 @@ export default function Activities() {
                       key={i}
                       style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ui-text-2)', lineHeight: 1.7 }}
                     >
-                      <CheckCircleOutlined style={{ color: '#22c4a8', marginTop: 3 }} />
+                      <CheckCircleOutlined style={{ color: 'var(--chart-2)', marginTop: 3 }} />
                       <span>{s}</span>
                     </div>
                   ))}

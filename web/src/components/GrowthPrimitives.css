@@ -1,0 +1,25 @@
+.growth-info-row {
+  display: flex;
+  padding: 3px 0;
+  font-size: var(--font-2, 12px);
+  line-height: 1.6;
+}
+
+.growth-info-row__label {
+  width: 62px;
+  flex-shrink: 0;
+  color: var(--ui-muted);
+}
+
+.growth-info-row__value {
+  flex: 1;
+  color: var(--ui-text-2);
+  overflow-wrap: anywhere;
+}
+
+.growth-section-title {
+  margin: 12px 0 6px;
+  color: var(--ui-text);
+  font-size: var(--font-2, 12px);
+  font-weight: 600;
+}

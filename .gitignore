@@ -1,5 +1,6 @@
 # 密钥与本地数据（绝不入库）
-server/.env
+server/.env*
+!server/.env.example
 server/data/
 *.db
 *.db-shm
@@ -18,5 +19,8 @@ Thumbs.db
 .claude/
 backups/
 outputs/
+/.tmp/
+/tmp/
+/artifacts/
 node_modules
 **/node_modules

@@ -1,0 +1,521 @@
+/* 门店日常操作台：日清 / 沽清 / 排班考勤 / 晨会 */
+.sop-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sop-head {
+  padding: 14px 18px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface);
+}
+
+.sop-kicker {
+  color: var(--ui-primary);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.sop-head h1 {
+  margin: 6px 0 5px;
+  font-size: clamp(22px, 2.4vw, 30px);
+  letter-spacing: -0.03em;
+}
+
+.sop-head p {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: 12.5px;
+}
+
+/* —— 晨会 —— */
+.sop-brief {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background:
+    linear-gradient(var(--ui-surface), var(--ui-surface)) padding-box,
+    linear-gradient(
+        115deg,
+        color-mix(in srgb, var(--ui-primary) 45%, transparent),
+        color-mix(in srgb, var(--warn) 35%, transparent) 65%,
+        color-mix(in srgb, var(--ui-primary) 16%, var(--ui-border))
+      )
+      border-box;
+}
+
+.sop-brief-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sop-brief-head strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-text);
+  font-size: 14.5px;
+}
+
+.sop-brief-head span {
+  display: block;
+  margin-top: 3px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.sop-brief-text {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--ui-primary);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--ui-primary) 4%, var(--ui-surface));
+  color: var(--ui-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+
+/* —— 日清 —— */
+.sop-checklists {
+  display: grid;
+  gap: 14px;
+}
+
+.sop-progress {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface);
+}
+
+.sop-progress-num {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.sop-progress-num small {
+  color: var(--ui-muted);
+  font-weight: 600;
+}
+
+.sop-progress-copy strong {
+  display: block;
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.sop-progress-copy span {
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sop-checklist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.sop-checklist {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-top: 2px solid color-mix(in srgb, var(--ui-primary) 40%, transparent);
+  border-radius: 12px;
+  background: var(--ui-surface);
+}
+
+.sop-checklist[data-complete] {
+  border-top-color: var(--ok);
+}
+
+.sop-checklist header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.sop-checklist header strong {
+  color: var(--ui-text);
+  font-size: 13.5px;
+}
+
+.sop-checklist header span {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.sop-checklist header em {
+  margin-left: auto;
+  color: var(--ui-primary);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.sop-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.sop-check-item:hover {
+  background: var(--ui-surface-2);
+}
+
+.sop-check-item input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--ok);
+  cursor: pointer;
+}
+
+.sop-check-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--ui-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.sop-check-item[data-done] .sop-check-label {
+  color: var(--ui-muted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--ok) 55%, transparent);
+}
+
+.sop-check-item small {
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-size: 10.5px;
+}
+
+/* —— 沽清板 —— */
+.sop-soldout {
+  display: grid;
+  gap: 12px;
+}
+
+.sop-soldout-group header {
+  margin-bottom: 6px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sop-soldout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.sop-dish {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease,
+    opacity 0.14s ease;
+}
+
+.sop-dish:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 40%, var(--ui-border));
+}
+
+.sop-dish strong {
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sop-dish span {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.sop-dish[data-soldout] {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--ui-border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--ui-surface));
+}
+
+.sop-dish[data-soldout] strong {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.sop-dish[data-soldout] span {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* —— 排班考勤 —— */
+.sop-shifts {
+  display: grid;
+  gap: 12px;
+}
+
+.sop-clock {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+}
+
+.sop-clock-copy strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.sop-clock-copy span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.sop-clock-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sop-week {
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  overflow: hidden;
+}
+
+.sop-week-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ui-border);
+  flex-wrap: wrap;
+}
+
+.sop-week-head .sop-week-nav {
+  margin-left: auto;
+}
+
+.sop-week-head strong {
+  color: var(--ui-text);
+  font-size: 13.5px;
+}
+
+.sop-week-head span {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.sop-week-table {
+  overflow-x: auto;
+}
+
+.sop-week-row {
+  display: grid;
+  grid-template-columns: 120px repeat(7, minmax(84px, 1fr));
+  align-items: center;
+  min-width: 760px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.sop-week-row:last-child {
+  border-bottom: 0;
+}
+
+.sop-week-row > span {
+  padding: 8px 8px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.sop-week-row-head {
+  background: var(--ui-surface-2);
+  color: var(--ui-muted);
+  font-weight: 650;
+}
+
+.sop-week-row-head small {
+  display: block;
+  font-weight: 500;
+}
+
+.sop-week-row > span[data-today] {
+  background: color-mix(in srgb, var(--ui-primary) 5%, transparent);
+}
+
+.sop-week-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start !important;
+  color: var(--ui-text);
+  font-weight: 600;
+  text-align: left !important;
+}
+
+.sop-week-row[data-me] .sop-week-name {
+  color: var(--ui-primary);
+}
+
+.sop-week-cell {
+  position: relative;
+}
+
+.sop-shift-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.sop-shift-none {
+  color: var(--ui-muted);
+  font-style: normal;
+}
+
+.sop-attend-mark {
+  position: absolute;
+  right: 6px;
+  top: 4px;
+  color: var(--ok);
+  font-size: 10px;
+}
+
+/* —— 库存订货 —— */
+.sop-inventory {
+  display: grid;
+  gap: 12px;
+}
+
+.sop-inventory-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.sop-inventory-benchmark {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.sop-reorder-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sop-reorder-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface-2);
+  font-size: 13px;
+}
+
+.sop-reorder-list li span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.sop-reorder-list li b {
+  margin-left: auto;
+  color: var(--ui-primary);
+}
+
+/* —— 外卖日报 —— */
+.sop-delivery {
+  display: grid;
+  gap: 12px;
+}
+
+.sop-delivery-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.sop-delivery-stats > div {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+}
+
+.sop-delivery-stats strong {
+  color: var(--ui-text);
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.sop-delivery-stats span {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.sop-delivery-stats > div[data-alert] {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--ui-border));
+}
+
+.sop-delivery-stats > div[data-alert] strong {
+  color: var(--danger);
+}
+
+.sop-delivery-form {
+  row-gap: 8px !important;
+  padding: 10px 12px;
+  border: 1px dashed var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface-2);
+}

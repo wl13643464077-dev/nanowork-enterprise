@@ -10,6 +10,7 @@ import {
   Progress,
   Select,
   Space,
+  Steps,
   Table,
   Tag,
   message,
@@ -25,7 +26,6 @@ import {
   FileSearchOutlined,
   HistoryOutlined,
   InboxOutlined,
-  SafetyCertificateOutlined,
   UndoOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -231,51 +231,67 @@ export default function DataIntake() {
     }
   };
 
+  // 文件处理与入口解耦：点击选择和拖拽投递共用同一条读取→识别→预览链路
+  const handleWorkbookFiles = async (selected: File[]) => {
+    if (!selected.length) return;
+    setParsing(true);
+    try {
+      const XLSX = await loadXlsx();
+      const next: RawSheet[] = [];
+      for (const file of selected) {
+        const buf = await file.arrayBuffer();
+        const workbook = XLSX.read(buf, { type: 'array', cellDates: false });
+        for (const sheetName of workbook.SheetNames) {
+          // Preserve Excel date serials so the server can normalize dates without
+          // depending on the workbook's locale-specific display format.
+          const rows: any[][] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+            header: 1,
+            raw: true,
+            defval: '',
+          });
+          if (rows.length) {
+            if (next.length >= MAX_WORKBOOK_SHEETS)
+              throw new Error(`单次最多读取 ${MAX_WORKBOOK_SHEETS} 个工作表，请拆分文件后上传`);
+            if (rows.length - 1 > MAX_WORKBOOK_ROWS)
+              throw new Error(
+                `${file.name} / ${sheetName} 超过 ${MAX_WORKBOOK_ROWS} 行，请拆分后上传，系统不会静默截断数据`,
+              );
+            next.push({ name: selected.length > 1 ? `${file.name} / ${sheetName}` : sheetName, rows });
+          }
+        }
+      }
+      setRawSheets(next);
+      setImportKey(newImportKey());
+      await preview(next);
+      message.success(`已读取 ${next.length} 个工作表，系统已自动判断写入位置`);
+    } catch (error: any) {
+      message.error(error?.message || '表格读取失败，请检查文件是否损坏或加密');
+    } finally {
+      setParsing(false);
+    }
+  };
+
   const pickWorkbook = () => {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
     input.accept = '.xlsx,.xls,.csv';
-    input.onchange = async () => {
-      const selected = Array.from(input.files || []);
-      if (!selected.length) return;
-      setParsing(true);
-      try {
-        const XLSX = await loadXlsx();
-        const next: RawSheet[] = [];
-        for (const file of selected) {
-          const buf = await file.arrayBuffer();
-          const workbook = XLSX.read(buf, { type: 'array', cellDates: false });
-          for (const sheetName of workbook.SheetNames) {
-            // Preserve Excel date serials so the server can normalize dates without
-            // depending on the workbook's locale-specific display format.
-            const rows: any[][] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
-              header: 1,
-              raw: true,
-              defval: '',
-            });
-            if (rows.length) {
-              if (next.length >= MAX_WORKBOOK_SHEETS)
-                throw new Error(`单次最多读取 ${MAX_WORKBOOK_SHEETS} 个工作表，请拆分文件后上传`);
-              if (rows.length - 1 > MAX_WORKBOOK_ROWS)
-                throw new Error(
-                  `${file.name} / ${sheetName} 超过 ${MAX_WORKBOOK_ROWS} 行，请拆分后上传，系统不会静默截断数据`,
-                );
-              next.push({ name: selected.length > 1 ? `${file.name} / ${sheetName}` : sheetName, rows });
-            }
-          }
-        }
-        setRawSheets(next);
-        setImportKey(newImportKey());
-        await preview(next);
-        message.success(`已读取 ${next.length} 个工作表，系统已自动判断写入位置`);
-      } catch (error: any) {
-        message.error(error?.message || '表格读取失败，请检查文件是否损坏或加密');
-      } finally {
-        setParsing(false);
-      }
+    input.onchange = () => {
+      void handleWorkbookFiles(Array.from(input.files || []));
     };
     input.click();
+  };
+
+  const [dragOver, setDragOver] = useState(false);
+  const onDropWorkbook = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragOver(false);
+    const accepted = Array.from(event.dataTransfer?.files || []).filter(file => /\.(xlsx|xls|csv)$/iu.test(file.name));
+    if (!accepted.length) {
+      message.warning('请拖入 Excel（.xlsx/.xls）或 CSV 文件');
+      return;
+    }
+    void handleWorkbookFiles(accepted);
   };
 
   const changeTarget = async (sheet: string, target: string) => {
@@ -336,59 +352,86 @@ export default function DataIntake() {
   const validRows = useMemo(() => batches.reduce((s, b) => s + Number(b.validRows || 0), 0), [batches]);
   const failedJobs = useMemo(() => jobs.filter(job => job.status !== 'success'), [jobs]);
 
+  const wizardStep = result ? 3 : batches.length ? 2 : rawSheets.length ? 1 : 0;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <Alert
-        type="info"
-        showIcon
-        icon={<SafetyCertificateOutlined />}
-        message="集中数据录入采用“先识别预览、再人工确认、最后写入”的三步流程"
-        description="系统会按表头自动判断客户、日报、活动、合伙人、订单、员工任务或知识库；导入前可修改目标表，不会直接覆盖未经确认的数据。"
-      />
+      {/* 向导步骤条：老板/管理员随时知道自己在第几步、下一步干什么 */}
+      <Panel>
+        <Steps
+          size="small"
+          current={wizardStep}
+          items={[
+            { title: '准备表格', description: '按模板整理 Excel/CSV' },
+            { title: '上传识别', description: '拖进来自动判断写入位置' },
+            { title: '预览确认', description: '核对无误再写入' },
+            { title: '完成', description: '驾驶舱实时更新' },
+          ]}
+        />
+      </Panel>
 
-      <Panel
-        title={
-          <>
-            <FileExcelOutlined /> 空系统启动：先准备这四类基础表
-          </>
-        }
-        extra={
+      <details
+        open={!batches.length || undefined}
+        style={{
+          border: '1px solid var(--ui-border)',
+          borderRadius: 14,
+          background: 'var(--ui-surface)',
+          padding: '4px 0',
+        }}
+      >
+        <summary
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 16px',
+            cursor: 'pointer',
+            fontWeight: 650,
+            color: 'var(--ui-text)',
+            listStyle: 'none',
+          }}
+        >
+          <FileExcelOutlined /> 第一次用？先看这份准备指南（四类基础表 + 标准模板）
           <Button
+            size="small"
             icon={<DownloadOutlined />}
-            onClick={() => {
+            style={{ marginLeft: 'auto' }}
+            onClick={event => {
+              event.preventDefault();
               downloadStarterWorkbook().catch(() => message.error('模板组件加载失败，请检查网络后重试'));
             }}
           >
             下载标准模板
           </Button>
-        }
-      >
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 10 }}
-          message="建议按“客户 → 订单 → 经营日报 → 活动”顺序导入"
-          description="只有客户表无法形成销售分析；补充订单表后才会出现商品销售TOP10、渠道和区域结构，日报与活动表负责驱动驾驶舱趋势、经营简报和活动复盘。"
-        />
-        <Table
-          size="small"
-          rowKey="key"
-          pagination={false}
-          dataSource={STARTER_GUIDE}
-          scroll={{ x: 1040 }}
-          columns={[
-            { title: '顺序', dataIndex: 'order', width: 58, render: (v: number) => <Tag color="blue">{v}</Tag> },
-            { title: '上传表格', dataIndex: 'sheet', width: 110, render: (v: string) => <b>{v}</b> },
-            { title: '最少字段', dataIndex: 'required', width: 150 },
-            { title: '建议补全字段', dataIndex: 'recommended', width: 340 },
-            { title: '导入后驱动', dataIndex: 'output', width: 330 },
-          ]}
-        />
-        <div style={{ marginTop: 9, fontSize: 12, color: 'var(--ui-muted)', lineHeight: 1.75 }}>
-          表头必须放在第一行，每行只放一条记录，不要合并单元格；日期建议使用
-          YYYY-MM-DD，金额只填数字。工作表名称可以不同，系统主要按表头识别，写入前仍会给你预览和修改目标表。
+        </summary>
+        <div style={{ padding: '4px 16px 14px' }}>
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 10 }}
+            message="建议按“客户 → 订单 → 经营日报 → 活动”顺序导入"
+            description="只有客户表无法形成销售分析；补充订单表后才会出现商品销售TOP10、渠道和区域结构，日报与活动表负责驱动驾驶舱趋势、经营简报和活动复盘。"
+          />
+          <Table
+            size="small"
+            rowKey="key"
+            pagination={false}
+            dataSource={STARTER_GUIDE}
+            scroll={{ x: 1040 }}
+            columns={[
+              { title: '顺序', dataIndex: 'order', width: 58, render: (v: number) => <Tag color="blue">{v}</Tag> },
+              { title: '上传表格', dataIndex: 'sheet', width: 110, render: (v: string) => <b>{v}</b> },
+              { title: '最少字段', dataIndex: 'required', width: 150 },
+              { title: '建议补全字段', dataIndex: 'recommended', width: 340 },
+              { title: '导入后驱动', dataIndex: 'output', width: 330 },
+            ]}
+          />
+          <div style={{ marginTop: 9, fontSize: 12, color: 'var(--ui-muted)', lineHeight: 1.75 }}>
+            表头必须放在第一行，每行只放一条记录，不要合并单元格；日期建议使用
+            YYYY-MM-DD，金额只填数字。工作表名称可以不同，系统主要按表头识别，写入前仍会给你预览和修改目标表。
+          </div>
         </div>
-      </Panel>
+      </details>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.45fr) minmax(280px,.75fr)', gap: 12 }}>
         <Panel
@@ -397,18 +440,49 @@ export default function DataIntake() {
               <InboxOutlined /> 结构化数据文件
             </>
           }
-          extra={
-            <Button type="primary" icon={<CloudUploadOutlined />} loading={parsing} onClick={pickWorkbook}>
-              选择 Excel / CSV
-            </Button>
-          }
         >
-          {!batches.length ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="上传工作簿后，系统自动识别每张表应写入哪个业务模块"
-            />
-          ) : (
+          {/* 拖拽投递区：把文件拖进来即上传，也可点击选择 */}
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="拖入或点击选择 Excel/CSV 文件"
+            onClick={pickWorkbook}
+            onKeyDown={event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                pickWorkbook();
+              }
+            }}
+            onDragOver={event => {
+              event.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDropWorkbook}
+            style={{
+              display: 'grid',
+              justifyItems: 'center',
+              gap: 6,
+              padding: '26px 16px',
+              marginBottom: batches.length ? 12 : 0,
+              border: `2px dashed ${dragOver ? 'var(--ui-primary)' : 'var(--ui-border)'}`,
+              borderRadius: 14,
+              background: dragOver
+                ? 'color-mix(in srgb, var(--ui-primary) 6%, var(--ui-surface))'
+                : 'var(--ui-surface-2)',
+              cursor: 'pointer',
+              transition: 'border-color 0.15s ease, background 0.15s ease',
+            }}
+          >
+            <CloudUploadOutlined style={{ fontSize: 30, color: 'var(--ui-primary)' }} />
+            <b style={{ color: 'var(--ui-text)', fontSize: 14 }}>
+              {parsing ? '正在读取表格…' : '把 Excel / CSV 拖到这里，或点击选择文件'}
+            </b>
+            <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>
+              上传后自动识别每张表写入哪个业务模块；写入前一定先给你预览确认
+            </span>
+          </div>
+          {!batches.length ? null : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Tag color="blue">{batches.length} 个工作表</Tag>

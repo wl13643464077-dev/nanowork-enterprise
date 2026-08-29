@@ -10,6 +10,30 @@ const FORMAT_ITEMS = [
   { key: 'pptx', label: 'PPT 演示 (.pptx)' },
 ];
 
+const AUTHORITATIVE_SOURCES = new Set(['agent_task', 'content_employee_run']);
+
+type Deliverable = {
+  id: number;
+  format: string;
+  label?: string;
+  fileName?: string;
+  downloadUrl: string;
+  size?: number;
+  reused?: boolean;
+};
+
+function normalizeDeliverables(value: unknown): Deliverable[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Deliverable =>
+      !!item &&
+      typeof item === 'object' &&
+      Number.isSafeInteger(Number((item as Deliverable).id)) &&
+      typeof (item as Deliverable).format === 'string' &&
+      typeof (item as Deliverable).downloadUrl === 'string',
+  );
+}
+
 export function ArtifactActions({
   title,
   content,
@@ -27,17 +51,22 @@ export function ArtifactActions({
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [artifact, setArtifact] = useState<any>(null);
+  const authoritativeSource = AUTHORITATIVE_SOURCES.has(sourceType) && Number.isSafeInteger(Number(sourceId));
 
   const generate = async (format: string) => {
     if (!content?.trim()) return message.warning('没有可生成文件的内容');
     setWorking(format);
     try {
-      const out = await api.post('/files/artifacts/generate', { title, content, format, sourceType, sourceId });
-      setArtifact(out);
+      const out = authoritativeSource
+        ? await api.post('/files/artifacts/source', { sourceType, sourceId, formats: [format] })
+        : await api.post('/files/artifacts/generate', { title, content, format, sourceType, sourceId });
+      const generated = authoritativeSource ? normalizeDeliverables(out?.deliverables) : [];
+      const nextArtifact = authoritativeSource ? generated[0] : out;
+      setArtifact(nextArtifact);
       onGenerated?.();
       message.success(`${FORMAT_ITEMS.find(x => x.key === format)?.label || format} 已生成并进入产出档案`);
       const link = document.createElement('a');
-      link.href = safeUrl(out.fileUrl);
+      link.href = safeUrl(nextArtifact?.downloadUrl || nextArtifact?.fileUrl);
       link.target = '_blank';
       link.rel = 'noreferrer';
       link.click();
@@ -55,7 +84,7 @@ export function ArtifactActions({
   };
 
   return (
-    <Space size={4}>
+    <Space size={4} wrap>
       <Dropdown menu={{ items: FORMAT_ITEMS, onClick: ({ key }) => generate(key) }} trigger={['click']}>
         <Tooltip title="生成真实可下载文件并保存到产出档案">
           <Button size={compact ? 'small' : 'middle'} type="text" icon={<DownloadOutlined />} loading={!!working}>

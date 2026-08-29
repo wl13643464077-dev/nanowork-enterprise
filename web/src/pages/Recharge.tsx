@@ -104,7 +104,7 @@ export default function Recharge() {
       title: `确认下单：${pkg.name}`,
       content: (
         <div style={{ fontSize: 13, lineHeight: 2 }}>
-          支付金额 <b style={{ color: '#f25b6b' }}>¥{pkg.price_yuan}</b>
+          支付金额 <b style={{ color: 'var(--danger)' }}>¥{pkg.price_yuan}</b>
           <br />
           到账积分 <b style={{ color: 'var(--ui-accent)' }}>{pkg.total_credits.toLocaleString()}</b>（含赠送{' '}
           {pkg.bonus_credits.toLocaleString()}）<br />
@@ -150,7 +150,7 @@ export default function Recharge() {
         <Col xs={12} md={8}>
           <StatCard
             icon={<GiftOutlined />}
-            color="#22c4a8"
+            color="var(--chart-2)"
             label="累计充值"
             value={(bal.totalRecharged ?? 0).toLocaleString()}
             suffix="分"
@@ -159,7 +159,7 @@ export default function Recharge() {
         <Col xs={12} md={8}>
           <StatCard
             icon={<ThunderboltOutlined />}
-            color="#f6a02d"
+            color="var(--warn)"
             label="累计消耗"
             value={(bal.totalSpent ?? 0).toLocaleString()}
             suffix="分"
@@ -197,13 +197,13 @@ export default function Recharge() {
                 )}
                 <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)' }}>{p.name}</div>
                 <div style={{ margin: '12px 0 4px' }}>
-                  <span style={{ fontSize: 30, fontWeight: 800, color: '#f25b6b' }}>¥{p.price_yuan}</span>
+                  <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--danger)' }}>¥{p.price_yuan}</span>
                 </div>
                 <div style={{ fontSize: 14, color: 'var(--ui-accent)', fontWeight: 600 }}>
                   {p.total_credits.toLocaleString()} 积分
                 </div>
                 {p.bonus_credits > 0 && (
-                  <div style={{ fontSize: 12, color: '#22c4a8', marginTop: 2 }}>
+                  <div style={{ fontSize: 12, color: 'var(--chart-2)', marginTop: 2 }}>
                     含赠送 {p.bonus_credits.toLocaleString()} 分
                   </div>
                 )}
@@ -222,7 +222,10 @@ export default function Recharge() {
                   type="primary"
                   block
                   onClick={() => buy(p)}
-                  style={{ background: 'linear-gradient(90deg,var(--ui-primary-strong),#70757a)', border: 'none' }}
+                  style={{
+                    background: 'linear-gradient(90deg,var(--ui-primary-strong),var(--ui-muted))',
+                    border: 'none',
+                  }}
                 >
                   立即充值
                 </Button>
@@ -286,7 +289,7 @@ export default function Recharge() {
                       取消
                     </button>
                   ) : (
-                    <CheckCircleOutlined style={{ color: '#22c4a8' }} />
+                    <CheckCircleOutlined style={{ color: 'var(--chart-2)' }} />
                   ),
               },
             ]}
@@ -338,9 +341,9 @@ export default function Recharge() {
                 width: 100,
                 render: (v: number) =>
                   v < 0 ? (
-                    <b style={{ color: '#22c4a8' }}>+{(-v).toLocaleString()}</b>
+                    <b style={{ color: 'var(--chart-2)' }}>+{(-v).toLocaleString()}</b>
                   ) : (
-                    <span style={{ color: '#f25b6b' }}>-{v.toLocaleString()}</span>
+                    <span style={{ color: 'var(--danger)' }}>-{v.toLocaleString()}</span>
                   ),
               },
               {
@@ -374,7 +377,7 @@ export default function Recharge() {
         {pickPkg && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
             <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: '12px 14px', lineHeight: 2 }}>
-              支付金额 <b style={{ color: '#f25b6b' }}>¥{pickPkg.price_yuan}</b>
+              支付金额 <b style={{ color: 'var(--danger)' }}>¥{pickPkg.price_yuan}</b>
               <br />
               到账积分 <b style={{ color: 'var(--ui-accent)' }}>
                 {pickPkg.total_credits.toLocaleString()}
@@ -439,7 +442,7 @@ export default function Recharge() {
                 />
                 <div style={{ fontSize: 13, color: 'var(--ui-text)' }}>
                   订单 <b style={{ fontFamily: 'monospace' }}>{payOrder.orderNo}</b>　金额{' '}
-                  <b style={{ color: '#f25b6b' }}>¥{payOrder.package?.price_yuan}</b>
+                  <b style={{ color: 'var(--danger)' }}>¥{payOrder.package?.price_yuan}</b>
                 </div>
                 {payStatus === '已取消' ? (
                   <Alert type="warning" showIcon message="订单已取消，二维码失效" />
@@ -482,7 +485,7 @@ export default function Recharge() {
               </div>
               <div>
                 套餐：{orderResult.package?.name}　金额：
-                <b style={{ color: '#f25b6b' }}>¥{orderResult.package?.price_yuan}</b>
+                <b style={{ color: 'var(--danger)' }}>¥{orderResult.package?.price_yuan}</b>
               </div>
               <div>
                 到账积分：

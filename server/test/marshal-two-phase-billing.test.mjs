@@ -62,9 +62,13 @@ providerApp.post('/v1/chat/completions', (req, res) => {
       : prompt.includes('强制技能制品落库失败')
         ? '# 强制技能制品落库失败\n\n正文'
         : '已依据当前岗位要求生成完整、可复核的员工交付。';
+  const zeroUsage = prompt.includes('强制员工对话零token')
+    || prompt.includes('强制技能制品零token');
   res.json({
     choices: [{ message: { content: text } }],
-    usage: { prompt_tokens: 220, completion_tokens: 80 },
+    usage: zeroUsage
+      ? { prompt_tokens: 0, completion_tokens: 0 }
+      : { prompt_tokens: 220, completion_tokens: 80 },
   });
 });
 const providerServer = providerApp.listen(0, '127.0.0.1');
@@ -117,6 +121,45 @@ test('员工对话在供应商调用前预授权，助手消息、风控、引�
   assert.ok(heldAtProvider.at(-1) > 0, '供应商调用发生时必须已存在预授权');
   assert.equal(heldRows().length, 0);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
+});
+
+test('员工对话 API 返回正文但 usage 为0时，不落库助手消息且全额退回', async () => {
+  const before = balanceOfTenant(tenantId);
+  const assistantBefore = db.prepare(
+    `SELECT COUNT(*) n FROM marshal_chat_msgs WHERE tenant_id=? AND role='assistant'`,
+  ).get(tenantId).n;
+  const result = await post(`/marshals/${department.id}/chat`, {
+    message: '强制员工对话零token',
+  });
+
+  assert.equal(result.response.status, 409, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'released');
+  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(db.prepare(
+    `SELECT COUNT(*) n FROM marshal_chat_msgs WHERE tenant_id=? AND role='assistant'`,
+  ).get(tenantId).n, assistantBefore);
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
+});
+
+test('技能文件 API 返回正文但 usage 为0时，不落制品记录且全额退回', async () => {
+  const before = balanceOfTenant(tenantId);
+  const artifactsBefore = db.prepare(
+    'SELECT COUNT(*) n FROM generated_artifacts WHERE tenant_id=?',
+  ).get(tenantId).n;
+  const result = await post(`/marshals/${department.id}/skill-file`, {
+    message: '强制技能制品零token',
+    format: 'docx',
+  });
+
+  assert.equal(result.response.status, 409, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'released');
+  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(db.prepare(
+    'SELECT COUNT(*) n FROM generated_artifacts WHERE tenant_id=?',
+  ).get(tenantId).n, artifactsBefore);
+  assert.equal(heldRows().length, 0);
+  assert.equal(balanceOfTenant(tenantId), before);
 });
 
 test('员工对话助手消息落库失败时释放预授权，SSE 不提前泄露模型正文', async () => {

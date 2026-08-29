@@ -40,6 +40,16 @@ export interface ContentItem {
   type: string;
   body: string;
   status?: string;
+  delivery?: {
+    canUse?: boolean;
+    canImport?: boolean;
+    canPublish?: boolean;
+    canSubmitApproval?: boolean;
+    presentationKey?: string;
+    displayStatus?: string;
+    reason?: string;
+    nextAction?: string | null;
+  };
 }
 
 export interface AdvisorConversation {

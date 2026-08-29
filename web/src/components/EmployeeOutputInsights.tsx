@@ -41,15 +41,72 @@ const initialFilters: Filters = {
 };
 
 const statusColor: Record<string, string> = {
-  已完成: 'green',
-  成功: 'green',
-  已采纳: 'green',
-  待审阅: 'gold',
-  执行中: 'processing',
+  已通过: 'green',
+  '已采纳/已完成': 'green',
+  '已人工采纳（可用于业务）': 'green',
+  已发布: 'green',
+  待审核: 'gold',
+  待派活: 'default',
   生成中: 'processing',
-  失败: 'red',
-  已驳回: 'red',
+  '生成失败（可重跑）': 'red',
+  '质检失败（可重跑）': 'red',
+  '审核未通过（可重跑）': 'red',
+  '执行失败（可重跑）': 'red',
+  '质检未通过（可重跑）': 'red',
+  '人工审核未通过（可重跑）': 'red',
+  '失败需处理（执行异常）': 'red',
+  '失败需返工（质检未通过）': 'red',
+  '失败需返工（人工审阅未通过）': 'red',
+  '历史未通过（后续已修复）': 'blue',
+  '历史失败（后续已修复）': 'blue',
+  待人工审核: 'gold',
+  待人工审阅: 'gold',
+  '可验收（待提交人工审阅）': 'gold',
+  '业务暂不可采用（待账务对账）': 'orange',
 };
+
+const OPERATIONAL_STATUS_LABELS: Record<string, string> = {
+  blocked_pending_privileged_review: '待老板或管理员复核',
+  draft_pending_human_review: '待人工审阅',
+  pending_human_review: '待人工审阅',
+  pending_settlement: '待结算',
+  pending_release: '待释放预授权',
+  pending_reconciliation: '业务暂不可采用（待账务对账）',
+  needs_review: '需人工复核',
+  compliant: '符合要求',
+  blocked: '需补齐业务条件',
+  settled: '已结算',
+  released: '预授权已释放（已退款）',
+  held: '预授权占扣中',
+  clear: '无异常',
+  pass: '已通过',
+};
+
+const PUBLIC_STATUS_LABELS: Record<string, string> = {
+  待审核: '待人工审阅',
+  已通过: '已人工采纳（可用于业务）',
+  '已采纳/已完成': '已人工采纳（可用于业务）',
+  '生成失败（可重跑）': '失败需处理（执行异常）',
+  '执行失败（可重跑）': '失败需处理（执行异常）',
+  '质检失败（可重跑）': '失败需返工（质检未通过）',
+  '质检未通过（可重跑）': '失败需返工（质检未通过）',
+  '审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
+  '人工审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
+  待账务对账: '业务暂不可采用（待账务对账）',
+  '质检通过，待发布决策': '可验收（待提交人工审阅）',
+  '历史未通过（后续已修复）': '历史失败（后续已修复）',
+};
+
+function localizeOperationalStatus(value: unknown) {
+  let result = typeof value === 'string' ? value : String(value ?? '');
+  result = PUBLIC_STATUS_LABELS[result] || result;
+  for (const [status, label] of Object.entries(OPERATIONAL_STATUS_LABELS).sort(
+    ([left], [right]) => right.length - left.length,
+  )) {
+    result = result.replace(new RegExp(`\\b${status}\\b`, 'gu'), label);
+  }
+  return result;
+}
 
 function evidenceColor(kind: string) {
   if (kind.includes('结果') || kind.includes('产出')) return 'blue';
@@ -64,11 +121,11 @@ function sourceColor(label: string) {
 
 function jsonPreview(value: unknown) {
   if (value == null || value === '') return '-';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return localizeOperationalStatus(value);
   try {
-    return JSON.stringify(value, null, 2);
+    return localizeOperationalStatus(JSON.stringify(value, null, 2));
   } catch {
-    return String(value);
+    return localizeOperationalStatus(value);
   }
 }
 
@@ -218,10 +275,11 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
   const options = data?.options || { domains: [], groups: [], employees: [], statuses: [], sources: [] };
   const summaryCards = [
     { label: '运行记录', value: hasData ? summary.total || 0 : '—', color: 'var(--ui-accent)' },
-    { label: '已有产出', value: hasData ? summary.withOutput || 0 : '—', color: '#2563eb' },
+    { label: '已有产出', value: hasData ? summary.withOutput || 0 : '—', color: 'var(--ui-primary)' },
     { label: '完成 / 采纳', value: hasData ? summary.completed || 0 : '—', color: '#16a34a' },
     { label: '待处理', value: hasData ? summary.pending || 0 : '—', color: '#d97706' },
-    { label: '失败 / 驳回', value: hasData ? summary.failed || 0 : '—', color: '#dc2626' },
+    { label: '当前失败 / 未通过', value: hasData ? summary.failed || 0 : '—', color: '#dc2626' },
+    { label: '历史未通过已修复', value: hasData ? summary.remediated || 0 : '—', color: '#2563eb' },
   ];
 
   return (
@@ -327,7 +385,10 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
           placeholder="全部状态"
           value={filters.status || undefined}
           style={{ width: 130 }}
-          options={(options.statuses || []).map((value: string) => ({ value, label: value }))}
+          options={(options.statuses || []).map((value: string) => ({
+            value,
+            label: localizeOperationalStatus(value),
+          }))}
           onChange={value => update('status', value || '')}
         />
         <span style={{ fontSize: 12, color: 'var(--ui-muted)', marginLeft: 4 }}>透视维度</span>
@@ -379,7 +440,12 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                 }}
                 onRow={row => ({ onClick: () => applyPivot(row), style: { cursor: 'pointer' } })}
                 columns={[
-                  { title: '维度', dataIndex: 'label', ellipsis: true },
+                  {
+                    title: '维度',
+                    dataIndex: 'label',
+                    ellipsis: true,
+                    render: (value: string) => localizeOperationalStatus(value),
+                  },
                   { title: '记录', dataIndex: 'total', width: 58, align: 'right' as const },
                   {
                     title: '产出率',
@@ -442,7 +508,11 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                     title: '状态',
                     dataIndex: 'status',
                     width: 82,
-                    render: (value: string) => <Tag color={statusColor[value] || 'default'}>{value}</Tag>,
+                    render: (value: string, row: any) => (
+                      <Tag color={statusColor[row.displayStatus || value] || 'default'}>
+                        {localizeOperationalStatus(row.displayStatus || value)}
+                      </Tag>
+                    ),
                   },
                   {
                     title: '证据',
@@ -491,7 +561,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                 <Descriptions.Item label="分部">{detail.context?.group}</Descriptions.Item>
                 <Descriptions.Item label="员工">{detail.context?.employee}</Descriptions.Item>
                 <Descriptions.Item label="来源 / 状态">
-                  {detail.context?.source} / {detail.context?.status}
+                  {detail.context?.source} / {localizeOperationalStatus(detail.context?.status)}
                 </Descriptions.Item>
               </Descriptions>
               <div style={{ marginTop: 8, color: 'var(--ui-text-2)', fontSize: 12, lineHeight: 1.7 }}>
@@ -503,8 +573,19 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
             <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}>
               <Descriptions.Item label="来源">{detail.data.sourceLabel}</Descriptions.Item>
               <Descriptions.Item label="状态">
-                <Tag color={statusColor[detail.data.record?.status] || 'default'}>{detail.data.record?.status}</Tag>
+                <Tag color={statusColor[detail.data.record?.displayStatus || detail.data.record?.status] || 'default'}>
+                  {localizeOperationalStatus(detail.data.record?.displayStatus || detail.data.record?.status)}
+                </Tag>
               </Descriptions.Item>
+              {detail.data.record?.nextAction && (
+                <Descriptions.Item label="下一步">{detail.data.record.nextAction}</Descriptions.Item>
+              )}
+              {detail.data.record?.remediated && (
+                <Descriptions.Item label="历史记录说明">
+                  原状态：{detail.data.record.originalStatus || '未通过'}；后续修复运行 #
+                  {detail.data.record.remediatedByRunId}
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="分部">{detail.data.record?.group || '-'}</Descriptions.Item>
               <Descriptions.Item label="数字员工">
                 {detail.data.record?.employeeIdx != null ? `${detail.data.record.employeeIdx} · ` : ''}
@@ -541,7 +622,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
             )}
             <Panel title="运行产出">
               {detail.data.output?.body ? (
-                <Markdown content={detail.data.output.body} />
+                <Markdown content={localizeOperationalStatus(detail.data.output.body)} />
               ) : (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未形成可查看的产出" />
               )}

@@ -9,7 +9,6 @@ import {
 import {
   estimateCallCredits,
   holdCredits,
-  releaseHold,
   settleHold,
 } from '../engines/credits.js';
 import { embedDoc } from '../engines/rag.js';
@@ -22,6 +21,19 @@ import {
   twoPhaseBillingSummary,
   withImmediateTransaction,
 } from '../engines/two-phase-delivery.js';
+import {
+  aiEvidence,
+  aiFailurePayload,
+  aiFailureReleaseNote,
+  assertRealAiOutput,
+  releaseFailedAiHold,
+} from '../engines/ai-delivery-status.js';
+import { buildRuntimeReadiness } from '../engines/runtime-readiness.js';
+import {
+  activityApprovalSubjectSnapshot,
+  approvalRouteSummary,
+  resolveTenantApprovalRoute,
+} from '../engines/approval-routing-policy.js';
 
 const r = Router();
 
@@ -56,6 +68,43 @@ const SMART_INVITE_RULES = [
   { id: 'not_invited', label: '尚未加入本活动邀约名单' },
 ];
 
+function invalidAiContract(label, evidence, reason) {
+  return Object.assign(new Error(`${label}返回内容未通过结构质检（${reason}），本次未保存，请重试。`), {
+    status: 502,
+    code: 'AI_OUTPUT_CONTRACT_INVALID',
+    retryable: true,
+    retryHint: '模型已返回但格式质检未通过，可在原任务直接重试。',
+    aiStatus: 'failed',
+    ai: evidence,
+  });
+}
+
+function assertActivityPlanContract(plan, evidence) {
+  const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
+  const requiredKpis = ['邀约确认率', '报名到场率', '现场成交率', '加微率', 'ROI'];
+  const valid = isRecord(plan)
+    && typeof plan.theme === 'string' && plan.theme.trim()
+    && Array.isArray(plan.flow) && plan.flow.length > 0
+    && plan.flow.every(item => isRecord(item) && String(item.time || '').trim() && String(item.item || '').trim())
+    && Array.isArray(plan.materials) && plan.materials.length > 0
+    && plan.materials.every(item => typeof item === 'string' && item.trim())
+    && typeof plan.invites === 'string' && plan.invites.trim()
+    && Array.isArray(plan.sop) && plan.sop.length > 0
+    && plan.sop.every(item => typeof item === 'string' && item.trim())
+    && isRecord(plan.kpi) && requiredKpis.every(key => typeof plan.kpi[key] === 'string' && plan.kpi[key].trim())
+    && typeof plan.budgetNote === 'string' && plan.budgetNote.trim();
+  if (!valid) throw invalidAiContract('AI活动策划', evidence, '缺少必填字段或执行清单为空');
+}
+
+function activityAiMeta(output, billing) {
+  const evidence = aiEvidence(output);
+  return {
+    ...evidence,
+    status: 'succeeded',
+    billing,
+  };
+}
+
 function normalizeActivityType(value) {
   const type = String(value || '').trim();
   return LEGACY_ACTIVITY_TYPE_MAP[type] || type || DEFAULT_ACTIVITY_TYPE;
@@ -80,7 +129,10 @@ function boundedTimeout(name, fallback, min, max) {
 }
 
 const ACTIVITY_EMBED_TIMEOUT_MS = boundedTimeout('AI_INTERACTIVE_EMBED_TIMEOUT_MS', 3000, 250, 20000);
-const ACTIVITY_CHAT_TIMEOUT_MS = boundedTimeout('AI_INTERACTIVE_CHAT_TIMEOUT_MS', 20000, 500, 60000);
+// 活动策划需要严格 JSON Schema 和完整执行清单。真实云模型在 20s
+// 默认窗口内稳定超时，导致已占扣任务只能退款而无法交付。统一到
+// 可完成结构化产出的 120s，仍保留环境变量缩短窗口以便快速失败测试。
+const ACTIVITY_CHAT_TIMEOUT_MS = boundedTimeout('AI_INTERACTIVE_CHAT_TIMEOUT_MS', 120000, 500, 300000);
 
 function parseMaybeJson(v, fallback = null) {
   if (!v) return fallback;
@@ -120,6 +172,37 @@ function immediateTransaction(work) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw error;
   }
+}
+
+function activityApprovalRoute(targetType, activity, riskLevel = 'medium', actor = null) {
+  return resolveTenantApprovalRoute({
+    targetType,
+    riskLevel,
+    amount: targetType === 'activity_plan' ? Number(activity?.budget || 0) : 0,
+    actorRole: actor?.role || null,
+    actorUserId: actor?.id || null,
+  });
+}
+
+function approvalStepAudience(step) {
+  if (step?.assignedReviewerId) return [Number(step.assignedReviewerId)];
+  return step?.level === 'boss' ? ['boss'] : ['ops_director', 'admin', 'boss'];
+}
+
+function notifyApprovalAudience(step, type, title, body) {
+  const audience = approvalStepAudience(step);
+  if (typeof audience[0] === 'number') {
+    notify(audience[0], type, title, body);
+    return;
+  }
+  notifyManagers(type, title, body, audience);
+}
+
+function configuredApprovalSummary(route) {
+  const assigned = route?.firstStep?.assignedReviewerId
+    ? q.get('SELECT name FROM users WHERE tenant_id=? AND id=?', curTenant(), route.firstStep.assignedReviewerId)?.name
+    : '';
+  return `${approvalRouteSummary(route)}${assigned ? `（首审：${assigned}）` : ''}`;
 }
 
 const ACTIVITY_STATUSES = new Set(['策划中', '筹备中', '报名中', '进行中', '已结束', '已复盘']);
@@ -408,9 +491,14 @@ async function buildActivityPlan(act, { goal = '提升到店体验与成交', au
     fallback: () => tplActivityPlan({ title: act.title, type: activityType, goal, audience, budget, date: act.date || '' }),
     timeoutMs: ACTIVITY_CHAT_TIMEOUT_MS,
   });
+  const evidence = assertRealAiOutput(out, {
+    label: 'AI活动策划',
+    noDelivery: '本次不保存策划、不改变活动状态、不同步知识库',
+  });
   let plan;
   try { plan = JSON.parse(out.text.replace(/^```json?\s*|```\s*$/g, '')); }
-  catch { plan = JSON.parse(tplActivityPlan({ title: act.title, type: activityType, goal, audience, budget, date: act.date || '' })); }
+  catch { throw invalidAiContract('AI活动策划', evidence, '返回的不是有效JSON'); }
+  assertActivityPlanContract(plan, evidence);
   return { plan: normalizeActivityPlan(plan, act.title), out };
 }
 
@@ -489,12 +577,17 @@ r.get('/calendar-sync', (req, res) => {
   const token = icsToken();
   const base = `${req.protocol}://${req.get('host')}`;
   const cfg = feishuConfig();
+  const readiness = buildRuntimeReadiness({ tenantId: curTenant() })
+    .channels.find(item => item.key === 'feishu');
+  const configuredSyncEnabled = Boolean(cfg.enabled && appReady());
   const scope = userScopeClause(req.user, 'owner_id');
   res.json({
     icsUrl: `${base}/api/public/calendar.ics?key=${token}`,
     appMode: appReady(),
-    autoSyncReady: !!(cfg.enabled && appReady()),
+    configuredSyncEnabled,
+    autoSyncReady: readiness?.connected === true && readiness?.canPerformExternalAction === true,
     appBotReady: appBotReady(),
+    readiness,
     managers: feishuManagerSummary(),
     eventCount: q.get(`SELECT COUNT(*) n FROM activities WHERE tenant_id = ${curTenant()} AND date >= date('now','-30 day') AND plan_status='已通过'${scope.sql}`, ...scope.params)?.n || 0,
   });
@@ -629,7 +722,8 @@ r.post('/:id/assignments', (req, res) => {
 });
 
 r.put('/:id', (req, res) => {
-  if (!ensureActivityAccess(req, res, req.params.id)) return;
+  const act = ensureActivityAccess(req, res, req.params.id);
+  if (!act) return;
   try {
     const patch = normalizedActivityInput(req.body);
     if (Object.prototype.hasOwnProperty.call(req.body || {}, 'checklist')) {
@@ -641,10 +735,30 @@ r.put('/:id', (req, res) => {
       patch.checklist = encoded;
     }
     const entries = Object.entries(patch);
+    const approvalCriticalFields = new Set([
+      'title', 'type', 'date', 'location', 'budget', 'target_join', 'target_deal',
+    ]);
+    const criticalChanged = entries.some(([field, value]) => {
+      if (!approvalCriticalFields.has(field)) return false;
+      const current = act[field];
+      if (typeof value === 'number') return Number(current || 0) !== value;
+      return String(current ?? '') !== String(value ?? '');
+    });
+    const resetPlanApproval = criticalChanged
+      && ['待审批', '总审中', '已通过'].includes(String(act.plan_status || ''));
     if (entries.length) {
       immediateTransaction(() => {
         q.run(`UPDATE activities SET ${entries.map(([field]) => `${field}=?`).join(',')} WHERE tenant_id=? AND id=?`,
           ...entries.map(([, value]) => value), curTenant(), req.params.id);
+        if (resetPlanApproval) {
+          q.run(`UPDATE approvals
+            SET status='已驳回',reviewer_id=?,reason=?,decided_at=datetime('now','localtime')
+            WHERE tenant_id=? AND target_type='activity_plan' AND target_id=? AND status='待审核'`,
+          req.user.id, '活动关键字段已修改，旧审批自动作废；请按新数据重新提交', curTenant(), act.id);
+          q.run(`UPDATE activities
+            SET plan_status='草稿',plan_submitted_at=NULL,plan_approved_at=NULL,plan_approval_id=NULL
+            WHERE tenant_id=? AND id=?`, curTenant(), act.id);
+        }
       });
     }
     const updated = q.get(`SELECT * FROM activities WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id);
@@ -653,10 +767,14 @@ r.put('/:id', (req, res) => {
       checklist: safeChecklist(updated.checklist),
       plan: updated.plan ? normalizeActivityPlan(parseMaybeJson(updated.plan, {}), updated.title) : null,
       review: parseMaybeJson(updated.review, null),
+      approvalReset: resetPlanApproval,
+      ...(resetPlanApproval
+        ? { message: '活动关键字段已更新，旧审批已作废；请按新预算和方案重新提交审批' }
+        : {}),
     });
     const fbTid = curTenant();
     const fbActor = { id: req.user.id, name: req.user.name, role: req.user.role };
-    if (entries.length && updated.plan_status === '已通过') {
+    if (entries.length && !resetPlanApproval && updated.plan_status === '已通过') {
       setImmediate(() => syncActivityLifecycleToFeishu(updated, {
         tid: fbTid,
         actor: fbActor,
@@ -732,19 +850,61 @@ r.post('/:id/checklist/:idx/submit', (req, res) => {
   item.submittedAt = new Date().toISOString();
   checklist[idx] = item;
 
-  const payload = { activityId: act.id, checklistIndex: idx, item: label, submittedBy: item.submittedBy };
+  const approvalRoute = activityApprovalRoute('activity_checklist', act, 'medium', req.user);
+  const approvalFlow = configuredApprovalSummary(approvalRoute);
+  const payload = {
+    activityId: act.id,
+    checklistIndex: idx,
+    item: label,
+    submittedBy: item.submittedBy,
+    activitySnapshot: activityApprovalSubjectSnapshot(act),
+    approvalRoute: { mode: approvalRoute.mode, reason: approvalRoute.reason, summary: approvalFlow },
+  };
+  if (!approvalRoute.requiresReview) {
+    item.done = true;
+    item.approvalStatus = CHECK_APPROVED;
+    item.approvedBy = { id: req.user.id, name: req.user.name, role: req.user.role };
+    item.approvedAt = new Date().toISOString();
+    delete item.approvalId;
+    checklist[idx] = item;
+    immediateTransaction(() => {
+      q.run(
+        'UPDATE activities SET checklist = ? WHERE tenant_id=? AND id = ?',
+        JSON.stringify(checklist),
+        curTenant(),
+        act.id,
+      );
+      logOp(req.user, '活动中心', 'Boss自授权完成待确认事项', `${act.title} / ${label}`);
+    });
+    return res.json({
+      ok: true,
+      approvalId: null,
+      checklist,
+      approvalRoute: { mode: approvalRoute.mode, summary: approvalFlow },
+      message: 'Boss已在本次会话自行确认，事项直接完成；未创建审批待办。',
+    });
+  }
   let result;
   try {
     result = immediateTransaction(() => {
-      const inserted = q.run(`INSERT INTO approvals(target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,approval_level)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      const inserted = q.run(`INSERT INTO approvals(
+        target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,
+        approval_level,assigned_reviewer_id,approval_policy_snapshot
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       'activity_checklist', act.id, `待确认事项审批：${act.title} / ${label}`,
-      `活动：${act.title}；事项：${label}；提交人：${req.user.name}；流程：运营总监初审 → 老板终审 → 自动同步管理层`,
-      'medium', JSON.stringify(['ACTIVITY_CHECKLIST_CONFIRM']), '待审核', req.user.id, JSON.stringify(payload), 'ops_director');
+      `活动：${act.title}；事项：${label}；提交人：${req.user.name}；审批：${approvalFlow}`,
+      'medium', JSON.stringify(['ACTIVITY_CHECKLIST_CONFIRM', `OWNER_POLICY:${approvalRoute.mode}`]),
+      '待审核', req.user.id, JSON.stringify(payload), approvalRoute.firstStep.level,
+      approvalRoute.firstStep.assignedReviewerId, JSON.stringify(approvalRoute.snapshot));
       item.approvalId = inserted.lastInsertRowid;
       checklist[idx] = item;
       q.run('UPDATE activities SET checklist = ? WHERE tenant_id=? AND id = ?', JSON.stringify(checklist), curTenant(), act.id);
-      notifyManagers('活动审批', `待确认事项待初审：${act.title}`, `${req.user.name} 提交「${label}」完成确认，需运营总监初审后转老板终审。`, ['ops_director', 'admin', 'boss']);
+      notifyApprovalAudience(
+        approvalRoute.firstStep,
+        '活动审批',
+        `待确认事项待审批：${act.title}`,
+        `${req.user.name} 提交「${label}」完成确认；本次按老板规则：${approvalFlow}。`,
+      );
       logOp(req.user, '活动中心', '提交待确认事项审批', `${act.title} / ${label}`);
       return inserted;
     });
@@ -758,11 +918,19 @@ r.post('/:id/checklist/:idx/submit', (req, res) => {
       `**${act.title}**`,
       `事项：${label}`,
       `提交人：${req.user.name}`,
-      '流程：运营总监初审 → 老板终审 → 通过后自动同步给管理层',
+      `老板配置的审批流程：${approvalFlow}`,
     ],
     url: appUrl(req, '/system'),
   }, fbTid).catch(() => {}));
-  res.json({ ok: true, approvalId: result.lastInsertRowid, checklist, message: '已提交审批，终审通过后会自动标记完成并同步管理层' });
+  res.json({
+    ok: true,
+    approvalId: result.lastInsertRowid,
+    checklist,
+    approvalRoute: { mode: approvalRoute.mode, summary: approvalFlow },
+    message: approvalRoute.mode === 'two_step'
+      ? '已提交审批，终审通过后会自动标记完成并同步管理层'
+      : `已按老板配置提交审批：${approvalFlow}`,
+  });
 });
 
 // AI 活动策划（FR-ACT-02）
@@ -795,7 +963,14 @@ r.post('/:id/plan', async (req, res) => {
         ],
         outputTokens: 4000,
       }),
+      refType: 'activity',
+      refId: Number(act.id),
       note: `活动#${act.id} AI策划在供应商调用前预授权；未交付全额退回。`,
+    });
+    const heldBilling = twoPhaseBillingSummary({
+      state: 'held',
+      hold,
+      note: '活动策划已预授权；真实AI产出通过结构质检并落库后才结算。',
     });
     const delivered = await executeHeldDelivery({
       hold,
@@ -805,34 +980,47 @@ r.post('/:id/plan', async (req, res) => {
         req.user.role,
       ),
       persist: generated => withImmediateTransaction(db, () => {
-        savePlan(act.id, generated.plan, PLAN_DRAFT);
+        const plan = {
+          ...generated.plan,
+          aiMeta: activityAiMeta(generated.out, heldBilling),
+        };
+        savePlan(act.id, plan, PLAN_DRAFT);
         logOp(req.user, '活动中心', 'AI策划草稿', act.title);
         return {
-          plan: generated.plan,
+          plan,
           planStatus: PLAN_DRAFT,
         };
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: generated => ({
         usage: generated.out.usage,
         model: generated.out.model,
         aiMode: generated.out.mode,
         note: `活动#${act.id} AI策划草稿已完成业务事务落库`,
       }),
-      releaseNote: `活动#${act.id} AI策划生成或草稿落库失败，预授权全额退回`,
+      releaseNote: aiFailureReleaseNote(`活动#${act.id} AI策划`),
+      onBillingFinalized: ({ delivery, billing: finalBilling }) => {
+        delivery.plan.aiMeta.billing = finalBilling;
+        return withImmediateTransaction(db, () => {
+          q.run(`UPDATE activities SET plan=? WHERE tenant_id=? AND id=?`,
+            JSON.stringify(normalizeActivityPlan(delivery.plan, act.title)), curTenant(), act.id);
+        });
+      },
     });
     return res.json({
       plan: delivered.delivery.plan,
       mode: delivered.output.out.mode,
+      model: delivered.output.out.model,
+      usage: delivered.output.out.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
       planStatus: delivered.delivery.planStatus,
     });
   } catch (e) {
-    res.status(e.status || 500).json({
-      error: e.message,
-      ...(e.billing ? { billing: e.billing } : {}),
-    });
+    res.status(e.status || 500).json(aiFailurePayload(e, { requestId: req.requestId }));
   }
 });
 
@@ -883,6 +1071,11 @@ r.post('/plan-drafts/generate', async (req, res) => {
       }),
       note: `独立活动策划「${act.title}」在供应商调用前预授权；未交付全额退回。`,
     });
+    const heldBilling = twoPhaseBillingSummary({
+      state: 'held',
+      hold,
+      note: '独立活动策划已预授权；真实AI产出通过结构质检并落库后才结算。',
+    });
     const delivered = await executeHeldDelivery({
       hold,
       generate: () => buildActivityPlan(
@@ -891,9 +1084,14 @@ r.post('/plan-drafts/generate', async (req, res) => {
         req.user.role,
       ),
       persist: generated => withImmediateTransaction(db, () => {
-        const normalized = normalizeActivityPlan(generated.plan, act.title);
+        const normalized = normalizeActivityPlan({
+          ...generated.plan,
+          aiMeta: activityAiMeta(generated.out, heldBilling),
+        }, act.title);
         const inserted = q.run(`INSERT INTO activity_plan_drafts(user_id,title,type,date,goal,audience,budget,target_join,plan,status) VALUES(?,?,?,?,?,?,?,?,?,?)`,
           req.user.id, act.title, act.type, normalizedDate, String(goal).slice(0, 100), String(audience).slice(0, 200), String(budget).slice(0, 100), targetCount, JSON.stringify(normalized), '草稿');
+        q.run(`UPDATE credit_holds SET ref_type='activity_plan_draft',ref_id=?
+          WHERE tenant_id=? AND id=? AND status='held'`, Number(inserted.lastInsertRowid), curTenant(), hold.holdId);
         logOp(req.user, '活动中心', '独立生成活动策划', act.title);
         return {
           draftId: Number(inserted.lastInsertRowid),
@@ -902,27 +1100,36 @@ r.post('/plan-drafts/generate', async (req, res) => {
         };
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: generated => ({
         usage: generated.out.usage,
         model: generated.out.model,
         aiMode: generated.out.mode,
         note: `独立活动策划「${act.title}」已完成业务事务落库`,
       }),
-      releaseNote: `独立活动策划「${act.title}」生成或草案落库失败，预授权全额退回`,
+      releaseNote: aiFailureReleaseNote(`独立活动策划「${act.title}」`),
+      onBillingFinalized: ({ delivery, billing: finalBilling }) => {
+        delivery.plan.aiMeta.billing = finalBilling;
+        return withImmediateTransaction(db, () => {
+          q.run(`UPDATE activity_plan_drafts SET plan=?,updated_at=datetime('now','localtime')
+            WHERE tenant_id=? AND id=?`, JSON.stringify(delivery.plan), curTenant(), delivery.draftId);
+        });
+      },
     });
     res.json({
       draftId: delivered.delivery.draftId,
       plan: delivered.delivery.plan,
       mode: delivered.output.out.mode,
+      model: delivered.output.out.model,
+      usage: delivered.output.out.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
       status: delivered.delivery.status,
     });
   } catch (e) {
-    res.status(e.status || 500).json({
-      error: e.message,
-      ...(e.billing ? { billing: e.billing } : {}),
-    });
+    res.status(e.status || 500).json(aiFailurePayload(e, { requestId: req.requestId }));
   }
 });
 
@@ -997,21 +1204,62 @@ r.post('/:id/plan/submit', (req, res) => {
   const rawPlan = req.body?.plan || parseMaybeJson(act.plan, null);
   if (!rawPlan || typeof rawPlan !== 'object') return res.status(400).json({ error: '请先生成或填写活动策划案' });
   const plan = normalizeActivityPlan(rawPlan, act.title);
-  const payload = { activityId: act.id, plan, submittedBy: { id: req.user.id, name: req.user.name, role: req.user.role } };
+  const approvalRoute = activityApprovalRoute('activity_plan', act, 'medium', req.user);
+  const approvalFlow = configuredApprovalSummary(approvalRoute);
+  const payload = {
+    activityId: act.id,
+    plan,
+    submittedBy: { id: req.user.id, name: req.user.name, role: req.user.role },
+    activitySnapshot: activityApprovalSubjectSnapshot(act),
+    approvalRoute: { mode: approvalRoute.mode, reason: approvalRoute.reason, summary: approvalFlow },
+  };
+  if (!approvalRoute.requiresReview) {
+    try {
+      immediateTransaction(() => {
+        savePlan(act.id, plan, '已通过');
+        q.run(
+          `UPDATE activities SET plan_status='已通过',
+          plan_submitted_at=datetime('now','localtime'),plan_approval_id=NULL
+          WHERE tenant_id=? AND id=?`,
+          curTenant(),
+          act.id,
+        );
+        logOp(req.user, '活动中心', 'Boss自授权采用活动策划', act.title);
+      });
+    } catch (error) {
+      return res.status(error.status || 500).json({ error: error.message });
+    }
+    return res.json({
+      ok: true,
+      approvalId: null,
+      planStatus: '已通过',
+      approvalRoute: { mode: approvalRoute.mode, summary: approvalFlow },
+      message: 'Boss已在本次会话自行确认，策划案直接进入已通过状态；未创建审批待办，未自动向外部平台发送。',
+    });
+  }
   let result;
   try {
     result = immediateTransaction(() => {
       const pending = q.get(`SELECT id FROM approvals WHERE tenant_id=${curTenant()} AND target_type='activity_plan' AND target_id=? AND status='待审核' ORDER BY id DESC LIMIT 1`, act.id);
       if (pending) throw Object.assign(new Error('该活动已有待审批策划案，请先处理当前审批'), { status: 400 });
       savePlan(act.id, plan, PLAN_PENDING);
-      const inserted = q.run(`INSERT INTO approvals(target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,approval_level)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      const inserted = q.run(`INSERT INTO approvals(
+        target_type,target_id,title,summary,risk_level,rules_hit,status,submitter_id,payload,
+        approval_level,assigned_reviewer_id,approval_policy_snapshot
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       'activity_plan', act.id, `活动策划审批：${act.title}`,
-      `活动日期：${act.date || '-'}；预算：${act.budget || 0}；${planSummary(plan)}`,
-      'medium', JSON.stringify(['ACTIVITY_PLAN_APPROVAL']), '待审核', req.user.id, JSON.stringify(payload), 'ops_director');
+      `活动日期：${act.date || '-'}；预算：${act.budget || 0}；${planSummary(plan)}；审批：${approvalFlow}`,
+      'medium', JSON.stringify(['ACTIVITY_PLAN_APPROVAL', `OWNER_POLICY:${approvalRoute.mode}`]),
+      '待审核', req.user.id, JSON.stringify(payload), approvalRoute.firstStep.level,
+      approvalRoute.firstStep.assignedReviewerId, JSON.stringify(approvalRoute.snapshot));
       q.run(`UPDATE activities SET plan_status=?, plan_submitted_at=datetime('now','localtime'), plan_approval_id=? WHERE tenant_id=? AND id=?`,
         PLAN_PENDING, inserted.lastInsertRowid, curTenant(), act.id);
-      notifyManagers('活动审批', `活动策划待运营总监初审：${act.title}`, `${req.user.name} 已提交策划案：${planSummary(plan)}`, ['ops_director', 'admin', 'boss']);
+      notifyApprovalAudience(
+        approvalRoute.firstStep,
+        '活动审批',
+        `活动策划待审批：${act.title}`,
+        `${req.user.name} 已提交策划案：${planSummary(plan)}；本次按老板规则：${approvalFlow}。`,
+      );
       logOp(req.user, '活动中心', '提交活动策划审批', act.title);
       return inserted;
     });
@@ -1025,12 +1273,20 @@ r.post('/:id/plan/submit', (req, res) => {
       `**${act.title}**`,
       `提交人：${req.user.name}`,
       `日期：${act.date || '-'} ｜ 地点：${act.location || '-'}`,
-      '审批流程：运营总监初审 → 老板终审 → 自动同步飞书日历',
+      `老板配置的审批流程：${approvalFlow}`,
       `方案摘要：${planSummary(plan)}`,
     ],
     url: appUrl(req, '/system'),
   }, fbTid).catch(() => {}));
-  res.json({ ok: true, approvalId: result.lastInsertRowid, planStatus: PLAN_PENDING, message: '已提交审批：运营总监初审通过后进入老板终审，通过后自动同步飞书日历' });
+  res.json({
+    ok: true,
+    approvalId: result.lastInsertRowid,
+    planStatus: PLAN_PENDING,
+    approvalRoute: { mode: approvalRoute.mode, summary: approvalFlow },
+    message: approvalRoute.mode === 'two_step'
+      ? '已提交审批：运营总监初审通过后进入老板终审，通过后自动同步飞书日历'
+      : `已按老板配置提交审批：${approvalFlow}`,
+  });
 });
 
 // 邀约名单（FR-ACT-03）：从CRM按规则圈选
@@ -1263,6 +1519,8 @@ r.post('/:id/review', async (req, res) => {
         ],
         outputTokens: 3500,
       }),
+      refType: 'activity_review',
+      refId: Number(act.id),
       note: `活动#${act.id} 数据分析复盘在供应商调用前预授权；未交付全额退回。`,
     });
     const heldBilling = twoPhaseBillingSummary({
@@ -1282,6 +1540,10 @@ r.post('/:id/review', async (req, res) => {
         if (!String(out?.text || '').trim()) {
           throw Object.assign(new Error('数据分析部没有返回可保存的活动复盘'), { status: 502 });
         }
+        assertRealAiOutput(out, {
+          label: '活动数据分析复盘',
+          noDelivery: '本次不保存复盘、不将活动标记为已复盘、不同步知识库',
+        });
         return { out, reviewDivision };
       },
       persist: generated => withImmediateTransaction(db, () => {
@@ -1291,6 +1553,8 @@ r.post('/:id/review', async (req, res) => {
           aiMeta: {
             model: generated.out.model,
             mode: generated.out.mode,
+            usage: generated.out.usage,
+            status: 'succeeded',
             billing: heldBilling,
             marshal: generated.reviewDivision.name,
             divisionCode: generated.reviewDivision.code,
@@ -1313,14 +1577,14 @@ r.post('/:id/review', async (req, res) => {
         return completedReview;
       }),
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: generated => ({
         usage: generated.out.usage,
         model: generated.out.model,
         aiMode: generated.out.mode,
         note: `活动#${act.id} AI复盘、知识库与活动状态已完成业务事务落库`,
       }),
-      releaseNote: `活动#${act.id} AI复盘生成或业务落库失败，预授权全额退回`,
+      releaseNote: aiFailureReleaseNote(`活动#${act.id} AI复盘`),
       onBillingFinalized: ({ delivery, billing: finalBilling }) => {
         delivery.aiMeta = {
           ...delivery.aiMeta,
@@ -1346,13 +1610,16 @@ r.post('/:id/review', async (req, res) => {
     }, fbTid).catch(() => {}));
     res.json({
       ...delivered.delivery,
+      mode: delivered.output.out.mode,
+      model: delivered.output.out.model,
+      usage: delivered.output.out.usage,
+      aiStatus: 'succeeded',
+      deliveryState: 'succeeded',
+      retryable: false,
       billing: delivered.billing,
     });
   } catch (e) {
-    res.status(e.status || 500).json({
-      error: e.message,
-      ...(e.billing ? { billing: e.billing } : {}),
-    });
+    res.status(e.status || 500).json(aiFailurePayload(e, { requestId: req.requestId }));
   }
 });
 

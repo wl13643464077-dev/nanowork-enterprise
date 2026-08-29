@@ -5,9 +5,15 @@
     "authority": "Paihuo live content registry",
     "referenceProject": "派活AI",
     "referencePath": "app/skills/registry.py",
-    "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+    "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
     "note": "Static metadata only. This catalog does not execute or import the legacy runtime.",
-    "profilePolicy": "Full declarative profiles; no legacy runtime import or database dependency."
+    "profilePolicy": "Full declarative profiles; no legacy runtime import or database dependency.",
+    "snapshotDate": "2026-08-01",
+    "sourceFingerprintAlgorithm": "sha256-json-utf8",
+    "capabilityCount": 45,
+    "promptCount": 10,
+    "capabilitySetFingerprint": "sha256:3e6efee397c09a809b4a9e3b8d8a34be488d3b74b37bb99a079f0c79de5b52a1",
+    "promptSetFingerprint": "sha256:2f30f9ae517801f0d1052f64488839111b5cdb5380eee8618941c588231f61b9"
   },
   "department": {
     "key": "content",
@@ -61,6 +67,243 @@
     "countedInEmployeeTotal": false,
     "description": "发布前规则与风险审查服务；不是可派活的内容员工，不占员工编号。"
   },
+  "nativeEmployees": [
+    {
+      "idx": 10,
+      "key": "commerce_video",
+      "person": null,
+      "name": "AI带货员",
+      "group": "商业视频工坊",
+      "moduleGroup": "content_commerce",
+      "skill": "AI-Sales-Video",
+      "emoji": "🛍️",
+      "color": "#ef476f",
+      "duty": "根据人物、菜品或商品、门店图片，完成30秒带货脚本、三段10秒分镜、字幕与成片任务",
+      "intro": "上传人物、菜品或商品、门头等真实素材，再说一句这次要卖什么；AI带货员先整理事实、脚本、三段镜头和字幕，再按已授权的视频连接器生成或安全阻断，不把计划冒充成片。",
+      "approval": "auto",
+      "optional": false,
+      "capabilities": [
+        {
+          "name": "带货事实整理",
+          "emoji": "🧾",
+          "desc": "从人物、菜品或商品、门店图片与老板目标中整理可核验事实和缺失项，禁止补造价格、功效、评价与经营结果",
+          "required": true,
+          "enabled": true,
+          "locked": true,
+          "sourceDefinition": {
+            "name": "带货事实整理",
+            "emoji": "🧾",
+            "desc": "从人物、菜品或商品、门店图片与老板目标中整理可核验事实和缺失项，禁止补造价格、功效、评价与经营结果"
+          },
+          "sourceFingerprint": "sha256:e58590bd634bb36e02c07a34502feef8c70d414eab8934ac618e745c70db1a10"
+        },
+        {
+          "name": "30秒口播编排",
+          "emoji": "🎙️",
+          "desc": "将事实白名单编成30秒口播稿、开场钩子、价值说明与条件式行动入口",
+          "required": true,
+          "enabled": true,
+          "locked": true,
+          "sourceDefinition": {
+            "name": "30秒口播编排",
+            "emoji": "🎙️",
+            "desc": "将事实白名单编成30秒口播稿、开场钩子、价值说明与条件式行动入口"
+          },
+          "sourceFingerprint": "sha256:21ae00dd2fcb882749b4c6f3f3619c65a6e58c34655adbaf81ad448b17be8d71"
+        },
+        {
+          "name": "三段10秒分镜",
+          "emoji": "🎬",
+          "desc": "固定编排三段10秒镜头，分别承担注意力、产品价值和行动入口，不伪造视频已生成",
+          "required": true,
+          "enabled": true,
+          "locked": true,
+          "sourceDefinition": {
+            "name": "三段10秒分镜",
+            "emoji": "🎬",
+            "desc": "固定编排三段10秒镜头，分别承担注意力、产品价值和行动入口，不伪造视频已生成"
+          },
+          "sourceFingerprint": "sha256:616522421cf00ff0855c0149ff44b131bbac3980a309656077c35e485856440b"
+        },
+        {
+          "name": "视频连接器安全门",
+          "emoji": "🛡️",
+          "desc": "逐段记录供应商、模型、任务状态与费用证据；未授权、未核价或无合成器时明确阻断并保留可恢复计划",
+          "required": true,
+          "enabled": true,
+          "locked": true,
+          "sourceDefinition": {
+            "name": "视频连接器安全门",
+            "emoji": "🛡️",
+            "desc": "逐段记录供应商、模型、任务状态与费用证据；未授权、未核价或无合成器时明确阻断并保留可恢复计划"
+          },
+          "sourceFingerprint": "sha256:932ce295448070c52910abe69d49daee78b28f79c9259b9da631cf63ea52a3e4"
+        }
+      ],
+      "outputKeys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+      "skillProfile": {
+        "catalog": "native-content-employee",
+        "employeeIdx": 10,
+        "expectedSkillCount": 0,
+        "verificationStatus": "native_verified"
+      },
+      "pipelinePrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "buildAiSalesVideoPlan",
+        "assemblyOrder": ["goal_and_references", "fact_whitelist", "script", "segments", "subtitles", "provider_evidence"],
+        "template": "【你的岗位】内容生产仓第11名原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n先列事实白名单与待确认项，再交付30秒口播稿、字幕、三段10秒分镜、封面建议和视频连接器状态。素材不足不得猜测价格、功效、评价、库存、营业信息或经营结果；没有真实供应商结果时必须明确阻断，不得把脚本和分镜冒充成片。",
+        "sourceTemplate": "【你的岗位】内容生产仓第11名原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n先列事实白名单与待确认项，再交付30秒口播稿、字幕、三段10秒分镜、封面建议和视频连接器状态。素材不足不得猜测价格、功效、评价、库存、营业信息或经营结果；没有真实供应商结果时必须明确阻断，不得把脚本和分镜冒充成片。",
+        "sourceFingerprint": "sha256:a6a12294829adc62726de5bbd42cc978a4e9fbe0d87a8d12c286f8f48554e3f2"
+      },
+      "soloPrompt": {
+        "messageMode": "single_user",
+        "legacyBuilder": "buildAiSalesVideoPlan",
+        "template": "你是内容生产仓原生数字员工「AI带货员」。本次只执行30秒带货视频专项任务。目标：{direction}\n行业/场景：{industry}\n老板材料：{material}\n上一版意见：{feedback}\n必须先整理事实白名单和缺失项，再输出30秒口播、字幕、三段10秒分镜、封面建议、视频连接器状态；没有真实视频供应商结果时只能返回计划或阻断，不得伪造视频URL、费用或效果。",
+        "placeholders": {
+          "direction": "带货目标",
+          "industry": "行业/场景",
+          "material": "人物、菜品/商品、门店图片与其他材料",
+          "feedback": "上一版意见",
+          "length_hint": "篇幅约束"
+        }
+      },
+      "placeholders": {
+        "brief": "一句带货目标",
+        "references": "人物、菜品/商品、门店参考图片",
+        "direction": "带货目标",
+        "industry": "行业/场景",
+        "material": "上传素材与事实",
+        "feedback": "上一版意见"
+      },
+      "workMethod": {
+        "input": {
+          "upstream": "老板一句带货目标",
+          "context": ["至少一张人物、菜品/商品或门店图片", "企业品牌档案", "已授权知识库与附件", "供应商与模型授权状态"]
+        },
+        "execution": {
+          "handler": "buildAiSalesVideoPlan",
+          "capabilities": "先事实整理，再脚本、三段10秒分镜、字幕和连接器证据",
+          "skills": "注入AI-Sales-Video岗位 Skill；不得把目录描述扩展为当前事实",
+          "webRequired": false,
+          "realtimeSteps": true
+        },
+        "output": {
+          "duty": "30秒带货事实包、口播、字幕、三段分镜与视频任务状态",
+          "keys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+          "primaryArtifact": "video_plan"
+        },
+        "approval": {
+          "code": "auto",
+          "description": "低风险脚本与计划通过契约和事实门后可自动入库；真实付费、外部发布或视频成片仍需授权与人工安全门"
+        },
+        "handoff": {
+          "target": "老板/内容生产仓任务中心",
+          "optional": false,
+          "qualityGateBefore": true
+        }
+      },
+      "defaultWorkConfig": {
+        "common": {
+          "capabilitiesRequired": true,
+          "capabilitiesEnabled": true,
+          "capabilitiesLocked": true,
+          "skillVerificationStatus": "native_verified",
+          "textModel": "gpt-5.5",
+          "imageModel": null,
+          "videoModel": "MiniMax-Hailuo-2.3-Fast",
+          "approval": "auto",
+          "optional": false,
+          "messageMode": "single_user"
+        },
+        "roleSpecific": {
+          "durationSeconds": 30,
+          "segmentDurationSeconds": 10,
+          "segmentCount": 3,
+          "maxReferences": 6,
+          "provider": "MiniMax",
+          "workflow": "ai_sales_video"
+        }
+      },
+      "dispatchForm": {
+        "mode": "single_station",
+        "fields": [
+          {"key": "direction", "label": "一句话带货目标", "type": "textarea", "required": true},
+          {"key": "material", "label": "人物、菜品/商品或门店图片", "type": "image_upload", "required": true, "minItems": 1, "maxItems": 6},
+          {"key": "industry", "label": "行业/场景", "type": "text", "required": false},
+          {"key": "feedback", "label": "上一版意见", "type": "textarea", "required": false}
+        ],
+        "result": {"format": "json", "persistedAsAsset": true, "supportsRedoFeedback": true}
+      },
+      "outputSchema": {
+        "format": "json_object",
+        "keys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+        "contract": "{\n  \"facts\": [{\"claim\": \"可核验事实\", \"source\": \"图片/老板材料/知识库\"}],\n  \"script\": {\"hook\": \"...\", \"value\": \"...\", \"cta\": \"...\"},\n  \"subtitles\": [{\"start\": 0, \"end\": 3, \"text\": \"...\"}],\n  \"segments\": [{\"index\": 1, \"durationSeconds\": 10, \"scene\": \"...\", \"voiceover\": \"...\", \"status\": \"planned|processing|ready|blocked\"}],\n  \"cover\": {\"description\": \"...\", \"source\": \"待生成或已核验素材\"},\n  \"video\": {\"status\": \"planned|processing|ready|blocked\", \"url\": null, \"provider\": null, \"model\": null, \"usage\": null, \"cost\": null}\n}",
+        "primaryArtifact": "video_plan"
+      },
+      "connectorPolicy": {
+        "executionBoundary": "先复用现有ai-sales-video三段10秒计划能力；未授权或未核价时只保留脚本、分镜与阻断证据，不调用供应商、不扣费、不伪造视频。",
+        "connectors": [
+          {
+            "kind": "sales_video_plan",
+            "primary": true,
+            "addon": false,
+            "legacyHandler": "buildAiSalesVideoPlan",
+            "newProjectStatus": "single_station",
+            "status": "single_station",
+            "mode": "employee_generation",
+            "requirements": {"inputs": ["brief", "referenceImages"], "liveData": "not_required", "credentials": [], "humanApproval": "auto"},
+            "executeBoundary": "本地确定性脚本与三段10秒分镜计划；零外部调用、零扣费。"
+          },
+          {
+            "kind": "sales_video_generation",
+            "primary": false,
+            "addon": true,
+            "legacyHandler": null,
+            "newProjectStatus": "single_station",
+            "status": "single_station",
+            "mode": "employee_generation",
+            "requirements": {"inputs": ["plannedSegments", "referenceImages"], "liveData": "optional", "credentials": ["server_runtime_video_provider"], "humanApproval": "review"},
+            "executeBoundary": "只有已核验模型价格、服务端授权和受控合成器同时就绪才允许外部调用；任一缺失即阻断。"
+          }
+        ]
+      },
+      "sourceProvenance": {
+        "project": "NanoWork当前项目",
+        "referencePath": "server/src/engines/ai-sales-video.js",
+        "referenceSha256": "807f041b78ecd41e10e2901d85df371288044307de2aafa11946f63b3682fc4e",
+        "legacyIdx": 10,
+        "snapshotDate": "2026-08-08",
+        "sourceCapabilitySetFingerprint": "sha256:4c698d4c53b398e4d2be0f17ac6d0e47c87e1e5b229dcd42909138804a9ee767",
+        "sourcePromptFingerprint": "sha256:a6a12294829adc62726de5bbd42cc978a4e9fbe0d87a8d12c286f8f48554e3f2",
+        "native": true,
+        "sourceBoundary": "本岗位是NanoWork原生扩展，不属于Paihuo旧10岗来源快照。"
+      },
+      "systemPrompt": {
+        "messageMode": "none",
+        "template": null,
+        "reason": "运行层使用统一单用户完整岗位包；不在静态目录中存放独立system消息。"
+      },
+      "runtime": {
+        "mode": "single_station",
+        "workflow": "ai_sales_video",
+        "durationSeconds": 30,
+        "segmentDurationSeconds": 10,
+        "segmentCount": 3,
+        "providerCallsDefault": 0,
+        "defaultStatus": "blocked_without_authorization",
+        "evidenceRequired": true
+      },
+      "permissions": {
+        "profileAudience": ["boss", "admin", "platform_super"],
+        "dispatchAudience": "authenticated_tenant_user",
+        "mayEditFactoryProfile": false,
+        "mayUseVideoProviderWithoutAuthorization": false,
+        "mayPublishExternallyWithoutHumanApproval": false,
+        "mayTriggerPaidActionWithoutHumanApproval": false,
+        "mayDisableRequiredCapabilities": false
+      }
+    }
+  ],
   "employees": [
     {
       "idx": 0,
@@ -83,7 +326,13 @@
           "desc": "逐个刷勾选渠道的热搜/热榜,提取与账号相关的信号",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "热榜扫描",
+            "emoji": "🔥",
+            "desc": "逐个刷勾选渠道的热搜/热榜,提取与账号相关的信号"
+          },
+          "sourceFingerprint": "sha256:c445c489796d18d600d3a84b7e4c6b17be6b5c9277dbb1c9d9ee2d2d7fdca139"
         },
         {
           "name": "走势判断",
@@ -91,7 +340,13 @@
           "desc": "判断话题在升温期还是见顶期,只推荐还有红利的",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "走势判断",
+            "emoji": "📈",
+            "desc": "判断话题在升温期还是见顶期,只推荐还有红利的"
+          },
+          "sourceFingerprint": "sha256:b9dc423137f0cb88bf6d61836109c4331d733c9e4f7553cf71bd98f1ae10538e"
         },
         {
           "name": "人设匹配筛选",
@@ -99,7 +354,13 @@
           "desc": "热点先过人设关:不贴合账号定位的再热也不报",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "人设匹配筛选",
+            "emoji": "🎯",
+            "desc": "热点先过人设关:不贴合账号定位的再热也不报"
+          },
+          "sourceFingerprint": "sha256:a9874342a7a253cd2224475f6822e643bf8ef2f62a6e8cf30f591a54fe37aba0"
         },
         {
           "name": "同行选题监测",
@@ -107,7 +368,13 @@
           "desc": "看同赛道账号最近在做什么题,找空位和差异化",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "同行选题监测",
+            "emoji": "👀",
+            "desc": "看同赛道账号最近在做什么题,找空位和差异化"
+          },
+          "sourceFingerprint": "sha256:77a9c5802bb4cc18157fde854b87efeda534407505be1f7b25f2714ac0102d76"
         },
         {
           "name": "节点借势",
@@ -115,7 +382,13 @@
           "desc": "结合近期节日/发布会/大事件日历,提前埋借势选题",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "节点借势",
+            "emoji": "📅",
+            "desc": "结合近期节日/发布会/大事件日历,提前埋借势选题"
+          },
+          "sourceFingerprint": "sha256:a8484f5dd396e7fddf59ad45da2cae1ea43fca1410c6841f57bf96c1ddd40df5"
         }
       ],
       "outputKeys": [
@@ -140,7 +413,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位1 · 趋势官(对应开源 Skill:Horizon 每日热点趋势简报)\n职责:结合今天({today})的真实热点趋势与老板的账号人设,产出趋势简报和 5 个候选选题。\n【你的检索渠道矩阵(老板指定,必须逐个覆盖)】{channels}\n要求:对上面每个渠道都做针对性检索(善用\"渠道名+方向关键词\"、site: 限定、榜单页直查),\n每个渠道至少 1 次检索;渠道之间交叉印证热度,不要凭空编造热点。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"briefing\": \"今日趋势简报,markdown,200-400字,含你检索到的真实热点\",\n \"channel_scan\": [{\"channel\": \"渠道名\", \"finding\": \"该渠道扫到的热点/信号,60字内,没有就写'无明显信号'\"}],\n \"topics\": [\n   {\"title\": \"选题标题\", \"angle\": \"切入角度\", \"hook\": \"开头钩子一句话\",\n     \"reason\": \"推荐理由(结合人设与热度)\", \"heat\": \"预估热度 高/中/低\",\n     \"evidence\": \"热度证据:来自哪些渠道\"}\n ]  // 恰好 5 个,按推荐度排序\n}"
+        "template": "【你的岗位】工位1 · 趋势官(对应开源 Skill:Horizon 每日热点趋势简报)\n职责:结合今天({today})的真实热点趋势与老板的账号人设,产出趋势简报和 5 个候选选题。\n【你的检索渠道矩阵(老板指定,必须逐个覆盖)】{channels}\n要求:对上面每个渠道都做针对性检索(善用\"渠道名+方向关键词\"、site: 限定、榜单页直查),\n每个渠道至少 1 次检索;渠道之间交叉印证热度,不要凭空编造热点。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"briefing\": \"今日趋势简报,markdown,200-400字,含你检索到的真实热点\",\n \"channel_scan\": [{\"channel\": \"渠道名\", \"finding\": \"该渠道扫到的热点/信号,60字内,没有就写'无明显信号'\"}],\n \"topics\": [\n   {\"title\": \"选题标题\", \"angle\": \"切入角度\", \"hook\": \"开头钩子一句话\",\n     \"reason\": \"推荐理由(结合人设与热度)\", \"heat\": \"预估热度 高/中/低\",\n     \"evidence\": \"热度证据:来自哪些渠道\"}\n ]  // 恰好 5 个,按推荐度排序\n}",
+        "sourceTemplate": "【你的岗位】工位1 · 趋势官(对应开源 Skill:Horizon 每日热点趋势简报)\n职责:结合今天({today})的真实热点趋势与老板的账号人设,产出趋势简报和 5 个候选选题。\n【你的检索渠道矩阵(老板指定,必须逐个覆盖)】{channels}\n要求:对上面每个渠道都做针对性检索(善用\"渠道名+方向关键词\"、site: 限定、榜单页直查),\n每个渠道至少 1 次检索;渠道之间交叉印证热度,不要凭空编造热点。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"briefing\": \"今日趋势简报,markdown,200-400字,含你检索到的真实热点\",\n \"channel_scan\": [{\"channel\": \"渠道名\", \"finding\": \"该渠道扫到的热点/信号,60字内,没有就写'无明显信号'\"}],\n \"topics\": [\n   {\"title\": \"选题标题\", \"angle\": \"切入角度\", \"hook\": \"开头钩子一句话\",\n     \"reason\": \"推荐理由(结合人设与热度)\", \"heat\": \"预估热度 高/中/低\",\n     \"evidence\": \"热度证据:来自哪些渠道\"}\n ]  // 恰好 5 个,按推荐度排序\n}",
+        "sourceFingerprint": "sha256:ba118664ee0f6a5d6655b0f38c72035b442964e975622d292ccd50da77b83a61"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -332,7 +607,10 @@
             "status": "requires_live_data",
             "mode": "verified_input_assist",
             "requirements": {
-              "inputs": ["task", "channels"],
+              "inputs": [
+                "task",
+                "channels"
+              ],
               "liveData": "required",
               "credentials": [],
               "humanApproval": "pick"
@@ -344,9 +622,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 0,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:8abb1e9521212ff579887949f70a1d92abb5b597a39e2275f4deffb28abc82c6",
+        "sourcePromptFingerprint": "sha256:ba118664ee0f6a5d6655b0f38c72035b442964e975622d292ccd50da77b83a61"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -375,7 +655,13 @@
           "desc": "权威媒体+门户报道,交叉验证事实与时间线",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "新闻检索",
+            "emoji": "📰",
+            "desc": "权威媒体+门户报道,交叉验证事实与时间线"
+          },
+          "sourceFingerprint": "sha256:da6b5a07c9f0bba51095528e7cf1ed2c7481ec766ceeba0b5a1ee8d2a71583ff"
         },
         {
           "name": "报告挖掘",
@@ -383,7 +669,13 @@
           "desc": "行业报告/白皮书/券商研报里挖数据和结论",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "报告挖掘",
+            "emoji": "📊",
+            "desc": "行业报告/白皮书/券商研报里挖数据和结论"
+          },
+          "sourceFingerprint": "sha256:24f75481d66ecc06b847c1db75932d61a9ea1824d47028ac1ca39a1cc24d341a"
         },
         {
           "name": "海外情报",
@@ -391,7 +683,13 @@
           "desc": "英文关键词检索外媒/论坛,拿国内还没传开的信息差",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "海外情报",
+            "emoji": "🌍",
+            "desc": "英文关键词检索外媒/论坛,拿国内还没传开的信息差"
+          },
+          "sourceFingerprint": "sha256:af97bc4f30888593a8427571a84c677e04dfe2eb253414ac62a56befd993657b"
         },
         {
           "name": "舆情侦查",
@@ -399,7 +697,13 @@
           "desc": "知乎/微博/小红书评论区,收集真实用户声音与争议点",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "舆情侦查",
+            "emoji": "💬",
+            "desc": "知乎/微博/小红书评论区,收集真实用户声音与争议点"
+          },
+          "sourceFingerprint": "sha256:4a8b5c3e37f6600843a83e801e626f1aa1a77d11e1f6da5dd4e66fd95b3d5739"
         },
         {
           "name": "官方数据核查",
@@ -407,7 +711,13 @@
           "desc": "统计局/公司财报/官网公告,数据必须找到原始出处",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "官方数据核查",
+            "emoji": "🏛️",
+            "desc": "统计局/公司财报/官网公告,数据必须找到原始出处"
+          },
+          "sourceFingerprint": "sha256:a4abdd77208ce5f1c71a0d0eaf3b7ce1fb19701866666c216aa8b496acaba96c"
         },
         {
           "name": "学术溯源",
@@ -415,7 +725,13 @@
           "desc": "论文/arXiv 检索,涉及科学结论时找一手研究",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "学术溯源",
+            "emoji": "🎓",
+            "desc": "论文/arXiv 检索,涉及科学结论时找一手研究"
+          },
+          "sourceFingerprint": "sha256:bf91a4f6f01c47a6175422182e14141fbedcd47fa573b69baf35964d0ebbbb76"
         }
       ],
       "outputKeys": [
@@ -443,7 +759,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位2 · 情报员(对应开源 Skill:Agent-Reach 全网素材检索)\n【选定选题】{topic}\n职责:围绕选题用 WebSearch/WebFetch 搜集国内外素材:核心事实、数据、多方观点、可引用来源。\n【你的情报源矩阵(老板指定,尽量逐类覆盖)】{channels}\n要求:按情报源类型分别检索(如\"选题关键词+报告\"、\"选题关键词+data/statistics\" 英文检索、\n知乎/公众号定向检索),至少 4 次检索;信息必须可溯源,不许编造数据。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"素材包摘要,100字\",\n \"facts\": [\"核心事实,每条附来源名\"],\n \"data_points\": [\"关键数据,每条附来源名\"],\n \"viewpoints\": [\"不同立场的观点\"],\n \"source_coverage\": [{\"channel\": \"情报源类型\", \"got\": \"找到了什么,40字内\"}],\n \"sources\": [{\"title\": \"来源标题\", \"url\": \"链接\"}]\n}"
+        "template": "【你的岗位】工位2 · 情报员(对应开源 Skill:Agent-Reach 全网素材检索)\n【选定选题】{topic}\n职责:围绕选题用 WebSearch/WebFetch 搜集国内外素材:核心事实、数据、多方观点、可引用来源。\n【你的情报源矩阵(老板指定,尽量逐类覆盖)】{channels}\n要求:按情报源类型分别检索(如\"选题关键词+报告\"、\"选题关键词+data/statistics\" 英文检索、\n知乎/公众号定向检索),至少 4 次检索;信息必须可溯源,不许编造数据。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"素材包摘要,100字\",\n \"facts\": [\"核心事实,每条附来源名\"],\n \"data_points\": [\"关键数据,每条附来源名\"],\n \"viewpoints\": [\"不同立场的观点\"],\n \"source_coverage\": [{\"channel\": \"情报源类型\", \"got\": \"找到了什么,40字内\"}],\n \"sources\": [{\"title\": \"来源标题\", \"url\": \"链接\"}]\n}",
+        "sourceTemplate": "【你的岗位】工位2 · 情报员(对应开源 Skill:Agent-Reach 全网素材检索)\n【选定选题】{topic}\n职责:围绕选题用 WebSearch/WebFetch 搜集国内外素材:核心事实、数据、多方观点、可引用来源。\n【你的情报源矩阵(老板指定,尽量逐类覆盖)】{channels}\n要求:按情报源类型分别检索(如\"选题关键词+报告\"、\"选题关键词+data/statistics\" 英文检索、\n知乎/公众号定向检索),至少 4 次检索;信息必须可溯源,不许编造数据。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"素材包摘要,100字\",\n \"facts\": [\"核心事实,每条附来源名\"],\n \"data_points\": [\"关键数据,每条附来源名\"],\n \"viewpoints\": [\"不同立场的观点\"],\n \"source_coverage\": [{\"channel\": \"情报源类型\", \"got\": \"找到了什么,40字内\"}],\n \"sources\": [{\"title\": \"来源标题\", \"url\": \"链接\"}]\n}",
+        "sourceFingerprint": "sha256:29dac88edc24023536f2ede547085e7cb7e31dde1bcbe309befb1a858509659c"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -625,7 +943,9 @@
             "status": "requires_live_data",
             "mode": "verified_input_assist",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "required",
               "credentials": [],
               "humanApproval": "auto"
@@ -637,9 +957,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 1,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:b3e9a9b5c2dd723b1e6bb1880a83f6ea84641ee33341c8268328bdd6ae0218fa",
+        "sourcePromptFingerprint": "sha256:29dac88edc24023536f2ede547085e7cb7e31dde1bcbe309befb1a858509659c"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -668,7 +990,13 @@
           "desc": "全网找同选题下的高热内容,按平台分别采样",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "同题爆款检索",
+            "emoji": "🔍",
+            "desc": "全网找同选题下的高热内容,按平台分别采样"
+          },
+          "sourceFingerprint": "sha256:6e48d2a87b8a5305727f182f5ee02058de957b5e8ed5eb59a8fe309da0c575a3"
         },
         {
           "name": "标题钩子拆解",
@@ -676,7 +1004,13 @@
           "desc": "拆爆款标题的公式:数字/悬念/身份代入/反常识",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "标题钩子拆解",
+            "emoji": "🪝",
+            "desc": "拆爆款标题的公式:数字/悬念/身份代入/反常识"
+          },
+          "sourceFingerprint": "sha256:1255d911aa1050c2cf3ff8e0ecef19d4cb806746ad3735d4bf7fcba86c9c65ec"
         },
         {
           "name": "结构情绪分析",
@@ -684,7 +1018,13 @@
           "desc": "拆内容结构与情绪曲线:哪里铺垫哪里爆点",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "结构情绪分析",
+            "emoji": "🎢",
+            "desc": "拆内容结构与情绪曲线:哪里铺垫哪里爆点"
+          },
+          "sourceFingerprint": "sha256:b95d6adad469594c1bb0e924100a9f013a2f5860ab439498a974e49de40a2092"
         },
         {
           "name": "评论区洞察",
@@ -692,7 +1032,13 @@
           "desc": "从高赞评论反推受众真实爽点与槽点",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "评论区洞察",
+            "emoji": "🗣️",
+            "desc": "从高赞评论反推受众真实爽点与槽点"
+          },
+          "sourceFingerprint": "sha256:8c5ccb736425ae3e8ec6a8b408a1382c4c5573345cf16d3018e9f05c84345621"
         },
         {
           "name": "账号打法画像",
@@ -700,7 +1046,13 @@
           "desc": "拆对标账号的更新节奏/人设策略/变现路径",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "账号打法画像",
+            "emoji": "🧬",
+            "desc": "拆对标账号的更新节奏/人设策略/变现路径"
+          },
+          "sourceFingerprint": "sha256:45b125846fd77da5b1b78fecd1c69d50ef4ce019c8857f26fd7bfe1c62dc417a"
         }
       ],
       "outputKeys": [
@@ -726,7 +1078,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位3 · 拆解师(对应开源 Skill:MediaCrawler 爆款采集拆解。\n V1 适配层用联网检索近似替代平台爬虫;商业授权闭环后切换为真实采集)\n【选定选题】{topic}\n【素材包摘要】{summary}\n【老板指定的对标账号/爆款(优先拆解这些;为空则自行检索同题高热内容)】\n{targets}\n【老板要求的拆解维度(每个对标都按这些维度拆)】{dimensions}\n职责:检索并拆解同选题下的高热内容:逐维度拆透,给出可复制的打法。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"benchmarks\": [{\"title\": \"对标内容标题\", \"platform\": \"平台\", \"account\": \"账号名(知道就填)\",\n                  \"dimensions\": {\"维度名\": \"该维度的拆解结论\"}, \"why_hot\": \"为什么火\"}],  // 3-5 个\n \"comment_insights\": [\"评论区/受众情绪洞察\"],\n \"user_language\": [\"目标用户的原生表达/黑话\"],\n \"takeaways\": [\"给撰稿人的可执行建议\"]\n}"
+        "template": "【你的岗位】工位3 · 拆解师(对应开源 Skill:MediaCrawler 爆款采集拆解。\n 当前运行使用已接通的联网检索核验公开信息;未授权的平台账号或采集连接器不得冒充已经执行)\n【选定选题】{topic}\n【素材包摘要】{summary}\n【老板指定的对标账号/爆款(优先拆解这些;为空则自行检索同题高热内容)】\n{targets}\n【老板要求的拆解维度(每个对标都按这些维度拆)】{dimensions}\n职责:检索并拆解同选题下的高热内容:逐维度拆透,给出可复制的打法。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"benchmarks\": [{\"title\": \"对标内容标题\", \"platform\": \"平台\", \"account\": \"账号名(知道就填)\",\n                  \"dimensions\": {\"维度名\": \"该维度的拆解结论\"}, \"why_hot\": \"为什么火\"}],  // 3-5 个\n \"comment_insights\": [\"评论区/受众情绪洞察\"],\n \"user_language\": [\"目标用户的原生表达/黑话\"],\n \"takeaways\": [\"给撰稿人的可执行建议\"]\n}",
+        "sourceTemplate": "【你的岗位】工位3 · 拆解师(对应开源 Skill:MediaCrawler 爆款采集拆解。\n 当前运行通过联网检索补充公开资料;接入合法授权采集连接器后再启用平台采集)\n【选定选题】{topic}\n【素材包摘要】{summary}\n【老板指定的对标账号/爆款(优先拆解这些;为空则自行检索同题高热内容)】\n{targets}\n【老板要求的拆解维度(每个对标都按这些维度拆)】{dimensions}\n职责:检索并拆解同选题下的高热内容:逐维度拆透,给出可复制的打法。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"benchmarks\": [{\"title\": \"对标内容标题\", \"platform\": \"平台\", \"account\": \"账号名(知道就填)\",\n                  \"dimensions\": {\"维度名\": \"该维度的拆解结论\"}, \"why_hot\": \"为什么火\"}],  // 3-5 个\n \"comment_insights\": [\"评论区/受众情绪洞察\"],\n \"user_language\": [\"目标用户的原生表达/黑话\"],\n \"takeaways\": [\"给撰稿人的可执行建议\"]\n}",
+        "sourceFingerprint": "sha256:c2a03a9ee93d3dd228f60f830c53281bc15eca8007f4d509d239a5b66a765523"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -898,7 +1252,9 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["samples"],
+              "inputs": [
+                "samples"
+              ],
               "liveData": "optional",
               "credentials": [],
               "humanApproval": "auto"
@@ -910,9 +1266,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 2,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:b71f6946030e187ab6e5e155478f340eb09b831b0465fbce6936ac95c159f1dd",
+        "sourcePromptFingerprint": "sha256:c2a03a9ee93d3dd228f60f830c53281bc15eca8007f4d509d239a5b66a765523"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -941,7 +1299,13 @@
           "desc": "前3秒/前两行必须抓人:悬念、反差、利益点直给",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "钩子开头",
+            "emoji": "🪝",
+            "desc": "前3秒/前两行必须抓人:悬念、反差、利益点直给"
+          },
+          "sourceFingerprint": "sha256:d04bc55b0e9af66c4fc2fdea1bf4842d7bb8f39234d6c779895ac7d82efbad3a"
         },
         {
           "name": "事实织入",
@@ -949,7 +1313,13 @@
           "desc": "素材包的数据事实自然织进正文,拒绝空话",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "事实织入",
+            "emoji": "🧵",
+            "desc": "素材包的数据事实自然织进正文,拒绝空话"
+          },
+          "sourceFingerprint": "sha256:299707a5a5a04a325fe69bad1aa29a0a8a1e90bff1216b747bbba3e74139d5c4"
         },
         {
           "name": "平台文体适配",
@@ -957,7 +1327,13 @@
           "desc": "按目标平台规格写:字数/分段/emoji/标签习惯",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "平台文体适配",
+            "emoji": "📱",
+            "desc": "按目标平台规格写:字数/分段/emoji/标签习惯"
+          },
+          "sourceFingerprint": "sha256:861fad08697c7468e69e9838eb270b6d1dfc652c5107635876d7f383ede0e4d6"
         },
         {
           "name": "标签策略",
@@ -965,7 +1341,13 @@
           "desc": "大词+精准词+长尾词组合,5-8个话题标签",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "标签策略",
+            "emoji": "#️⃣",
+            "desc": "大词+精准词+长尾词组合,5-8个话题标签"
+          },
+          "sourceFingerprint": "sha256:7dfb5b796917123ab0a2aa6b3089ce8c5ac1a14c37ca561120d287afd5a74994"
         },
         {
           "name": "配图点位规划",
@@ -973,7 +1355,13 @@
           "desc": "写作同时规划哪里需要配图、配什么",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "配图点位规划",
+            "emoji": "🖼️",
+            "desc": "写作同时规划哪里需要配图、配什么"
+          },
+          "sourceFingerprint": "sha256:a97069afa863e1ae0bfc0f039398340b67cac53a9a1050adad7535dd0677a1c1"
         }
       ],
       "outputKeys": [
@@ -999,7 +1387,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位4 · 撰稿人(对应开源 Skill:Auto-Redbook-Skills,V1 只用其文案生成职责)\n【选定选题】{topic}\n【素材包】{research}\n【对标报告】{benchmark}\n职责:写出初稿。要求:开头 3 秒钩子;信息密度高,用素材包里的真实事实与数据;\n结构借鉴对标报告;符合目标平台文体(小红书≤1000字带emoji,公众号可长文)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"title_candidates\": [\"标题1\", \"标题2\", \"标题3\"],\n \"body\": \"正文 markdown(按首选平台文体)\",\n \"tags\": [\"话题标签,不带#号,5-8个\"],\n \"image_plan\": [{\"slot\": \"配图点位如'开头'\", \"desc\": \"画面描述\"}]  // 2-4 个\n}"
+        "template": "【你的岗位】工位4 · 撰稿人(对应开源 Skill:Auto-Redbook-Skills;本岗位完整承担文案生成职责)\n【选定选题】{topic}\n【素材包】{research}\n【对标报告】{benchmark}\n职责:写出初稿。要求:开头 3 秒钩子;信息密度高,用素材包里的真实事实与数据;\n结构借鉴对标报告;符合目标平台文体(小红书≤1000字带emoji,公众号可长文)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"title_candidates\": [\"标题1\", \"标题2\", \"标题3\"],\n \"body\": \"正文 markdown(按首选平台文体)\",\n \"tags\": [\"话题标签,不带#号,5-8个\"],\n \"image_plan\": [{\"slot\": \"配图点位如'开头'\", \"desc\": \"画面描述\"}]  // 2-4 个\n}",
+        "sourceTemplate": "【你的岗位】工位4 · 撰稿人(对应开源 Skill:Auto-Redbook-Skills,当前只使用其文案生成职责)\n【选定选题】{topic}\n【素材包】{research}\n【对标报告】{benchmark}\n职责:写出初稿。要求:开头 3 秒钩子;信息密度高,用素材包里的真实事实与数据;\n结构借鉴对标报告;符合目标平台文体(小红书≤1000字带emoji,公众号可长文)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"title_candidates\": [\"标题1\", \"标题2\", \"标题3\"],\n \"body\": \"正文 markdown(按首选平台文体)\",\n \"tags\": [\"话题标签,不带#号,5-8个\"],\n \"image_plan\": [{\"slot\": \"配图点位如'开头'\", \"desc\": \"画面描述\"}]  // 2-4 个\n}",
+        "sourceFingerprint": "sha256:47d381cd2c54a58b446b4214fdfde72994ffbf1806eccb93c1076dbb3e5f8091"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -1065,7 +1455,7 @@
           "capabilitiesEnabled": true,
           "capabilitiesLocked": true,
           "skillVerificationStatus": "legacy_unverified",
-          "textModel": "deepseek-v4-flash",
+          "textModel": "gpt-5.5",
           "imageModel": "inherit",
           "approval": "review",
           "optional": false,
@@ -1162,9 +1552,13 @@
             "status": "single_station",
             "mode": "employee_generation",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "optional",
-              "credentials": ["configured_text_model_provider"],
+              "credentials": [
+                "configured_text_model_provider"
+              ],
               "humanApproval": "review"
             },
             "executeBoundary": "必须经现有撰稿人单员工生成链执行，由该链负责模型凭证、计费、输出校验和人工复核。"
@@ -1178,9 +1572,13 @@
             "status": "single_station",
             "mode": "employee_generation",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "optional",
-              "credentials": ["configured_text_model_provider"],
+              "credentials": [
+                "configured_text_model_provider"
+              ],
               "humanApproval": "review"
             },
             "executeBoundary": "只编排现有撰稿人日更包子任务；必须由单员工生成链逐项执行和计费，不能把模板当成功产物。"
@@ -1190,9 +1588,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 3,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:85f2b70abb61a04651d5413a91b86e0b0543a41322c8caf8a762486d612884f2",
+        "sourcePromptFingerprint": "sha256:47d381cd2c54a58b446b4214fdfde72994ffbf1806eccb93c1076dbb3e5f8091"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -1221,7 +1621,13 @@
           "desc": "把人设档案的口头禅/句式习惯自然融进正文",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "口头禅移植",
+            "emoji": "💬",
+            "desc": "把人设档案的口头禅/句式习惯自然融进正文"
+          },
+          "sourceFingerprint": "sha256:acd5079c2e3d7494a5dfa200f8e1cda2d14c5b59b335ca28adc6be35538d0ebd"
         },
         {
           "name": "节奏改写",
@@ -1229,7 +1635,13 @@
           "desc": "长短句节奏调成本人惯有的呼吸感",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "节奏改写",
+            "emoji": "🥁",
+            "desc": "长短句节奏调成本人惯有的呼吸感"
+          },
+          "sourceFingerprint": "sha256:0701b0b6fbccc992488443d8b235cea5a13b12f4e6065b05b69601214189e925"
         },
         {
           "name": "红线校准",
@@ -1237,7 +1649,13 @@
           "desc": "对照人设禁忌逐条排查,越界内容改写或删除",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "红线校准",
+            "emoji": "🚧",
+            "desc": "对照人设禁忌逐条排查,越界内容改写或删除"
+          },
+          "sourceFingerprint": "sha256:b2ad4cad9f3f04ac17ea13fa1a96d62e1380300f1fd366dd87a5775da89e26ed"
         },
         {
           "name": "标题风格化",
@@ -1245,7 +1663,13 @@
           "desc": "标题也要像本人起的,不能一股AI味",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "标题风格化",
+            "emoji": "✨",
+            "desc": "标题也要像本人起的,不能一股AI味"
+          },
+          "sourceFingerprint": "sha256:9d0b7988df20d5e01e7baa3dbb4647eb7a4ce8a4e031f61a950347843065e8d6"
         }
       ],
       "outputKeys": [
@@ -1270,7 +1694,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位5 · 文风师(对应开源 Skill:nuwa-skill 人设文风固定)\n【初稿标题】{title}\n【初稿正文】\n{draft_body}\n【老板历史作品节选(文风依据)】\n{corpus}\n职责:在不改动事实与结构的前提下,把初稿改写成老板本人的语气:句式、口头禅、\n节奏、价值观边界都要贴合人设档案。改动要克制,以\"像本人写的\"为唯一标准。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"body\": \"风格化定稿正文 markdown\",\n \"title_candidates\": [\"风格化后的标题1\", \"标题2\", \"标题3\"],\n \"consistency_note\": \"与历史文风的一致性说明,60字内\"\n}"
+        "template": "【你的岗位】工位5 · 文风师(对应开源 Skill:nuwa-skill 人设文风固定)\n【初稿标题】{title}\n【初稿正文】\n{draft_body}\n【老板历史作品节选(文风依据)】\n{corpus}\n职责:在不改动事实与结构的前提下,把初稿改写成老板本人的语气:句式、口头禅、\n节奏、价值观边界都要贴合人设档案。改动要克制,以\"像本人写的\"为唯一标准。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"body\": \"风格化定稿正文 markdown\",\n \"title_candidates\": [\"风格化后的标题1\", \"标题2\", \"标题3\"],\n \"consistency_note\": \"与历史文风的一致性说明,60字内\"\n}",
+        "sourceTemplate": "【你的岗位】工位5 · 文风师(对应开源 Skill:nuwa-skill 人设文风固定)\n【初稿标题】{title}\n【初稿正文】\n{draft_body}\n【老板历史作品节选(文风依据)】\n{corpus}\n职责:在不改动事实与结构的前提下,把初稿改写成老板本人的语气:句式、口头禅、\n节奏、价值观边界都要贴合人设档案。改动要克制,以\"像本人写的\"为唯一标准。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"body\": \"风格化定稿正文 markdown\",\n \"title_candidates\": [\"风格化后的标题1\", \"标题2\", \"标题3\"],\n \"consistency_note\": \"与历史文风的一致性说明,60字内\"\n}",
+        "sourceFingerprint": "sha256:5f4f753df18081d47b5653d7e7fcebdcec7de184119efe3511d9eed793fec519"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -1431,7 +1857,10 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["sourceText", "styleGuide"],
+              "inputs": [
+                "sourceText",
+                "styleGuide"
+              ],
               "liveData": "not_required",
               "credentials": [],
               "humanApproval": "review"
@@ -1443,9 +1872,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 4,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:45dd808cc5cac8eddfda35a80cec9067aeea88b2ca0b6345f6be8784b8ec1c21",
+        "sourcePromptFingerprint": "sha256:5f4f753df18081d47b5653d7e7fcebdcec7de184119efe3511d9eed793fec519"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -1463,7 +1894,7 @@
       "skill": "Generative-Media-Skills",
       "emoji": "🎬",
       "color": "#90be6d",
-      "duty": "生成正文配图(V1:SVG 信息图)",
+      "duty": "生成正文配图与SVG信息图",
       "intro": "多媒体师为内容准备合适的视觉素材，让文字信息更直观，也更适合不同平台展示。TA可以围绕内容主题补充画面表达，帮助作品提升完整度、阅读体验和视觉吸引力。",
       "approval": "pick",
       "optional": false,
@@ -1474,7 +1905,13 @@
           "desc": "把核心信息做成层次分明的SVG信息图",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "信息图设计",
+            "emoji": "📐",
+            "desc": "把核心信息做成层次分明的SVG信息图"
+          },
+          "sourceFingerprint": "sha256:51a6e2ab3c0b4b85ba81e07c640fb48dac38da5fcbc3c8a84bdd3b4e8085ef84"
         },
         {
           "name": "数据可视化",
@@ -1482,7 +1919,13 @@
           "desc": "有数据时优先图表化:对比/趋势/占比",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "数据可视化",
+            "emoji": "📊",
+            "desc": "有数据时优先图表化:对比/趋势/占比"
+          },
+          "sourceFingerprint": "sha256:b769838b8a122d1e71caed999c2ca044bf1a598c11a32e4ff7e11170dafe1a63"
         },
         {
           "name": "视觉统一",
@@ -1490,15 +1933,27 @@
           "desc": "同一工单配图统一色系与设计语言",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "视觉统一",
+            "emoji": "🎨",
+            "desc": "同一工单配图统一色系与设计语言"
+          },
+          "sourceFingerprint": "sha256:240e2fde9132c95e6ebb73e01c632e122876803d81fc9186ba7a0929b1fdfc66"
         },
         {
           "name": "多平台尺寸",
           "emoji": "📱",
-          "desc": "按各目标平台规格出对应比例的版本",
+          "desc": "按各目标平台规格输出对应比例的成品",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "多平台尺寸",
+            "emoji": "📱",
+            "desc": "按各目标平台规格出对应比例的版本"
+          },
+          "sourceFingerprint": "sha256:dca750f88c9502b780171ad7361817b9738c84afb368d214bc6b3f9ee8c659f6"
         }
       ],
       "outputKeys": [
@@ -1521,12 +1976,14 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位6 · 多媒体师(对应开源 Skill:Generative-Media-Skills。\n V1 未接 muapi.ai 付费生图,用精美 SVG 信息图/插画本地渲染,零成本;接入后可切换 AI 生图)\n【定稿标题】{title}\n【配图点位】{plan}\n【目标平台与规格】\n{platform_specs}\n【正文】\n{body}\n职责:为每个配图点位设计 SVG 配图。默认竖版 3:4(viewBox 0 0 1080 1440);\n若目标平台含抖音/视频号,再为\"最重要的 1 个点位\"额外出 1 张 9:16(viewBox 0 0 1080 1920)\n的竖屏版(platform 字段标注);若含B站/公众号,再出 1 张横版主图(按其规格)。\n要求:现代扁平设计,高级配色(每张一个主色系),大字号中文关键信息上图,层次分明。\nSVG 里文字用系统字体,不引用外部资源。总数控制在 3-6 张。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"images\": [{\"slot\": \"点位\", \"desc\": \"画面说明\", \"platform\": \"通用 或 具体平台名\",\n              \"svg\": \"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1440' ...>完整SVG</svg>\"}]\n}"
+        "template": "【你的岗位】工位6 · 多媒体师(对应开源 Skill:Generative-Media-Skills。\n 按当前已启用连接器生成视觉素材;没有外部生图连接器时使用可审阅的 SVG 信息图,不得冒充外部生图已经完成)\n【定稿标题】{title}\n【配图点位】{plan}\n【目标平台与规格】\n{platform_specs}\n【正文】\n{body}\n职责:为每个配图点位设计 SVG 配图。默认竖版 3:4(viewBox 0 0 1080 1440);\n若目标平台含抖音/视频号,再为\"最重要的 1 个点位\"额外出 1 张 9:16(viewBox 0 0 1080 1920)\n的竖屏版(platform 字段标注);若含B站/公众号,再出 1 张横版主图(按其规格)。\n要求:现代扁平设计,高级配色(每张一个主色系),大字号中文关键信息上图,层次分明。\nSVG 里文字用系统字体,不引用外部资源。总数控制在 3-6 张。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"images\": [{\"slot\": \"点位\", \"desc\": \"画面说明\", \"platform\": \"通用 或 具体平台名\",\n              \"svg\": \"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1440' ...>完整SVG</svg>\"}]\n}",
+        "sourceTemplate": "【你的岗位】工位6 · 多媒体师(对应开源 Skill:Generative-Media-Skills。\n 当前按任务配置调用已接通的图片能力;供应商不可用时必须明确失败,不得用占位产物冒充)\n【定稿标题】{title}\n【配图点位】{plan}\n【目标平台与规格】\n{platform_specs}\n【正文】\n{body}\n职责:为每个配图点位设计 SVG 配图。默认竖版 3:4(viewBox 0 0 1080 1440);\n若目标平台含抖音/视频号,再为\"最重要的 1 个点位\"额外出 1 张 9:16(viewBox 0 0 1080 1920)\n的竖屏版(platform 字段标注);若含B站/公众号,再出 1 张横版主图(按其规格)。\n要求:现代扁平设计,高级配色(每张一个主色系),大字号中文关键信息上图,层次分明。\nSVG 里文字用系统字体,不引用外部资源。总数控制在 3-6 张。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"images\": [{\"slot\": \"点位\", \"desc\": \"画面说明\", \"platform\": \"通用 或 具体平台名\",\n              \"svg\": \"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1440' ...>完整SVG</svg>\"}]\n}",
+        "sourceFingerprint": "sha256:05a25982c3886ec80e8b38f14f99df637f4a1a9e58859cba4d61041a9070766c"
       },
       "soloPrompt": {
         "messageMode": "single_user",
         "legacyBuilder": "solo_prompt",
-        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「多媒体师」(部门:视觉工厂)。\n岗位职责:生成正文配图(V1:SVG 信息图)。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「多媒体师」(部门:视觉工厂)。\n岗位职责:生成正文配图与SVG信息图。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
         "placeholders": {
           "required_capabilities": "全部必备硬能力",
           "enabled_skills": "启用中的历史或后续学习技能",
@@ -1563,7 +2020,7 @@
           "realtimeSteps": true
         },
         "output": {
-          "duty": "生成正文配图(V1:SVG 信息图)",
+          "duty": "生成正文配图与SVG信息图",
           "keys": [
             "images"
           ],
@@ -1585,7 +2042,7 @@
           "capabilitiesEnabled": true,
           "capabilitiesLocked": true,
           "skillVerificationStatus": "legacy_unverified",
-          "textModel": "deepseek-v4-flash",
+          "textModel": "gpt-5.5",
           "imageModel": "gpt-image-2",
           "approval": "pick",
           "optional": false,
@@ -1725,9 +2182,13 @@
             "status": "single_station",
             "mode": "employee_generation",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "not_required",
-              "credentials": ["configured_image_model_provider_or_local_svg"],
+              "credentials": [
+                "configured_image_model_provider_or_local_svg"
+              ],
               "humanApproval": "pick"
             },
             "executeBoundary": "必须经现有多媒体师单员工生成链执行；外部生图需服务端凭证，本地SVG必须明确标注为本地产物。"
@@ -1741,9 +2202,13 @@
             "status": "single_station",
             "mode": "employee_generation",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "not_required",
-              "credentials": ["configured_video_model_provider"],
+              "credentials": [
+                "configured_video_model_provider"
+              ],
               "humanApproval": "pick"
             },
             "executeBoundary": "只能经现有多媒体师视频生成链执行；无服务端视频模型凭证时阻断，不返回伪造视频链接。"
@@ -1753,9 +2218,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 5,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:470b9b2ef0807d3f76d993c0017ec94f18859a4ea22523523f7da5a78f05c0b8",
+        "sourcePromptFingerprint": "sha256:05a25982c3886ec80e8b38f14f99df637f4a1a9e58859cba4d61041a9070766c"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -1784,7 +2251,13 @@
           "desc": "超大字号+高对比,信息一秒击中",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "大字报冲击风",
+            "emoji": "🈲",
+            "desc": "超大字号+高对比,信息一秒击中"
+          },
+          "sourceFingerprint": "sha256:0d64d85b7ae2b08eea4977a28dc4e6671648cf921b7e827c4e4506f8956448c3"
         },
         {
           "name": "杂志留白风",
@@ -1792,7 +2265,13 @@
           "desc": "克制排版+大量留白,高级感路线",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "杂志留白风",
+            "emoji": "📖",
+            "desc": "克制排版+大量留白,高级感路线"
+          },
+          "sourceFingerprint": "sha256:5269bb4fb4cf4e382d5c04ecd02aef2383677dd749e25b891ed6cad9de4da095"
         },
         {
           "name": "高饱和活力风",
@@ -1800,7 +2279,13 @@
           "desc": "鲜艳撞色+几何装饰,年轻化路线",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "高饱和活力风",
+            "emoji": "🌈",
+            "desc": "鲜艳撞色+几何装饰,年轻化路线"
+          },
+          "sourceFingerprint": "sha256:15220f8a98f6826226eb8cad6abacfccad272efd4d530d7fef2e25e4a0cefd0b"
         },
         {
           "name": "平台规格适配",
@@ -1808,7 +2293,13 @@
           "desc": "每个平台按自己的封面尺寸精确出图",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "平台规格适配",
+            "emoji": "📏",
+            "desc": "每个平台按自己的封面尺寸精确出图"
+          },
+          "sourceFingerprint": "sha256:ee3c66bfd5bcb1c4788dd5fae3770e0d1f3d7a0f54b3ffcd613ac426c8e2d815"
         }
       ],
       "outputKeys": [
@@ -1831,7 +2322,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位7 · 封面师(对应开源 Skill:guizang-social-card-skill 封面图文卡片,\n 纯 HTML/CSS 本地渲染,零成本)\n【定稿标题】{title}\n【视觉规范】{visual}\n【目标平台与封面规格(每个平台按自己的尺寸出)】\n{platform_specs}\n职责:为每个目标平台各做 1 张专属尺寸的封面卡片(html 的 body 即卡片,width/height\n精确等于该平台封面像素);若只有 1 个目标平台,则为它做 3 张风格迥异的备选\n(①大字报冲击风 ②杂志留白高级风 ③高饱和活力风)。每张都是完整独立 HTML 文档:\n内联全部 CSS,大标题上卡,可加副标题/角标/装饰几何元素,同一工单视觉语言要统一。\n不引用任何外部资源(字体用系统字体栈)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"covers\": [{\"style\": \"风格名\", \"platform\": \"平台名\", \"size\": \"如1080×1440\",\n              \"html\": \"<!DOCTYPE html><html>...完整HTML...\"}]\n}"
+        "template": "【你的岗位】工位7 · 封面师(对应开源 Skill:guizang-social-card-skill 封面图文卡片,\n 纯 HTML/CSS 本地渲染,零成本)\n【定稿标题】{title}\n【视觉规范】{visual}\n【目标平台与封面规格(每个平台按自己的尺寸出)】\n{platform_specs}\n职责:为每个目标平台各做 1 张专属尺寸的封面卡片(html 的 body 即卡片,width/height\n精确等于该平台封面像素);若只有 1 个目标平台,则为它做 3 张风格迥异的备选\n(①大字报冲击风 ②杂志留白高级风 ③高饱和活力风)。每张都是完整独立 HTML 文档:\n内联全部 CSS,大标题上卡,可加副标题/角标/装饰几何元素,同一工单视觉语言要统一。\n不引用任何外部资源(字体用系统字体栈)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"covers\": [{\"style\": \"风格名\", \"platform\": \"平台名\", \"size\": \"如1080×1440\",\n              \"html\": \"<!DOCTYPE html><html>...完整HTML...\"}]\n}",
+        "sourceTemplate": "【你的岗位】工位7 · 封面师(对应开源 Skill:guizang-social-card-skill 封面图文卡片,\n 纯 HTML/CSS 本地渲染,零成本)\n【定稿标题】{title}\n【视觉规范】{visual}\n【目标平台与封面规格(每个平台按自己的尺寸出)】\n{platform_specs}\n职责:为每个目标平台各做 1 张专属尺寸的封面卡片(html 的 body 即卡片,width/height\n精确等于该平台封面像素);若只有 1 个目标平台,则为它做 3 张风格迥异的备选\n(①大字报冲击风 ②杂志留白高级风 ③高饱和活力风)。每张都是完整独立 HTML 文档:\n内联全部 CSS,大标题上卡,可加副标题/角标/装饰几何元素,同一工单视觉语言要统一。\n不引用任何外部资源(字体用系统字体栈)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"covers\": [{\"style\": \"风格名\", \"platform\": \"平台名\", \"size\": \"如1080×1440\",\n              \"html\": \"<!DOCTYPE html><html>...完整HTML...\"}]\n}",
+        "sourceFingerprint": "sha256:3f713f77cf6aa32ce681058b77afeb9706fd0f7f8ee83c4d0cb4fe378b07c060"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -2034,7 +2527,10 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["title", "platform"],
+              "inputs": [
+                "title",
+                "platform"
+              ],
               "liveData": "not_required",
               "credentials": [],
               "humanApproval": "pick"
@@ -2046,9 +2542,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 6,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:1814a630f0cd7419b53aa9f8a72753fa4a749ccd3d118fd98fcb160ca016adfd",
+        "sourcePromptFingerprint": "sha256:3f713f77cf6aa32ce681058b77afeb9706fd0f7f8ee83c4d0cb4fe378b07c060"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -2077,7 +2575,13 @@
           "desc": "纵向滚动的图文长页,适合教程干货",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "信息长页",
+            "emoji": "📜",
+            "desc": "纵向滚动的图文长页,适合教程干货"
+          },
+          "sourceFingerprint": "sha256:f5eef5406cc0225f9749a3fc762d6ee87c7b1f34c5f679404beb622985c98788"
         },
         {
           "name": "横滑卡片",
@@ -2085,7 +2589,13 @@
           "desc": "横滑分页卡片,适合要点清单",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "横滑卡片",
+            "emoji": "🃏",
+            "desc": "横滑分页卡片,适合要点清单"
+          },
+          "sourceFingerprint": "sha256:23f24dbf4ebadd7d978e91fb2c014c450bf7695ef807085355a53fe1e7be77dd"
         },
         {
           "name": "交互组件",
@@ -2093,7 +2603,13 @@
           "desc": "折叠/切换/进度等轻交互增强表达",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "交互组件",
+            "emoji": "🖱️",
+            "desc": "折叠/切换/进度等轻交互增强表达"
+          },
+          "sourceFingerprint": "sha256:11e308193eb89f9894369116f7df52aaee7868113aabedd6bd59567abcb409c5"
         },
         {
           "name": "移动端适配",
@@ -2101,7 +2617,13 @@
           "desc": "手机上打开必须完美,优先竖屏体验",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "移动端适配",
+            "emoji": "📲",
+            "desc": "手机上打开必须完美,优先竖屏体验"
+          },
+          "sourceFingerprint": "sha256:f5e319e573f28ffb04d63dd536a6ca2704bea3691f8e7199ee306ffaa79d71b6"
         }
       ],
       "outputKeys": [
@@ -2125,7 +2647,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位8 · 演绎师(对应开源 Skill:huashu-design,HTML 是通用设计媒介)\n【定稿标题】{title}\n【定稿正文】\n{body}\n职责:把内容做成一页精美的交互式 HTML 演绎稿(信息图长页或横滑卡片式),\n适合知识/教程类内容分享。完整独立 HTML,内联 CSS/JS,不引外部资源,移动端自适应。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"演绎稿说明,50字\",\n \"html\": \"<!DOCTYPE html>...完整HTML...\"\n}"
+        "template": "【你的岗位】工位8 · 演绎师(对应开源 Skill:huashu-design,HTML 是通用设计媒介)\n【定稿标题】{title}\n【定稿正文】\n{body}\n职责:把内容做成一页精美的交互式 HTML 演绎稿(信息图长页或横滑卡片式),\n适合知识/教程类内容分享。完整独立 HTML,内联 CSS/JS,不引外部资源,移动端自适应。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"演绎稿说明,50字\",\n \"html\": \"<!DOCTYPE html>...完整HTML...\"\n}",
+        "sourceTemplate": "【你的岗位】工位8 · 演绎师(对应开源 Skill:huashu-design,HTML 是通用设计媒介)\n【定稿标题】{title}\n【定稿正文】\n{body}\n职责:把内容做成一页精美的交互式 HTML 演绎稿(信息图长页或横滑卡片式),\n适合知识/教程类内容分享。完整独立 HTML,内联 CSS/JS,不引外部资源,移动端自适应。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"summary\": \"演绎稿说明,50字\",\n \"html\": \"<!DOCTYPE html>...完整HTML...\"\n}",
+        "sourceFingerprint": "sha256:c322257471fbf279332a8a2b0b8e9f262925ac6d825a30295938aa0dcc9a1f8b"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -2188,7 +2712,7 @@
           "capabilitiesEnabled": true,
           "capabilitiesLocked": true,
           "skillVerificationStatus": "legacy_unverified",
-          "textModel": "deepseek-v4-flash",
+          "textModel": "gpt-5.5",
           "imageModel": "inherit",
           "approval": "auto",
           "optional": true,
@@ -2283,7 +2807,10 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["title", "sections"],
+              "inputs": [
+                "title",
+                "sections"
+              ],
               "liveData": "not_required",
               "credentials": [],
               "humanApproval": "auto"
@@ -2299,7 +2826,9 @@
             "status": "single_station",
             "mode": "employee_generation",
             "requirements": {
-              "inputs": ["task"],
+              "inputs": [
+                "task"
+              ],
               "liveData": "not_required",
               "credentials": [],
               "humanApproval": "auto"
@@ -2311,9 +2840,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 7,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:e37d8894d1c4d499d77594ee47ced885859fdb836f4e90b773385011145e9288",
+        "sourcePromptFingerprint": "sha256:c322257471fbf279332a8a2b0b8e9f262925ac6d825a30295938aa0dcc9a1f8b"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -2342,7 +2873,13 @@
           "desc": "同一内容按每个平台的文体规格出专属版",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "平台文体转换",
+            "emoji": "🔄",
+            "desc": "同一内容按每个平台的文体规格出专属版"
+          },
+          "sourceFingerprint": "sha256:472957f0474a4b9ec13b9fc5761512f7b9e7941e1063545169bccfcd93adaad2"
         },
         {
           "name": "发布时机策略",
@@ -2350,7 +2887,13 @@
           "desc": "按平台流量高峰给出最佳发布时间",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "发布时机策略",
+            "emoji": "⏰",
+            "desc": "按平台流量高峰给出最佳发布时间"
+          },
+          "sourceFingerprint": "sha256:95306103bf1673e22c035fcbc43f5c5152d090c8e702e1ef532e1b0f034e7a0b"
         },
         {
           "name": "操作清单",
@@ -2358,7 +2901,13 @@
           "desc": "每平台后台的具体操作步骤,照着点就能发",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "操作清单",
+            "emoji": "✅",
+            "desc": "每平台后台的具体操作步骤,照着点就能发"
+          },
+          "sourceFingerprint": "sha256:660f776ded6ce8fdcb0e91545c2132d47b5001ec0d9c5769170e064ded8ff3d1"
         },
         {
           "name": "风险预警",
@@ -2366,7 +2915,13 @@
           "desc": "提示该平台的限流词/敏感区/常见坑",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "风险预警",
+            "emoji": "⚠️",
+            "desc": "提示该平台的限流词/敏感区/常见坑"
+          },
+          "sourceFingerprint": "sha256:0de4d6bbcaa6c3a835aa92a13be28b69bc4007def27804a06bc76ecef9ec8986"
         }
       ],
       "outputKeys": [
@@ -2390,7 +2945,9 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位9 · 分发官(对应开源 Skill:social-auto-upload 多平台发布。\n V1 未托管真实平台账号,产出\"各平台完整发布包\",老板一键复制/打包上传;\n 绑定平台 Cookie 后可切换为真实自动发布)\n【定稿标题】{title}\n【话题标签】{tags}\n【目标平台与文体规格】\n{platform_specs}\n【定稿正文】\n{body}\n职责:为每个目标平台产出一个\"拿来即发\"的完整发布包:适配标题、适配正文、\n标签、最佳发布时间、发布操作清单(该平台后台里要点什么/填什么/避什么坑)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"versions\": [{\"platform\": \"平台名\", \"title\": \"适配标题\", \"body\": \"适配正文\",\n               \"tags\": [\"标签\"], \"best_time\": \"该平台最佳发布时间,如'工作日 12:00-13:00'\",\n               \"checklist\": [\"发布操作清单,2-4条,具体到该平台后台\"],\n               \"note\": \"发布注意事项一句话\"}],\n \"publish_plan\": \"全平台发布节奏建议(先发哪个/间隔多久),60字\"\n}"
+        "template": "【你的岗位】工位9 · 分发官(对应开源 Skill:social-auto-upload 多平台发布。\n 默认产出各平台完整发布包并进入人工终审;只有账号已授权且发布连接器明确启用时才允许执行平台操作)\n【定稿标题】{title}\n【话题标签】{tags}\n【目标平台与文体规格】\n{platform_specs}\n【定稿正文】\n{body}\n职责:为每个目标平台产出一个\"拿来即发\"的完整发布包:适配标题、适配正文、\n标签、最佳发布时间、发布操作清单(该平台后台里要点什么/填什么/避什么坑)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"versions\": [{\"platform\": \"平台名\", \"title\": \"适配标题\", \"body\": \"适配正文\",\n               \"tags\": [\"标签\"], \"best_time\": \"该平台最佳发布时间,如'工作日 12:00-13:00'\",\n               \"checklist\": [\"发布操作清单,2-4条,具体到该平台后台\"],\n               \"note\": \"发布注意事项一句话\"}],\n \"publish_plan\": \"全平台发布节奏建议(先发哪个/间隔多久),60字\"\n}",
+        "sourceTemplate": "【你的岗位】工位9 · 分发官(对应开源 Skill:social-auto-upload 多平台发布。\n 未获得平台账号授权时,仅产出\"各平台完整发布包\",由有权限的人确认后操作;\n 绑定平台 Cookie 后可切换为真实自动发布)\n【定稿标题】{title}\n【话题标签】{tags}\n【目标平台与文体规格】\n{platform_specs}\n【定稿正文】\n{body}\n职责:为每个目标平台产出一个\"拿来即发\"的完整发布包:适配标题、适配正文、\n标签、最佳发布时间、发布操作清单(该平台后台里要点什么/填什么/避什么坑)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"versions\": [{\"platform\": \"平台名\", \"title\": \"适配标题\", \"body\": \"适配正文\",\n               \"tags\": [\"标签\"], \"best_time\": \"该平台最佳发布时间,如'工作日 12:00-13:00'\",\n               \"checklist\": [\"发布操作清单,2-4条,具体到该平台后台\"],\n               \"note\": \"发布注意事项一句话\"}],\n \"publish_plan\": \"全平台发布节奏建议(先发哪个/间隔多久),60字\"\n}",
+        "sourceFingerprint": "sha256:25b81b55495c72eed65128cefee15ea3bb48482171e42d53a0b8e7d58f293e5c"
       },
       "soloPrompt": {
         "messageMode": "single_user",
@@ -2596,9 +3153,14 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["content", "platforms"],
+              "inputs": [
+                "content",
+                "platforms"
+              ],
               "liveData": "not_required",
-              "credentials": ["platform_authorization_only_for_actual_publish"],
+              "credentials": [
+                "platform_authorization_only_for_actual_publish"
+              ],
               "humanApproval": "review"
             },
             "executeBoundary": "本地只生成各平台发布包和终审清单；任何实际发布都要求服务器端平台授权并由独立发布适配器执行，本连接器始终拒绝发布动作。"
@@ -2608,9 +3170,11 @@
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 8,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:efc862fbd3c937cb07e23160dddab5fb17168e9e73132bc67d85576ef348e8ab",
+        "sourcePromptFingerprint": "sha256:25b81b55495c72eed65128cefee15ea3bb48482171e42d53a0b8e7d58f293e5c"
       },
       "systemPrompt": {
         "messageMode": "none",
@@ -2629,41 +3193,65 @@
       "emoji": "📊",
       "color": "#9b5de5",
       "duty": "发布后数据复盘回流",
-      "intro": "复盘官关注内容发布后的表现、反馈和变化，帮助团队看清哪些做法有效、哪些地方需要调整。适合用于阶段总结和持续优化，让下一轮内容生产更有依据、更少重复踩坑。",
+      "intro": "复盘官负责发布后数据回流：有真实历史与本轮数据时比较实际表现、目标和基线，解释变化并回流经验；数据不足时只建立取数责任、观察窗口与验证计划，不把假设当结论。",
       "approval": "auto",
       "optional": false,
       "capabilities": [
         {
           "name": "指标计划",
           "emoji": "📋",
-          "desc": "T+1/3/7 各看什么指标,达标线定多少",
+          "desc": "按T+1/3/7明确指标、取数负责人和统计口径；达标阈值只引用真实历史基线或负责人明确授权",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "指标计划",
+            "emoji": "📋",
+            "desc": "T+1/3/7 各看什么指标,达标线定多少"
+          },
+          "sourceFingerprint": "sha256:c07aa7cda0193f4475990edf0638668707e70ab856abb03787aa734701890400"
         },
         {
           "name": "预测性复盘",
           "emoji": "🔮",
-          "desc": "发布前预判哪里会好、哪里可能拖后腿",
+          "desc": "有真实数据时比较实际表现；无数据时只提出明确标注的待验证假设、验证窗口和判定方法，不预测结果",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "预测性复盘",
+            "emoji": "🔮",
+            "desc": "发布前预判哪里会好、哪里可能拖后腿"
+          },
+          "sourceFingerprint": "sha256:ad041b040cd5de9b8f40fdf7922e183995e235f2c7ea5e2fc5ce2dfab7a6cf26"
         },
         {
           "name": "选题回流",
           "emoji": "♻️",
-          "desc": "从本次内容衍生下次选题,回流选题库",
+          "desc": "基于有证据的复盘结论或明确的数据缺口，提出下一轮选题和验证方向",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "选题回流",
+            "emoji": "♻️",
+            "desc": "从本次内容衍生下次选题,回流选题库"
+          },
+          "sourceFingerprint": "sha256:245611e10315aef94632b059456a07dfe7f8511da5f06fc1e78baaf2f1907afc"
         },
         {
           "name": "经验沉淀",
           "emoji": "📚",
-          "desc": "把可复用的经验写回人设档案与知识库",
+          "desc": "只把有真实数据或已核验来源支持的可复用经验写回人设档案与知识库；无证据时保留为待验证项",
           "required": true,
           "enabled": true,
-          "locked": true
+          "locked": true,
+          "sourceDefinition": {
+            "name": "经验沉淀",
+            "emoji": "📚",
+            "desc": "把可复用的经验写回人设档案与知识库"
+          },
+          "sourceFingerprint": "sha256:e3054f2553d7e83e1688f64f45122c95752b5182b9298bffd76b47f317b4f7e0"
         }
       ],
       "outputKeys": [
@@ -2688,12 +3276,14 @@
           "enabled_skill_cards",
           "role_template"
         ],
-        "template": "【你的岗位】工位10 · 复盘官(对应开源 Skill:MediaCrawler 反馈采集。\n V1 未接真实平台数据回流,产出\"发布后复盘计划+预测性复盘\";接入采集后切换为 T+1/3/7 真实数据)\n【已交付内容】《{title}》\n{body}\n职责:①给出 T+1/T+3/T+7 各要看什么指标、达标线是多少;②基于内容质量做预测性复盘\n(哪里可能好、哪里可能拖后腿);③给下次的 3 个选题建议(回流选题库)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"report\": \"复盘报告 markdown(含指标计划与预测性分析)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"理由\"}],\n \"profile_updates\": [\"建议写回人设档案的经验,如无则空数组\"]\n}"
+        "template": "【你的岗位】工位10 · 复盘官(对应开源 Skill:MediaCrawler 反馈采集)\n【已交付内容】《{title}》\n{body}\n职责:①有真实历史基线和本轮平台数据时,按 T+1/T+3/T+7 同口径比较实际表现、目标与基线,阈值只引用真实基线或负责人明确授权;②数据不足时只列待补数据、取数负责人、观察窗口和验证计划,任何预测只能明确标注为「待验证假设」,不得写成结果、平台规则或行业结论;③基于有证据的结论或明确的数据缺口,给出下次 3 个选题与验证建议,只有证据支持的经验才写回人设,否则 profile_updates 返回空数组。\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"report\": \"复盘报告 markdown(有真实数据时比较实际、目标与基线;无数据时只写取数与验证计划)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"基于证据或数据缺口的理由\"}],\n \"profile_updates\": [\"仅写证据支持的可复用经验,无则空数组\"]\n}",
+        "sourceTemplate": "【你的岗位】工位10 · 复盘官(对应开源 Skill:MediaCrawler 反馈采集。\n 未接通真实平台数据回流时,只产出\"发布后复盘计划+预测性复盘\";接通后使用 T+1/3/7 真实数据)\n【已交付内容】《{title}》\n{body}\n职责:①给出 T+1/T+3/T+7 各要看什么指标、达标线是多少;②基于内容质量做预测性复盘\n(哪里可能好、哪里可能拖后腿);③给下次的 3 个选题建议(回流选题库)。\n\n\n只输出一个合法 JSON 对象(UTF-8,无注释,不要 markdown 围栏之外的任何文字)。JSON 结构如下:\n{\n \"report\": \"复盘报告 markdown(含指标计划与预测性分析)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"理由\"}],\n \"profile_updates\": [\"建议写回人设档案的经验,如无则空数组\"]\n}",
+        "sourceFingerprint": "sha256:a669d27259eb495dc68c3e556c839408fb48f256a3e93a1ea022916927fe9a75"
       },
       "soloPrompt": {
         "messageMode": "single_user",
         "legacyBuilder": "solo_prompt",
-        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「复盘官」(部门:数据复盘部)。\n岗位职责:发布后数据复盘回流。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);材料不足就合理假设并标注「假设」;只输出 Markdown,不要客套。\n{length_hint}",
+        "template": "你是「老板的AI集团 · 内容生产部」的数字员工「复盘官」(部门:数据复盘部)。\n岗位职责:发布后数据复盘回流。这次不是流水线作业,是老板单独派给你个人的活。\n\n【你的多项能力(逐项运用)】\n{required_capabilities}\n{enabled_skills}\n{tenant_company_profile_and_knowledge}\n【老板的任务书】\n- 任务:{direction}\n- 行业/赛道:{industry}\n- 老板给的材料:\n{material}\n- 老板对上一版的意见(必须落实):{feedback}\n\n要求:按你的岗位专业标准独立完成,产出一份可直接使用的 Markdown 交付物(开头一行「# 标题」,结构清晰);有真实历史基线和本轮数据时才比较实际结果,具体阈值只能引用真实基线或负责人明确授权;材料不足就只列待补数据、取数负责人、观察窗口与验证计划,不得猜测平台规则、行业规律或结果;任何预测只能标为「待验证假设」并写明验证方法;只输出 Markdown,不要客套。\n{length_hint}",
         "placeholders": {
           "required_capabilities": "全部必备硬能力",
           "enabled_skills": "启用中的历史或后续学习技能",
@@ -2833,7 +3423,7 @@
           "next_topics",
           "profile_updates"
         ],
-        "contract": "{\n \"report\": \"复盘报告 markdown(含指标计划与预测性分析)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"理由\"}],\n \"profile_updates\": [\"建议写回人设档案的经验,如无则空数组\"]\n}",
+        "contract": "{\n \"report\": \"复盘报告 markdown(有真实数据时比较实际、目标与基线;无数据时只列取数、负责人、观察窗口与验证计划;预测仅可作为待验证假设)\",\n \"next_topics\": [{\"title\": \"下次选题\", \"reason\": \"基于证据或数据缺口的理由\"}],\n \"profile_updates\": [\"仅写证据支持的可复用经验,无则空数组\"]\n}",
         "primaryArtifact": "markdown"
       },
       "connectorPolicy": {
@@ -2848,21 +3438,25 @@
             "status": "local_assist_ready",
             "mode": "local_contract_assist",
             "requirements": {
-              "inputs": ["contentId"],
+              "inputs": [
+                "contentId"
+              ],
               "liveData": "optional",
               "credentials": [],
               "humanApproval": "auto"
             },
-            "executeBoundary": "有调用方提供的真实指标时仅据此复盘；无指标时只输出采集计划和待补清单，不预测或冒充真实经营成效。"
+            "executeBoundary": "有调用方提供的真实指标和历史基线时仅据此比较实际表现；无数据时只输出待补数据、取数负责人、观察窗口与验证计划；阈值只来自真实基线或负责人明确授权，预测只可标为待验证假设，绝不冒充真实成效或平台规则。"
           }
         ]
       },
       "sourceProvenance": {
         "project": "派活AI",
         "referencePath": "app/skills/registry.py",
-        "referenceSha256": "fb5e5d463e02be9b5ebdd24d3fe8533f4f33498a719a9913b32a9c24e75e80ce",
+        "referenceSha256": "9663481bfb2a709209281c1eb356783f9d5b4047dc54124cfa27f3e4986237dc",
         "legacyIdx": 9,
-        "snapshotDate": "2026-07-23"
+        "snapshotDate": "2026-08-01",
+        "sourceCapabilitySetFingerprint": "sha256:5cb3731de9578438c7396f37f84e8adee994e988ae77313ad7e4de29f97bdfeb",
+        "sourcePromptFingerprint": "sha256:a669d27259eb495dc68c3e556c839408fb48f256a3e93a1ea022916927fe9a75"
       },
       "systemPrompt": {
         "messageMode": "none",

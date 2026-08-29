@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -21,15 +21,12 @@ import {
   Avatar,
   Space,
   Popconfirm,
-  Descriptions,
   Switch,
   Grid,
 } from 'antd';
 import {
   FileTextOutlined,
-  PictureOutlined,
   VideoCameraOutlined,
-  FundProjectionScreenOutlined,
   ThunderboltOutlined,
   BulbOutlined,
   RobotOutlined,
@@ -47,32 +44,53 @@ import {
   DownOutlined,
   UpOutlined,
   CalendarOutlined,
+  BarChartOutlined,
+  PictureOutlined,
   PlusOutlined,
   EditOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
-import { notifyCredits, api } from '../api/client';
+import { notifyCredits, api, getUser } from '../api/client';
 import { StatCard, Panel } from '../components/Kit';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeWorkbench from '../components/EmployeeWorkbench';
+import ContentPipelineWorkbench from '../components/ContentPipelineWorkbench';
+import ContentEmployeeTaskCenter from '../components/ContentEmployeeTaskCenter';
+import WechatDraftStudio from '../components/WechatDraftStudio';
+import ContentReferencePanel from '../components/ContentReferencePanel';
+import ContentFactoryRecentCard from '../components/ContentFactoryRecentCard';
+import AiSalesVideoPanel from '../components/AiSalesVideoPanel';
+import { useReferenceImages } from '../components/useReferenceImages';
+import {
+  CONTENT_EXECUTION_STATIONS,
+  CONTENT_CREW_STATIONS,
+  type ContentCrewKey,
+  type ContentCrewStation,
+} from '../components/contentCrewConfig';
+import type { VideoModelOption } from '../components/contentMediaTypes';
+import AutomationFailureReason from '../components/AutomationFailureReason';
 import MediaJobCard, { MediaImportAction, MediaReviewTags, mediaBillingPresentation } from '../components/MediaJobCard';
+import PromptGuideModal, { type PromptGuide } from '../components/PromptGuideModal';
 import TaskProgress from '../components/TaskProgress';
+import type { ContentEmployeeQueueResponse, EmployeeWorkbenchRun } from '../api/employeeWorkbenchTypes';
+import './ContentFactory.css';
 import {
   BRANDS,
   COPY_TYPES,
-  DOT_COLORS,
   GENERATE_STAGES,
   LIB_TABS,
   MEDIA_TABS,
   PUBLISH_LEADS_MAX,
   PUBLISH_VIEWS_MAX,
-  REFERENCE_SUGGESTIONS,
   STATUSES,
-  STATUS_COLOR,
   TABS,
   TYPE_META,
   approvalBlockedReason,
   canSubmitApproval,
   contentFlowBlockedReason,
   contentFlowReady,
+  contentStatusColor,
+  contentStatusLabel,
   contentTypeLabel,
   ell,
   fmtNum,
@@ -84,38 +102,6 @@ import {
 import { templatesFor, MediaTemplate } from '../data/mediaTemplates';
 import { useSearchParams } from 'react-router-dom';
 
-type VideoModelOption = {
-  id: string;
-  name?: string;
-  provider?: string;
-  credits?: number;
-  costYuan?: number;
-  default?: boolean;
-  tier?: 'fast' | 'standard' | 'quality' | string;
-  tierLabel?: string;
-  tierRank?: number;
-  tierDesc?: string;
-  displayName?: string;
-  shortName?: string;
-  supported?: boolean;
-  statusLabel?: string;
-  note?: string;
-  requiresImage?: boolean;
-};
-type PromptGuide = {
-  id?: number;
-  tab: string;
-  type: string;
-  code: string;
-  name: string;
-  role_card: string;
-  output_rule: string;
-  style: string;
-  canEditPrompt?: boolean;
-  editablePath?: string;
-  overridden?: boolean;
-};
-type ReferenceImage = { id: string; name: string; url: string; size: number };
 type ProductionMode = 'manual' | 'immediate' | 'scheduled';
 type ContentAutomationRule = {
   id: number;
@@ -130,7 +116,7 @@ type ContentAutomationRule = {
   frequency: 'daily' | 'weekly';
   runTime: string;
   weekday: number | null;
-  approvalMode: 'risk' | 'always';
+  approvalMode: 'auto' | 'risk' | 'always';
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: string | null;
@@ -138,6 +124,14 @@ type ContentAutomationRule = {
   lastContentId: number | null;
   allowedTaskTypes?: string[];
   taskTypeValid?: boolean;
+};
+
+// 自动化产物一律停在待人工审阅，人工采纳后才进业务资产；
+// approvalMode 只保留历史配置的展示区分，不再有免审通道。
+const automationApprovalModeLabel = (mode: ContentAutomationRule['approvalMode']) => {
+  if (mode === 'always') return '生成后待人工审阅（强制复核）';
+  if (mode === 'risk') return '生成后待人工审阅（旧“按风险”规则已升级为必审）';
+  return '生成后待人工审阅（旧“自动采用”规则已升级为必审）';
 };
 type ContentAutomationRun = {
   id: number;
@@ -154,166 +148,17 @@ type AcceptedAutomationRun = {
   pollAfterMs?: number;
   pollUrl: string;
 };
-type ContentCrewKey =
-  'trend' | 'research' | 'benchmark' | 'draft' | 'style' | 'media' | 'cover' | 'deck' | 'publish' | 'retro';
-type ContentCrewCapability = { name?: string; emoji?: string; desc?: string };
-type ContentCrewRuntime = {
-  outputs?: number;
-  mediaJobs?: number;
-  lastCreatedAt?: string | null;
-};
-type ContentCrewStation = {
-  order: number;
-  key: ContentCrewKey;
-  name: string;
-  group: string;
-  emoji: string;
-  person: null;
-  optional: boolean;
-  employeeIdx: number | null;
-  moduleGroup?: string;
-  skill?: string;
-  color?: string;
-  duty?: string;
-  intro?: string;
-  approval?: string;
-  capabilities?: ContentCrewCapability[];
-  outputKeys?: string[];
-  taskTypes?: string[];
-  runtime?: ContentCrewRuntime;
-};
-const CONTENT_CREW_STATIONS: ContentCrewStation[] = [
-  {
-    order: 0,
-    key: 'trend',
-    name: '趋势官',
-    group: '热点雷达部',
-    emoji: '📡',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['趋势简报', '候选选题', '热点扫描'],
-  },
-  {
-    order: 1,
-    key: 'research',
-    name: '情报员',
-    group: '情报检索部',
-    emoji: '🔎',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['事实资料包', '核验报告', '来源清单'],
-  },
-  {
-    order: 2,
-    key: 'benchmark',
-    name: '拆解师',
-    group: '爆款研究部',
-    emoji: '🧩',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['爆款拆解', '评论洞察', '用户语言报告'],
-  },
-  {
-    order: 3,
-    key: 'draft',
-    name: '撰稿人',
-    group: '文案创作部',
-    emoji: '✍️',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['文案初稿', '标题方案', '配图建议'],
-  },
-  {
-    order: 4,
-    key: 'style',
-    name: '文风师',
-    group: '风格工坊',
-    emoji: '🎭',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['文风改写', '人设一致性校对', '表达优化稿'],
-  },
-  {
-    order: 5,
-    key: 'media',
-    name: '多媒体师',
-    group: '视觉工厂',
-    emoji: '🎬',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['多媒体素材方案', '正文配图方案', 'SVG信息图方案'],
-  },
-  {
-    order: 6,
-    key: 'cover',
-    name: '封面师',
-    group: '封面设计部',
-    emoji: '🖼️',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['封面方案', '封面备选组', '视觉钩子方案'],
-  },
-  {
-    order: 7,
-    key: 'deck',
-    name: '演绎师',
-    group: '互动演绎部',
-    emoji: '📽️',
-    person: null,
-    optional: true,
-    employeeIdx: null,
-    taskTypes: ['HTML演绎稿', '网页演示方案', '交互演绎稿'],
-  },
-  {
-    order: 8,
-    key: 'publish',
-    name: '分发官',
-    group: '发行调度部',
-    emoji: '🚀',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['平台发布包', '多平台适配稿', '发布终审清单'],
-  },
-  {
-    order: 9,
-    key: 'retro',
-    name: '复盘官',
-    group: '数据复盘部',
-    emoji: '📊',
-    person: null,
-    optional: false,
-    employeeIdx: null,
-    taskTypes: ['复盘报告', '下一轮选题建议', '人设回流建议'],
-  },
-];
-const CONTENT_EXECUTION_STATIONS = {
-  draft: { employeeIdx: 3, label: '文案 / 日更包' },
-  media: { employeeIdx: 5, label: '图片 / 视频' },
-  deck: { employeeIdx: 7, label: 'HTML 演绎 / 按需 PPT' },
-} as const;
-const APPROVAL_LABELS: Record<string, string> = {
-  auto: '自动确认',
-  pick: '人工选择',
-  review: '需要审核',
-  force: '强制终审',
-};
-const executionLabel = (key: ContentCrewKey) =>
-  key in CONTENT_EXECUTION_STATIONS
-    ? CONTENT_EXECUTION_STATIONS[key as keyof typeof CONTENT_EXECUTION_STATIONS].label
-    : '';
-const crewRuntimeText = (runtime?: ContentCrewRuntime) => {
-  if (!runtime) return '暂无运行统计';
-  const parts = [`内容产出 ${runtime.outputs ?? 0}`, `媒体任务 ${runtime.mediaJobs ?? 0}`];
-  if (runtime.lastCreatedAt) parts.push(`最近运行 ${String(runtime.lastCreatedAt).replace('T', ' ').slice(0, 16)}`);
-  return parts.join(' · ');
+type PipelinePendingReview = {
+  pipelineId: number;
+  pipelineTitle: string;
+  stationIdx: number;
+  stationName: string;
+  creator: { id: number; name: string; role: string | null };
+  approvalBoundary: { code: string | null; label: string };
+  canReview: boolean;
+  reviewBlockedReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
 const normalizeVideoModel = (m: VideoModelOption | string): VideoModelOption =>
   typeof m === 'string' ? { id: m, name: m } : m;
@@ -331,13 +176,61 @@ const GEN_TIME_HINTS: Record<string, string> = {
 const genTimeHint = (tab: string) => GEN_TIME_HINTS[tab] || '文案生成通常需要 10-60 秒，可随时取消';
 const WEEKDAY_LABELS = ['-', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const AUTOMATION_STATUS_COLOR: Record<string, string> = { 运行中: 'processing', 成功: 'success', 失败: 'error' };
-
+const automationVisibleFailure = (rule: ContentAutomationRule) => {
+  const error = String(rule.lastError || '').trim();
+  return error && ['失败', '未完成', '已停用'].includes(rule.lastStatus || '') ? error : '';
+};
+const pendingApprovalContent = (record: any) => ({
+  ...record,
+  status: '待审核',
+  delivery: {
+    ...(record?.delivery || {}),
+    displayStatus: '待人工审阅',
+    canUse: false,
+    canImport: false,
+    canPublish: false,
+    canSubmitApproval: false,
+    reason: '内容已进入策略确认；确认前只能内部预览，不能导入正式素材或登记发布',
+    nextAction: '由有权限的人员完成策略确认',
+  },
+});
+const crewStationIcon = (key: ContentCrewKey): ReactNode =>
+  ({
+    trend: <BulbOutlined />,
+    research: <SearchOutlined />,
+    benchmark: <AppstoreOutlined />,
+    draft: <EditOutlined />,
+    style: <FileTextOutlined />,
+    media: <VideoCameraOutlined />,
+    cover: <PictureOutlined />,
+    deck: <AppstoreOutlined />,
+    publish: <SendOutlined />,
+    retro: <BarChartOutlined />,
+    commerce_video: <VideoCameraOutlined />,
+  })[key];
+const crewAdoptionLabel = (mode?: string, role?: string) => {
+  if (role === 'boss' || role === 'platform_super') return '当前账号普通内部结果直接采用';
+  if (!mode || mode === 'auto') return '普通内部结果通过门禁后自动采用';
+  if (mode === 'force') return '内部结果按中央策略采用；外发、付费或不可逆执行另行授权';
+  return '以当前中央策略为准（岗位旧配置仅作档案）';
+};
+const approvalActionText = (record: any) =>
+  record?.delivery?.approvalActionLabel === '补建审阅单' ? '补建确认单' : '提交策略确认';
+const ContentUseActions = ({ record, children }: { record: any; children: ReactNode }) => (
+  <Tooltip title={contentFlowReady(record) ? '' : contentFlowBlockedReason(record)}>
+    <span style={{ display: 'inline-flex', gap: 6 }}>{children}</span>
+  </Tooltip>
+);
 export default function ContentFactory() {
+  const canViewCrewInternals = ['boss', 'admin', 'platform_super'].includes(getUser()?.role || '');
   const [searchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
+  const pipelineIdFromQuery = Number(searchParams.get('pipelineId'));
+  const requestedPipelineId =
+    Number.isSafeInteger(pipelineIdFromQuery) && pipelineIdFromQuery > 0 ? pipelineIdFromQuery : null;
   const [summary, setSummary] = useState<any>({});
   const [tab, setTab] = useState(
-    requestedTab && [...MEDIA_TABS, ...LIB_TABS, 'AI文案'].includes(requestedTab) ? requestedTab : 'AI文案',
+    requestedTab && [...LIB_TABS, 'AI文案'].includes(requestedTab) ? requestedTab : 'AI文案',
   );
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -348,6 +241,10 @@ export default function ContentFactory() {
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<number[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [pendingError, setPendingError] = useState('');
+  const [pipelinePendingReviews, setPipelinePendingReviews] = useState<PipelinePendingReview[]>([]);
+  const [pipelinePendingError, setPipelinePendingError] = useState('');
+  const [employeeTaskQueue, setEmployeeTaskQueue] = useState<ContentEmployeeQueueResponse | null>(null);
+  const [employeeTaskRefreshToken, setEmployeeTaskRefreshToken] = useState(0);
   const [effectTop, setEffectTop] = useState<any[]>([]);
   const [briefing, setBriefing] = useState<any>(null);
   const [results, setResults] = useState<any[]>([]);
@@ -355,6 +252,9 @@ export default function ContentFactory() {
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyPack, setDailyPack] = useState<any>(null);
   const [dailyOpen, setDailyOpen] = useState(false);
+  const [salesVideoOpen, setSalesVideoOpen] = useState(false);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
+  const [pipelineFocusId, setPipelineFocusId] = useState<number | null>(requestedPipelineId);
   const [viewRec, setViewRec] = useState<any>(null);
   const [pubRec, setPubRec] = useState<any>(null);
   const [publishIdempotencyKey, setPublishIdempotencyKey] = useState('');
@@ -375,7 +275,6 @@ export default function ContentFactory() {
   const [pubForm] = Form.useForm();
   const [tplForm] = Form.useForm();
   const [matForm] = Form.useForm();
-  // 素材调度点击引用 / 效果TOP点击详情
   const [matDetail, setMatDetail] = useState<any>(null);
   const [mediaJobs, setMediaJobs] = useState<any[]>([]);
   const [mediaJobsRefreshing, setMediaJobsRefreshing] = useState(false);
@@ -404,7 +303,8 @@ export default function ContentFactory() {
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled && requestedTab && [...MEDIA_TABS, ...LIB_TABS, 'AI文案'].includes(requestedTab)) {
-        setTab(requestedTab);
+        // 旧媒体深链继续可读，但不再重新暴露独立的图片/视频/PPT创作入口。
+        setTab(MEDIA_TABS.includes(requestedTab) ? '素材库' : requestedTab);
       }
     });
     return () => {
@@ -445,13 +345,12 @@ export default function ContentFactory() {
   };
   const regenSame = (rec: any) => {
     const type = COPY_TYPES.includes(rec.type) ? rec.type : '短视频脚本';
-    switchTab(MEDIA_TABS.includes(rec.type) ? rec.type : 'AI文案');
+    switchTab(MEDIA_TABS.includes(rec.type) ? '素材库' : 'AI文案');
     form.setFieldsValue({ type, topic: rec.topic || rec.title?.split('·')[0] || '' });
     setViewRec(null);
     message.success('已按该爆款回填类型与主题，可直接生成同款');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-
   const isMedia = MEDIA_TABS.includes(tab);
   const selectedMaterials = selectedMaterialIds
     .map(id => materials.find(material => Number(material.id) === id))
@@ -466,7 +365,9 @@ export default function ContentFactory() {
       (!mediaTagFilter || (t.tags || []).includes(mediaTagFilter)) &&
       (!mediaSceneFilter || t.scene === mediaSceneFilter),
   );
-  const activePromptGuide = promptGuides.find(g => g.type === (isMedia ? tab : currentCopyType));
+  const activePromptGuide = canViewCrewInternals
+    ? promptGuides.find(g => g.type === (isMedia ? tab : currentCopyType))
+    : undefined;
   const videoModelItems = videoModels.models
     .map(normalizeVideoModel)
     .sort(
@@ -548,7 +449,6 @@ export default function ContentFactory() {
       })),
     };
   }).filter(Boolean) as any[];
-
   useEffect(() => {
     if (tab !== 'AI视频' || !videoModels.models.length) return;
     const usable = videoModels.models.map(normalizeVideoModel).filter(m => m.supported !== false);
@@ -558,26 +458,32 @@ export default function ContentFactory() {
     }
   }, [tab, videoModels.default, videoModels.models, form]);
 
-  const loadSummary = () =>
-    api
-      .get('/content/summary')
-      .then(setSummary)
-      .catch(() => message.error('内容统计加载失败，可稍后刷新页面重试'));
+  const loadSummary = useCallback(
+    () =>
+      api
+        .get('/content/summary')
+        .then(setSummary)
+        .catch(() => message.error('内容统计加载失败，可稍后刷新页面重试')),
+    [],
+  );
   const loadTemplates = () =>
     api
       .get('/content/templates')
       .then(r => setTemplates(r || []))
       .catch(() => message.error('模板列表加载失败，可稍后刷新页面重试'));
-  const loadMaterials = () =>
-    api
-      .get('/content/materials')
-      .then(r => {
-        const next = r || [];
-        setMaterials(next);
-        const available = new Set(next.map((material: any) => Number(material.id)));
-        setSelectedMaterialIds(current => current.filter(id => available.has(id)));
-      })
-      .catch(() => message.error('素材列表加载失败，可稍后刷新页面重试'));
+  const loadMaterials = useCallback(
+    () =>
+      api
+        .get('/content/materials')
+        .then(r => {
+          const next = r || [];
+          setMaterials(next);
+          const available = new Set(next.map((material: any) => Number(material.id)));
+          setSelectedMaterialIds(current => current.filter(id => available.has(id)));
+        })
+        .catch(() => message.error('素材列表加载失败，可稍后刷新页面重试')),
+    [],
+  );
   const loadEffectTop = () =>
     api
       .get('/content/effect-top')
@@ -609,7 +515,19 @@ export default function ContentFactory() {
       .then(r => setPending(r.rows || []))
       .catch(e => {
         setPending([]);
-        setPendingError(e?.message || '待审核列表加载失败');
+        setPendingError(e?.message || '待处理列表加载失败');
+      });
+  };
+  const loadPipelinePendingReviews = () => {
+    setPipelinePendingError('');
+    return api
+      .get('/content/pipelines/pending-reviews')
+      .then((data: any) => {
+        setPipelinePendingReviews(Array.isArray(data?.reviews) ? data.reviews : []);
+      })
+      .catch((error: any) => {
+        setPipelinePendingReviews([]);
+        setPipelinePendingError(error?.message || '流水线待审列表加载失败');
       });
   };
   const loadList = useCallback(() => {
@@ -638,6 +556,7 @@ export default function ContentFactory() {
       loadTemplates();
       loadMaterials();
       loadPending();
+      loadPipelinePendingReviews();
       loadEffectTop();
       loadAutomations();
       // 跨模块辅助简报：未开通 dashboard 模块的角色 403 属正常路径，缺失仅隐藏建议区，保留静默
@@ -645,10 +564,12 @@ export default function ContentFactory() {
         .get('/dashboard/briefing')
         .then(setBriefing)
         .catch(() => {});
-      api
-        .get('/content/prompt-guides')
-        .then((r: PromptGuide[]) => setPromptGuides(r || []))
-        .catch(() => message.error('提示词指南加载失败，可稍后刷新页面重试'));
+      if (canViewCrewInternals) {
+        api
+          .get('/content/prompt-guides')
+          .then((r: PromptGuide[]) => setPromptGuides(r || []))
+          .catch(() => message.error('提示词指南加载失败，可稍后刷新页面重试'));
+      }
       // 跨模块可选数据：未开通 marshals 模块的角色属正常缺失，仅影响可选的"数字员工"下拉，保留静默
       api
         .get('/marshals')
@@ -658,7 +579,19 @@ export default function ContentFactory() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canViewCrewInternals, loadMaterials, loadSummary]);
+  useEffect(() => {
+    if (!requestedPipelineId) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setPipelineFocusId(requestedPipelineId);
+      setPipelineOpen(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedPipelineId]);
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -678,7 +611,6 @@ export default function ContentFactory() {
         setSelectedMediaJobIds(prev => prev.filter(id => (rows || []).some(j => j.id === id)));
       })
       .catch(() => {
-        // silent=true 时为 5s 轮询容错，静默合理；手动/切页加载失败则明确提示
         if (!silent) message.error('媒体任务列表加载失败，可点击刷新重试');
       })
       .finally(() => {
@@ -743,7 +675,7 @@ export default function ContentFactory() {
             frequency: 'daily',
             runTime: '09:00',
             weekday: null,
-            approvalMode: 'always',
+            approvalMode: 'auto',
           },
     );
     setAutomationOpen(true);
@@ -820,7 +752,7 @@ export default function ContentFactory() {
       }
       if (terminal.billing) notifyCredits(terminal.billing.balance);
       if (terminal.status === '成功') {
-        message.success(`「${rule.name}」已完成并进入内容仓；未执行外发`);
+        message.success(`「${rule.name}」已生成并进入内容仓，请按产物状态继续处理或做发布决策；未执行外发`);
       } else {
         message.error(`「${rule.name}」运行失败：${terminal.error || '请查看自动任务记录'}`);
       }
@@ -841,7 +773,7 @@ export default function ContentFactory() {
   };
 
   const switchTab = (k: string) => {
-    setTab(k);
+    setTab(MEDIA_TABS.includes(k) ? '素材库' : k);
     setPage(1);
     setSelTpl(null);
     setMediaPromptText('');
@@ -852,7 +784,6 @@ export default function ContentFactory() {
       form.setFieldsValue({ type: '短视频脚本' });
   };
 
-  // —— 媒体模板库（图/视频/PPT，真实示意配图，点选套用）——
   const [selTpl, setSelTpl] = useState<MediaTemplate | null>(null);
   const applyMediaTpl = (t: MediaTemplate) => {
     setSelTpl(t);
@@ -862,14 +793,26 @@ export default function ContentFactory() {
     message.success(`已套用模板「${t.name}」：生成时按模板风格与结构执行`, 1.6);
   };
 
-  // —— 多参考图上传（图生图 / 图生视频）——
-  const [refImgs, setRefImgs] = useState<ReferenceImage[]>([]);
+  const { refImgs, setRefImgs, onPickRef } = useReferenceImages();
   const [contentCrew, setContentCrew] = useState<ContentCrewStation[]>(CONTENT_CREW_STATIONS);
   const [crewLoading, setCrewLoading] = useState(true);
   const [crewConnected, setCrewConnected] = useState(false);
-  const [selectedCrewKey, setSelectedCrewKey] = useState<ContentCrewKey>('draft');
   const [crewWorkbenchIdx, setCrewWorkbenchIdx] = useState<number | null>(null);
-  const selectedCrew = contentCrew.find(station => station.key === selectedCrewKey);
+  const [crewWorkbenchRunId, setCrewWorkbenchRunId] = useState<number | null>(null);
+  const employeePendingReviewCount = employeeTaskQueue?.statusCounts?.['待审阅'] || 0;
+  const pipelinePendingReviewCount = pipelinePendingReviews.length;
+  const totalPendingReviewCount = pending.length + employeePendingReviewCount + pipelinePendingReviewCount;
+  const openPipelineReview = useCallback((pipelineId: number) => {
+    setPipelineFocusId(pipelineId);
+    setPipelineOpen(true);
+  }, []);
+  const receiveEmployeeTaskQueue = useCallback((data: ContentEmployeeQueueResponse | null) => {
+    setEmployeeTaskQueue(data);
+  }, []);
+  const openContentEmployeeRun = useCallback((run: EmployeeWorkbenchRun) => {
+    setCrewWorkbenchRunId(run.id);
+    setCrewWorkbenchIdx(run.employeeIdx);
+  }, []);
   const automationStation = contentCrew.find(
     station => (station.employeeIdx ?? station.order) === Number(automationEmployeeIdx),
   );
@@ -926,51 +869,7 @@ export default function ContentFactory() {
       .catch(() => setCrewConnected(false))
       .finally(() => setCrewLoading(false));
   }, []);
-  const onPickRef = async (files: FileList | null) => {
-    const incoming = Array.from(files || []);
-    if (!incoming.length) return;
-    if (refImgs.length + incoming.length > 6) {
-      message.error('一次最多上传6张参考图');
-      return;
-    }
-    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
-    const invalid = incoming.find(file => !allowed.has(file.type) || file.size > 4 * 1024 * 1024);
-    if (invalid) {
-      message.error(`「${invalid.name}」仅支持 PNG/JPG/WebP，且单张不超过4MB`);
-      return;
-    }
-    const total = [...refImgs.map(image => image.size), ...incoming.map(file => file.size)].reduce(
-      (sum, size) => sum + size,
-      0,
-    );
-    if (total > 18 * 1024 * 1024) {
-      message.error('参考图合计不能超过18MB');
-      return;
-    }
-    const added = await Promise.all(
-      incoming.map(
-        file =>
-          new Promise<ReferenceImage>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () =>
-              resolve({
-                id: `${Date.now()}-${Math.random()}`,
-                name: file.name,
-                url: String(reader.result),
-                size: file.size,
-              });
-            reader.onerror = () => reject(new Error(`读取「${file.name}」失败`));
-            reader.readAsDataURL(file);
-          }),
-      ),
-    );
-    setRefImgs(current => [...current, ...added].slice(0, 6));
-  };
-
-  // —— 生成（文本走 /generate；图片/视频走真实媒体通道并按张/条计费）——
-  // —— 后台生成（长任务异步化）：立即拿 jobId，5s 轮询，完成后替换结果卡；离开页面也有铃铛通知兜底 ——
   const bgTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({});
-  // 前台生成的取消控制器：生成期间持有，取消/结束后置空
   const genAbortRef = useRef<AbortController | null>(null);
   useEffect(
     () => () => {
@@ -1162,17 +1061,23 @@ export default function ContentFactory() {
             },
             genOptions,
           )
-          .then(res => {
+          .then(async res => {
+            const fresh = res.id ? await api.get(`/content/detail/${res.id}`).catch(() => null) : null;
             if (res.billing) {
               notifyCredits(res.billing.balance);
               const billingView = mediaBillingPresentation(res.billing);
+              const deliveryStatus =
+                fresh?.delivery?.displayStatus ||
+                res.delivery?.displayStatus ||
+                (res.status === '待审核' ? '旧策略/显式策略待处理' : res.status || '状态待确认');
               message.open({
                 type: res.billing.state === 'pending_reconciliation' ? 'warning' : 'success',
-                content: `PPT结构已生成（${res.deck.pages.length + 1}页含封面），状态：${res.status || '待审核'}${billingView ? `；${billingView.label}` : ''}`,
+                content: `PPT结构已生成（${res.deck.pages.length + 1}页含封面），状态：${deliveryStatus}${billingView ? `；${billingView.label}` : ''}`,
               });
             }
             setResults(prev => [
               {
+                ...(fresh || {}),
                 id: res.id,
                 type: 'AIPPT',
                 topic: v.topic,
@@ -1208,9 +1113,13 @@ export default function ContentFactory() {
       };
       api
         .post('/content/generate', payload, genOptions)
-        .then(res => {
+        .then(async res => {
+          const fresh = res.id ? await api.get(`/content/detail/${res.id}`).catch(() => null) : null;
           if (res.billing) notifyCredits(res.billing.balance);
-          setResults(prev => [{ ...res, type: payload.type, topic: v.topic, media, kbCat: res.kbCat }, ...prev]);
+          setResults(prev => [
+            { ...res, ...(fresh || {}), type: payload.type, topic: v.topic, media, kbCat: res.kbCat },
+            ...prev,
+          ]);
           const billingView = mediaBillingPresentation(res.billing);
           message.open({
             type: res.billing?.state === 'pending_reconciliation' ? 'warning' : 'success',
@@ -1495,7 +1404,7 @@ export default function ContentFactory() {
 
   const submitApproval = (rec: any) => {
     if (!rec?.id) {
-      message.warning('该内容还没有内容ID，不能提交审核');
+      message.warning('该内容还没有内容ID，不能提交策略确认');
       return;
     }
     if (!canSubmitApproval(rec)) {
@@ -1503,10 +1412,11 @@ export default function ContentFactory() {
       return;
     }
     api.post(`/content/${rec.id}/submit-approval`, {}).then((r: any) => {
-      message.success(r.existed ? '该内容已在待审核队列' : '已提交上级审核，右侧待审核内容会同步显示');
-      setViewRec((old: any) => (old ? { ...old, status: '待审核' } : old));
-      setRows(prev => prev.map(x => (x.id === rec.id ? { ...x, status: '待审核' } : x)));
-      setResults(prev => prev.map(x => (x.id === rec.id ? { ...x, status: '待审核' } : x)));
+      message.success(r.existed ? '该内容已在待确认区' : '已提交策略确认，右侧待确认区会同步显示');
+      setViewRec((old: any) => (old?.id === rec.id ? pendingApprovalContent(old) : old));
+      setRows(prev => prev.map(x => (x.id === rec.id ? pendingApprovalContent(x) : x)));
+      setResults(prev => prev.map(x => (x.id === rec.id ? pendingApprovalContent(x) : x)));
+      refreshList();
       loadPending();
     });
   };
@@ -1649,15 +1559,15 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       steps: [
         '读取今日作战主题或当前主题',
         '生成11条内容并做风控扫描',
-        '安全内容进入可使用，命中规则进入待审核',
-        '右侧待审核和最近生成同步更新',
+        '当前 auto 下，所有普通内部内容通过质量与账务门后自动采用；只有显式策略才需人工确认',
+        '任务中心与待确认区同步更新；系统不会自动发布',
       ],
     },
     {
       label: '导入素材',
       desc: '人工登记图片/视频/文档',
       icon: <CloudUploadOutlined />,
-      color: '#22c4a8',
+      color: 'var(--chart-2)',
       run: () => setMatOpen(true),
       steps: [
         '填写素材名称与类型',
@@ -1670,7 +1580,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       label: '调用品牌模板',
       desc: '套用高频提示词',
       icon: <AppstoreOutlined />,
-      color: '#8a7450',
+      color: 'var(--chart-3)',
       run: () => {
         const t = [...templates].sort((a, b) => (b.use_count || 0) - (a.use_count || 0))[0];
         if (t) applyTemplate(t);
@@ -1682,13 +1592,18 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       label: '生成短视频脚本',
       desc: '切到脚本创作表单',
       icon: <VideoCameraOutlined />,
-      color: '#f6a02d',
+      color: 'var(--warn)',
       run: () => {
         switchTab('AI文案');
         form.setFieldsValue({ type: '短视频脚本' });
         message.info('已选择短视频脚本，填写主题后点击「开始生成」');
       },
-      steps: ['切换到AI文案频道', '创作类型设为短视频脚本', '填写主题和要求', '生成后可复制、提交审核或导入素材库'],
+      steps: [
+        '切换到AI文案频道',
+        '创作类型设为短视频脚本',
+        '填写主题和要求',
+        '生成后可预览；普通内部结果通过门禁后自动采用',
+      ],
     },
   ];
 
@@ -1711,7 +1626,15 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       }
     >
       {productionMode === 'scheduled' && (
-        <Tooltip title={rule.enabled ? '停用后不会继续定时运行' : '启用后重新计算下次运行时间'}>
+        <Tooltip
+          title={
+            rule.taskTypeValid === false && !rule.enabled
+              ? '当前交付形式不属于这名内容员工的岗位范围；请先编辑规则并选择可执行的交付形式'
+              : rule.enabled
+                ? '停用后不会继续定时运行'
+                : '启用后重新计算下次运行时间'
+          }
+        >
           <div
             style={
               compact
@@ -1744,18 +1667,30 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
           </div>
         </Tooltip>
       )}
-      <Button
-        size="small"
-        type="primary"
-        ghost
-        icon={<ThunderboltOutlined />}
-        style={compact ? { width: '100%' } : undefined}
-        loading={automationRunningId === rule.id}
-        disabled={rule.taskTypeValid === false || (automationRunningId !== null && automationRunningId !== rule.id)}
-        onClick={() => runAutomationNow(rule)}
+      <Tooltip
+        title={
+          rule.taskTypeValid === false
+            ? '当前交付形式不属于这名内容员工的岗位范围；请先编辑规则并选择可执行的交付形式'
+            : automationRunningId !== null && automationRunningId !== rule.id
+              ? '已有另一条自动任务正在运行，请等待它结束后再启动'
+              : ''
+        }
       >
-        立即运行
-      </Button>
+        <span style={compact ? { width: '100%' } : undefined}>
+          <Button
+            size="small"
+            type="primary"
+            ghost
+            icon={<ThunderboltOutlined />}
+            style={compact ? { width: '100%' } : undefined}
+            loading={automationRunningId === rule.id}
+            disabled={rule.taskTypeValid === false || (automationRunningId !== null && automationRunningId !== rule.id)}
+            onClick={() => runAutomationNow(rule)}
+          >
+            立即运行
+          </Button>
+        </span>
+      </Tooltip>
       <Button
         size="small"
         icon={<EditOutlined />}
@@ -1781,299 +1716,208 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
     </div>
   );
 
-  const recentCard = (r: any) => {
-    const meta = TYPE_META[r.type] || { icon: <FileTextOutlined />, color: 'var(--ui-accent)' };
-    const pendingHl = r.status === '待审核';
-    const flowReady = contentFlowReady(r);
-    const blockedReason = flowReady ? '' : contentFlowBlockedReason(r);
-    return (
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label={`查看内容：${r.title || r.topic || '未命名内容'}`}
-        onClick={() => openContentDetail(r)}
-        onKeyDown={e => {
-          if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
-          e.preventDefault();
-          openContentDetail(r);
-        }}
-        style={{
-          border: pendingHl ? '1.5px solid #f6c343' : '1px solid var(--ui-border)',
-          background: 'var(--ui-surface)',
-          borderRadius: 10,
-          padding: 12,
-          cursor: 'pointer',
-          height: '100%',
-        }}
-      >
-        <div style={{ display: 'flex', gap: 10 }}>
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: `${meta.color}1a`,
-              color: meta.color,
-              fontSize: 16,
+  return (
+    <div className="content-factory-page">
+      <header className="content-command-head">
+        <div>
+          <span className="content-command-kicker">PAIHUO · CONTENT COMMAND</span>
+          <h1>内容生产仓</h1>
+          <p>选一个数字员工，说清这次要解决什么；岗位会自动调用技能、知识库和联网工具，普通结果完成后直接可用。</p>
+        </div>
+        <div className="content-command-side">
+          <Button
+            type="primary"
+            size="large"
+            icon={<TeamOutlined />}
+            onClick={() => {
+              setPipelineFocusId(null);
+              setPipelineOpen(true);
             }}
           >
-            {meta.icon}
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)', ...ell }}>
-              {r.title || r.topic || '未命名内容'}
+            完整团队流水线
+          </Button>
+          <dl className="content-command-metrics" aria-label="内容生产状态">
+            <div>
+              <dt>在岗员工</dt>
+              <dd>{crewLoading ? '—' : contentCrew.length}</dd>
             </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 2, ...ell }}>
-              {contentTypeLabel(r.type)}
-              {r.creator ? ` · ${r.creator}` : ''}
+            <div>
+              <dt>自动规则</dt>
+              <dd>{automationLoading ? '—' : automationRules.filter(rule => rule.enabled).length}</dd>
             </div>
-          </div>
+            <div data-state={totalPendingReviewCount > 0 ? 'attention' : 'quiet'}>
+              <dt>历史/策略待处理</dt>
+              <dd>{totalPendingReviewCount}</dd>
+            </div>
+          </dl>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-          <Tag color={STATUS_COLOR[r.status] || 'default'} style={{ marginRight: 0 }}>
-            {r.status}
-          </Tag>
-          <span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>
-            <ClockCircleOutlined /> {fmtTime(r.created_at)}
+      </header>
+
+      <section className="content-crew-command" aria-labelledby="content-crew-title">
+        <header className="content-crew-head">
+          <div>
+            <span>岗位目录 · 每位员工都可以单独派活</span>
+            <h2 id="content-crew-title">内容数字员工</h2>
+          </div>
+          <span className={`content-crew-connection ${crewConnected ? 'connected' : ''}`}>
+            <i aria-hidden="true" />
+            {crewLoading ? '连接中' : crewConnected ? `${contentCrew.length} 位在岗` : '等待接口'}
           </span>
-        </div>
-        <div
-          role="toolbar"
-          aria-label="内容操作"
-          onClick={e => e.stopPropagation()}
-          onKeyDown={e => e.stopPropagation()}
-          style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}
-        >
-          <Tooltip title={blockedReason}>
-            <span>
-              <Button
-                size="small"
-                icon={<FolderOpenOutlined />}
-                disabled={!flowReady}
-                loading={importingKey === `content-${r.id}`}
-                onClick={() => importToMaterial(r)}
+        </header>
+        <div className="content-crew-grid" aria-label="内容数字员工">
+          {contentCrew.map(station => {
+            const outputs = Number(station.runtime?.outputs || 0) + Number(station.runtime?.mediaJobs || 0);
+            return (
+              <article
+                className="content-crew-card"
+                key={station.key}
+                style={station.color ? ({ '--dept': station.color } as CSSProperties) : undefined}
               >
-                导入素材库
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title={canSubmitApproval(r) ? '' : approvalBlockedReason(r)}>
-            <span>
-              <Button size="small" disabled={!canSubmitApproval(r)} onClick={() => submitApproval(r)}>
-                提交审核
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title={blockedReason}>
-            <span>
-              <Button
-                size="small"
-                type="primary"
-                ghost
-                icon={<SendOutlined />}
-                disabled={!flowReady}
-                onClick={() => openPublish(r)}
-              >
-                发布登记
-              </Button>
-            </span>
-          </Tooltip>
-          <Popconfirm
-            title={`删除「${r.title || r.topic || '该内容'}」？`}
-            description="删除后进入回收站，老板/管理员可恢复。"
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => deleteContent(r)}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />}>
-              删除
-            </Button>
-          </Popconfirm>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--ui-text)', letterSpacing: '-.02em' }}>
-          内容生产仓
-        </div>
-        <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ui-text-2)' }}>
-          统一承接选题、创作、视觉、分发与复盘；现有生成、模板、素材和审批能力保持不变。
-        </div>
-      </div>
-
-      <Panel
-        title={
-          <>
-            <TeamOutlined style={{ color: 'var(--ui-accent)' }} /> Paihuo 内容部门 · 10 位完整数字员工
-          </>
-        }
-        extra={
-          crewLoading ? (
-            <Tag>连接中</Tag>
-          ) : (
-            <Tag color={crewConnected ? 'green' : 'default'}>{crewConnected ? '完整档案已接入' : '等待员工接口'}</Tag>
-          )
-        }
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="10 位员工均可打开完整工作台并单独派活"
-          description="每位员工都保留完整能力、工作方式、技能库、岗位提示词、工作配置和岗位档案；撰稿人 #3、多媒体师 #5、演绎师 #7 另有文案、媒体、HTML 演绎与按需 PPT 入口。单独派活不等于十工位流水线已经自动串行执行。"
-        />
-        <div style={{ overflowX: 'auto', paddingBottom: 6 }}>
-          <div style={{ display: 'flex', alignItems: 'stretch', minWidth: 1510 }}>
-            {contentCrew.map((station, index) => {
-              const active = selectedCrewKey === station.key;
-              return (
-                <div key={station.key} style={{ display: 'flex', alignItems: 'center' }}>
+                <header className="content-crew-card-head">
+                  {station.employeeIdx != null ? (
+                    <EmployeeAvatar
+                      idx={station.employeeIdx}
+                      name={station.person || station.name}
+                      color={station.color || '#7a5bd8'}
+                      size={50}
+                    />
+                  ) : (
+                    <span className="content-crew-icon" aria-hidden="true">
+                      {crewStationIcon(station.key)}
+                    </span>
+                  )}
+                  <div className="content-crew-card-identity">
+                    <h3>{station.person || station.name}</h3>
+                    <span>{station.name}</span>
+                    <small>
+                      {station.employeeIdx != null
+                        ? `工位 ${String(station.order + 1).padStart(2, '0')}`
+                        : '岗位待绑定'}{' '}
+                      · {station.optional ? '按需岗位' : '核心岗位'}
+                    </small>
+                  </div>
+                  <span className={`content-crew-card-state${outputs > 0 ? ' has-output' : ''}`}>
+                    {outputs > 0 ? `${outputs} 份产出` : '待命'}
+                  </span>
+                </header>
+                <p className="content-crew-card-duty">{station.intro || station.duty || '岗位职责正在同步。'}</p>
+                {(station.capabilityCount || station.skillCount || null) && (
                   <button
                     type="button"
-                    onClick={() => setSelectedCrewKey(station.key)}
-                    style={{
-                      width: 136,
-                      minHeight: 132,
-                      padding: '12px 10px',
-                      borderRadius: 10,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      border: active ? '1.5px solid var(--ui-accent)' : '1px solid var(--ui-border)',
-                      background: active ? 'var(--ui-primary-soft)' : 'var(--ui-surface)',
-                      color: 'var(--ui-text)',
-                      boxShadow: 'none',
-                      font: 'inherit',
+                    className="content-crew-card-powers"
+                    title="点击打开工作台查看完整能力与技能"
+                    aria-label={`查看${station.person || station.name}的完整能力与技能`}
+                    disabled={station.employeeIdx == null}
+                    onClick={() => {
+                      setCrewWorkbenchRunId(null);
+                      setCrewWorkbenchIdx(station.employeeIdx);
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: 22 }}>{station.emoji}</span>
-                      <span style={{ fontSize: 10.5, color: 'var(--ui-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                        {String(station.order).padStart(2, '0')}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 700, marginTop: 8 }}>{station.name}</div>
-                    <div style={{ fontSize: 11, color: 'var(--ui-text-2)', marginTop: 3 }}>{station.group}</div>
-                    <div style={{ fontSize: 10.5, color: 'var(--ui-muted)', marginTop: 7 }}>
-                      {station.optional ? '按需工位 · ' : ''}
-                      {station.employeeIdx != null ? `员工 #${station.employeeIdx}` : '待接口绑定'}
-                    </div>
-                    <Tag color="blue" style={{ margin: '7px 0 0', fontSize: 10, lineHeight: '17px' }}>
-                      {executionLabel(station.key)
-                        ? `可派活 · 附加 ${executionLabel(station.key)}`
-                        : '完整档案 · 可派活'}
-                    </Tag>
+                    <span>
+                      能力 {station.capabilityCount || 0} · 技能 {station.skillCount || 0}
+                    </span>
+                    {(station.capabilityNames || []).slice(0, 2).map(name => (
+                      <em key={name}>{name}</em>
+                    ))}
                   </button>
-                  {index < contentCrew.length - 1 && (
-                    <RightOutlined style={{ margin: '0 7px', color: 'var(--ui-muted)', fontSize: 11 }} />
+                )}
+                <div className="content-crew-card-deliverables" aria-label="常用交付">
+                  {(station.taskTypes || []).slice(0, 3).map(taskType => (
+                    <span key={taskType}>{taskType}</span>
+                  ))}
+                  {canViewCrewInternals && station.approval && (
+                    <span className="content-crew-card-approval">
+                      {crewAdoptionLabel(station.approval, getUser()?.role)}
+                    </span>
                   )}
                 </div>
-              );
-            })}
-          </div>
+                <div className="content-crew-card-actions">
+                  <Tooltip title={station.employeeIdx == null ? '该岗位尚未同步数字员工编号，暂时不能打开工作台' : ''}>
+                    <Button
+                      type="primary"
+                      block={station.key !== 'commerce_video'}
+                      icon={<TeamOutlined />}
+                      disabled={station.employeeIdx == null}
+                      onClick={() => {
+                        setCrewWorkbenchRunId(null);
+                        setCrewWorkbenchIdx(station.employeeIdx);
+                      }}
+                    >
+                      单独派活
+                    </Button>
+                  </Tooltip>
+                  {station.key === 'commerce_video' && (
+                    <Button icon={<VideoCameraOutlined />} onClick={() => setSalesVideoOpen(true)}>
+                      30秒带货视频
+                    </Button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
-        {selectedCrew && (
-          <div style={{ marginTop: 10 }}>
-            <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}>
-              <Descriptions.Item label="当前目录工位">
-                {selectedCrew.emoji} {selectedCrew.employeeIdx != null ? `#${selectedCrew.employeeIdx} · ` : ''}
-                {selectedCrew.name}
-              </Descriptions.Item>
-              <Descriptions.Item label="分部">{selectedCrew.group}</Descriptions.Item>
-              <Descriptions.Item label="人员">岗位身份（不虚构人名）</Descriptions.Item>
-              <Descriptions.Item label="按需工位">{selectedCrew.optional ? '是' : '否'}</Descriptions.Item>
-              <Descriptions.Item label="职责" span={2}>
-                {selectedCrew.duty || '接口未提供'}
-              </Descriptions.Item>
-              <Descriptions.Item label="介绍" span={2}>
-                {selectedCrew.intro || '接口未提供'}
-              </Descriptions.Item>
-              <Descriptions.Item label="能力" span={2}>
-                {selectedCrew.capabilities?.length ? (
-                  <Space size={[4, 6]} wrap>
-                    {selectedCrew.capabilities.map((capability, index) => (
-                      <Tooltip key={`${capability.name || 'capability'}-${index}`} title={capability.desc || ''}>
-                        <Tag style={{ margin: 0 }}>
-                          {capability.emoji} {capability.name || '未命名能力'}
-                        </Tag>
-                      </Tooltip>
-                    ))}
-                  </Space>
-                ) : (
-                  '接口未提供'
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="审批方式">
-                {APPROVAL_LABELS[selectedCrew.approval || ''] || selectedCrew.approval || '接口未提供'}
-              </Descriptions.Item>
-              <Descriptions.Item label="执行接入">
-                {executionLabel(selectedCrew.key)
-                  ? `完整单独派活 + 附加连接器：${executionLabel(selectedCrew.key)}`
-                  : '完整单独派活（岗位原生 JSON 交付）'}
-              </Descriptions.Item>
-              <Descriptions.Item label="运行统计" span={2}>
-                {crewRuntimeText(selectedCrew.runtime)}
-              </Descriptions.Item>
-            </Descriptions>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                justifyContent: 'space-between',
-                marginTop: 10,
-                flexWrap: 'wrap',
-              }}
-            >
-              <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>
-                审查由 quality_gate 服务执行，不计入第 11 位员工；历史技能标记为待核验，不能直接当作当前平台事实。
-              </div>
-              <Button
-                type="primary"
-                icon={<TeamOutlined />}
-                disabled={selectedCrew.employeeIdx == null}
-                onClick={() => setCrewWorkbenchIdx(selectedCrew.employeeIdx)}
-              >
-                打开完整工作台
-              </Button>
-            </div>
-          </div>
-        )}
-      </Panel>
+      </section>
+
+      <ContentEmployeeTaskCenter
+        refreshToken={employeeTaskRefreshToken}
+        onData={receiveEmployeeTaskQueue}
+        onOpenRun={openContentEmployeeRun}
+      />
+
+      <WechatDraftStudio />
+
+      <AiSalesVideoPanel
+        open={salesVideoOpen}
+        onOpenChange={setSalesVideoOpen}
+        refImgs={refImgs}
+        setRefImgs={setRefImgs}
+        onPickRef={onPickRef}
+        loadMaterials={loadMaterials}
+        loadSummary={loadSummary}
+        loadMediaJobs={loadMediaJobs}
+        onTaskSubmitted={() => setEmployeeTaskRefreshToken(value => value + 1)}
+      />
 
       <EmployeeWorkbench
         open={crewWorkbenchIdx !== null}
         domain="content"
         idx={crewWorkbenchIdx}
-        identityHint={
-          selectedCrew
+        initialRunId={crewWorkbenchRunId}
+        identityHint={(() => {
+          const station = contentCrew.find(item => item.employeeIdx === crewWorkbenchIdx);
+          return station
             ? {
-                idx: selectedCrew.employeeIdx ?? selectedCrew.order,
-                name: selectedCrew.name,
-                person: null,
-                group: selectedCrew.group,
-                emoji: selectedCrew.emoji,
-                color: selectedCrew.color,
-                duty: selectedCrew.duty,
-                intro: selectedCrew.intro,
+                idx: station.employeeIdx ?? station.order,
+                name: station.name,
+                person: station.person,
+                group: station.group,
+                emoji: station.emoji,
+                color: station.color,
+                duty: station.duty,
+                intro: station.intro,
               }
-            : null
-        }
+            : null;
+        })()}
         onClose={() => {
           setCrewWorkbenchIdx(null);
+          setCrewWorkbenchRunId(null);
+          setEmployeeTaskRefreshToken(value => value + 1);
           loadMaterials();
           loadSummary();
           loadPending();
+          loadPipelinePendingReviews();
           loadEffectTop();
           loadList();
+        }}
+      />
+
+      <ContentPipelineWorkbench
+        open={pipelineOpen}
+        crew={contentCrew}
+        initialPipelineId={pipelineFocusId}
+        onClose={() => {
+          setPipelineOpen(false);
+          loadPipelinePendingReviews();
         }}
       />
 
@@ -2166,7 +2010,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
           description={
             productionMode === 'manual'
               ? '下方保留原有文案、图片、视频、PPT、素材和模板工作台。'
-              : '自动结果只会进入“待审核”或“可使用”，绝不会自动发布、操作外部账号、付费投放或执行其他不可逆动作。'
+              : '当前 auto 下，所有普通内部结果通过质量与账务门后自动采用；只有显式配置的策略确认才会进入待处理。系统绝不会自动发布、操作外部账号、真实付费或执行其他不可逆动作。'
           }
         />
 
@@ -2230,6 +2074,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                             <Tag style={{ margin: 0, flexShrink: 0 }}>未运行</Tag>
                           )}
                         </div>
+                        <AutomationFailureReason reason={automationVisibleFailure(rule)} prefix />
                         {rule.taskTypeValid === false && (
                           <Tag color="red" style={{ marginTop: 8 }}>
                             任务类型与员工岗位不匹配，需编辑
@@ -2256,7 +2101,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                             <span style={{ color: 'var(--ui-muted)' }}>执行计划：</span>
                             {rule.frequency === 'daily' ? '每天' : WEEKDAY_LABELS[rule.weekday || 0]} {rule.runTime}
                             {' · '}
-                            {rule.approvalMode === 'always' ? '全部人工审核' : '按现有风控'}
+                            {automationApprovalModeLabel(rule.approvalMode)}
                           </div>
                           <div>
                             <span style={{ color: 'var(--ui-muted)' }}>下次运行：</span>
@@ -2321,9 +2166,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         <div>
                           {rule.frequency === 'daily' ? '每天' : WEEKDAY_LABELS[rule.weekday || 0]} {rule.runTime}
                         </div>
-                        <div style={{ color: 'var(--ui-muted)' }}>
-                          {rule.approvalMode === 'always' ? '全部人工审核' : '按现有风控'}
-                        </div>
+                        <div style={{ color: 'var(--ui-muted)' }}>{automationApprovalModeLabel(rule.approvalMode)}</div>
                       </div>
                     ),
                   },
@@ -2341,15 +2184,19 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                   },
                   {
                     title: '最近状态',
-                    width: 110,
-                    render: (_value, rule) =>
-                      rule.lastStatus ? (
-                        <Tooltip title={rule.lastError || (rule.lastContentId ? `内容 #${rule.lastContentId}` : '')}>
-                          <Tag color={AUTOMATION_STATUS_COLOR[rule.lastStatus] || 'default'}>{rule.lastStatus}</Tag>
-                        </Tooltip>
-                      ) : (
-                        <Tag>未运行</Tag>
-                      ),
+                    width: 220,
+                    render: (_value, rule) => (
+                      <div>
+                        {rule.lastStatus ? (
+                          <Tooltip title={rule.lastError || (rule.lastContentId ? `内容 #${rule.lastContentId}` : '')}>
+                            <Tag color={AUTOMATION_STATUS_COLOR[rule.lastStatus] || 'default'}>{rule.lastStatus}</Tag>
+                          </Tooltip>
+                        ) : (
+                          <Tag>未运行</Tag>
+                        )}
+                        <AutomationFailureReason reason={automationVisibleFailure(rule)} />
+                      </div>
+                    ),
                   },
                   {
                     title: '操作',
@@ -2363,13 +2210,13 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         )}
       </Panel>
 
-      {/* 顶部 5 统计卡 */}
+      {/* 内容业务概览：媒体能力由数字员工调用，不再作为并列产品入口。 */}
       <Row gutter={[12, 12]}>
         <Col flex="1 1 176px" style={{ minWidth: 0 }}>
           <StatCard
             icon={<FileTextOutlined />}
             color="var(--ui-accent)"
-            label="本月内容产出"
+            label="本月可用内容"
             value={summary.total ?? '-'}
             suffix="条"
             onClick={() => switchTab('AI文案')}
@@ -2377,32 +2224,34 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         </Col>
         <Col flex="1 1 176px" style={{ minWidth: 0 }}>
           <StatCard
-            icon={<PictureOutlined />}
-            color="#22c4a8"
-            label="AI图片"
-            value={summary.image ?? '-'}
-            suffix="张"
-            onClick={() => switchTab('AI图片')}
+            icon={<TeamOutlined />}
+            color="var(--chart-2)"
+            label="数字员工任务"
+            value={employeeTaskQueue?.visibleTotal ?? '-'}
+            suffix="项"
+            onClick={() =>
+              document.getElementById('content-employee-task-center')?.scrollIntoView({ behavior: 'smooth' })
+            }
           />
         </Col>
         <Col flex="1 1 176px" style={{ minWidth: 0 }}>
           <StatCard
-            icon={<VideoCameraOutlined />}
-            color="#70757a"
-            label="AI视频"
-            value={summary.video ?? '-'}
-            suffix="支"
-            onClick={() => switchTab('AI视频')}
-          />
-        </Col>
-        <Col flex="1 1 176px" style={{ minWidth: 0 }}>
-          <StatCard
-            icon={<FundProjectionScreenOutlined />}
-            color="#f6a02d"
-            label="AIPPT"
-            value={summary.ppt ?? '-'}
+            icon={<FolderOpenOutlined />}
+            color="var(--chart-3)"
+            label="素材资产"
+            value={materials.length}
             suffix="份"
-            onClick={() => switchTab('AIPPT')}
+            onClick={() => switchTab('素材库')}
+          />
+        </Col>
+        <Col flex="1 1 176px" style={{ minWidth: 0 }}>
+          <StatCard
+            icon={<ClockCircleOutlined />}
+            color="var(--warn)"
+            label="自动任务"
+            value={automationRules.filter(rule => rule.enabled).length}
+            suffix="条"
+            onClick={() => setAutomationOpen(true)}
           />
         </Col>
       </Row>
@@ -2646,7 +2495,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                   <Panel
                     title={
                       <>
-                        <AppstoreOutlined style={{ color: '#8a7450' }} /> {tab}模板库（点击套用，主题可改）
+                        <AppstoreOutlined style={{ color: 'var(--chart-3)' }} /> {tab}模板库（点击套用，主题可改）
                       </>
                     }
                     extra={
@@ -3011,6 +2860,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         <Form.Item
                           label="创作类型"
                           name="type"
+                          extra={isMedia ? '当前媒体入口已锁定对应创作类型，无需另外选择。' : undefined}
                           rules={[{ required: true, message: '请选择创作类型' }]}
                           style={{ marginBottom: 12 }}
                         >
@@ -3323,9 +3173,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                                 {r.topic}
                               </span>
                               <Tag color={TYPE_META[r.type]?.color}>{contentTypeLabel(r.type)}</Tag>
-                              {!r.jobId && r.status && (
-                                <Tag color={STATUS_COLOR[r.status] || 'default'}>{r.status}</Tag>
-                              )}
+                              {!r.jobId && r.status && <Tag color={contentStatusColor(r)}>{contentStatusLabel(r)}</Tag>}
                               {r.tpl && <Tag color="purple">模板：{r.tpl}</Tag>}
                               {r.kbCat && <Tag color="cyan">📚 已入知识库·{r.kbCat}</Tag>}
                               {!r.jobId && !r.pending && !r.failed && (
@@ -3339,9 +3187,16 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                               {r.jobId ? <MediaReviewTags job={r} /> : r.media && <Tag color="purple">演绎附件</Tag>}
                             </div>
                             <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                              <Button size="small" icon={<CopyOutlined />} onClick={() => copyText(r.body)}>
-                                复制
-                              </Button>
+                              <ContentUseActions record={r}>
+                                <Button
+                                  size="small"
+                                  icon={<CopyOutlined />}
+                                  disabled={!contentFlowReady(r)}
+                                  onClick={() => copyText(r.body)}
+                                >
+                                  复制
+                                </Button>
+                              </ContentUseActions>
                               {(r.id || r.jobId) &&
                                 (r.jobId ? (
                                   <MediaImportAction
@@ -3364,16 +3219,11 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                                     </span>
                                   </Tooltip>
                                 ))}
-                              {r.id && (
+                              {r.id && canSubmitApproval(r) && (
                                 <Tooltip title={canSubmitApproval(r) ? '' : approvalBlockedReason(r)}>
                                   <span>
-                                    <Button
-                                      size="small"
-                                      ghost
-                                      disabled={!canSubmitApproval(r)}
-                                      onClick={() => submitApproval(r)}
-                                    >
-                                      提交审核
+                                    <Button size="small" ghost onClick={() => submitApproval(r)}>
+                                      {approvalActionText(r)}
                                     </Button>
                                   </span>
                                 </Tooltip>
@@ -3462,14 +3312,18 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                                 <span style={{ fontSize: 12, color: 'var(--ui-text-2)' }}>
                                   共 {r.deck.pages.length + 1} 页（含封面）{r.tpl ? ` · 模板：${r.tpl}` : ''}
                                 </span>
-                                <div style={{ display: 'flex', gap: 6 }}>
-                                  <Button size="small" onClick={() => exportDeckHtml(r)}>
+                                <ContentUseActions record={r}>
+                                  <Button
+                                    size="small"
+                                    disabled={!contentFlowReady(r)}
+                                    onClick={() => exportDeckHtml(r)}
+                                  >
                                     🖥️ 下载放映版(HTML)
                                   </Button>
-                                  <Button size="small" onClick={() => exportDeckDoc(r)}>
+                                  <Button size="small" disabled={!contentFlowReady(r)} onClick={() => exportDeckDoc(r)}>
                                     📄 导出大纲(Word)
                                   </Button>
-                                </div>
+                                </ContentUseActions>
                               </div>
                               <div
                                 style={{
@@ -3615,17 +3469,21 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         >
                           刷新状态
                         </Button>
-                        <Button
-                          size="small"
-                          danger
-                          ghost
-                          disabled={!selectedMediaJobIds.length}
-                          onClick={() =>
-                            deleteMediaJobs(selectedMediaJobIds, `选中的 ${selectedMediaJobIds.length} 条任务`)
-                          }
-                        >
-                          删除选中
-                        </Button>
+                        <Tooltip title={selectedMediaJobIds.length ? '' : '请先勾选可删除的媒体任务'}>
+                          <span>
+                            <Button
+                              size="small"
+                              danger
+                              ghost
+                              disabled={!selectedMediaJobIds.length}
+                              onClick={() =>
+                                deleteMediaJobs(selectedMediaJobIds, `选中的 ${selectedMediaJobIds.length} 条任务`)
+                              }
+                            >
+                              删除选中
+                            </Button>
+                          </span>
+                        </Tooltip>
                         <Button size="small" onClick={clearFailedMediaJobs}>
                           清空失败
                         </Button>
@@ -3661,7 +3519,20 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         setStatusFilter(v);
                         setPage(1);
                       }}
-                      options={[{ value: '', label: '全部状态' }, ...STATUSES.map(s => ({ value: s, label: s }))]}
+                      options={[
+                        { value: '', label: '全部状态' },
+                        ...STATUSES.map(s => ({
+                          value: s,
+                          label:
+                            s === '可使用'
+                              ? '已采用（可用于业务）'
+                              : s === '待审核'
+                                ? '旧策略/显式策略待处理'
+                                : s === '已驳回'
+                                  ? '失败需返工'
+                                  : s,
+                        })),
+                      ]}
                     />
                   }
                 >
@@ -3671,7 +3542,15 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                     <Row gutter={[12, 12]}>
                       {rows.map(r => (
                         <Col xs={24} sm={12} xl={8} key={r.id}>
-                          {recentCard(r)}
+                          <ContentFactoryRecentCard
+                            record={r}
+                            importing={importingKey === `content-${r.id}`}
+                            onOpen={openContentDetail}
+                            onImport={importToMaterial}
+                            onSubmitApproval={submitApproval}
+                            onOpenPublish={openPublish}
+                            onDelete={deleteContent}
+                          />
                         </Col>
                       ))}
                     </Row>
@@ -3699,85 +3578,21 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         <Col xs={24} lg={8}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* 固定创作参考：不冒充实时经营或热点判断 */}
-            <Panel
-              title={
-                <>
-                  <BulbOutlined style={{ color: 'var(--ui-accent)' }} /> 创作参考模板
-                </>
-              }
-              extra={
-                briefing?.theme && (
-                  <Tag color="blue" style={{ fontSize: 11, marginRight: 0 }}>
-                    已记录主题：{briefing.theme}
-                  </Tag>
-                )
-              }
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  message="以下是固定示例，不是实时 AI 判断"
-                  description="系统没有为这些模板读取实时热点、经营表现或活动排期；使用前必须核对门店真实信息。"
-                />
-                {REFERENCE_SUGGESTIONS.map((s, i) => (
-                  <button
-                    type="button"
-                    key={i}
-                    onClick={() => setSuggestionDetail(s)}
-                    style={{
-                      ...interactiveSurfaceStyle,
-                      display: 'flex',
-                      gap: 8,
-                      fontSize: 12.5,
-                      color: 'var(--ui-text-2)',
-                      lineHeight: 1.7,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Badge color={DOT_COLORS[i % DOT_COLORS.length]} />
-                    <span style={{ flex: 1 }}>
-                      <b style={{ color: 'var(--ui-text)' }}>{s.title}</b>
-                      <br />
-                      {s.summary}
-                    </span>
-                    <RightOutlined style={{ fontSize: 10, color: 'var(--ui-muted)', marginTop: 6 }} />
-                  </button>
-                ))}
-                {briefing?.theme ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      form.setFieldsValue({ topic: briefing.theme });
-                      switchTab('AI文案');
-                      message.success('已将经营作战计划中记录的主题填入表单，请核对后再生成');
-                    }}
-                    style={{
-                      ...interactiveSurfaceStyle,
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                      fontSize: 12,
-                      color: 'var(--ui-accent)',
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                    }}
-                  >
-                    <ThunderboltOutlined /> 使用已记录主题 <RightOutlined style={{ fontSize: 10 }} />
-                  </button>
-                ) : (
-                  <div style={{ color: 'var(--ui-muted)', fontSize: 12 }}>
-                    暂无带业务记录的今日主题，请先在创作表单中填写真实主题。
-                  </div>
-                )}
-              </div>
-            </Panel>
+            <ContentReferencePanel
+              briefingTheme={briefing?.theme}
+              onSelectSuggestion={setSuggestionDetail}
+              onUseBriefingTheme={theme => {
+                form.setFieldsValue({ topic: theme });
+                switchTab('AI文案');
+                message.success('已将经营作战计划中记录的主题填入表单，请核对后再生成');
+              }}
+            />
 
-            {/* 待审核内容队列 */}
+            {/* 待人工处理区：流水线、单员工和普通内容统一可发现 */}
             <Panel
               title={
                 <>
-                  待审核内容 <Badge count={pending.length} size="small" />
+                  待人工处理 <Badge count={totalPendingReviewCount} size="small" />
                 </>
               }
               extra={
@@ -3788,6 +3603,8 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                   onClick={() => {
                     switchTab('AI文案');
                     setStatusFilter('待审核');
+                    loadPending();
+                    loadPipelinePendingReviews();
                   }}
                 >
                   全部 <RightOutlined />
@@ -3798,14 +3615,76 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                 type="info"
                 showIcon
                 style={{ marginBottom: 8 }}
-                message="员工点击「提交审核」后会进入这里；上级/老板账号可在待审核列表逐条查看正文、风险和来源。"
+                message="这里只列出待处理或需策略确认的任务"
+                description="当前 auto 下，none / low / medium / high 普通内部结果通过质量和账务门后直接进入业务可用状态。历史待审任务和显式策略任务仍在这里展示；系统不会自动发布。"
               />
+              {pipelinePendingError ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  message="流水线待审列表加载失败"
+                  description={
+                    <span>
+                      {pipelinePendingError}{' '}
+                      <button type="button" className="ui-link-button" onClick={loadPipelinePendingReviews}>
+                        重新加载
+                      </button>
+                    </span>
+                  }
+                />
+              ) : (
+                pipelinePendingReviews.map(review => (
+                  <button
+                    type="button"
+                    className="content-pipeline-review-card"
+                    key={`pipeline-${review.pipelineId}`}
+                    data-pipeline-review-id={review.pipelineId}
+                    onClick={() => openPipelineReview(review.pipelineId)}
+                  >
+                    <span className="content-pipeline-review-head">
+                      <strong>{review.pipelineTitle || `内容流水线 #${review.pipelineId}`}</strong>
+                      <Tag color={review.canReview ? 'gold' : 'default'}>
+                        {review.canReview ? '可审阅' : '只可查看'}
+                      </Tag>
+                    </span>
+                    <span className="content-pipeline-review-meta">
+                      流水线 #{review.pipelineId} · 工位{review.stationIdx}·{review.stationName}
+                    </span>
+                    <span className="content-pipeline-review-meta">
+                      创建人：{review.creator?.name || `用户 #${review.creator?.id || '-'}`} · 边界：
+                      {review.approvalBoundary?.label || '待核验'}
+                    </span>
+                    {!review.canReview && review.reviewBlockedReason ? (
+                      <span className="content-pipeline-review-blocked">{review.reviewBlockedReason}</span>
+                    ) : null}
+                  </button>
+                ))
+              )}
+              {employeePendingReviewCount > 0 && (
+                <button
+                  type="button"
+                  className="content-employee-review-link"
+                  onClick={() =>
+                    document.getElementById('content-employee-task-center')?.scrollIntoView({ behavior: 'smooth' })
+                  }
+                >
+                  <span>
+                    <b>{employeePendingReviewCount}</b>
+                    <span>
+                      <strong>内容数字员工产出待处理 / 需策略确认</strong>
+                      <small>去任务中心打开对应员工与任务</small>
+                    </span>
+                  </span>
+                  <RightOutlined />
+                </button>
+              )}
               {pendingError ? (
                 <Alert
                   type="error"
                   showIcon
                   style={{ marginBottom: 8 }}
-                  message="待审核列表加载失败"
+                  message="待确认列表加载失败"
                   description={
                     <span>
                       {pendingError}{' '}
@@ -3815,9 +3694,13 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                     </span>
                   }
                 />
-              ) : pending.length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无待审核内容" style={{ margin: '8px 0' }} />
-              ) : (
+              ) : pending.length === 0 && employeePendingReviewCount === 0 && pipelinePendingReviewCount === 0 ? (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="暂无待人工处理内容"
+                  style={{ margin: '8px 0' }}
+                />
+              ) : pending.length === 0 ? null : (
                 pending.map(p => (
                   <button
                     type="button"
@@ -3843,7 +3726,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                       </div>
                     </div>
                     <Tag color="gold" style={{ marginRight: 0, flexShrink: 0 }}>
-                      待审核
+                      待处理
                     </Tag>
                   </button>
                 ))
@@ -3981,7 +3864,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
             <Panel
               title={
                 <>
-                  <FireOutlined style={{ color: '#f25b6b' }} /> 内容效果TOP
+                  <FireOutlined style={{ color: 'var(--danger)' }} /> 内容效果TOP
                 </>
               }
             >
@@ -4019,7 +3902,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         fontWeight: 700,
                         color: '#fff',
                         marginTop: 2,
-                        background: i < 3 ? ['#f25b6b', '#f6a02d', '#70757a'][i] : 'var(--ui-muted)',
+                        background: i < 3 ? ['var(--danger)', 'var(--warn)', 'var(--ui-muted)'][i] : 'var(--ui-muted)',
                       }}
                     >
                       {i + 1}
@@ -4030,7 +3913,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                         {contentTypeLabel(e.type)} · {e.channel || '未发布'} · {fmtNum(e.effect_views)}浏览 ·{' '}
                         {e.effect_leads ?? 0}线索
                       </div>
-                      <div style={{ fontSize: 10.5, color: '#b0b8c8' }}>点击查看正文、发布效果、入库和审核操作</div>
+                      <div style={{ fontSize: 10.5, color: '#b0b8c8' }}>点击查看正文、发布效果、入库和策略确认操作</div>
                     </div>
                   </button>
                 ))
@@ -4153,18 +4036,22 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
               </span>
             </Tooltip>
           ),
-          viewRec?.id && (
+          viewRec?.id && canSubmitApproval(viewRec) && (
             <Tooltip key="audit" title={canSubmitApproval(viewRec) ? '' : approvalBlockedReason(viewRec)}>
               <span>
-                <Button disabled={!canSubmitApproval(viewRec)} onClick={() => submitApproval(viewRec)}>
-                  提交审核
-                </Button>
+                <Button onClick={() => submitApproval(viewRec)}>{approvalActionText(viewRec)}</Button>
               </span>
             </Tooltip>
           ),
-          <Button key="copy" icon={<CopyOutlined />} onClick={() => copyText(viewRec?.body)}>
-            复制
-          </Button>,
+          <ContentUseActions key="copy" record={viewRec}>
+            <Button
+              icon={<CopyOutlined />}
+              disabled={!contentFlowReady(viewRec)}
+              onClick={() => copyText(viewRec?.body)}
+            >
+              复制
+            </Button>
+          </ContentUseActions>,
           viewRec?.id && (
             <Tooltip key="pub" title={!contentFlowReady(viewRec) ? contentFlowBlockedReason(viewRec) : ''}>
               <span>
@@ -4205,7 +4092,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       >
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
           <Tag color={TYPE_META[viewRec?.type]?.color || 'blue'}>{contentTypeLabel(viewRec?.type)}</Tag>
-          <Tag color={STATUS_COLOR[viewRec?.status] || 'default'}>{viewRec?.status}</Tag>
+          <Tag color={contentStatusColor(viewRec)}>{contentStatusLabel(viewRec)}</Tag>
           {viewRec?.ai_mode && (
             <Tag color={viewRec.ai_mode === 'template' ? 'orange' : 'geekblue'}>
               {viewRec.ai_mode === 'template' ? '模板底稿' : '真实AI'}
@@ -4374,7 +4261,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
           showIcon
           style={{ marginBottom: 14 }}
           message="自动生产不等于自动发布"
-          description="系统会锁定所选内容员工的完整岗位能力与人工审批边界。结果只进入待审核或可使用；不会自动外发、操作账号或付费投放。"
+          description="新规则默认 auto：none / low / medium / high 普通内部结果通过质量和账务门后自动采用。risk / always 作为旧规则兼容选项保留。系统不会自动外发、操作账号、真实付费或执行不可逆动作。"
         />
         {editingAutomation?.taskTypeValid === false && (
           <Alert
@@ -4501,11 +4388,16 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
               </Form.Item>
             </Col>
             <Col xs={24} md={automationFrequency === 'weekly' ? 6 : 9}>
-              <Form.Item name="approvalMode" label="审批模式" rules={[{ required: true, message: '请选择审批模式' }]}>
+              <Form.Item
+                name="approvalMode"
+                label="采用与确认策略"
+                rules={[{ required: true, message: '请选择采用与确认策略' }]}
+              >
                 <Select
                   options={[
-                    { value: 'always', label: '全部进入人工审核' },
-                    { value: 'risk', label: '按现有风控决定' },
+                    { value: 'auto', label: '默认：所有普通内部结果自动采用' },
+                    { value: 'risk', label: '兼容旧规则：按风险分流' },
+                    { value: 'always', label: '兼容旧规则：所有结果逐条确认' },
                   ]}
                 />
               </Form.Item>
@@ -4636,7 +4528,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
               ? `日更包部分完成：已产出 ${dailyPack?.summary?.producedItems || 0} 条，${dailyPack?.summary?.failedParts || 0} 个子任务失败`
               : `日更包已生成：${dailyPack?.summary?.producedItems || 0} 条内容，已进入内容队列`
           }
-          description="生成结果仍须逐条人工审核；系统不会自动发布。"
+          description="当前 auto 下，普通内部合格结果通过质量与账务门后自动采用；历史 risk / always 规则仍按锁定策略处理。系统不会自动发布。"
         />
         {!!dailyPack?.failures?.length && (
           <Alert
@@ -4663,7 +4555,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
             >
               <div style={{ marginBottom: 6 }}>
                 <Tag color={TYPE_META[r.type]?.color || 'blue'}>{contentTypeLabel(r.type)}</Tag>
-                <Tag color={STATUS_COLOR[r.status] || 'default'}>{r.status}</Tag>
+                <Tag color={contentStatusColor(r)}>{contentStatusLabel(r)}</Tag>
               </div>
               <div
                 style={{
@@ -4682,79 +4574,11 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         </div>
       </Modal>
 
-      {/* 提示词逻辑 Modal */}
-      <Modal
-        open={!!promptGuideDetail}
-        width={680}
-        onCancel={() => setPromptGuideDetail(null)}
-        title={
-          promptGuideDetail ? (
-            <>
-              <Tag color="blue" style={{ fontFamily: 'Consolas,Menlo,monospace' }}>
-                {promptGuideDetail.code}
-              </Tag>
-              {promptGuideDetail.name}
-            </>
-          ) : (
-            ''
-          )
-        }
-        footer={
-          <Space>
-            {promptGuideDetail?.canEditPrompt && (
-              <Button
-                type="primary"
-                ghost
-                onClick={() => {
-                  window.location.href = promptGuideDetail.editablePath || '/system?tab=prompts';
-                }}
-              >
-                去系统管理修改
-              </Button>
-            )}
-            <Button type="primary" onClick={() => setPromptGuideDetail(null)}>
-              知道了
-            </Button>
-          </Space>
-        }
-      >
-        {promptGuideDetail && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {[
-              ['角色卡', promptGuideDetail.role_card],
-              ['输出规则', promptGuideDetail.output_rule],
-              ['风格要求', promptGuideDetail.style],
-            ].map(([label, text]) => (
-              <div key={label}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ui-text-2)', marginBottom: 5 }}>{label}</div>
-                <div
-                  style={{
-                    background: 'var(--ui-surface-2)',
-                    border: '1px solid var(--ui-border)',
-                    borderRadius: 8,
-                    padding: '10px 12px',
-                    fontSize: 12.5,
-                    color: 'var(--ui-text-2)',
-                    lineHeight: 1.8,
-                    whiteSpace: 'pre-wrap',
-                    maxHeight: 150,
-                    overflow: 'auto',
-                  }}
-                >
-                  {text || <span style={{ color: 'var(--ui-muted)' }}>暂未配置</span>}
-                </div>
-              </div>
-            ))}
-            {!promptGuideDetail.canEditPrompt && (
-              <Alert
-                type="info"
-                showIcon
-                message="当前账号可查看提示词逻辑，但不能修改；需要老板/管理员在系统管理的提示词中枢调整。"
-              />
-            )}
-          </div>
-        )}
-      </Modal>
+      <PromptGuideModal
+        open={canViewCrewInternals && !!promptGuideDetail}
+        guide={canViewCrewInternals ? promptGuideDetail : null}
+        onClose={() => setPromptGuideDetail(null)}
+      />
 
       {/* 发布登记 Modal */}
       <Modal
@@ -4875,7 +4699,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
             <Input placeholder="可不填；系统会自动打标。多个标签用逗号分隔，如：招牌菜,主题活动,海报" />
           </Form.Item>
           <Form.Item label="素材链接" name="url">
-            <Input placeholder="可选：外部图片/视频/文档链接，便于领导审核追溯" />
+            <Input placeholder="可选：外部图片/视频/文档链接，便于负责人审阅追溯" />
           </Form.Item>
           <Form.Item label="来源备注" name="note">
             <Input.TextArea rows={2} placeholder="如：员工上传的主题试吃现场图；用于本月会员活动复盘" />

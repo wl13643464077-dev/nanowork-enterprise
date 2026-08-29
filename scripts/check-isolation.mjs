@@ -18,11 +18,21 @@ function parseIsolatedFromDb() {
     );
     process.exit(2);
   }
-  return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
+  return [...m[1].matchAll(/(["'])([a-z_]+)\1/g)].map((x) => x[2]);
 }
 // 额外显式隔离表：带 tenant_id 列但 INSERT 显式传值（不在自动注入集合）。
 // credit_logs 是典型——计费流水按租户分账，聚合读必须带 tenant_id，否则跨企业串账（V2.10 实锤）。
-const EXTRA_EXPLICIT = ["credit_logs"];
+const EXTRA_EXPLICIT = [
+  "credit_logs",
+  // 内容团队流水线由独立 repository 使用显式 tenant_id 建表和读写，
+  // 不走 db.js 的 INSERT 自动注入；仍必须纳入静态读隔离审计。
+  "content_production_pipeline_jobs",
+  "content_production_pipeline_stations",
+  "content_production_pipeline_phase_events",
+  "content_production_pipeline_artifacts",
+  "content_production_pipeline_artifact_backfills",
+  "content_production_pipeline_private_web_snapshots",
+];
 const ISOLATED = [...new Set([...parseIsolatedFromDb(), ...EXTRA_EXPLICIT])];
 
 // 提取从 startIdx 的 ( 起、括号匹配的完整调用文本
@@ -46,7 +56,9 @@ for (const dir of DIRS) {
   if (!fs.existsSync(full)) continue;
   for (const file of fs.readdirSync(full).filter((f) => f.endsWith(".js"))) {
     const s = fs.readFileSync(path.join(full, file), "utf8");
-    const re = /q\.(all|get)\s*\(/g;
+    // q.all/q.get 之外，部分独立 repository 直接使用 db.prepare；两种读法都审计，
+    // 避免“主业务查询已安全、旁路 repository 未被扫描”的假绿。
+    const re = /(?:q\.(?:all|get)|db\.prepare)\s*\(/g;
     let m;
     while ((m = re.exec(s))) {
       const call = callText(s, m.index + m[0].length - 1);
