@@ -13,7 +13,7 @@
 - 服务地址：`http://127.0.0.1:3107/`
 - 健康检查：`GET /api/health` 返回 `{"ok":true,"db":"up"}`。
 - 当前数据库：`server/data/nanowork-preview.db`。
-- 调度器以 `ENABLE_SCHEDULER=false` 运行，避免验收期间产生后台任务。
+- 调度器沿用部署前配置，以 `ENABLE_SCHEDULER=true` 运行；正式迁移前需结合目标时区和外部连接器再次确认自动任务窗口。
 
 ## 真实样本
 

@@ -242,3 +242,14 @@ npm run verify
 1. 保留发布前 Git 提交锚点与 SQLite 一致性快照。
 2. 部署冒烟失败时停止新进程，不继续对外暴露；恢复上一个已验证代码版本与数据库快照后再启动。
 3. 未完成服务器、域名、HTTPS、生产数据迁移和备份恢复演练前，公网生产状态始终为 **HOLD**。
+
+### 实际部署结果
+
+- 代码提交：`a2bccabf0b4b21f5b6f300243b0f4cf43eb29c0a`。
+- 数据快照：`server/backups/predeploy-20260828-211839/nanowork-preview.db`，134,201,344 bytes，`PRAGMA integrity_check=ok`，SHA-256 `33672c91b1b1d279dc6017e51e3da735b75399679e9592c75f5ad9903c0ee44d`。
+- 运行方式：现有 LaunchAgent `com.nanowork.api` 自动拉起新进程，状态 `running`，工作目录为仓库 `server/`，监听 `127.0.0.1:3107`。
+- 冒烟结果：`/api/health` 为 `ok=true, db=up`；首页与员工 101 深链均为 HTTP 200；未登录 `/api/auth/me` 为预期 HTTP 401；首页引用的 46 个构建资源全部 HTTP 200；在线数据库 `PRAGMA quick_check=ok`。
+- 构建一致性：服务首页与 `web/dist/index.html` 的 SHA-256 均为 `e3cca4c6920f8f85967830ba0f715d2c4181b0edbc2f4eada0338c567ae42d82`。
+- 运行配置：调度器沿用部署前配置保持启用；本机时区为 UTC-7，面向中国门店迁移时必须显式设置 `TZ=Asia/Shanghai` 并重新验收自动任务归日。
+
+本机部署结论：**GO**。公网生产结论：**HOLD**。
