@@ -3,7 +3,12 @@ import { createRequire } from 'node:module';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPackagedAsarName, toArtifactName } from './artifact-paths.mjs';
+import {
+  isAllowedAsarEntryName,
+  isPackagedAsarName,
+  normalizeAsarEntryName,
+  toArtifactName,
+} from './artifact-paths.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const platform = process.argv[2];
@@ -48,11 +53,11 @@ async function requireArtifacts(names, label) {
 }
 
 function validateAsar(archivePath) {
-  const entries = asar.listPackage(archivePath).map(name => name.replace(/^\//, ''));
+  const entries = asar.listPackage(archivePath).map(normalizeAsarEntryName);
   const forbidden = entries.filter(name => /(^|\/)(server|uploads|artifacts)(\/|$)|(^|\/)\.env($|\.)|\.(sqlite|sqlite3|db)$/i.test(name));
   assert.deepEqual(forbidden, [], `app.asar 含禁止内容：${forbidden.join(', ')}`);
-  const unexpectedApplicationFiles = entries.filter(name =>
-    !/^(node_modules(?:\/|$)|assets(?:$|\/icon\.png$)|renderer(?:\/|$)|src(?:\/|$)|package\.json$)/.test(name),
+  const unexpectedApplicationFiles = entries.filter(
+    name => !isAllowedAsarEntryName(name),
   );
   assert.deepEqual(unexpectedApplicationFiles, [], `app.asar 超出白名单：${unexpectedApplicationFiles.join(', ')}`);
   const manifest = JSON.parse(asar.extractFile(archivePath, 'package.json').toString('utf8'));
