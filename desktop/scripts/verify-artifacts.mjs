@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isPackagedAsarName, toArtifactName } from './artifact-paths.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const platform = process.argv[2];
@@ -32,6 +33,20 @@ function countExtensions(paths, extension) {
   return paths.filter(path => extname(path).toLowerCase() === extension).length;
 }
 
+async function requireNonemptyFile(path, label) {
+  const metadata = await stat(path);
+  assert.equal(metadata.isFile(), true, `${label}必须是文件：${path}`);
+  assert.ok(metadata.size > 0, `${label}不能为空：${path}`);
+}
+
+async function requireArtifacts(names, label) {
+  await Promise.all(
+    names.map(name =>
+      requireNonemptyFile(join(outputDirectory, ...name.split('/')), `${label} ${name}`),
+    ),
+  );
+}
+
 function validateAsar(archivePath) {
   const entries = asar.listPackage(archivePath).map(name => name.replace(/^\//, ''));
   const forbidden = entries.filter(name => /(^|\/)(server|uploads|artifacts)(\/|$)|(^|\/)\.env($|\.)|\.(sqlite|sqlite3|db)$/i.test(name));
@@ -49,22 +64,64 @@ function validateAsar(archivePath) {
 
 async function main() {
   assert.equal((await stat(outputDirectory)).isDirectory(), true, '缺少 desktop/dist');
+  const sourceManifest = JSON.parse(
+    await readFile(resolve(scriptDirectory, '../package.json'), 'utf8'),
+  );
+  const buildConfig = JSON.parse(
+    await readFile(resolve(scriptDirectory, '../electron-builder.yml'), 'utf8'),
+  );
+  const releasePrefix = `NanoWork-${sourceManifest.version}`;
+  const productName = buildConfig.productName;
   const paths = await walk(outputDirectory);
-  const names = paths.map(path => path.slice(outputDirectory.length + 1).replaceAll('\\', '/'));
+  const names = paths.map(path => toArtifactName(outputDirectory, path));
   const lowerNames = names.map(name => name.toLowerCase());
   const forbidden = lowerNames.filter(name => /(^|\/)(server|uploads|artifacts)(\/|$)|\.env($|\.)|\.(sqlite|sqlite3|db)$/.test(name));
   assert.deepEqual(forbidden, [], `产物含禁止内容：${forbidden.join(', ')}`);
-  const archives = paths.filter(path => path.toLowerCase().endsWith('/resources/app.asar'));
-  assert.ok(archives.length > 0, '产物缺少 resources/app.asar');
-  for (const archive of archives) validateAsar(archive);
+  const archiveEntries = paths
+    .map((path, index) => ({ path, name: names[index] }))
+    .filter(({ name }) => isPackagedAsarName(name));
+  assert.ok(archiveEntries.length > 0, '产物缺少 resources/app.asar');
+  for (const archive of archiveEntries) validateAsar(archive.path);
   if (platform === 'mac') {
+    const expectedPackages = [
+      `${releasePrefix}-mac-x64.dmg`,
+      `${releasePrefix}-mac-arm64.dmg`,
+      `${releasePrefix}-mac-x64.zip`,
+      `${releasePrefix}-mac-arm64.zip`,
+    ];
+    const expectedArchives = [
+      `mac/${productName}.app/Contents/Resources/app.asar`,
+      `mac-arm64/${productName}.app/Contents/Resources/app.asar`,
+    ];
+    const expectedExecutables = [
+      `mac/${productName}.app/Contents/MacOS/${productName}`,
+      `mac-arm64/${productName}.app/Contents/MacOS/${productName}`,
+    ];
+    await requireArtifacts(expectedPackages, 'macOS 发行包');
+    await requireArtifacts(expectedExecutables, 'macOS 解包可执行文件');
+    assert.deepEqual(
+      archiveEntries.map(({ name }) => name).sort(),
+      expectedArchives.sort(),
+      'macOS x64/arm64 解包产物必须各含一个 app.asar',
+    );
     assert.ok(countExtensions(paths, '.dmg') >= 2, 'macOS 必须同时产出 x64/arm64 DMG');
     assert.ok(countExtensions(paths, '.zip') >= 2, 'macOS 必须同时产出 x64/arm64 ZIP');
-    assert.ok(names.some(name => name.includes('.app/Contents/MacOS/')), 'macOS 解包产物缺少可执行文件');
   } else {
+    const expectedPackages = [
+      `${releasePrefix}-win-x64.exe`,
+      `${releasePrefix}-win-x64.zip`,
+    ];
+    const expectedArchive = 'win-unpacked/resources/app.asar';
+    const expectedExecutable = `win-unpacked/${productName}.exe`;
+    await requireArtifacts(expectedPackages, 'Windows 发行包');
+    await requireArtifacts([expectedExecutable], 'Windows 解包可执行文件');
+    assert.deepEqual(
+      archiveEntries.map(({ name }) => name),
+      [expectedArchive],
+      'Windows 解包产物必须含且仅含一个 app.asar',
+    );
     assert.ok(countExtensions(paths, '.exe') >= 2, 'Windows 必须产出 NSIS 安装器和解包可执行文件');
     assert.ok(countExtensions(paths, '.zip') >= 1, 'Windows 必须产出 x64 ZIP');
-    assert.ok(names.some(name => /win-unpacked\/.+\.exe$/i.test(name)), 'Windows 解包产物缺少应用 EXE');
   }
   console.log(`${platform === 'mac' ? 'macOS' : 'Windows'} 产物结构校验通过：${paths.length} 个文件/目录，无后端、密钥或业务数据入包。`);
 }

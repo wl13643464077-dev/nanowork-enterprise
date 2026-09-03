@@ -18,13 +18,36 @@ import { currentPaihuoSourceTemplate } from '../../scripts/lib/paihuo-content-pr
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, '..', '..');
-const paihuoRoot = path.resolve(projectRoot, '..', '派活AI');
+const paihuoRoot = process.env.PAIHUO_SOURCE_ROOT
+  ? path.resolve(process.env.PAIHUO_SOURCE_ROOT)
+  : path.resolve(projectRoot, '..', '派活AI');
 const paihuoRegistryPath = path.join(paihuoRoot, 'app', 'skills', 'registry.py');
 const paihuoRestaurantPath = path.join(paihuoRoot, 'data', 'departments', 'restaurant.json');
 const paihuoDepartmentsPath = path.join(paihuoRoot, 'app', 'departments.py');
 const paihuoTaskrunnerPath = path.join(paihuoRoot, 'app', 'taskrunner.py');
 const paihuoProvidersPath = path.join(paihuoRoot, 'app', 'providers.py');
 const paihuoLlmPath = path.join(paihuoRoot, 'app', 'llm.py');
+const paihuoRequiredPaths = [
+  paihuoRegistryPath,
+  paihuoRestaurantPath,
+  paihuoDepartmentsPath,
+  paihuoTaskrunnerPath,
+  paihuoProvidersPath,
+  paihuoLlmPath,
+];
+const missingPaihuoPaths = paihuoRequiredPaths.filter(filePath => !fs.existsSync(filePath));
+const paihuoSourceAvailable = missingPaihuoPaths.length === 0;
+const paihuoSkipReason = paihuoSourceAvailable
+  ? ''
+  : `可选派活AI黄金源码不可用（缺少 ${missingPaihuoPaths.map(filePath => path.relative(paihuoRoot, filePath)).join(', ')}）；设置 PAIHUO_SOURCE_ROOT 后可运行源对齐契约。`;
+
+function paihuoSourceTest(name, fn) {
+  test(name, { skip: paihuoSkipReason || false }, fn);
+}
+
+function readPaihuoSource(filePath) {
+  return paihuoSourceAvailable ? fs.readFileSync(filePath, 'utf8') : '';
+}
 
 // Keep imports on a dedicated in-memory DB.  The blank values also prevent
 // provider modules from loading a developer's local credentials from .env.
@@ -59,12 +82,14 @@ const {
 
 const nanoRestaurant = loadRestaurantCatalog();
 const nanoContent = CONTENT_EMPLOYEES;
-const paihuoRestaurant = JSON.parse(fs.readFileSync(paihuoRestaurantPath, 'utf8'));
-const paihuoRegistrySource = fs.readFileSync(paihuoRegistryPath, 'utf8');
-const paihuoDepartmentsSource = fs.readFileSync(paihuoDepartmentsPath, 'utf8');
-const paihuoTaskrunnerSource = fs.readFileSync(paihuoTaskrunnerPath, 'utf8');
-const paihuoProvidersSource = fs.readFileSync(paihuoProvidersPath, 'utf8');
-const paihuoLlmSource = fs.readFileSync(paihuoLlmPath, 'utf8');
+const paihuoRestaurant = paihuoSourceAvailable
+  ? JSON.parse(fs.readFileSync(paihuoRestaurantPath, 'utf8'))
+  : { employees: [], tagline: '' };
+const paihuoRegistrySource = readPaihuoSource(paihuoRegistryPath);
+const paihuoDepartmentsSource = readPaihuoSource(paihuoDepartmentsPath);
+const paihuoTaskrunnerSource = readPaihuoSource(paihuoTaskrunnerPath);
+const paihuoProvidersSource = readPaihuoSource(paihuoProvidersPath);
+const paihuoLlmSource = readPaihuoSource(paihuoLlmPath);
 const nanoAiSource = fs.readFileSync(path.join(projectRoot, 'server', 'src', 'engines', 'ai.js'), 'utf8');
 const nanoAgenticSource = fs.readFileSync(path.join(projectRoot, 'server', 'src', 'engines', 'agentic-web-research.js'), 'utf8');
 const nanoControlledSource = fs.readFileSync(path.join(projectRoot, 'server', 'src', 'engines', 'controlled-web-evidence.js'), 'utf8');
@@ -114,7 +139,9 @@ function readPaihuoRegistry() {
   return JSON.parse(output);
 }
 
-const paihuoRegistry = readPaihuoRegistry();
+const paihuoRegistry = paihuoSourceAvailable
+  ? readPaihuoRegistry()
+  : { CAPABILITIES: {}, DEFAULT_PROMPTS: {}, STATIONS: [] };
 
 function employeeSummary(employee) {
   return {
@@ -158,25 +185,25 @@ function sourceContainsAll(source, fragments, label) {
 }
 
 const parityRedPoints = [];
-if (!paihuoRestaurant.employees.some(employee => employee.idx === 161)) {
+if (paihuoSourceAvailable && !paihuoRestaurant.employees.some(employee => employee.idx === 161)) {
   parityRedPoints.push({
     code: 'PAIHUO_RESTAURANT_EXTENSION_MISSING',
     detail: '派活AI data/departments/restaurant.json 缺少 NanoWork 扩展餐饮员工 idx161；源实际60，NanoWork为61。',
   });
 }
-if (!paihuoRegistry.STATIONS.some(station => station.idx === 10)) {
+if (paihuoSourceAvailable && !paihuoRegistry.STATIONS.some(station => station.idx === 10)) {
   parityRedPoints.push({
     code: 'PAIHUO_NATIVE_CONTENT_EMPLOYEE_MISSING',
     detail: '派活AI registry.STATIONS 只有0–9；NanoWork另有原生AI带货员 idx10。',
   });
 }
-if (String(paihuoRestaurant.tagline || '').includes('59')) {
+if (paihuoSourceAvailable && String(paihuoRestaurant.tagline || '').includes('59')) {
   parityRedPoints.push({
     code: 'PAIHUO_RESTAURANT_TAGLINE_STALE',
     detail: '派活AI餐饮tagline仍写59位，而JSON实际员工为60名（缺161）。',
   });
 }
-for (const employee of nanoContent) {
+for (const employee of paihuoSourceAvailable ? nanoContent : []) {
   const source = paihuoRegistry.STATIONS.find(station => station.idx === employee.idx);
   if (source && source.duty !== employee.duty) {
     parityRedPoints.push({
@@ -186,7 +213,7 @@ for (const employee of nanoContent) {
   }
 }
 
-test('能力链源边界与已知 parity red points 明确记录（无云）', () => {
+paihuoSourceTest('能力链源边界与已知 parity red points 明确记录（无云）', () => {
   assert.equal(paihuoRegistry.STATIONS.length, 10);
   assert.deepEqual(
     paihuoRegistry.STATIONS.map(station => station.idx),
@@ -216,7 +243,7 @@ test('能力链源边界与已知 parity red points 明确记录（无云）', (
   console.log(`PAIHUO_PARITY_RED_POINTS ${JSON.stringify(parityRedPoints)}`);
 });
 
-test('餐饮101/102/104岗位绑定、输入、工作流和交付物一比一', () => {
+paihuoSourceTest('餐饮101/102/104岗位绑定、输入、工作流和交付物一比一', () => {
   for (const idx of [101, 102, 104]) {
     const source = paihuoRestaurant.employees.find(employee => employee.idx === idx);
     const target = nanoRestaurant.employees.find(employee => employee.idx === idx);
@@ -229,7 +256,7 @@ test('餐饮101/102/104岗位绑定、输入、工作流和交付物一比一', 
   }
 });
 
-test('内容0–9技能注册、岗位绑定与源提示词一比一；idx10保持原生扩展边界', () => {
+paihuoSourceTest('内容0–9技能注册、岗位绑定与源提示词一比一；idx10保持原生扩展边界', () => {
   const sourceSummaries = paihuoRegistry.STATIONS.map(stationSummary).map(station => ({
     idx: station.idx,
     key: station.key,
@@ -318,7 +345,7 @@ test('内容0–10 system/user prompt边界保留岗位包、技能与不可信�
   }
 });
 
-test('搜索/API/MCP/受控证据链：两项目均显式接线，且未触发真实网络', () => {
+paihuoSourceTest('搜索/API/MCP/受控证据链：两项目均显式接线，且未触发真实网络', () => {
   // Paihuo: registry -> providers.call_text(_json)(web=true) -> WebSearch
   // gateway -> linkgrab controlled page evidence -> taskrunner.
   sourceContainsAll(paihuoRegistrySource, [
@@ -380,7 +407,7 @@ test('搜索/API/MCP/受控证据链：两项目均显式接线，且未触发�
   ], 'NanoWork task runner/snapshot route');
 });
 
-test('结果与失败快照契约：成功产物、失败原因、退款/重试边界均有持久化接线', () => {
+paihuoSourceTest('结果与失败快照契约：成功产物、失败原因、退款/重试边界均有持久化接线', () => {
   sourceContainsAll(paihuoTaskrunnerSource, [
     'async def run_task',
     "status='done'",
@@ -430,12 +457,16 @@ test('72档案静态矩阵：61餐饮+11内容全部具备最小执行/产物/�
   assert.equal(matrix.filter(row => row.domain === 'restaurant').length, 61);
   assert.equal(matrix.filter(row => row.domain === 'content').length, 11);
 
-  // Keep source-side shortfalls visible next to the green NanoWork matrix.
-  assert.deepEqual(
-    paihuoRestaurant.employees.map(employee => employee.idx).filter(idx => idx >= 101).at(-1),
-    160,
-  );
-  assert.equal(paihuoRegistry.STATIONS.length, 10);
+  // Keep source-side shortfalls visible next to the green NanoWork matrix
+  // when the optional golden source is available. The Nano matrix remains a
+  // mandatory gate for standalone clones.
+  if (paihuoSourceAvailable) {
+    assert.deepEqual(
+      paihuoRestaurant.employees.map(employee => employee.idx).filter(idx => idx >= 101).at(-1),
+      160,
+    );
+    assert.equal(paihuoRegistry.STATIONS.length, 10);
+  }
 });
 
 test('禁止把无云 parity 测试误报为真实联网/付费执行', () => {

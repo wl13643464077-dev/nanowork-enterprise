@@ -23,14 +23,33 @@ process.env.SEED_DEMO = 'false';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, '..', '..');
-const paihuoRoot = path.resolve(projectRoot, '..', '派活AI');
+const paihuoRoot = process.env.PAIHUO_SOURCE_ROOT
+  ? path.resolve(process.env.PAIHUO_SOURCE_ROOT)
+  : path.resolve(projectRoot, '..', '派活AI');
+const paihuoRequiredPaths = [
+  'app/skills/registry.py',
+  'app/main.py',
+  'app/providers.py',
+  'app/llm.py',
+].map(relativePath => path.join(paihuoRoot, relativePath));
+const missingPaihuoPaths = paihuoRequiredPaths.filter(filePath => !fs.existsSync(filePath));
+const paihuoSourceAvailable = missingPaihuoPaths.length === 0;
+const paihuoSkipReason = paihuoSourceAvailable
+  ? ''
+  : `可选派活AI黄金源码不可用（缺少 ${missingPaihuoPaths.map(filePath => path.relative(paihuoRoot, filePath)).join(', ')}）；设置 PAIHUO_SOURCE_ROOT 后可运行源对齐契约。`;
+
+function paihuoSourceTest(name, fn) {
+  test(name, { skip: paihuoSkipReason || false }, fn);
+}
 
 function read(relativePath) {
   return fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
 }
 
 function readPaihuo(relativePath) {
-  return fs.readFileSync(path.join(paihuoRoot, relativePath), 'utf8');
+  return paihuoSourceAvailable
+    ? fs.readFileSync(path.join(paihuoRoot, relativePath), 'utf8')
+    : '';
 }
 
 const paihuoRegistrySource = readPaihuo('app/skills/registry.py');
@@ -111,7 +130,7 @@ const EXPECTED_VARIABLE_NAMES = {
   retro: ['title', 'body'],
 };
 
-test('派活AI registry 动态暴露10工位 run_*，且0–2真实联网、3–9有明确运行边界', () => {
+paihuoSourceTest('派活AI registry 动态暴露10工位 run_*，且0–2真实联网、3–9有明确运行边界', () => {
   assert.equal(paihuoStations.length, 10, '派活AI registry.STATIONS 必须保持10工位');
   assert.deepEqual(paihuoStations.map(row => row.idx), [...Array(10).keys()]);
   assert.deepEqual(
@@ -134,7 +153,7 @@ test('派活AI registry 动态暴露10工位 run_*，且0–2真实联网、3–
   console.log(`PAIHUO_RUNTIME_STATIONS ${JSON.stringify(paihuoStations)}`);
 });
 
-test('Nano handler 映射与派活AI 10工位一致，并锁定外部动作边界', () => {
+paihuoSourceTest('Nano handler 映射与派活AI 10工位一致，并锁定外部动作边界', () => {
   assert.deepEqual(
     CONTENT_HANDLER_ADAPTER_CATALOG.map(mappingSummary),
     EXPECTED_HANDLERS.map(row => ({
@@ -213,7 +232,7 @@ test('每工位上下游参数真实进入 injected runtime（无网络、无供
   assert.ok(calls.find(call => call.idx === 8).userMsg.includes('#tag'));
 });
 
-test('0–2联网链必须是 WebSearch 候选 + 应用受控正文，3–9执行模型或本地渲染/动作边界', () => {
+paihuoSourceTest('0–2联网链必须是 WebSearch 候选 + 应用受控正文，3–9执行模型或本地渲染/动作边界', () => {
   assert.match(paihuoProvidersSource, /_controlled_webfetch_evidence/u);
   assert.match(paihuoProvidersSource, /linkgrab\.fetch_page_evidence/u);
   assert.match(paihuoProvidersSource, /call_text_json[\s\S]*web/u);
@@ -241,7 +260,7 @@ test('0–2联网链必须是 WebSearch 候选 + 应用受控正文，3–9执�
   }
 });
 
-test('工具箱五类动态 parity：绑定、后台任务、产物、供应商账务与失败退款证据', () => {
+paihuoSourceTest('工具箱五类动态 parity：绑定、后台任务、产物、供应商账务与失败退款证据', () => {
   const paihuoToolKinds = [...(paihuoMainSource.match(/TOOL_KINDS\s*=\s*\{([\s\S]*?)\}/u)?.[1] || '').matchAll(/"([a-z]+)"\s*:/gu)]
     .map(match => match[1]);
   const paihuoRefundKinds = [...(paihuoMainSource.match(/TOOL_REFUND\s*=\s*\{([\s\S]*?)\}/u)?.[1] || '').matchAll(/"([a-z]+)"\s*:/gu)]
@@ -271,7 +290,7 @@ test('工具箱五类动态 parity：绑定、后台任务、产物、供应商�
   assert.match(nanoToolboxEngineSource, /不会自动发布内容/u);
 });
 
-test('Paihuo 工具成本/token 丢弃作为上游差异留痕，Nano 不得跟随退化', () => {
+paihuoSourceTest('Paihuo 工具成本/token 丢弃作为上游差异留痕，Nano 不得跟随退化', () => {
   const redPoints = [];
   if (/r\.pop\(['"]cost_usd['"],\s*None\)/u.test(paihuoMainSource)
     || /r\.pop\(['"]tokens['"],\s*None\)/u.test(paihuoMainSource)) {

@@ -25,14 +25,31 @@ process.env.SEED_DEMO = 'false';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, '..', '..');
-const paihuoRoot = path.resolve(projectRoot, '..', '派活AI');
+const paihuoRoot = process.env.PAIHUO_SOURCE_ROOT
+  ? path.resolve(process.env.PAIHUO_SOURCE_ROOT)
+  : path.resolve(projectRoot, '..', '派活AI');
 const paihuoEmployeesPath = path.join(paihuoRoot, 'app', 'employees.py');
 const paihuoMainPath = path.join(paihuoRoot, 'app', 'main.py');
 const nanoLearningPath = path.join(projectRoot, 'server', 'src', 'engines', 'employee-skill-learning.js');
 const nanoRoutesDirectory = path.join(projectRoot, 'server', 'src', 'routes');
 
-const paihuoEmployeesSource = fs.readFileSync(paihuoEmployeesPath, 'utf8');
-const paihuoMainSource = fs.readFileSync(paihuoMainPath, 'utf8');
+const paihuoRequiredPaths = [paihuoEmployeesPath, paihuoMainPath];
+const missingPaihuoPaths = paihuoRequiredPaths.filter(filePath => !fs.existsSync(filePath));
+const paihuoSourceAvailable = missingPaihuoPaths.length === 0;
+const paihuoSkipReason = paihuoSourceAvailable
+  ? ''
+  : `可选派活AI黄金源码不可用（缺少 ${missingPaihuoPaths.map(filePath => path.relative(paihuoRoot, filePath)).join(', ')}）；设置 PAIHUO_SOURCE_ROOT 后可运行源对齐契约。`;
+
+function paihuoSourceTest(name, fn) {
+  test(name, { skip: paihuoSkipReason || false }, fn);
+}
+
+const paihuoEmployeesSource = paihuoSourceAvailable
+  ? fs.readFileSync(paihuoEmployeesPath, 'utf8')
+  : '';
+const paihuoMainSource = paihuoSourceAvailable
+  ? fs.readFileSync(paihuoMainPath, 'utf8')
+  : '';
 const paihuoLearnRouteStart = paihuoMainSource.indexOf('@app.post("/api/employees/{idx}/learn")');
 const paihuoLearnRouteSource = paihuoLearnRouteStart >= 0
   ? paihuoMainSource.slice(paihuoLearnRouteStart, paihuoLearnRouteStart + 4200)
@@ -72,21 +89,24 @@ if (!/learn|skill.?learning/iu.test(nanoRouteSource)) {
     detail: 'server/src/routes 当前没有员工在线进修派发/查询路由，Boss/platform_super 入口无法验收。',
   });
 }
-if (!/至少(?:做)?\s*5\s*次|至少\s*5|5\s*次针对性搜索/iu.test(paihuoEmployeesSource)
+if (paihuoSourceAvailable
+  && !/至少(?:做)?\s*5\s*次|至少\s*5|5\s*次针对性搜索/iu.test(paihuoEmployeesSource)
   && /至少(?:做)?\s*3\s*次|至少\s*3|3\s*次针对性搜索/iu.test(paihuoEmployeesSource)) {
   parityRedPoints.push({
     code: 'PAIHUO_WEBSEARCH_MINIMUM_BELOW_FIVE',
     detail: '派活AI learning_prompt_bundle research brief 只要求至少3次搜索，本轮门禁要求不少于5次。',
   });
 }
-if (/_need_boss\(\)/u.test(paihuoLearnRouteSource)
+if (paihuoSourceAvailable
+  && /_need_boss\(\)/u.test(paihuoLearnRouteSource)
   && !/platform_super/iu.test(paihuoLearnRouteSource)) {
   parityRedPoints.push({
     code: 'PAIHUO_LEARNING_AUTHORITY_NOT_EXPLICIT_PLATFORM_SUPER',
     detail: '派活AI进修入口固定 _need_boss/root boss，本轮要求 Boss 与 platform_super 均可发起。',
   });
 }
-if (/raise HTTPException\(429/iu.test(paihuoLearnRouteSource)
+if (paihuoSourceAvailable
+  && /raise HTTPException\(429/iu.test(paihuoLearnRouteSource)
   && !/409/iu.test(paihuoLearnRouteSource)) {
   parityRedPoints.push({
     code: 'PAIHUO_LEARNING_BUSY_STATUS_429_NOT_409',
@@ -106,7 +126,7 @@ function assertSourceContains(source, patterns, label) {
   }
 }
 
-test('派活AI learning_prompt_bundle/learn 基线保留私有隔离、联网JSON、去重和回调', () => {
+paihuoSourceTest('派活AI learning_prompt_bundle/learn 基线保留私有隔离、联网JSON、去重和回调', () => {
   assertSourceContains(paihuoEmployeesSource, [
     /def learning_prompt_bundle\(station(?::\s*dict)?\s*,\s*existing(?::\s*list)?\)/u,
     /现有技能\/岗位档案只给最终模型，不交给 WebSearch/u,
@@ -281,7 +301,7 @@ test('失败、并发与权限/审批契约以源码门禁保留', { concurrency
   assert.match(routeSources, /boss|admin|platform_super/u);
 });
 
-test('在线进修 parity 红点原样输出且不包含凭据/真实响应', () => {
+paihuoSourceTest('在线进修 parity 红点原样输出且不包含凭据/真实响应', () => {
   assert.ok(parityRedPoints.length >= 3, '当前应保留缺失接口/旧基线红点');
   console.log(`EMPLOYEE_SKILL_LEARNING_PARITY_RED_POINTS ${JSON.stringify(parityRedPoints)}`);
   const serialized = JSON.stringify(parityRedPoints);

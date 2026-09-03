@@ -12,6 +12,7 @@ const ISOLATED_ENV_KEYS = [
   'TAVILY_API_KEY',
   'SERPER_API_KEY',
   'NANOWORK_TEST_TEMPLATE_AI',
+  'NANOWORK_DB',
 ];
 
 function captureEnvironment(keys = ISOLATED_ENV_KEYS) {
@@ -45,8 +46,38 @@ async function withIsolatedSearchEnvironment(values, run) {
 const originalModuleEnvironment = captureEnvironment();
 for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
 process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
+// Deliberately import against an unmigrated database. This matches a fresh CI
+// worker/first boot, where sys_config does not exist yet.
+process.env.NANOWORK_DB = ':memory:';
 const { webSearch } = await import('../src/engines/websearch.js');
+const { yunwuAvailable, yunwuKeySource } = await import('../src/engines/yunwu.js');
+const { db } = await import('../src/db.js');
 test.after(() => restoreEnvironment(originalModuleEnvironment));
+
+test('未迁移空库缺少 sys_config 时按无旧密钥处理', async () => {
+  await withIsolatedSearchEnvironment({}, async () => {
+    assert.equal(yunwuAvailable(), false);
+    assert.equal(yunwuKeySource(), 'none');
+  });
+});
+
+test('sys_config 的其他数据库错误仍原样抛出', async () => {
+  db.exec('CREATE TABLE sys_config (key TEXT PRIMARY KEY)');
+  try {
+    await withIsolatedSearchEnvironment({}, async () => {
+      assert.throws(
+        () => yunwuAvailable(),
+        error => {
+          assert.equal(error?.code, 'ERR_SQLITE_ERROR');
+          assert.match(String(error?.message || ''), /no such column:\s*value/iu);
+          return true;
+        },
+      );
+    });
+  } finally {
+    db.exec('DROP TABLE sys_config');
+  }
+});
 
 test('no-key 联网检索使用 Google News RSS 真实来源兜底并保留日期', async () => {
   const originalFetch = globalThis.fetch;

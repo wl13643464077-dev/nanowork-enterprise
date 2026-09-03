@@ -22,14 +22,32 @@ process.env.SEED_DEMO = "false";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "..", "..");
-const paihuoRoot = path.resolve(projectRoot, "..", "派活AI");
+const paihuoRoot = process.env.PAIHUO_SOURCE_ROOT
+  ? path.resolve(process.env.PAIHUO_SOURCE_ROOT)
+  : path.resolve(projectRoot, "..", "派活AI");
+const paihuoRequiredPaths = ["app/main.py", "app/providers.py"].map(
+  (relativePath) => path.join(paihuoRoot, relativePath),
+);
+const missingPaihuoPaths = paihuoRequiredPaths.filter(
+  (filePath) => !fs.existsSync(filePath),
+);
+const paihuoSourceAvailable = missingPaihuoPaths.length === 0;
+const paihuoSkipReason = paihuoSourceAvailable
+  ? ""
+  : `可选派活AI黄金源码不可用（缺少 ${missingPaihuoPaths.map((filePath) => path.relative(paihuoRoot, filePath)).join(", ")}）；设置 PAIHUO_SOURCE_ROOT 后可运行源对齐契约。`;
+
+function paihuoSourceTest(name, fn) {
+  test(name, { skip: paihuoSkipReason || false }, fn);
+}
 
 function readNano(relativePath) {
   return fs.readFileSync(path.join(projectRoot, relativePath), "utf8");
 }
 
 function readPaihuo(relativePath) {
-  return fs.readFileSync(path.join(paihuoRoot, relativePath), "utf8");
+  return paihuoSourceAvailable
+    ? fs.readFileSync(path.join(paihuoRoot, relativePath), "utf8")
+    : "";
 }
 
 const paihuoMain = readPaihuo("app/main.py");
@@ -68,7 +86,7 @@ function parsePaihuoMapping(name) {
   );
 }
 
-test("Paihuo 母版五类工具具备真实模型、联网受控正文、后台与退款边界（离线黄金断言）", () => {
+paihuoSourceTest("Paihuo 母版五类工具具备真实模型、联网受控正文、后台与退款边界（离线黄金断言）", () => {
   assert.deepEqual(parsePaihuoMapping("TOOL_KINDS"), [
     "hot",
     "pcal",

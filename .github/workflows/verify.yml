@@ -27,6 +27,21 @@ jobs:
         with:
           node-version: '24'
 
+      # 全新 Ubuntu runner 不预装 ffmpeg/ffprobe，也没有可嵌入的中文字体。
+      # 文档与媒体测试必须在和真实交付一致的依赖下运行，不能因 runner 差异误报。
+      - name: 安装媒体与中文文档测试依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg poppler-utils
+          curl -fsSL --retry 3 \
+            'https://raw.githubusercontent.com/notofonts/noto-cjk/165c01b46ea533872e002e0785ff17e44f6d97d8/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf' \
+            -o "$RUNNER_TEMP/NotoSansCJKsc-Regular.otf"
+          printf '%s  %s\n' \
+            '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b' \
+            "$RUNNER_TEMP/NotoSansCJKsc-Regular.otf" | sha256sum -c -
+          echo "PDF_FONT_PATH=$RUNNER_TEMP/NotoSansCJKsc-Regular.otf" >> "$GITHUB_ENV"
+          echo "DOCX_FONT_PATH=$RUNNER_TEMP/NotoSansCJKsc-Regular.otf" >> "$GITHUB_ENV"
+
       - name: 安装依赖（server）
         run: npm ci --prefix server || npm install --prefix server
 

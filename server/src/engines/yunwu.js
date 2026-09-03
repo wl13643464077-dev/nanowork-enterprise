@@ -29,8 +29,26 @@ if (process.env.NANOWORK_TEST_TEMPLATE_AI !== "1" && fs.existsSync(envPath)) {
   }
 }
 
-const legacyStoredKey = () =>
-  String(getConfig("yunwu_api_key", null) || "").trim();
+function isMissingLegacyConfigTable(error) {
+  return (
+    error?.code === "ERR_SQLITE_ERROR" &&
+    /^(?:SQLITE_ERROR:\s*)?no such table:\s*(?:main\.)?sys_config$/iu.test(
+      String(error?.message || "").trim(),
+    )
+  );
+}
+
+// `yunwu.js` can be imported before initSchema() during a first boot or by
+// isolated workers/tests.  A not-yet-created legacy config table means only
+// that no legacy key is available; every other database failure must surface.
+const legacyStoredKey = () => {
+  try {
+    return String(getConfig("yunwu_api_key", null) || "").trim();
+  } catch (error) {
+    if (isMissingLegacyConfigTable(error)) return "";
+    throw error;
+  }
+};
 const environmentKey = () => String(process.env.YUNWU_API_KEY || "").trim();
 const KEY = () => environmentKey() || legacyStoredKey();
 // Base URL 与 Key 对齐：显式环境变量优先，避免库内旧地址盖住运维切换（如切到 OpenLux）。
@@ -636,10 +654,11 @@ async function post(
   timeoutMs = 60000,
   externalSignal,
   requestHeaders = {},
+  fetchFn = globalThis.fetch,
 ) {
   const timed = timedSignal(timeoutMs, externalSignal);
   try {
-    const res = await fetch(`${BASE()}${pathName}`, {
+    const res = await fetchFn(`${BASE()}${pathName}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1044,6 +1063,7 @@ export async function generateImage({
   model,
   signal,
   idempotencyKey,
+  fetchFn = globalThis.fetch,
 }) {
   const m = model || routing().image;
   const body = { model: m, prompt, n: 1, size };
@@ -1063,6 +1083,7 @@ export async function generateImage({
         IMAGE_TIMEOUT_MS,
         signal,
         headers,
+        fetchFn,
       );
       const item = data.data?.[0] || {};
       usage.images++;
