@@ -84,6 +84,16 @@ test('运行就绪前端只展示三维能力，不再用兼容canExecute宣称�
   assert.doesNotMatch(source, /row\.canExecute/u);
 });
 
+test('运行就绪前端用简洁标签展示 TinyFish 首选与 Claude 自动回退状态', () => {
+  const source = read('web/src/components/RuntimeReadiness.tsx');
+  assert.match(source, /details\?\.providerRoute/u);
+  assert.match(source, /rawRole === 'primary' \? '首选'/u);
+  assert.match(source, /rawRole === 'fallback' \? '自动回退'/u);
+  assert.match(source, /provider\?\.ready === true/u);
+  assert.match(source, /待补前置/u);
+  assert.match(source, /title=\{provider\.reason\}/u);
+});
+
 test('知识库页面区分资料入库与语义向量就绪，并提供显式付费回填入口', () => {
   const source = read('web/src/pages/System.tsx');
   assert.match(source, /const kbVector = kbReadiness\.vector/u);

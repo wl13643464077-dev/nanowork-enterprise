@@ -264,6 +264,7 @@ test("到点只claim一次，完整task/persona/settings/workflow触发0→9真�
   assert.equal(duplicate.length, 0);
   const result = await fixture.service.execute(first[0]);
   assert.equal(result.pipeline.status, "completed");
+  assert.equal(result.pipeline.task.visual_policy_version, "v2");
   assert.deepEqual(fixture.runtime.invoked, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const stored = fixture.service.getSchedule(1, schedule.id);
   assert.equal(stored.task.direction, TASK.direction);

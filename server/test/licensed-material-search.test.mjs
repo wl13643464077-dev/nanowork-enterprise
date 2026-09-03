@@ -137,7 +137,11 @@ test("只返回当前租户已确认授权的ImageHunt本地图片", async () =>
     });
     assert.deepEqual(
       new Set(result.assets.map((asset) => asset.materialId)),
-      new Set([hotpotId, teamId, storefrontId]),
+      new Set([hotpotId]),
+    );
+    assert.ok(
+      result.assets.every((asset) => asset.materialId !== teamId),
+      "只匹配平台但与内容无关的团队图不得占用真实素材槽位",
     );
     assert.ok(
       result.assets.every(
@@ -197,10 +201,24 @@ test("库内数量不足时只返回实际素材，不复制、不伪造补齐",
     count: 8,
     request: { prompt: "火锅", platforms: ["小红书"] },
   });
-  assert.equal(result.assets.length, 3);
-  assert.equal(new Set(result.assets.map((asset) => asset.materialId)).size, 3);
+  assert.equal(result.assets.length, 2);
+  assert.equal(new Set(result.assets.map((asset) => asset.materialId)).size, 2);
   assert.equal(result.usage.requestedCount, 8);
-  assert.equal(result.usage.returnedCount, 3);
+  assert.equal(result.usage.returnedCount, 2);
+  assert.equal(result.usage.eligibleCount, 3);
+});
+
+test("没有内容相关性的授权图片时返回空结果，让上层交给GPT Image 2", async () => {
+  const result = await searchLicensedMaterials({
+    tenantId: 1,
+    count: 3,
+    request: { prompt: "法式甜品马卡龙新品", platforms: ["公众号"] },
+    runtime: {
+      imagePlan: [{ slot: "甜品首图", desc: "马卡龙礼盒与咖啡场景" }],
+    },
+  });
+  assert.deepEqual(result.assets, []);
+  assert.equal(result.usage.returnedCount, 0);
   assert.equal(result.usage.eligibleCount, 3);
 });
 

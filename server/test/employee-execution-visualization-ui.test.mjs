@@ -20,7 +20,7 @@ test("餐饮与内容员工工作台共享真实执行时间线，任务中心�
   assert.match(workbench, /restaurantTask\.generationProgress/);
   assert.match(taskCenter, /detail\.executionProgress/);
   assert.match(taskCenter, /EmployeeExecutionTimeline/);
-  assert.match(taskCenter, /}, 2000\);/);
+  assert.match(taskCenter, /DETAIL_RUNNING_REFRESH_MS\s*=\s*2_000/u);
   assert.match(timeline, /progress\.steps/);
   assert.match(timeline, /progress\?\.currentLabel/);
   assert.match(timeline, /receivedChars === 0 && isModelResponseStage/);

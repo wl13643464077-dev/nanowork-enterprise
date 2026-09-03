@@ -1,7 +1,52 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { webSearch } from '../src/engines/websearch.js';
+const ISOLATED_ENV_KEYS = [
+  'TINYFISH_API_KEY',
+  'YUNWU_API_KEY',
+  'YUNWU_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'CONTENTCREW_CLAUDE_PATH',
+  'NANOWORK_RESEARCH_MODEL',
+  'BOCHA_API_KEY',
+  'TAVILY_API_KEY',
+  'SERPER_API_KEY',
+  'NANOWORK_TEST_TEMPLATE_AI',
+];
+
+function captureEnvironment(keys = ISOLATED_ENV_KEYS) {
+  return Object.fromEntries(keys.map(key => [key, process.env[key]]));
+}
+
+function restoreEnvironment(snapshot) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+async function withIsolatedSearchEnvironment(values, run) {
+  const original = captureEnvironment();
+  for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
+  process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
+  for (const [key, value] of Object.entries(values || {})) {
+    if (value === undefined || value === null) delete process.env[key];
+    else process.env[key] = String(value);
+  }
+  try {
+    return await run();
+  } finally {
+    restoreEnvironment(original);
+  }
+}
+
+// 必须在加载 yunwu/agentic 模块前隔离真实服务端凭证，否则本机 .env 会让
+// 这些纯单元测试误入真实 TinyFish/Claude 通道。
+const originalModuleEnvironment = captureEnvironment();
+for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
+process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
+const { webSearch } = await import('../src/engines/websearch.js');
+test.after(() => restoreEnvironment(originalModuleEnvironment));
 
 test('no-key 联网检索使用 Google News RSS 真实来源兜底并保留日期', async () => {
   const originalFetch = globalThis.fetch;
@@ -355,4 +400,241 @@ test('调用方 signal 取消后立即停止整条检索链，不再请求后续
       else process.env[key] = value;
     }
   }
+});
+
+test('分层检索成功时透传 provider，且不调用博查或免 Key 灾备源', async () => {
+  await withIsolatedSearchEnvironment(
+    {
+      TINYFISH_API_KEY: 'tiered-test-key',
+      BOCHA_API_KEY: 'bocha-must-not-be-used',
+    },
+    async () => {
+      let tieredCalls = 0;
+      let legacyFetchCalls = 0;
+      const tieredEvidence = {
+        schemaVersion: 'nanowork.tiered-web-research/1',
+        providerRoute: ['tinyfish'],
+      };
+      const result = await webSearch('分层通道优先级验证', {
+        max: 3,
+        timeoutMs: 500,
+        fetchImpl: async () => {
+          legacyFetchCalls += 1;
+          throw new Error('分层成功后不得调用旧检索源');
+        },
+        tieredResearchFn: async (_query, options) => {
+          tieredCalls += 1;
+          assert.equal(options.maxResults, 5);
+          assert.equal(options.researchMode, 'simple_search');
+          assert.equal(options.signal.aborted, false);
+          return {
+            attempted: true,
+            ok: true,
+            candidateReady: true,
+            provider: 'TinyFish Search + Fetch',
+            results: [
+              {
+                title: '分层来源一',
+                url: 'https://tiered-one.example.com/report',
+                snippet: '已由分层入口整理的公开来源',
+              },
+              {
+                title: '分层来源二',
+                url: 'https://tiered-two.example.com/report',
+                snippet: '第二条公开来源',
+              },
+            ],
+            evidence: tieredEvidence,
+          };
+        },
+      });
+
+      assert.equal(tieredCalls, 1);
+      assert.equal(legacyFetchCalls, 0);
+      assert.equal(result.ok, true);
+      assert.equal(result.provider, 'TinyFish Search + Fetch');
+      assert.equal(result.results.length, 2);
+      assert.equal(result.evidence, tieredEvidence);
+    },
+  );
+});
+
+test('分层质量门失败后继续旧商业源灾备', async () => {
+  await withIsolatedSearchEnvironment(
+    {
+      TINYFISH_API_KEY: 'tiered-test-key',
+      BOCHA_API_KEY: 'bocha-test-key',
+    },
+    async () => {
+      const requested = [];
+      const result = await webSearch('分层失败后商业灾备', {
+        timeoutMs: 500,
+        tieredResearchFn: async () => ({
+          attempted: true,
+          ok: false,
+          candidateReady: false,
+          provider: 'TinyFish Search + Fetch',
+          results: [],
+          evidence: {
+            schemaVersion: 'nanowork.tiered-web-research/1',
+            fallback: {
+              triggered: true,
+              reasonCode: 'TINYFISH_ORGANIZATION_INSUFFICIENT',
+            },
+          },
+        }),
+        fetchImpl: async (url) => {
+          requested.push(String(url));
+          if (!String(url).includes('api.bochaai.com')) {
+            throw new Error('博查命中后不得继续免 Key 灾备');
+          }
+          return Response.json({
+            data: {
+              webPages: {
+                value: [
+                  {
+                    name: '博查灾备来源',
+                    url: 'https://bocha-fallback.example.com/report',
+                    summary: '分层质量不足后由既有商业源接管',
+                  },
+                ],
+              },
+            },
+          });
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.provider, '博查');
+      assert.equal(result.results[0].url, 'https://bocha-fallback.example.com/report');
+      assert.equal(requested.length, 1);
+      assert.match(requested[0], /api\.bochaai\.com/u);
+    },
+  );
+});
+
+test('Claude 只有候选而没有正文产物时继续旧商业源灾备', async () => {
+  await withIsolatedSearchEnvironment(
+    {
+      TINYFISH_API_KEY: 'tiered-test-key',
+      BOCHA_API_KEY: 'bocha-test-key',
+    },
+    async () => {
+      let legacyFetchCalls = 0;
+      const result = await webSearch('Claude候选不等于可交付正文', {
+        timeoutMs: 500,
+        tieredResearchFn: async () => ({
+          attempted: true,
+          ok: false,
+          candidateReady: true,
+          provider: 'Claude WebSearch',
+          results: [],
+          fetchCandidates: [
+            {
+              title: '仅候选来源',
+              url: 'https://candidate-only.example.com/report',
+              snippet: '尚未抓取和核验正文',
+            },
+          ],
+        }),
+        fetchImpl: async (url) => {
+          legacyFetchCalls += 1;
+          assert.match(String(url), /api\.bochaai\.com/u);
+          return Response.json({
+            data: {
+              webPages: {
+                value: [
+                  {
+                    name: '博查正文灾备来源',
+                    url: 'https://bocha-fallback.example.com/body-verified',
+                    summary: '候选不可交付时继续既有灾备链',
+                  },
+                ],
+              },
+            },
+          });
+        },
+      });
+
+      assert.equal(legacyFetchCalls, 1);
+      assert.equal(result.ok, true);
+      assert.equal(result.provider, '博查');
+      assert.equal(result.results[0].url, 'https://bocha-fallback.example.com/body-verified');
+    },
+  );
+});
+
+test('分层质量门失败且无商业源时继续免 Key 灾备', async () => {
+  await withIsolatedSearchEnvironment(
+    { TINYFISH_API_KEY: 'tiered-test-key' },
+    async () => {
+      const requested = [];
+      const result = await webSearch('分层失败后免费灾备', {
+        timeoutMs: 500,
+        tieredResearchFn: async () => ({
+          attempted: true,
+          ok: false,
+          candidateReady: false,
+          provider: 'TinyFish Search + Fetch',
+          results: [],
+        }),
+        fetchImpl: async (url) => {
+          requested.push(String(url));
+          return new Response(`<?xml version="1.0"?><rss><channel>
+            <item><title>免Key灾备新闻</title>
+            <link>https://news.google.com/rss/articles/tiered-fallback</link>
+            <description>分层质量失败后的真实新闻来源</description>
+            <pubDate>Mon, 31 Aug 2026 08:00:00 GMT</pubDate>
+            <source url="https://example.com">测试媒体</source></item>
+          </channel></rss>`, { status: 200 });
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.provider, 'Google News RSS');
+      assert.equal(result.results.length, 1);
+      assert.equal(requested.length, 1);
+      assert.match(requested[0], /^https:\/\/news\.google\.com\/rss\/search\?/u);
+    },
+  );
+});
+
+test('调用方在分层入口取消后不再调用商业或免 Key 后续源', async () => {
+  await withIsolatedSearchEnvironment(
+    {
+      TINYFISH_API_KEY: 'tiered-test-key',
+      YUNWU_API_KEY: 'yunwu-must-not-be-used',
+      BOCHA_API_KEY: 'bocha-must-not-be-used',
+    },
+    async () => {
+      const controller = new AbortController();
+      let tieredCalls = 0;
+      let legacyFetchCalls = 0;
+      const result = await webSearch('分层入口取消传播', {
+        timeoutMs: 500,
+        signal: controller.signal,
+        fetchImpl: async () => {
+          legacyFetchCalls += 1;
+          throw new Error('取消后不得调用后续检索源');
+        },
+        tieredResearchFn: async (_query, options) => {
+          tieredCalls += 1;
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener(
+              'abort',
+              () => reject(new DOMException('cancelled', 'AbortError')),
+              { once: true },
+            );
+            controller.abort();
+          });
+        },
+      });
+
+      assert.equal(tieredCalls, 1);
+      assert.equal(legacyFetchCalls, 0);
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.results, []);
+      assert.match(result.note, /调用方已取消/u);
+    },
+  );
 });

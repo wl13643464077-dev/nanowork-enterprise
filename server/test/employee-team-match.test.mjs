@@ -16,9 +16,11 @@ process.env.NANOWORK_DB = DBP;
 const { db, q, initSchema, migrateV2, runWithTenant } = await import(
   "../src/db.js"
 );
-const { default: employeesRouter } = await import(
-  "../src/routes/employees.js"
-);
+const {
+  default: employeesRouter,
+  shouldFailoverTeamPlanModel,
+  shouldRetryTeamPlanOutput,
+} = await import("../src/routes/employees.js");
 
 initSchema();
 migrateV2();
@@ -130,6 +132,96 @@ test("空输入直接400，未配置真实AI通道时503且不冒充规则匹配
       : 0,
     0,
     "未进入模型生成不得产生任何占扣",
+  );
+});
+
+test("队长拆解只在受控预算内重试四类瞬时上游故障", () => {
+  for (const code of [
+    "provider_upstream_error",
+    "provider_timeout",
+    "provider_rate_limited",
+    "provider_empty_output",
+  ]) {
+    const output = {
+      mode: "template",
+      providerFailure: { code, retryable: true },
+    };
+    assert.equal(shouldRetryTeamPlanOutput(output, 1), true, `${code}首轮应重试`);
+    assert.equal(shouldRetryTeamPlanOutput(output, 2), false, `${code}达到上限应停止`);
+  }
+  assert.equal(
+    shouldRetryTeamPlanOutput({
+      mode: "template",
+      providerFailure: { code: "provider_auth_failed", retryable: false },
+    }, 1),
+    false,
+    "鉴权等非瞬时故障不应空跑重试",
+  );
+  assert.equal(
+    shouldRetryTeamPlanOutput({
+      mode: "template",
+      providerFailure: { code: "provider_upstream_error", retryable: false },
+    }, 1),
+    false,
+    "供应商明确标记不可重试时必须尊重该约束",
+  );
+  assert.equal(
+    shouldRetryTeamPlanOutput({ mode: "api" }, 1),
+    false,
+    "真实API已成功时不得重复请求",
+  );
+  assert.equal(
+    shouldRetryTeamPlanOutput({
+      mode: "template",
+      text: "",
+      usage: { inputTokens: 100, outputTokens: 20 },
+      providerFailure: { code: "provider_empty_output", retryable: true },
+    }, 1),
+    false,
+    "已产生真实token的空正文不得宽泛重试造成漏记成本",
+  );
+  assert.equal(
+    shouldFailoverTeamPlanModel({
+      mode: "template",
+      text: "",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      providerFailure: {
+        code: "provider_upstream_error",
+        status: 502,
+        timedOut: false,
+        retryable: true,
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldFailoverTeamPlanModel({
+      mode: "template",
+      text: "",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      providerFailure: {
+        code: "provider_timeout",
+        status: 504,
+        timedOut: true,
+        retryable: true,
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldFailoverTeamPlanModel({
+      mode: "template",
+      text: "",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      providerFailure: {
+        code: "provider_rate_limited",
+        status: 429,
+        timedOut: false,
+        retryable: true,
+      },
+    }),
+    false,
+    "限流可原模型补试，但不构成切备模型的授权事实",
   );
 });
 
@@ -297,6 +389,230 @@ test("队长拆解：专业档带全员能力清单，briefs覆盖全员并真�
       // 专业档必须把成员的全部能力清单交给队长逐项运用
       assert.match(capturedSystem, /全部能力\(/u);
       assert.match(capturedSystem, /深度挖掘/u);
+    });
+  } finally {
+    delete process.env.YUNWU_API_KEY;
+    delete process.env.YUNWU_BASE_URL;
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test("队长拆解：首选模型零用量502后仅接力一次gpt-5.5并按实际模型结算", async () => {
+  let served = 0;
+  const requestedModels = [];
+  const upstream = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requestedModels.push(JSON.parse(body).model);
+    served += 1;
+    if (served === 1) {
+      res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "primary upstream unavailable" } }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            briefs: [
+              {
+                idx: 101,
+                title: "统筹周年庆目标",
+                directive: "统筹目标、预算和两位成员交付。【输出标准】先给老板摘要。",
+                deliverables: "一份可拍板的周年庆统筹方案",
+              },
+              {
+                idx: 102,
+                title: "盘点竞品活动",
+                directive: "盘点周边竞品并给队长供料。【输出标准】列出可核验来源。",
+                deliverables: "竞品活动与价格动作清单",
+              },
+            ],
+          }),
+        },
+      }],
+      usage: { prompt_tokens: 720, completion_tokens: 260 },
+    }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  process.env.YUNWU_API_KEY = "test-team-plan-retry-key";
+  process.env.YUNWU_BASE_URL = `http://127.0.0.1:${upstream.address().port}`;
+  const balanceBefore = q.get("SELECT credits FROM tenants WHERE id=1").credits;
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/employees/team-plan`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": "team-plan-retry-success",
+        },
+        body: JSON.stringify({
+          text: "帮门店做周年庆活动",
+          depth: "full",
+          members: [
+            { idx: 101, roleInTeam: "队长", task: "统筹", dependsOn: [102] },
+            { idx: 102, roleInTeam: "成员", task: "盯竞品", dependsOn: [] },
+          ],
+        }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(payload));
+      assert.equal(served, 2, "零用量502后只允许一次受控模型接力");
+      assert.deepEqual(requestedModels, ["deepseek-v4-flash", "gpt-5.5"]);
+      assert.equal(payload.plan.briefs.length, 2);
+      assert.equal(payload.billing.state, "settled");
+      assert.ok(payload.billing.chargedCredits > 0);
+    });
+    assert.ok(
+      q.get("SELECT credits FROM tenants WHERE id=1").credits < balanceBefore,
+      "备模型真实交付后按实际用量结算",
+    );
+    const hold = q.get(
+      `SELECT h.*, l.input_tokens, l.output_tokens, l.model ledger_model, l.note
+       FROM credit_holds h
+       JOIN credit_logs l ON l.tenant_id=h.tenant_id AND l.id=h.log_id
+       WHERE h.tenant_id=1 AND h.feature LIKE '协同小队·队长拆解派活%'
+       ORDER BY h.id DESC LIMIT 1`,
+    );
+    assert.equal(Number(hold.input_tokens), 720);
+    assert.equal(Number(hold.output_tokens), 260);
+    assert.equal(hold.ledger_model, "gpt-5.5", "流水必须写最终实际模型");
+    assert.match(hold.note, /deepseek-v4-flash→gpt-5\.5/u);
+    assert.match(hold.note, /reason=retryable_zero_usage_transport_failure/u);
+  } finally {
+    delete process.env.YUNWU_API_KEY;
+    delete process.env.YUNWU_BASE_URL;
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test("队长拆解：瞬时上游故障耗尽重试后失败关闭、全额退回并返回脱敏错误契约", async () => {
+  let served = 0;
+  const upstreamSecret = "private-upstream-cluster-secret";
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {
+      /* consume */
+    }
+    served += 1;
+    res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: upstreamSecret } }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  process.env.YUNWU_API_KEY = "test-team-plan-failure-key";
+  process.env.YUNWU_BASE_URL = `http://127.0.0.1:${upstream.address().port}`;
+  const balanceBefore = q.get("SELECT credits FROM tenants WHERE id=1").credits;
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/employees/team-plan`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": "team-plan-upstream-failed-001",
+        },
+        body: JSON.stringify({
+          text: "帮门店做周年庆活动",
+          depth: "full",
+          members: [
+            { idx: 101, roleInTeam: "队长", task: "统筹", dependsOn: [102] },
+            { idx: 102, roleInTeam: "成员", task: "盯竞品", dependsOn: [] },
+          ],
+        }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 502, JSON.stringify(payload));
+      assert.equal(served, 2, "受控预算仅允许两次上游请求");
+      assert.equal(payload.code, "provider_upstream_error");
+      assert.equal(payload.retryable, true);
+      assert.equal(payload.requestId, "team-plan-upstream-failed-001");
+      assert.equal(payload.failurePhase, "generate");
+      assert.equal(payload.providerAttempts, 2);
+      assert.deepEqual(payload.providerFailure, {
+        code: "provider_upstream_error",
+        status: 502,
+        timedOut: false,
+        retryable: true,
+        summary: "供应商服务暂时异常",
+      });
+      assert.equal(payload.billing.state, "released");
+      assert.equal(payload.billing.chargedCredits, 0);
+      assert.equal(payload.billing.heldCredits, 0);
+      assert.equal(payload.billing.pendingReconciliation, false);
+      assert.equal(Object.hasOwn(payload, "plan"), false, "不得用模板冒充拆解结果");
+      assert.doesNotMatch(JSON.stringify(payload), new RegExp(upstreamSecret));
+    });
+    assert.equal(
+      q.get("SELECT credits FROM tenants WHERE id=1").credits,
+      balanceBefore,
+      "两轮上游都失败后预授权必须全额退回",
+    );
+    const hold = q.get(
+      `SELECT h.*, l.input_tokens, l.output_tokens, l.credits log_credits, l.ai_mode
+       FROM credit_holds h
+       JOIN credit_logs l ON l.tenant_id=h.tenant_id AND l.id=h.log_id
+       WHERE h.tenant_id=1 AND h.feature LIKE '协同小队·队长拆解派活%'
+       ORDER BY h.id DESC LIMIT 1`,
+    );
+    assert.equal(Number(hold.settled_credits), 0);
+    assert.equal(Number(hold.log_credits), 0);
+    assert.equal(Number(hold.input_tokens), 0);
+    assert.equal(Number(hold.output_tokens), 0);
+    assert.equal(hold.ai_mode, "failed", "未交付流水不得冒充真实API成功");
+  } finally {
+    delete process.env.YUNWU_API_KEY;
+    delete process.env.YUNWU_BASE_URL;
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test("队长拆解：账务未结清时不返回可派发plan", async () => {
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {
+      /* consume */
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            briefs: [{
+              idx: 101,
+              title: "统筹周年庆",
+              directive: "统筹方案。【输出标准】先给老板摘要。",
+              deliverables: "一份统筹方案",
+            }],
+          }),
+        },
+      }],
+      // 故意构造超过预授权上限的供应商用量，验证待对账门禁。
+      usage: { prompt_tokens: 10_000_000, completion_tokens: 10_000_000 },
+    }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  process.env.YUNWU_API_KEY = "test-team-plan-billing-key";
+  process.env.YUNWU_BASE_URL = `http://127.0.0.1:${upstream.address().port}`;
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/employees/team-plan`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": "team-plan-billing-unsettled-001",
+        },
+        body: JSON.stringify({
+          text: "帮门店做周年庆活动",
+          depth: "full",
+          members: [{ idx: 101, roleInTeam: "队长", task: "统筹", dependsOn: [] }],
+        }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 409, JSON.stringify(payload));
+      assert.equal(payload.code, "TEAM_PLAN_BILLING_NOT_SETTLED");
+      assert.equal(payload.retryable, false);
+      assert.equal(payload.requestId, "team-plan-billing-unsettled-001");
+      assert.equal(payload.billing.state, "pending_reconciliation");
+      assert.equal(payload.billing.pendingReconciliation, true);
+      assert.equal(Object.hasOwn(payload, "plan"), false);
     });
   } finally {
     delete process.env.YUNWU_API_KEY;

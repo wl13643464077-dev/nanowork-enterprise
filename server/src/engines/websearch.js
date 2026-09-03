@@ -1,11 +1,14 @@
 // 联网检索引擎（老板参谋「联网」开关，FR-ADV-07）
-// 多源链路：按已配置的 API Key 依次尝试 TinyFish（免费，真浏览器渲染）→ 博查 → Tavily → Serper，
-// 全部未配置或失败时先用 Google News RSS 做只读新闻来源兜底，再尝试 DuckDuckGo HTML。
+// 统一链路：TinyFish Search+Fetch 先过材料质量门 → 不足时 Claude WebSearch
+// 深度回退 → 旧部署已配置的博查/Tavily/Serper 灾备 → 无 Key 只读来源。
 // 注意：免 Key 来源可能限流或反爬，正式部署仍应配置至少一个检索源
 // （TINYFISH_API_KEY 免费 / BOCHA_API_KEY / TAVILY_API_KEY / SERPER_API_KEY）。
 // 失败安全：超时/网络受限时返回空数组并附 note，不阻塞会诊主流程。
 import { providerResponseError, sanitizeProviderError } from './provider-errors.js';
-import { tinyfishSearch } from './tinyfish.js';
+import {
+  agenticWebResearch,
+  agenticWebResearchReadiness,
+} from './agentic-web-research.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
@@ -77,16 +80,8 @@ const norm = (title, url, snippet) => ({
   snippet: String(snippet || '').replace(/\s+/g, ' ').trim().slice(0, 160),
 });
 
-// 各商业源适配器：返回统一 [{title,url,snippet}]
+// 旧商业源适配器：统一分层通道未交付时才继续尝试。
 const PROVIDERS = [
-  {
-    // 免费且真浏览器渲染，放首位；本地节流触发或失败时自动落到下一源
-    name: 'TinyFish',
-    key: () => process.env.TINYFISH_API_KEY,
-    async search(query, max, signal, fetchImpl) {
-      return tinyfishSearch(query, { max, signal, fetchImpl });
-    },
-  },
   {
     name: '博查',
     key: () => process.env.BOCHA_API_KEY,
@@ -196,7 +191,12 @@ async function googleNewsSearch(query, max, signal, fetchImpl) {
 }
 
 export function webSearchProviders() {
-  return PROVIDERS.filter(p => p.key()).map(p => p.name);
+  const tiered = agenticWebResearchReadiness();
+  return [
+    ...(tiered.primaryReady ? ['TinyFish'] : []),
+    ...(tiered.fallbackReady ? ['Claude WebSearch'] : []),
+    ...PROVIDERS.filter(p => p.key()).map(p => p.name),
+  ];
 }
 
 function attemptSignal(timeoutMs, externalSignal, totalSignal) {
@@ -233,18 +233,71 @@ export async function webSearch(query, {
   signal: externalSignal,
   fetchImpl = globalThis.fetch,
   fallbackOrder = 'news_first',
+  tieredResearchFn = agenticWebResearch,
+  skipTiered = false,
 } = {}) {
   const perAttemptTimeoutMs = Math.max(1, Math.floor(Number(timeoutMs) || 9000));
   const configuredProviders = PROVIDERS.filter(provider => provider.key());
+  const tieredReadiness = agenticWebResearchReadiness();
+  // 只有首选 TinyFish 确实配置后才进入 TinyFish→Claude。单独存在 Claude
+  // 凭证时，深度员工链仍可直接使用 Claude；轻量检索不意外启动 CLI。
+  const tieredEnabled = !skipTiered
+    && tieredReadiness.primaryReady === true
+    && typeof tieredResearchFn === 'function';
   // timeoutMs 是单个检索源的预算；总预算按实际链路长度封顶，防止首个源
   // 用尽一个共享 signal 后，后续真实来源被立即取消。
   const totalController = new AbortController();
-  const totalBudgetMs = perAttemptTimeoutMs * Math.max(1, configuredProviders.length + 2);
+  const totalBudgetMs = perAttemptTimeoutMs * Math.max(
+    1,
+    configuredProviders.length + (tieredEnabled ? 1 : 0) + 2,
+  );
   const totalTimer = setTimeout(() => totalController.abort(), totalBudgetMs);
   const failures = [];
   try {
     if (externalSignal?.aborted) return unavailableResult([], '调用方已取消');
     if (typeof fetchImpl !== 'function') return unavailableResult([], '检索客户端不可用');
+    if (tieredEnabled) {
+      const attempt = attemptSignal(perAttemptTimeoutMs, externalSignal, totalController.signal);
+      try {
+        const research = await tieredResearchFn(query, {
+          maxResults: Math.max(5, Number(max) || 5),
+          timeoutMs: perAttemptTimeoutMs,
+          signal: attempt.signal,
+          researchMode: 'simple_search',
+        });
+        const source = [
+          ...(Array.isArray(research?.results) ? research.results : []),
+          ...(Array.isArray(research?.fetchCandidates) ? research.fetchCandidates : []),
+        ];
+        const seen = new Set();
+        const results = source
+          .map(item => norm(item?.title, item?.url, item?.snippet || item?.body))
+          .filter(item => {
+            if (!item.title || !usableHttpUrl(item.url) || seen.has(item.url)) return false;
+            seen.add(item.url);
+            return true;
+          })
+          .slice(0, Math.max(1, Number(max) || 5));
+        if (research?.ok === true && research?.candidateReady === true && results.length) {
+          return {
+            ok: true,
+            provider: research.provider || 'TinyFish → Claude WebSearch',
+            results,
+            note: null,
+            evidence: research.evidence || null,
+          };
+        }
+        failures.push('TinyFish→Claude:质量门未通过');
+      } catch (error) {
+        if (externalSignal?.aborted) return unavailableResult(failures, '调用方已取消');
+        if (totalController.signal.aborted && !attempt.timedOut()) {
+          return unavailableResult(failures, '总预算超时');
+        }
+        failures.push(safeFailure('TinyFish→Claude', error, '分层联网检索服务').note);
+      } finally {
+        attempt.clear();
+      }
+    }
     for (const provider of configuredProviders) {
       const attempt = attemptSignal(perAttemptTimeoutMs, externalSignal, totalController.signal);
       try {

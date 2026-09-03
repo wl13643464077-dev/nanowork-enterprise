@@ -394,6 +394,30 @@ test("media适配保留Paihuo自动数量与显式数量，不再把null或0改�
   );
 });
 
+test("media视觉策略版本只对新v2任务透传，旧任务缺版本保持原mix幂等语义", async () => {
+  const compiled = [];
+  const registry = createContentHandlerAdapterRegistry({
+    compile(input) {
+      compiled.push(input.variables.media_request);
+      return { system: "system:media", user: "user:media" };
+    },
+    invoke: async () => ({ data: { ok: true } }),
+  });
+
+  const legacy = pipelineContext();
+  delete legacy.brief.visual_policy_version;
+  await registry.invoke("run_media", legacy);
+
+  const current = pipelineContext();
+  current.brief.visual_policy_version = "v2";
+  await registry.invoke("run_media", current);
+
+  assert.equal(Object.hasOwn(compiled[0], "visual_policy_version"), false);
+  assert.equal(compiled[1].visual_policy_version, "v2");
+  assert.equal(compiled[0].mode, "mix");
+  assert.equal(compiled[1].mode, "mix");
+});
+
 test("media单独派活在真实文本产出前不伪造配图计划，pipeline仍严格使用上游image_plan", async () => {
   const compiled = [];
   const registry = createContentHandlerAdapterRegistry({

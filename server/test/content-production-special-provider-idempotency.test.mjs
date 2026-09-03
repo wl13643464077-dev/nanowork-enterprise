@@ -13,6 +13,10 @@ const {
   createContentSpecialProviderBridge,
   contentSpecialProviderAttemptIdentity,
 } = await import("../src/engines/content-special-provider-bridge.js");
+const {
+  contentPaidMediaAuthorizationReservation,
+  createContentPaidMediaAuthorization,
+} = await import("../src/engines/content-paid-media-authorization.js");
 const { db, q, runWithTenant } = await import("../src/db.js");
 
 db.exec(`
@@ -85,6 +89,43 @@ function employeePackage() {
   };
 }
 
+function paidMediaAuthorization(estimatedUnitCredits = 75) {
+  return createContentPaidMediaAuthorization({
+    task: {
+      direction: "provider幂等与授权累计测试",
+      image_mode: "mix",
+      image_count: 12,
+      platforms: ["小红书", "抖音", "微信视频号", "公众号"],
+    },
+    actor: { id: 1, role: "boss" },
+    imageModel: "gpt-image-2",
+    estimatedUnitCredits,
+  });
+}
+
+function paidAuthorizationUsage({
+  kind = "image",
+  count = 1,
+  unitCredits = 75,
+} = {}) {
+  return authorizationUsageFrom(paidMediaAuthorization(unitCredits), {
+    kind,
+    count,
+    unitCredits,
+  });
+}
+
+function authorizationUsageFrom(
+  policy,
+  { kind = "image", count = 1, unitCredits = 75 } = {},
+) {
+  return contentPaidMediaAuthorizationReservation(policy, {
+    providerKind: kind,
+    requestedImageCount: count,
+    requestedCredits: count * unitCredits,
+  });
+}
+
 function testProviderAttemptStore() {
   return createContentPipelineSpecialProviderAttemptStore({
     async downloadProviderAssetFn() {
@@ -140,13 +181,16 @@ test("URL固化失败发生在写事务之前且不产生material副作用", asy
         });
       },
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_003,
-      employeeIdx: 5,
-      kind: "image",
-      requestFingerprint: `sha256:${"a".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_003,
+        employeeIdx: 5,
+        kind: "image",
+        requestFingerprint: `sha256:${"a".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage(),
+    };
     const claim = store.claim({ ...attempt, tenantId: 33, userId: 3_301 });
     const leasedAttempt = { ...attempt, leaseToken: claim.leaseToken };
     store.associateHold({
@@ -218,13 +262,16 @@ test("ImageHunt已授权租户文件可固化为idx5素材，授权缺失时在�
         throw new Error("租户本地已授权素材不应走公网下载");
       },
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_034,
-      employeeIdx: 5,
-      kind: "material",
-      requestFingerprint: `sha256:${"b".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_034,
+        employeeIdx: 5,
+        kind: "material",
+        requestFingerprint: `sha256:${"b".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage({ kind: "material" }),
+    };
     const claim = store.claim({ ...attempt, tenantId: 34, userId: 3_401 });
     const leasedAttempt = { ...attempt, leaseToken: claim.leaseToken };
     store.associateHold({
@@ -289,13 +336,16 @@ test("ImageHunt已授权租户文件可固化为idx5素材，授权缺失时在�
         throw new Error("授权门应先于网络读取");
       },
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_035,
-      employeeIdx: 5,
-      kind: "material",
-      requestFingerprint: `sha256:${"c".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_035,
+        employeeIdx: 5,
+        kind: "material",
+        requestFingerprint: `sha256:${"c".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage({ kind: "material" }),
+    };
     const claim = store.claim({ ...attempt, tenantId: 35, userId: 3_501 });
     const leasedAttempt = { ...attempt, leaseToken: claim.leaseToken };
     store.associateHold({
@@ -386,6 +436,7 @@ test("外层station落库失败后的新bridge恢复只回放同一attempt，不
       employeePackage: employeePackage(),
       imageModel: "gpt-image-2",
       attemptNamespace: "content-production-pipeline",
+      paidMediaAuthorization: paidMediaAuthorization(50),
       request: {
         prompt: "生成两张可追溯经营信息图",
         image_mode: "ai",
@@ -487,7 +538,7 @@ test("外层station落库失败后的新bridge恢复只回放同一attempt，不
   });
 });
 
-test("provider明确失败且预授权已释放后允许同一稳定attempt安全复跑，不会永久卡在in_progress", async () => {
+test("provider外调已开始后失败则attempt转待对账，禁止自动退款与二次付费复跑", async () => {
   await runWithTenant(32, async () => {
     const store = testProviderAttemptStore();
     let providerCalls = 0;
@@ -517,7 +568,7 @@ test("provider明确失败且预授权已释放后允许同一稳定attempt安�
         return { credits: input.credits, balance: 9_950, costYuan: 1 };
       },
       releaseHoldFn() {
-        return { credits: 0, balance: 10_000, costYuan: 0 };
+        assert.fail("provider外调已开始后不得自动退款");
       },
       async generateImageFn(input) {
         providerCalls += 1;
@@ -536,6 +587,7 @@ test("provider明确失败且预授权已释放后允许同一稳定attempt安�
       employeePackage: employeePackage(),
       imageModel: "gpt-image-2",
       attemptNamespace: "content-production-pipeline",
+      paidMediaAuthorization: paidMediaAuthorization(25),
       request: {
         prompt: "provider失败后安全重试",
         image_mode: "ai",
@@ -550,7 +602,13 @@ test("provider明确失败且预授权已释放后允许同一稳定attempt安�
         count: 1,
         purpose: "content_images",
       }),
-      /(?:图片|image)内容供应商|provider/u,
+      (error) => {
+        assert.equal(error.billing.state, "pending_reconciliation");
+        assert.equal(error.billing.heldCredits, 25);
+        assert.equal(error.billing.chargedCredits, null);
+        assert.equal(error.billing.releaseSuppressed, true);
+        return true;
+      },
     );
     assert.equal(
       q.get(
@@ -559,17 +617,18 @@ test("provider明确失败且预授权已释放后允许同一稳定attempt安�
         32,
         45_002,
       ).status,
-      "released",
+      "pending_reconciliation",
     );
 
-    const retried = await createContentSpecialProviderBridge(
-      input,
-      dependencies,
-    ).providers.image({ count: 1, purpose: "content_images" });
-    assert.equal(retried.bridge.replayed, false);
-    assert.equal(retried.bridge.billing.state, "settled");
-    assert.equal(providerCalls, 2);
-    assert.equal(holdCalls, 2);
+    await assert.rejects(
+      createContentSpecialProviderBridge(input, dependencies).providers.image({
+        count: 1,
+        purpose: "content_images",
+      }),
+      /幂等尝试仍在执行或等待对账/u,
+    );
+    assert.equal(providerCalls, 1);
+    assert.equal(holdCalls, 1);
     assert.equal(
       q.get(
         `SELECT COUNT(*) n FROM materials
@@ -577,7 +636,7 @@ test("provider明确失败且预授权已释放后允许同一稳定attempt安�
         32,
         45_002,
       ).n,
-      1,
+      0,
     );
   });
 });
@@ -591,13 +650,16 @@ test("进程崩溃窗口：租约过期且本轮无hold的空claim可安全回�
       randomUUIDFn: () => `crash-empty-${++tokenSequence}`,
       claimLeaseMs: 1_000,
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_004,
-      employeeIdx: 5,
-      kind: "image",
-      requestFingerprint: `sha256:${"b".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_004,
+        employeeIdx: 5,
+        kind: "image",
+        requestFingerprint: `sha256:${"b".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage(),
+    };
     const identity = { ...attempt, tenantId: 34, userId: 3_401 };
     const first = store.claim(identity);
     assert.equal(store.claim(identity).state, "in_progress");
@@ -631,13 +693,16 @@ test("进程崩溃窗口：hold已创建但尚未关联时不得回收或退款�
       randomUUIDFn: () => "crash-unlinked-hold",
       claimLeaseMs: 1_000,
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_005,
-      employeeIdx: 5,
-      kind: "image",
-      requestFingerprint: `sha256:${"c".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_005,
+        employeeIdx: 5,
+        kind: "image",
+        requestFingerprint: `sha256:${"c".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage(),
+    };
     const identity = { ...attempt, tenantId: 35, userId: 3_501 };
     store.claim(identity);
     q.run(
@@ -682,13 +747,16 @@ test("进程崩溃窗口：hold已即时关联后即使没有产物也只进入�
       randomUUIDFn: () => "crash-associated-hold",
       claimLeaseMs: 1_000,
     });
-    const attempt = contentSpecialProviderAttemptIdentity({
-      namespace: "content-production-pipeline",
-      runId: 45_006,
-      employeeIdx: 5,
-      kind: "image",
-      requestFingerprint: `sha256:${"d".repeat(64)}`,
-    });
+    const attempt = {
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_006,
+        employeeIdx: 5,
+        kind: "image",
+        requestFingerprint: `sha256:${"d".repeat(64)}`,
+      }),
+      authorizationUsage: paidAuthorizationUsage(),
+    };
     const identity = { ...attempt, tenantId: 36, userId: 3_601 };
     const claim = store.claim(identity);
     q.run(
@@ -733,6 +801,228 @@ test("进程崩溃窗口：hold已即时关联后即使没有产物也只进入�
     assert.equal(
       q.get("SELECT status FROM credit_holds WHERE id=?", 860_002).status,
       "held",
+    );
+  });
+});
+
+test("工位5配图与工位6封面在pipeline全生命周期原子共用总额度，重新授权不清零", async () => {
+  await runWithTenant(37, async () => {
+    const store = testProviderAttemptStore();
+    const policy = createContentPaidMediaAuthorization({
+      task: {
+        direction: "配图与封面共用总额度",
+        image_mode: "ai",
+        image_count: 4,
+        platforms: ["小红书", "抖音"],
+      },
+      actor: { id: 3_701, role: "boss" },
+      imageModel: "gpt-image-2",
+      estimatedUnitCredits: 75,
+    });
+    const identity = ({
+      stationIdx,
+      attemptOrdinal,
+      fingerprint,
+      count,
+      authorizationPolicy = policy,
+    }) => ({
+      ...contentSpecialProviderAttemptIdentity({
+        namespace: "content-production-pipeline",
+        runId: 45_007,
+        employeeIdx: stationIdx,
+        kind: "image",
+        attemptOrdinal,
+        requestFingerprint: `sha256:${fingerprint.repeat(64)}`,
+      }),
+      tenantId: 37,
+      userId: 3_701,
+      authorizationUsage: authorizationUsageFrom(authorizationPolicy, {
+        count,
+      }),
+    });
+
+    store.claim(
+      identity({
+        stationIdx: 5,
+        attemptOrdinal: 1,
+        fingerprint: "e",
+        count: 4,
+      }),
+    );
+    store.claim(
+      identity({
+        stationIdx: 6,
+        attemptOrdinal: 1,
+        fingerprint: "f",
+        count: 2,
+      }),
+    );
+    assert.throws(
+      () =>
+        store.claim(
+          identity({
+            stationIdx: 6,
+            attemptOrdinal: 2,
+            fingerprint: "1",
+            count: 1,
+          }),
+        ),
+      (error) =>
+        error?.code ===
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_CUMULATIVE_LIMIT_EXCEEDED",
+    );
+    assert.equal(
+      q.get(
+        `SELECT COUNT(*) n FROM content_pipeline_special_provider_attempts
+        WHERE tenant_id=? AND pipeline_id=?`,
+        37,
+        45_007,
+      ).n,
+      2,
+    );
+    const renewedPolicy = createContentPaidMediaAuthorization({
+      task: {
+        direction: "配图与封面共用总额度",
+        image_mode: "ai",
+        image_count: 4,
+        platforms: ["小红书", "抖音"],
+      },
+      actor: { id: 3_701, role: "boss" },
+      imageModel: "gpt-image-2",
+      estimatedUnitCredits: 75,
+      now: () => new Date(Date.now() + 60_000),
+    });
+    assert.notEqual(renewedPolicy.authorizationId, policy.authorizationId);
+    assert.throws(
+      () =>
+        store.claim(
+          identity({
+            stationIdx: 6,
+            attemptOrdinal: 3,
+            fingerprint: "2",
+            count: 1,
+            authorizationPolicy: renewedPolicy,
+          }),
+        ),
+      (error) =>
+        error?.code ===
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_CUMULATIVE_LIMIT_EXCEEDED",
+    );
+  });
+});
+
+test("新stationAttempt先跨轮回放已结算产物，指纹不一致则转待对账且不建新hold", async () => {
+  await runWithTenant(38, async () => {
+    const store = testProviderAttemptStore();
+    const policy = createContentPaidMediaAuthorization({
+      task: {
+        direction: "跨stationAttempt回放",
+        image_mode: "ai",
+        image_count: 1,
+        platforms: ["小红书"],
+      },
+      actor: { id: 3_801, role: "boss" },
+      imageModel: "gpt-image-2",
+      estimatedUnitCredits: 50,
+    });
+    let holdCalls = 0;
+    let providerCalls = 0;
+    const dependencies = {
+      resolveProviderAttemptFn: store.resolve,
+      claimProviderAttemptFn: store.claim,
+      validateProviderClaimFn: store.validateClaim,
+      associateProviderHoldFn: store.associateHold,
+      persistProviderOutputFn: store.persist,
+      finalizeProviderAttemptFn: store.finalize,
+      estimateMaxCreditsFn: () => 50,
+      holdCreditsFn(input) {
+        holdCalls += 1;
+        return {
+          holdId: 880_000 + holdCalls,
+          logId: 881_000 + holdCalls,
+          tenantId: 38,
+          userId: 3_801,
+          kind: input.kind,
+          model: input.model,
+          credits: input.credits,
+          balance: 10_000,
+        };
+      },
+      settleHoldFn(hold, input) {
+        return { credits: input.credits, balance: 9_950, costYuan: 1 };
+      },
+      releaseHoldFn() {
+        throw new Error("已交付产物不应释放");
+      },
+      async generateImageFn(input) {
+        providerCalls += 1;
+        return {
+          model: input.model,
+          url: "https://images.example/cross-attempt.png",
+        };
+      },
+    };
+    const bridgeInput = (attemptOrdinal, prompt) => ({
+      tenantId: 38,
+      userId: 3_801,
+      runId: 45_008,
+      employeeIdx: 5,
+      employeePackage: employeePackage(),
+      imageModel: "gpt-image-2",
+      attemptNamespace: "content-production-pipeline",
+      attemptOrdinal,
+      paidMediaAuthorization: policy,
+      request: {
+        prompt,
+        image_mode: "ai",
+        image_count: 1,
+        platforms: ["小红书"],
+        size: "1024x1024",
+      },
+    });
+
+    const first = await createContentSpecialProviderBridge(
+      bridgeInput(1, "生成可追溯经营图"),
+      dependencies,
+    ).providers.image({ count: 1, purpose: "content_images" });
+    const replayed = await createContentSpecialProviderBridge(
+      bridgeInput(2, "生成可追溯经营图"),
+      dependencies,
+    ).providers.image({ count: 1, purpose: "content_images" });
+    assert.equal(first.bridge.replayed, false);
+    assert.equal(replayed.bridge.replayed, true);
+    assert.notEqual(replayed.bridge.attemptId, first.bridge.attemptId);
+    assert.equal(holdCalls, 1);
+    assert.equal(providerCalls, 1);
+    assert.equal(
+      q.get(
+        `SELECT COUNT(*) n FROM content_pipeline_special_provider_attempts
+        WHERE tenant_id=? AND pipeline_id=?`,
+        38,
+        45_008,
+      ).n,
+      1,
+    );
+
+    await assert.rejects(
+      createContentSpecialProviderBridge(
+        bridgeInput(3, "另一个不同的经营图请求"),
+        dependencies,
+      ).providers.image({ count: 1, purpose: "content_images" }),
+      (error) =>
+        error?.code ===
+        "CONTENT_PIPELINE_PROVIDER_PRIOR_DELIVERY_REQUIRES_RECONCILIATION",
+    );
+    assert.equal(holdCalls, 1);
+    assert.equal(providerCalls, 1);
+    assert.equal(
+      q.get(
+        `SELECT status FROM content_pipeline_special_provider_attempts
+        WHERE tenant_id=? AND pipeline_id=? ORDER BY id DESC LIMIT 1`,
+        38,
+        45_008,
+      ).status,
+      "pending_reconciliation",
     );
   });
 });

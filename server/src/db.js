@@ -80,6 +80,10 @@ export function initSchema() {
     avatar TEXT,
     status TEXT DEFAULT '启用',
     auth_version INTEGER DEFAULT 0,
+    onboarding_version INTEGER NOT NULL DEFAULT 0,
+    onboarding_role TEXT,
+    onboarding_completed_at TEXT,
+    onboarding_outcome TEXT CHECK(onboarding_outcome IS NULL OR onboarding_outcome IN ('completed','dismissed')),
     last_login_at TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
@@ -1467,6 +1471,16 @@ export function migrateV2() {
     "TEXT NOT NULL DEFAULT 'live' CHECK(data_mode IN ('live','demo'))",
   );
   addCol("users", "tenant_id", "INTEGER DEFAULT 1");
+  // 角色化新手指引完成态：由服务端版本、当前岗位和当前登录用户共同判定。
+  // 历史账号默认 version=0，升级后自然进入新版本指引，不需要批量回填。
+  addCol("users", "onboarding_version", "INTEGER NOT NULL DEFAULT 0");
+  addCol("users", "onboarding_role", "TEXT");
+  addCol("users", "onboarding_completed_at", "TEXT");
+  addCol(
+    "users",
+    "onboarding_outcome",
+    "TEXT CHECK(onboarding_outcome IS NULL OR onboarding_outcome IN ('completed','dismissed'))",
+  );
   addCol("credit_logs", "tenant_id", "INTEGER DEFAULT 1");
   addCol("materials", "tenant_id", "INTEGER DEFAULT 1");
   // 历史会话在加 tenant_id 列时会先拿到默认值1，必须按会话所有者回填，否则非总部租户升级后会丢失历史。
@@ -2534,6 +2548,13 @@ export function migrateV2() {
       !toolRunsSql.includes("'link-script'") ||
       !toolEventsSql.includes("'link-script'"))
   ) {
+    // 根因加固：RENAME tool_runs 时 SQLite 会把其它表里 REFERENCES tool_runs 的
+    // 外键定义同步改写成 legacy 名（3.25+ 新语义默认改写；foreign_keys=ON 时旧语义
+    // 也会改写），随后 DROP legacy 表就让 toolbox_automation_runs 等子表外键悬空。
+    // 因此必须同时关掉两条改写路径：foreign_keys 只能在事务外设置（事务内是 no-op），
+    // legacy_alter_table=ON 让 RENAME 走旧行为、不动其它表的定义。
+    db.exec("PRAGMA foreign_keys=OFF");
+    db.exec("PRAGMA legacy_alter_table=ON");
     db.exec("BEGIN IMMEDIATE");
     try {
       db.exec(`
@@ -2622,6 +2643,77 @@ export function migrateV2() {
         /* transaction already closed */
       }
       throw error;
+    } finally {
+      db.exec("PRAGMA legacy_alter_table=OFF");
+      db.exec("PRAGMA foreign_keys=ON");
+    }
+  }
+
+  // 自愈迁移：修复历史事故留下的悬空外键。早期版本的 menu-copy 迁移在 RENAME 时
+  // 没有关掉外键改写，导致 toolbox_automation_runs / toolbox_automation_configs /
+  // tool_run_pcal_edits 的外键被 SQLite 自动改写成 REFERENCES "tool_runs_legacy_menu_copy"，
+  // 而 legacy 表随后已被 DROP——这些表从此任何写操作都报 no such table。
+  // 这里扫描所有定义里还残留 legacy 名的表，按官方推荐的重建流程逐表修复：
+  // 建修正表 → 显式列复制 → DROP 旧表 → RENAME 回原名 → 重建原有索引。
+  // 修好的库定义里不再含 legacy 名，扫描为空，因此重复执行天然幂等。
+  const danglingFkTables = db
+    .prepare(
+      `SELECT name, sql FROM sqlite_master
+       WHERE type='table' AND sql LIKE '%legacy_menu_copy%'
+         AND name NOT LIKE '%legacy_menu_copy%'`,
+    )
+    .all();
+  if (danglingFkTables.length > 0) {
+    // 与上面同理：重建期间关闭外键检查（防止 DROP/复制被悬空外键卡死），并用旧版
+    // RENAME 语义防止“改回原名”这步再次改写其它表的外键定义、造成二次事故。
+    db.exec("PRAGMA foreign_keys=OFF");
+    db.exec("PRAGMA legacy_alter_table=ON");
+    try {
+      for (const { name, sql } of danglingFkTables) {
+        const tempName = `${name}_fk_fix`;
+        // 外键指回真实表（去掉 _legacy_menu_copy 后缀），其余定义原样保留
+        const fixedSql = sql
+          .replace(/"?(\w+)_legacy_menu_copy"?/gu, "$1")
+          .replace(
+            new RegExp(`^(CREATE\\s+TABLE\\s+)("?)${name}\\2`, "iu"),
+            (_m, head) => `${head}"${tempName}"`,
+          );
+        const columns = db
+          .prepare(`PRAGMA table_info("${name}")`)
+          .all()
+          .map((col) => `"${col.name}"`)
+          .join(",");
+        // 显式建的索引会随 DROP TABLE 一起消失，先记下 DDL 以便原样重建；
+        // 自动索引（主键/UNIQUE 约束）的 sql 为 NULL，会由建表语句自动恢复。
+        const indexSqls = db
+          .prepare(
+            `SELECT sql FROM sqlite_master
+             WHERE type='index' AND tbl_name=? AND sql IS NOT NULL`,
+          )
+          .all(name)
+          .map((row) => row.sql);
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          db.exec(fixedSql);
+          db.exec(
+            `INSERT INTO "${tempName}"(${columns}) SELECT ${columns} FROM "${name}"`,
+          );
+          db.exec(`DROP TABLE "${name}"`);
+          db.exec(`ALTER TABLE "${tempName}" RENAME TO "${name}"`);
+          for (const indexSql of indexSqls) db.exec(indexSql);
+          db.exec("COMMIT");
+        } catch (error) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            /* transaction already closed */
+          }
+          throw error;
+        }
+      }
+    } finally {
+      db.exec("PRAGMA legacy_alter_table=OFF");
+      db.exec("PRAGMA foreign_keys=ON");
     }
   }
   addCol("activity_plan_drafts", "target_join", "INTEGER DEFAULT 12");

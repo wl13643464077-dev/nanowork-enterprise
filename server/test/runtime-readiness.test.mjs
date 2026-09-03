@@ -14,6 +14,8 @@ process.env.ENABLE_SCHEDULER = 'false';
 for (const key of [
   'YUNWU_API_KEY',
   'ANTHROPIC_API_KEY',
+  'TINYFISH_API_KEY',
+  'CONTENTCREW_CLAUDE_PATH',
   'BOCHA_API_KEY',
   'TAVILY_API_KEY',
   'SERPER_API_KEY',
@@ -225,6 +227,78 @@ test('只有当前配置最近一次显式测试通过才叫 connected，失败�
   matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 24_000 }));
   assert.equal(channel(matrix, 'ai').verification, 'stale');
   assert.notEqual(channel(matrix, 'ai').effective, 'connected');
+});
+
+test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFish 密钥纳入配置指纹', () => {
+  const previous = {
+    tinyfish: process.env.TINYFISH_API_KEY,
+    yunwu: process.env.YUNWU_API_KEY,
+    claudePath: process.env.CONTENTCREW_CLAUDE_PATH,
+  };
+  try {
+    clearRuntimeReadinessChecks();
+    process.env.TINYFISH_API_KEY = 'tinyfish-runtime-readiness-one';
+    process.env.YUNWU_API_KEY = '';
+    process.env.CONTENTCREW_CLAUDE_PATH = '';
+
+    let matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 1_000 }));
+    let search = channel(matrix, 'web_search');
+    assert.equal(search.configured, true);
+    assert.equal(search.effective, 'configured_unverified');
+    assert.equal(search.details.preferredProvider, 'tinyfish');
+    assert.equal(search.details.fallbackProvider, 'claude_websearch');
+    assert.equal(search.details.automaticFallback, true);
+    assert.equal(search.details.providerRoute[0].role, 'primary');
+    assert.equal(search.details.providerRoute[0].ready, true);
+    assert.equal(search.details.providerRoute[0].verified, false);
+    assert.equal(search.details.providerRoute[1].role, 'fallback');
+    assert.equal(search.details.providerRoute[1].ready, false);
+    assert.equal(search.details.providerRoute[1].verified, false);
+    assert.match(search.description, /TinyFish.*首选/u);
+
+    const fingerprint = runWithTenant(1, () => runtimeReadinessConfigFingerprint('web_search', { tenantId: 1 }));
+    recordRuntimeReadinessCheck('web_search', {
+      tenantId: 1,
+      outcome: 'passed',
+      configFingerprint: fingerprint,
+      checkedAt: 1_000,
+      ttlMs: 10_000,
+      evidence: { provider: 'TinyFish' },
+    });
+    matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 2_000 }));
+    assert.equal(channel(matrix, 'web_search').effective, 'connected');
+    assert.equal(channel(matrix, 'web_search').details.providerRoute[0].verified, true);
+
+    process.env.TINYFISH_API_KEY = 'tinyfish-runtime-readiness-two';
+    matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 3_000 }));
+    search = channel(matrix, 'web_search');
+    assert.equal(search.verification, 'stale');
+    assert.notEqual(search.effective, 'connected');
+    assert.doesNotMatch(JSON.stringify(search), /tinyfish-runtime-readiness-(?:one|two)/u);
+
+    clearRuntimeReadinessChecks();
+    process.env.TINYFISH_API_KEY = '';
+    process.env.YUNWU_API_KEY = 'sk-runtime-search-fallback';
+    process.env.CONTENTCREW_CLAUDE_PATH = process.execPath;
+    matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1 }));
+    search = channel(matrix, 'web_search');
+    const tinyfishRoute = search.details.providerRoute.find(item => item.id === 'tinyfish');
+    const claudeRoute = search.details.providerRoute.find(item => item.id === 'claude_websearch');
+    assert.equal(search.configured, true);
+    assert.equal(search.effective, 'configured_unverified');
+    assert.equal(tinyfishRoute.ready, false);
+    assert.equal(claudeRoute.configured, true);
+    assert.equal(claudeRoute.ready, true);
+    assert.match(search.description, /Claude WebSearch.*自动回退.*前置已齐全/u);
+    assert.doesNotMatch(JSON.stringify(search), /sk-runtime-search-fallback/u);
+  } finally {
+    if (previous.tinyfish === undefined) delete process.env.TINYFISH_API_KEY;
+    else process.env.TINYFISH_API_KEY = previous.tinyfish;
+    if (previous.yunwu === undefined) delete process.env.YUNWU_API_KEY;
+    else process.env.YUNWU_API_KEY = previous.yunwu;
+    if (previous.claudePath === undefined) delete process.env.CONTENTCREW_CLAUDE_PATH;
+    else process.env.CONTENTCREW_CLAUDE_PATH = previous.claudePath;
+  }
 });
 
 test('支付与飞书完整配置在未显式验收前只能是 configured_unverified', () => {

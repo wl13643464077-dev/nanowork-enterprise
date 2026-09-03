@@ -104,6 +104,38 @@ function safeJson(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
+function aiSalesVideoRecoveryPresentation(job, billing) {
+  const snapshot = safeJson(job?.snapshot_json, {}) || {};
+  const planned = Array.isArray(snapshot?.segments) ? snapshot.segments : [];
+  const providerSegments = Array.isArray(snapshot?.providerExecution?.segments)
+    ? snapshot.providerExecution.segments
+    : [];
+  const taskIds = providerSegments
+    .map(segment => String(segment?.taskId || '').trim())
+    .filter(taskId => /^[\p{L}\p{N}_.:+-]+$/u.test(taskId) && taskId.length <= 240);
+  const available =
+    snapshot?.workflow === 'ai_sales_video'
+    && ['失败', '阻塞'].includes(String(job?.status || ''))
+    && !String(job?.url || '').trim()
+    && [2, 3].includes(planned.length)
+    && providerSegments.length === planned.length
+    && taskIds.length === planned.length
+    && new Set(taskIds).size === taskIds.length;
+  return {
+    available,
+    mode: available ? 'reuse_existing_provider_tasks' : null,
+    providerSubmissions: 0,
+    reusedTaskCount: available ? taskIds.length : 0,
+    requiresBillingConfirmation: available && billing?.state === 'released',
+    estimatedCredits: available
+      ? Number(billing?.estimatedCredits || billing?.heldCredits || 0)
+      : 0,
+    note: available
+      ? '可复用原供应商任务恢复本地合成；不会重复提交供应商生成。'
+      : null,
+  };
+}
+
 function mediaTypeLabel(kind) {
   if (kind === 'image') return '图片';
   if (kind === 'video') return '视频';
@@ -391,6 +423,7 @@ export function augmentMediaJob(job, user) {
   const businessUsable = reviewed && billingReady;
   const previewAllowed = delivery.ready && billingReady && (roleAllowed || businessUsable);
   const originalUrl = String(job.url || '').trim() || null;
+  const recovery = aiSalesVideoRecoveryPresentation(job, billing);
   return {
     ...publicJob,
     url: businessUsable ? originalUrl : null,
@@ -413,6 +446,7 @@ export function augmentMediaJob(job, user) {
     canImport,
     canImportReason,
     billing,
+    recovery,
   };
 }
 

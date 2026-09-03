@@ -6,6 +6,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 import {
   AI_SALES_VIDEO_TARGET_DURATION_SECONDS,
+  assertAiSalesVideoComposerReady,
   composeAiSalesVideo,
 } from '../src/engines/video-composer.js';
 
@@ -46,6 +47,70 @@ function probeJson(duration, { output = false } = {}) {
     format: { duration: String(duration) },
   });
 }
+
+test('LaunchAgent最小PATH会安全发现Homebrew二进制，显式配置仍优先', async () => {
+  const checked = [];
+  const ready = await assertAiSalesVideoComposerReady({
+    env: { PATH: '/usr/bin:/bin' },
+    isExecutable: async candidate => {
+      checked.push(candidate);
+      return candidate === '/opt/homebrew/bin/ffmpeg'
+        || candidate === '/usr/local/bin/ffprobe';
+    },
+  });
+  assert.deepEqual(ready, {
+    ffmpegPath: '/opt/homebrew/bin/ffmpeg',
+    ffprobePath: '/usr/local/bin/ffprobe',
+  });
+  assert.equal(checked.every(candidate => path.isAbsolute(candidate)), true);
+
+  const explicit = await assertAiSalesVideoComposerReady({
+    env: {
+      PATH: '/untrusted/minimal-path',
+      FFMPEG_PATH: '/configured/tools/ffmpeg',
+      FFPROBE_PATH: '/configured/tools/ffprobe',
+    },
+    isExecutable: async candidate => candidate.startsWith('/configured/tools/'),
+  });
+  assert.deepEqual(explicit, {
+    ffmpegPath: '/configured/tools/ffmpeg',
+    ffprobePath: '/configured/tools/ffprobe',
+  });
+});
+
+test('FFmpeg不存在时预检返回明确中文错误码', async () => {
+  await assert.rejects(
+    assertAiSalesVideoComposerReady({
+      env: { PATH: '/empty/minimal-path' },
+      isExecutable: async () => false,
+    }),
+    error => error.code === 'AI_SALES_VIDEO_COMPOSER_BINARY_MISSING'
+      && error.binary === 'ffmpeg'
+      && /缺少可执行的 ffmpeg/u.test(error.message),
+  );
+});
+
+test('预检后二进制被移除产生ENOENT时仍返回可操作错误', async () => {
+  const root = await tempRoot('nanowork-video-composer-enoent-');
+  const inputRoot = await tempRoot('nanowork-video-composer-enoent-input-');
+  const clips = await localClips(inputRoot);
+  const runner = async () => {
+    const error = new Error('spawn ffprobe ENOENT');
+    error.code = 'ENOENT';
+    throw error;
+  };
+  await assert.rejects(
+    composeAiSalesVideo({
+      tenantId: 1,
+      segments: clips,
+      outputRoot: root,
+      runner,
+    }),
+    error => error.code === 'AI_SALES_VIDEO_COMPOSER_BINARY_MISSING'
+      && error.binary === 'ffprobe'
+      && /配置 FFPROBE_PATH/u.test(error.message),
+  );
+});
 
 test('本地片段安全标准化并合成30秒竖屏H264/AAC，返回受保护URL与哈希', async () => {
   const root = await tempRoot('nanowork-video-composer-success-');

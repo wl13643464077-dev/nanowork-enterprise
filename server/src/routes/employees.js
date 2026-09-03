@@ -10,12 +10,17 @@ import {
 } from '../engines/employee-evolution.js';
 import { userScopeClause } from '../engines/access.js';
 import { restaurantBusinessProfile, restaurantAvatar } from '../catalog/business-profiles.js';
-import { generate } from '../engines/ai.js';
+import { employeeTextModelFailoverPlan, generate } from '../engines/ai.js';
 import { textModelFor, yunwuAvailable } from '../engines/yunwu.js';
-import { assertRealAiOutput } from '../engines/ai-delivery-status.js';
+import {
+  aiFailurePayload,
+  assertRealAiOutput,
+  releaseFailedAiHold,
+} from '../engines/ai-delivery-status.js';
 import {
   estimateCallCredits,
   holdCredits,
+  precheck,
   precheckByRole,
   releaseHold,
   settleHold,
@@ -524,6 +529,100 @@ const TEAM_PLAN_SCHEMA_HINT = [
   '{"briefs":[{"idx":101,"title":"任务标题(≤40字)","directive":"给该成员的完整任务指令","deliverables":"交付物一句话(老板视角)"}]}',
 ].join('\n');
 
+const TEAM_PLAN_MAX_PROVIDER_ATTEMPTS = 2;
+const TEAM_PLAN_RETRY_DELAY_MS = 2500;
+const TEAM_PLAN_MODEL_FAILOVER_REASON = 'retryable_zero_usage_transport_failure';
+const TEAM_PLAN_TRANSIENT_PROVIDER_FAILURES = new Set([
+  'provider_upstream_error',
+  'provider_timeout',
+  'provider_rate_limited',
+  'provider_empty_output',
+]);
+
+export function shouldRetryTeamPlanOutput(
+  output,
+  attempt,
+  maxAttempts = TEAM_PLAN_MAX_PROVIDER_ATTEMPTS,
+) {
+  if (output?.mode === 'api' || Number(attempt) >= Number(maxAttempts)) return false;
+  if (output?.providerFailure?.retryable === false) return false;
+  const inputTokens = Number(output?.usage?.inputTokens || 0);
+  const outputTokens = Number(output?.usage?.outputTokens || 0);
+  if (inputTokens !== 0 || outputTokens !== 0 || String(output?.text || '').trim()) return false;
+  return TEAM_PLAN_TRANSIENT_PROVIDER_FAILURES.has(
+    String(output?.providerFailure?.code || ''),
+  );
+}
+
+export function shouldFailoverTeamPlanModel(output) {
+  if (!shouldRetryTeamPlanOutput(output, 1)) return false;
+  const failure = output.providerFailure;
+  const status = Number(failure.status);
+  if (failure.code === 'provider_timeout') {
+    return status === 504 && failure.timedOut === true;
+  }
+  if (failure.code === 'provider_upstream_error') {
+    return (status === 500 || status === 502) && failure.timedOut !== true;
+  }
+  return false;
+}
+
+function waitForTeamPlanRetry(signal) {
+  if (signal?.aborted) {
+    return Promise.reject(Object.assign(new Error('队长拆解请求已取消'), {
+      status: 499,
+      code: 'AI_REQUEST_CANCELLED',
+      retryable: true,
+    }));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, TEAM_PLAN_RETRY_DELAY_MS);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('队长拆解请求已取消'), {
+        status: 499,
+        code: 'AI_REQUEST_CANCELLED',
+        retryable: true,
+      }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function publicTeamPlanProviderFailure(value) {
+  if (!value || typeof value !== 'object') return null;
+  const code = String(value.code || '').trim();
+  if (!code) return null;
+  const status = Number(value.status);
+  return {
+    code: code.slice(0, 80),
+    status: Number.isInteger(status) && status >= 400 && status <= 599 ? status : null,
+    timedOut: value.timedOut === true,
+    retryable: value.retryable === true,
+    summary: String(value.summary || '上游服务未返回可交付结果').slice(0, 120),
+  };
+}
+
+function attachTeamPlanProviderFailure(error, output, attempts) {
+  const target = error instanceof Error ? error : new Error(String(error || '队长拆解失败'));
+  const providerFailure = publicTeamPlanProviderFailure(output?.providerFailure);
+  if (!providerFailure) return target;
+  target.code = providerFailure.code;
+  target.retryable = providerFailure.retryable;
+  target.retryHint = `上游${providerFailure.summary}，系统已自动尝试 ${attempts} 次但仍未取得产出，请稍后在原任务重试。`;
+  target.providerFailure = providerFailure;
+  target.providerAttempts = attempts;
+  return target;
+}
+
+function teamPlanRequestId(req) {
+  const value = String(req.requestId || req.get?.('X-Request-Id') || '').trim();
+  return /^[A-Za-z0-9._-]{1,100}$/.test(value) ? value : null;
+}
+
 r.post('/team-plan', async (req, res) => {
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: '缺少老板原话，无法拆解' });
@@ -578,15 +677,27 @@ r.post('/team-plan', async (req, res) => {
     ].filter(Boolean).join('\n  ');
   }).join('\n');
   const model = textModelFor('sales');
+  const modelPlan = employeeTextModelFailoverPlan(model);
   let hold = null;
   try {
-    precheckByRole(req.user.id, 'text', req.user.role);
+    for (const candidateModel of modelPlan.models) {
+      precheck(req.user.id, 'text', candidateModel);
+    }
+    const estimatedCredits = Math.max(...modelPlan.models.map(candidateModel => (
+      estimateCallCredits({
+        model: candidateModel,
+        outputTokens: 8000,
+        texts: [text, memberLines],
+      })
+    )));
     hold = holdCredits({
       userId: req.user.id,
       feature: `协同小队·队长拆解派活（${depth.label}档）`,
       kind: 'text',
       model,
-      credits: estimateCallCredits({ model, outputTokens: 8000, texts: [text, memberLines] }),
+      // 只有零 token 瞬时故障允许第二次尝试，因此同一时刻最多只有
+      // 一轮可结算用量；预授权取主备模型估价的较大值。
+      credits: estimatedCredits,
       refType: null,
       refId: null,
     });
@@ -596,8 +707,12 @@ r.post('/team-plan', async (req, res) => {
       hold: deliveryHold,
       generate: async () => {
         let output = null;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
-          output = await generate({
+        let attempts = 0;
+        let callModel = modelPlan.requestedModel;
+        let modelFailover = null;
+        for (let attempt = 1; attempt <= TEAM_PLAN_MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+          attempts = attempt;
+          const generated = await generate({
             kind: 'employee-team-plan',
             system: [
               `你是协同小队队长「${lead.person}」（${lead.name}），负责把老板的一句话需求拆解派活给小队每一名成员（包括你自己）。`,
@@ -616,22 +731,36 @@ r.post('/team-plan', async (req, res) => {
             fallback: () => '',
             maxTokens: 8000,
             role: req.user.role,
-            model,
+            model: callModel,
             providerPolicy: 'yunwu_only',
             signal: req.requestSignal,
           });
-          const retryable =
-            output?.mode !== 'api' &&
-            ['provider_rate_limited', 'provider_empty_output'].includes(
-              output?.providerFailure?.code,
-            );
-          if (!retryable || attempt === 2) break;
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          output = {
+            ...generated,
+            requestedModel: modelPlan.requestedModel,
+            effectiveModel: generated?.mode === 'api' ? generated.model : callModel,
+            modelFailover,
+          };
+          if (!shouldRetryTeamPlanOutput(output, attempt)) break;
+          if (modelPlan.backupModel && shouldFailoverTeamPlanModel(output)) {
+            modelFailover = {
+              from: modelPlan.requestedModel,
+              to: modelPlan.backupModel,
+              reason: TEAM_PLAN_MODEL_FAILOVER_REASON,
+              attempt: attempt + 1,
+            };
+            callModel = modelPlan.backupModel;
+          }
+          await waitForTeamPlanRetry(req.requestSignal);
         }
-        assertRealAiOutput(output, {
-          label: '队长拆解派活',
-          noDelivery: '本次不产生拆解结果，也不扣费',
-        });
+        try {
+          assertRealAiOutput(output, {
+            label: '队长拆解派活',
+            noDelivery: '本次不产生拆解结果，也不扣费',
+          });
+        } catch (error) {
+          throw attachTeamPlanProviderFailure(error, output, attempts);
+        }
         const parsed = parseTeamMatchJson(output.text);
         const rawBriefs = Array.isArray(parsed?.briefs) ? parsed.briefs : [];
         const briefByIdx = new Map();
@@ -652,7 +781,12 @@ r.post('/team-plan', async (req, res) => {
         if (missing.length) {
           throw Object.assign(
             new Error(`队长拆解不完整，缺少成员：${missing.map(member => member.person).join('、')}，请重试`),
-            { status: 422 },
+            {
+              status: 422,
+              code: 'TEAM_PLAN_INCOMPLETE',
+              retryable: true,
+              retryHint: '模型本轮漏拆了小队成员，未交付任何拆解并已退回预授权，可在原任务直接重试。',
+            },
           );
         }
         const briefs = members.map(member => ({
@@ -666,16 +800,29 @@ r.post('/team-plan', async (req, res) => {
       },
       persist: generated => generated.briefs,
       settle: settleHold,
-      release: releaseHold,
+      release: releaseFailedAiHold,
       settlement: generated => ({
         usage: generated.output.usage,
-        model: generated.output.model,
+        model: generated.output.effectiveModel || generated.output.model,
         aiMode: generated.output.mode,
-        note: `队长拆解派活：${depth.label}档，${members.length}名成员`,
+        note: [
+          `队长拆解派活：${depth.label}档，${members.length}名成员`,
+          generated.output.modelFailover
+            ? `模型接力 ${generated.output.modelFailover.from}→${generated.output.modelFailover.to}；reason=${TEAM_PLAN_MODEL_FAILOVER_REASON}`
+            : '',
+        ].filter(Boolean).join('；'),
       }),
       requirePositiveApiUsage: true,
       releaseNote: '队长拆解未形成完整结果，预授权全额退回',
     });
+    if (delivered.billing.state !== 'settled') {
+      throw Object.assign(new Error('队长拆解已生成，但账务尚未完成结算，本次不交付可派发计划'), {
+        status: 409,
+        code: 'TEAM_PLAN_BILLING_NOT_SETTLED',
+        retryable: false,
+        billing: delivered.billing,
+      });
+    }
     try {
       logOp(req.user, '数字员工', '队长拆解派活', `${depth.label}档·${members.length}人`);
     } catch { /* 日志失败不影响业务返回 */ }
@@ -697,10 +844,16 @@ r.post('/team-plan', async (req, res) => {
       } catch { /* 保留原始错误 */ }
       hold = null;
     }
-    return res.status(error.status || 502).json({
-      error: String(error?.message || '队长拆解失败').slice(0, 300),
-      ...(error.billing ? { billing: error.billing } : {}),
-    });
+    const extra = {
+      ...(error.providerFailure ? { providerFailure: error.providerFailure } : {}),
+      ...(Number.isSafeInteger(Number(error.providerAttempts))
+        ? { providerAttempts: Number(error.providerAttempts) }
+        : {}),
+    };
+    return res.status(error.status || 502).json(aiFailurePayload(error, {
+      requestId: teamPlanRequestId(req),
+      extra,
+    }));
   }
 });
 

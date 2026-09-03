@@ -513,11 +513,15 @@ test("boss创建保留exact 11字段Brief，自定义停审点且配置人不可
   assert.equal(result.status, 202, JSON.stringify(result.payload));
   assert.equal(result.payload.queued, true);
   assert.equal(result.headers.get("retry-after"), "2");
-  assert.deepEqual(
-    Object.keys(fixture.calls.create[0].task),
-    Object.keys(EXACT_BRIEF),
-  );
-  assert.deepEqual(fixture.calls.create[0].task, EXACT_BRIEF);
+  assert.deepEqual(Object.keys(fixture.calls.create[0].task), [
+    ...Object.keys(EXACT_BRIEF),
+    "visual_policy_version",
+  ]);
+  assert.deepEqual(fixture.calls.create[0].task, {
+    ...EXACT_BRIEF,
+    visual_policy_version: "v2",
+  });
+  assert.equal(Object.hasOwn(EXACT_BRIEF, "visual_policy_version"), false);
   assert.deepEqual(
     fixture.calls.create[0].workflow.approvalPolicy.configuredBy,
     {
@@ -564,9 +568,11 @@ test("老板创建时可一次明确授权当前Brief的付费媒体上限，客
     imageModel: "gpt-image-2",
     pricingVersion: CONTENT_PAID_MEDIA_PRICING_VERSION,
     pricingFingerprint: pricing.pricingFingerprint,
-    maximumImageCount: 4,
+    maximumContentImageCount: 4,
+    maximumCoverImageCount: 1,
+    maximumImageCount: 5,
     estimatedUnitCredits: 75,
-    estimatedMaximumCredits: 300,
+    estimatedMaximumCredits: 375,
     authorizationValidHours: 24,
     externalPublishAllowed: false,
   });
@@ -581,12 +587,14 @@ test("老板创建时可一次明确授权当前Brief的付费媒体上限，客
   const policy = fixture.calls.create[0].workflow.paidMediaAuthorization;
   assert.equal(policy.authorizedBy.id, ACTORS.boss.id);
   assert.equal(policy.authorizedBy.role, "boss");
-  assert.equal(policy.maximumImageCount, 4);
+  assert.equal(policy.maximumContentImageCount, 4);
+  assert.equal(policy.maximumCoverImageCount, 2);
+  assert.equal(policy.maximumImageCount, 6);
   assert.equal(policy.imageModel, "gpt-image-2");
   assert.equal(policy.pricingVersion, CONTENT_PAID_MEDIA_PRICING_VERSION);
   assert.equal(policy.pricingFingerprint, pricing.pricingFingerprint);
   assert.equal(policy.estimatedUnitCredits, 75);
-  assert.equal(policy.estimatedMaximumCredits, 300);
+  assert.equal(policy.estimatedMaximumCredits, 450);
   assert.equal(policy.externalPublishAllowed, false);
 
   const forged = await fixture.request("/api/content/pipelines", {
@@ -659,7 +667,7 @@ test("普通员工不能付费授权；老板授权阻断中的工位5后原子�
   );
   assert.equal(
     fixture.calls.authorizePaidMedia[0].policy.estimatedMaximumCredits,
-    300,
+    450,
   );
   assert.equal(fixture.scheduled.length, 1);
 
@@ -686,20 +694,69 @@ test("普通员工不能付费授权；老板授权阻断中的工位5后原子�
   assert.equal(fixture.scheduled.length, 1);
 });
 
-test("未配置可核验授权素材provider时real/mix在创建和占分前明确禁用", async (t) => {
+test("旧授权在工位6失败后可由老板重新授权并安全排队恢复封面工位", async (t) => {
+  const fixture = await routeServer(t);
+  fixture.seed({
+    id: 1403,
+    status: "failed",
+    currentStation: 6,
+    workflow: {
+      mode: "copilot",
+      paidMediaAuthorization: {
+        schemaVersion: "nanowork.content-paid-media-authorization/2",
+      },
+    },
+    stations: [
+      {
+        stationIdx: 6,
+        status: "failed",
+        failure: { code: "CONTENT_PAID_MEDIA_REAUTHORIZATION_REQUIRED" },
+      },
+    ],
+  });
+  const reauthorized = await fixture.request(
+    "/api/content/pipelines/1403/paid-media-authorization",
+    {
+      actor: ACTORS.boss,
+      method: "POST",
+      body: { authorized: true },
+    },
+  );
+  assert.equal(reauthorized.status, 202, JSON.stringify(reauthorized.payload));
+  assert.equal(reauthorized.payload.queued, true);
+  assert.equal(
+    fixture.calls.authorizePaidMedia[0].policy.schemaVersion,
+    "nanowork.content-paid-media-authorization/3",
+  );
+  assert.equal(fixture.scheduled.length, 1);
+  await fixture.flushNext();
+  assert.equal(fixture.calls.retry.length, 1);
+  assert.equal(fixture.calls.retry[0].pipelineId, 1403);
+});
+
+test("未配置授权素材provider时仅严格real禁用，mix仍可由GPT Image 2补齐", async (t) => {
   const fixture = await routeServer(t, { materialProviderAvailable: false });
-  const result = await fixture.request("/api/content/pipelines", {
+  const realResult = await fixture.request("/api/content/pipelines", {
+    method: "POST",
+    body: { brief: { ...EXACT_BRIEF, image_mode: "real" } },
+  });
+  assert.equal(realResult.status, 503, JSON.stringify(realResult.payload));
+  assert.equal(
+    realResult.payload.code,
+    "CONTENT_PIPELINE_LICENSED_MATERIAL_PROVIDER_UNAVAILABLE",
+  );
+  assert.match(realResult.payload.error, /GPT Image 2自动补足/u);
+  assert.equal(fixture.calls.create.length, 0);
+  assert.equal(fixture.scheduled.length, 0);
+
+  const mixResult = await fixture.request("/api/content/pipelines", {
     method: "POST",
     body: { brief: EXACT_BRIEF },
   });
-  assert.equal(result.status, 503, JSON.stringify(result.payload));
-  assert.equal(
-    result.payload.code,
-    "CONTENT_PIPELINE_LICENSED_MATERIAL_PROVIDER_UNAVAILABLE",
-  );
-  assert.match(result.payload.error, /当前只能使用AI配图/u);
-  assert.equal(fixture.calls.create.length, 0);
-  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(mixResult.status, 202, JSON.stringify(mixResult.payload));
+  assert.equal(fixture.calls.create.length, 1);
+  assert.equal(fixture.calls.create[0].task.image_mode, "mix");
+  assert.equal(fixture.scheduled.length, 1);
 });
 
 test("后台AI守卫缺失时在创建业务记录前失败关闭", async (t) => {
@@ -1804,11 +1861,38 @@ test("retry、recover与resume保持可轮询的HTTP契约且只运行fake runti
   assert.equal(retry.status, 202, JSON.stringify(retry.payload));
   assert.equal(retry.payload.queued, true);
   assert.equal(retry.payload.pipeline.status, "failed");
+  assert.equal(
+    Object.hasOwn(retry.payload.pipeline.task, "visual_policy_version"),
+    false,
+  );
   await fixture.flushNext();
   assert.deepEqual(fixture.calls.retry.at(-1), {
     tenantId: ACTORS.boss.tenant_id,
     pipelineId: failed.id,
   });
+  assert.equal(Object.hasOwn(failed.task, "visual_policy_version"), false);
+
+  const staffFailed = fixture.seed({
+    id: 1_406,
+    createdBy: ACTORS.staff.id,
+    status: "failed",
+    currentStation: 2,
+  });
+  const retryDenied = await fixture.request(
+    `/api/content/pipelines/${staffFailed.id}/retry`,
+    {
+      actor: ACTORS.staff,
+      method: "POST",
+      body: {},
+    },
+  );
+  assert.equal(retryDenied.status, 403, JSON.stringify(retryDenied.payload));
+  assert.equal(
+    retryDenied.payload.code,
+    "CONTENT_PIPELINE_RETRY_ROLE_FORBIDDEN",
+  );
+  assert.equal(fixture.calls.retry.length, 1);
+  assert.equal(fixture.scheduled.length, 0);
 
   const notFailed = fixture.seed({
     id: 1_402,

@@ -276,3 +276,34 @@
 .admin-cell-center {
   text-align: center;
 }
+
+/* 联网检索主备链：保持管理页信息密度，但不新增内联样式与非标字号。 */
+.admin-search-readiness-badge {
+  font-size: var(--font-2);
+}
+
+.admin-search-description {
+  margin-bottom: 10px;
+  color: var(--ui-text);
+}
+
+.admin-search-route-list {
+  margin-bottom: 12px;
+}
+
+.admin-search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-search-result {
+  margin: 0;
+}
+
+.admin-search-security-note {
+  margin-top: 10px;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}

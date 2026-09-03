@@ -23,6 +23,11 @@ import {
   settleHold,
 } from "./credits.js";
 import { decodeBase64File } from "./filehub.js";
+import {
+  missingMediaBinaryMessage,
+  resolveFfmpeg,
+  resolveFfprobe,
+} from "./media-binaries.js";
 import createMiniMaxVoiceClient, {
   MINIMAX_TTS_MODEL,
   parseMiniMaxAudioUrl,
@@ -859,8 +864,18 @@ async function sha256File(filePath) {
 
 function commandFailure(command, error) {
   const name = path.basename(String(command || "媒体工具"));
+  // ENOENT 说明可执行文件本身缺失（常见于 launchd 的最小 PATH），
+  // 给出可操作的安装/配置指引，而不是笼统的"执行失败"。
+  const missingBinary =
+    error?.code === "ENOENT" && /^ff(?:mpeg|probe)/u.test(name)
+      ? name.startsWith("ffprobe")
+        ? "ffprobe"
+        : "ffmpeg"
+      : null;
   const wrapped = failure(
-    `${name}执行失败，任务未交付`,
+    missingBinary
+      ? missingMediaBinaryMessage(missingBinary)
+      : `${name}执行失败，任务未交付`,
     502,
     "TEXT_VIDEO_MEDIA_COMMAND_FAILED",
   );
@@ -1792,11 +1807,20 @@ export function createTextVideoRenderer(options = {}) {
   const ttsFn = options.ttsFn || defaultTts;
   const downloadAudioFn = options.downloadAudioFn || defaultDownloadAudio;
   const mediaPreflightFn = options.mediaPreflightFn || defaultMediaPreflight;
+  // 显式选项 > 专用环境变量 > 统一解析器（含 FFMPEG_PATH/FFPROBE_PATH 与
+  // Homebrew 目录探测）。解析不到时保留裸命令兜底，真正执行时由
+  // commandFailure 把 ENOENT 转成可操作的中文错误。
   const ffmpegPath = String(
-    options.ffmpegPath || process.env.TEXT_VIDEO_FFMPEG_PATH || "ffmpeg",
+    options.ffmpegPath ||
+      process.env.TEXT_VIDEO_FFMPEG_PATH ||
+      resolveFfmpeg() ||
+      "ffmpeg",
   ).trim();
   const ffprobePath = String(
-    options.ffprobePath || process.env.TEXT_VIDEO_FFPROBE_PATH || "ffprobe",
+    options.ffprobePath ||
+      process.env.TEXT_VIDEO_FFPROBE_PATH ||
+      resolveFfprobe() ||
+      "ffprobe",
   ).trim();
   const outputRoot = path.resolve(options.outputRoot || UPLOAD_ROOT);
   let verifiedMediaProfile = null;

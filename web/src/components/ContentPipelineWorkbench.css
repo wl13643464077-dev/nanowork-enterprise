@@ -705,8 +705,10 @@
 
 .cpw-provider-assets {
   margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--ui-border);
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 24%, var(--ui-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ui-primary) 4%, var(--ui-surface));
 }
 
 .cpw-provider-assets > header {
@@ -736,8 +738,8 @@
 
 .cpw-provider-assets-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
 }
 
 .cpw-provider-assets-grid > article {
@@ -754,7 +756,7 @@
   width: 100%;
   aspect-ratio: 3 / 4;
   background: var(--ui-surface-3);
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .cpw-provider-asset-unavailable {
@@ -1346,7 +1348,7 @@
 
 .cpw-boss-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
 }
 
@@ -1362,9 +1364,10 @@
 
 .cpw-boss-gallery-grid img {
   width: 100%;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 3 / 4;
   border-radius: 8px;
-  object-fit: cover;
+  object-fit: contain;
+  background: var(--ui-surface-3);
   display: block;
 }
 

@@ -1,4 +1,6 @@
 # 密钥与本地数据（绝不入库）
+.env
+.env.*
 server/.env*
 !server/.env.example
 server/data/
@@ -22,5 +24,9 @@ outputs/
 /.tmp/
 /tmp/
 /artifacts/
+
+# 本机生成的宣传片/PPT交付物（公开源码仓库不承载业务素材与大文件）
+docs/marketing/
+docs/汇报方案/
 node_modules
 **/node_modules

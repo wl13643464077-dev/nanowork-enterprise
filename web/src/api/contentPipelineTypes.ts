@@ -23,6 +23,8 @@ export type ContentPipelinePaidMediaAuthorization = {
   imageModel?: string;
   pricingVersion?: string;
   pricingFingerprint?: string;
+  maximumContentImageCount?: number;
+  maximumCoverImageCount?: number;
   maximumImageCount?: number;
   estimatedUnitCredits?: number;
   estimatedMaximumCredits?: number;
@@ -164,6 +166,14 @@ export type ContentPipelineProviderAsset = {
   displaySize?: string | null;
   style?: string | null;
   paihuoRealImage?: boolean;
+  sourceMaterialId?: number | null;
+  sourceUrl?: string | null;
+  rights?: {
+    confirmed?: boolean;
+    commercialUse?: boolean;
+    license?: string | null;
+    attribution?: string | null;
+  } | null;
   availability: 'final' | 'awaiting_approval' | 'awaiting_metrics' | 'billing_pending' | string;
   finalUsable: boolean;
   previewUrl: string;
@@ -216,7 +226,16 @@ export type ContentPipelineStation = {
   handlerEvidence?: ContentPipelineHandlerEvidence | null;
   billingEvidence?: ContentPipelineStationBillingEvidence | null;
   phaseEvents?: ContentPipelinePhaseEvent[];
-  retry?: { used?: number; remaining?: number; allowed?: boolean } | null;
+  retry?: {
+    used?: number;
+    /** @deprecated Manual retries are manager-gated and unlimited; use manualUnlimited. */
+    remaining?: number | null;
+    /** Backward-compatible alias for manualAllowed. */
+    allowed?: boolean;
+    manualAllowed?: boolean;
+    manualUnlimited?: boolean;
+    automaticRemaining?: number;
+  } | null;
   contextSnapshot?: ContentPipelineContextSnapshot | null;
   approvalBoundary?: ContentPipelineApprovalBoundary | null;
   approvalAudit?: unknown[];

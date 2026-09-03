@@ -36,6 +36,7 @@ export const CONTENT_PRODUCTION_INTERRUPTED_STALE_MS = 30 * 60 * 1_000;
 export const CONTENT_PRODUCTION_MAX_RETRY_ATTEMPTS = 2;
 export const CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS =
   1 + CONTENT_PRODUCTION_MAX_RETRY_ATTEMPTS;
+export const CONTENT_PRODUCTION_VISUAL_POLICY_VERSION = "v2";
 
 const WORKFLOW_MODES = new Set(["fullauto", "autopilot", "copilot", "manual"]);
 const CONTENT_PLATFORMS = new Set([
@@ -948,13 +949,18 @@ export function contentPipelineUsesPredictiveRetro(workflow) {
   const policyMode = String(workflow?.approvalPolicy?.mode || "").trim();
   const mode = String(workflow?.mode || "").trim();
   return (
-    policyMode === "internal_auto" || mode === "fullauto" || mode === "autopilot"
+    policyMode === "internal_auto" ||
+    mode === "fullauto" ||
+    mode === "autopilot"
   );
 }
 
 function pipelineMustAwaitPublicationMetrics(job) {
   if (contentPipelineUsesPredictiveRetro(job?.workflow)) return false;
-  return !publicationMetricsOrNull(job?.workflow?.publicationMetrics, job?.task);
+  return !publicationMetricsOrNull(
+    job?.workflow?.publicationMetrics,
+    job?.task,
+  );
 }
 
 function descriptorAt(stationIdx) {
@@ -3410,7 +3416,11 @@ export function createSqliteContentProductionPipelineRepository({
         }
         const stationIdx = Number(job.currentStation);
         const station = getStation(tenantId, pipelineId, stationIdx);
-        if (!station || station.status !== "billing_pending" || !station.output) {
+        if (
+          !station ||
+          station.status !== "billing_pending" ||
+          !station.output
+        ) {
           fail(
             "当前工位没有可恢复的已交付产物",
             "CONTENT_PIPELINE_BILLING_PENDING_WITHOUT_OUTPUT",
@@ -4602,6 +4612,10 @@ function publicPipeline(repository, tenantId, pipelineId) {
     retryPolicy: {
       maxRetries: CONTENT_PRODUCTION_MAX_RETRY_ATTEMPTS,
       maxStationAttempts: CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS,
+      automaticMaxRetries: CONTENT_PRODUCTION_MAX_RETRY_ATTEMPTS,
+      automaticMaxStationAttempts: CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS,
+      manualAuthorization: "manager_role_required",
+      manualUnlimited: true,
       billing: "each_attempt_independently_reconciled",
     },
     knowledgeSink: knowledgeSink ? safeValue(knowledgeSink) : null,
@@ -4613,17 +4627,21 @@ function publicPipeline(repository, tenantId, pipelineId) {
       ),
     ),
     stations: stations.map((station) => {
+      const manualAllowed = station.status === "failed";
       const retry = {
         used: Math.max(0, Number(station.attempt || 0) - 1),
-        remaining: Math.max(
+        // `remaining` is the legacy manual-retry field. Manual retries are
+        // manager-gated at the HTTP boundary and intentionally unlimited;
+        // automated stale recovery keeps its own finite budget below.
+        remaining: null,
+        allowed: manualAllowed,
+        manualAllowed,
+        manualUnlimited: true,
+        automaticRemaining: Math.max(
           0,
           CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS -
             Number(station.attempt || 0),
         ),
-        allowed:
-          station.status === "failed" &&
-          Number(station.attempt || 0) <
-            CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS,
       };
       if (awaitingMetrics && station.stationIdx === 9) {
         return { ...station, status: "awaiting_metrics", retry };
@@ -4867,10 +4885,9 @@ export function createContentProductionPipeline({
           detail: { source: "database_persisted_upstream" },
         });
         try {
-          // 工位5是首个可能调用图片/素材provider的工位。授权必须在统一文本
-          // delivery boundary（其内部会先占积分）和handler之前校验，确保未授权、
-          // 过期或被篡改时既不调用任何provider，也不产生任何新hold。
-          if (stationIdx === 5) {
+          // 工位5正文配图与工位6封面共用同一份老板付费媒体授权。
+          // 两站都必须在handler/hold之前重验，防止封面绕过总额度。
+          if ([5, 6].includes(stationIdx)) {
             validateContentPaidMediaAuthorization(
               job.workflow?.paidMediaAuthorization,
               {
@@ -5619,7 +5636,12 @@ export function createContentProductionPipeline({
     create(input = {}) {
       const tenantId = positiveInteger(input.tenantId, "tenantId");
       const createdBy = positiveInteger(input.createdBy, "createdBy");
-      const task = validatePaihuoContentBrief(input.task || {});
+      const task = {
+        ...validatePaihuoContentBrief(input.task || {}),
+        // 仅在创建新流水线时写入。repository读取和retry不得给旧task补默认值，
+        // 否则旧mix attempt的provider请求指纹会发生漂移。
+        visual_policy_version: CONTENT_PRODUCTION_VISUAL_POLICY_VERSION,
+      };
       if (
         !isObject(task) ||
         !cleanText(task.direction || task.title || task.requirement)
@@ -5813,15 +5835,6 @@ export function createContentProductionPipeline({
       );
       if (!station || station.status !== "failed") {
         fail("只能重试失败工位", "CONTENT_PIPELINE_NOT_FAILED");
-      }
-      if (
-        Number(station.attempt || 0) >= CONTENT_PRODUCTION_MAX_STATION_ATTEMPTS
-      ) {
-        fail(
-          `工位${station.stationIdx}已用完${CONTENT_PRODUCTION_MAX_RETRY_ATTEMPTS}次重试额度`,
-          "CONTENT_PIPELINE_RETRY_LIMIT_REACHED",
-          409,
-        );
       }
       repository.resetFailedStation(tenantId, pipelineId);
       return resume({

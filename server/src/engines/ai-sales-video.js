@@ -88,7 +88,7 @@ function segmentPlan(brief, index, { segmentCount, durationSeconds }) {
  * state machine (H3 2×15s, Hailuo 3×10s). This is template-mode: it does not spend text
  * credits or claim that an LLM/provider has generated a script.
  */
-export function buildAiSalesVideoPlan({ brief, references = [], model = 'MiniMax-Hailuo-2.3-Fast' } = {}) {
+export function buildAiSalesVideoPlan({ brief, references = [], model = 'MiniMax-Hailuo-2.3' } = {}) {
   const normalizedBrief = normalizeAiSalesVideoBrief(brief);
   if (!Array.isArray(references) || references.length < 1) throw invalid('至少上传1张人物、菜品或门店参考图');
   if (references.length > AI_SALES_VIDEO_MAX_REFERENCES) throw invalid(`一次最多上传${AI_SALES_VIDEO_MAX_REFERENCES}张参考图`);
@@ -141,6 +141,8 @@ export async function executeAiSalesVideoPlan({
   resolveSegment,
   downloadSegment,
   compose,
+  onProviderInvocationStarted,
+  onSegmentState,
 } = {}) {
   if (!plan || plan.workflow !== AI_SALES_VIDEO_WORKFLOW) throw invalid('带货视频计划无效');
   if (typeof submitSegment !== 'function' || typeof compose !== 'function') {
@@ -154,47 +156,102 @@ export async function executeAiSalesVideoPlan({
   }
   const completed = [];
   for (const segment of plan.segments) {
-    let output = await submitSegment({
-      segment,
-      prompt: `${plan.brief}\n镜头段落：${segment.title}\n${segment.scene}\n${segment.voiceover}`,
-      durationSeconds: segment.durationSeconds,
-      references: plan.references,
-      model: plan.model,
-    });
-    if (!output?.url && !output?.taskId) {
-      const error = new Error(`第${segment.index}段视频未返回任务或交付地址`);
-      error.code = 'AI_SALES_VIDEO_SEGMENT_SUBMIT_FAILED';
-      throw error;
-    }
-    if (!output.url) {
-      if (typeof resolveSegment !== 'function') {
-        const error = new Error(`第${segment.index}段视频仍在生成，但未配置任务轮询器`);
-        error.code = 'AI_SALES_VIDEO_SEGMENT_RESOLVER_MISSING';
-        throw error;
+    let output = null;
+    let providerTaskId = null;
+    let invocationStarted = false;
+    try {
+      // The durable marker is awaited before the paid provider call. If the
+      // marker cannot be persisted, submitSegment is never invoked and the
+      // caller can still prove that releasing the hold is safe.
+      if (typeof onProviderInvocationStarted === 'function') {
+        await onProviderInvocationStarted({
+          segment,
+          model: plan.model,
+        });
       }
-      output = await resolveSegment({
-        ...output,
+      invocationStarted = true;
+      output = await submitSegment({
         segment,
+        prompt: `${plan.brief}\n镜头段落：${segment.title}\n${segment.scene}\n${segment.voiceover}`,
+        durationSeconds: segment.durationSeconds,
+        references: plan.references,
         model: plan.model,
       });
-    }
-    if (!output?.url) {
-      const error = new Error(`第${segment.index}段视频未取得可交付地址`);
-      error.code = 'AI_SALES_VIDEO_SEGMENT_NOT_READY';
+      if (!output?.url && !output?.taskId) {
+        const error = new Error(`第${segment.index}段视频未返回任务或交付地址`);
+        error.code = 'AI_SALES_VIDEO_SEGMENT_SUBMIT_FAILED';
+        throw error;
+      }
+      providerTaskId = output.taskId || null;
+      if (typeof onSegmentState === 'function') {
+        await onSegmentState({
+          segment,
+          status: output.url ? 'provider_ready' : 'provider_submitted',
+          taskId: output.taskId || null,
+        });
+      }
+      if (!output.url) {
+        if (typeof resolveSegment !== 'function') {
+          const error = new Error(`第${segment.index}段视频仍在生成，但未配置任务轮询器`);
+          error.code = 'AI_SALES_VIDEO_SEGMENT_RESOLVER_MISSING';
+          throw error;
+        }
+        output = await resolveSegment({
+          ...output,
+          segment,
+          model: plan.model,
+        });
+        output = {
+          ...output,
+          taskId: output?.taskId || providerTaskId,
+        };
+        if (!output?.url) {
+          const error = new Error(`第${segment.index}段视频未取得可交付地址`);
+          error.code = 'AI_SALES_VIDEO_SEGMENT_NOT_READY';
+          throw error;
+        }
+        if (typeof onSegmentState === 'function') {
+          await onSegmentState({
+            segment,
+            status: 'provider_ready',
+            taskId: output.taskId || null,
+          });
+        }
+      }
+      const local = typeof downloadSegment === 'function'
+        ? await downloadSegment({ ...output, segment, model: plan.model })
+        : null;
+      if (typeof onSegmentState === 'function') {
+        await onSegmentState({
+          segment,
+          status: 'downloaded',
+          taskId: output.taskId || null,
+        });
+      }
+      completed.push({
+        ...segment,
+        status: 'ready',
+        taskId: output.taskId || null,
+        url: output.url,
+        ...(local?.path || local?.absolutePath
+          ? { localPath: local.path || local.absolutePath, download: local }
+          : {}),
+      });
+    } catch (error) {
+      if (invocationStarted && typeof onSegmentState === 'function') {
+        try {
+          await onSegmentState({
+            segment,
+            status: 'failed',
+            taskId: output?.taskId || providerTaskId,
+          });
+        } catch {
+          // Preserve the provider/processing error. The caller already has a
+          // durable invocation marker and will retain the hold for reconciliation.
+        }
+      }
       throw error;
     }
-    const local = typeof downloadSegment === 'function'
-      ? await downloadSegment({ ...output, segment, model: plan.model })
-      : null;
-    completed.push({
-      ...segment,
-      status: 'ready',
-      taskId: output.taskId || null,
-      url: output.url,
-      ...(local?.path || local?.absolutePath
-        ? { localPath: local.path || local.absolutePath, download: local }
-        : {}),
-    });
   }
   const composed = await compose({ plan, segments: completed });
   if (!composed?.url) {

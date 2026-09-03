@@ -8,7 +8,9 @@ import {
 } from "./provider-errors.js";
 import {
   MINIMAX_H3_MODEL,
+  MINIMAX_OFFICIAL_BASE_URL,
   createMiniMaxVideoTransport,
+  miniMaxH3CredentialAvailability,
 } from "./minimax-video.js";
 
 // ===== AI 文本/多模态通道（OpenAI 兼容协议）=====
@@ -21,7 +23,7 @@ const envPath = path.join(__dirname, "..", "..", ".env");
 // 否则本机 .env 里的真实 Key 会让断言输出不可复现。
 if (process.env.NANOWORK_TEST_TEMPLATE_AI !== "1" && fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
-    const m = line.match(/^([A-Z_]+)=(.*)$/);
+    const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
     // 尊重"已定义"的环境变量（包括显式设为空串），只补齐未定义项
     if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].trim();
   }
@@ -45,6 +47,15 @@ export const maskedKey = () => {
 export const yunwuKeySource = () =>
   environmentKey() ? "environment" : legacyStoredKey() ? "legacy_db" : "none";
 export const yunwuApiKey = () => KEY();
+
+// H3 直连 MiniMax 官方，不复用 YUNWU/OpenLux 的 key 或 base URL。
+// 这两个凭证函数只在服务端内部传递；对路由仅导出不含密钥的可用性摘要。
+const miniMaxH3EnvironmentKey = () =>
+  String(process.env.MINIMAX_API_KEY || "").trim();
+const miniMaxH3EnvironmentBase = () =>
+  String(process.env.MINIMAX_BASE_URL || "").trim();
+const MINIMAX_H3_BASE = () =>
+  miniMaxH3EnvironmentBase() || MINIMAX_OFFICIAL_BASE_URL;
 
 // 分层模型路由（PRD V2 §22：老板/管理层/员工 三级，后台接口管理可改）
 const DEFAULT_ROUTING = {
@@ -110,10 +121,10 @@ const VIDEO_MODEL_CATALOG = {
   [MINIMAX_H3_MODEL]: {
     displayName: "MiniMax H3",
     shortName: "H3",
-    provider: "MiniMax 海螺",
+    provider: "MiniMax 官方",
     adapter: "minimax-h3",
     supported: false,
-    note: "官方 H3 已有多模态视频 API；待云雾路由与价格核验，并通过显式 feature gate 后开放",
+    note: "官方 H3 多模态视频 API；需独立 MiniMax 官方凭证、供应商与计价核验，并通过显式 feature gate 后开放",
   },
   "kling-video": {
     displayName: "可灵标准视频",
@@ -447,16 +458,38 @@ const VIDEO_MODEL_CATALOG = {
     note: "需接入 Midjourney 专属 /mj 视频流程，暂不走统一视频接口",
   },
 };
-// MiniMax Hailuo 2.3/2.3-Fast are explicitly wired to the dedicated Yunwu
-// task adapter. H3 is intentionally gated by both a deployment flag and
-// verified provider/billing configuration; it must never become a default
-// network call merely because a model id appears in tenant config.
-export function miniMaxH3Enabled() {
-  if (process.env.NANOWORK_MINIMAX_H3_ENABLED !== "1") return false;
+// MiniMax Hailuo 2.3/2.3-Fast stay on the dedicated Yunwu task adapter. H3 is
+// direct-to-official and requires four independent gates; a tenant model id
+// alone can never turn it into a paid network call.
+export function miniMaxH3Availability() {
   const capability = getConfig("minimax_h3_capability", {}) || {};
-  return (
-    capability.providerVerified === true && capability.billingVerified === true
-  );
+  const credentials = miniMaxH3CredentialAvailability({
+    apiKey: miniMaxH3EnvironmentKey(),
+    baseUrl: miniMaxH3EnvironmentBase(),
+    credentialSource: "environment",
+    baseUrlSource: "environment",
+  });
+  const deploymentFlagEnabled =
+    process.env.NANOWORK_MINIMAX_H3_ENABLED === "1";
+  const providerVerified = capability.providerVerified === true;
+  const billingVerified = capability.billingVerified === true;
+  return Object.freeze({
+    enabled:
+      deploymentFlagEnabled &&
+      providerVerified &&
+      billingVerified &&
+      credentials.configured,
+    deploymentFlagEnabled,
+    providerVerified,
+    billingVerified,
+    credentialConfigured: credentials.configured,
+    credentialSource: credentials.credentialSource,
+    baseUrlSource: credentials.baseUrlSource,
+  });
+}
+
+export function miniMaxH3Enabled() {
+  return miniMaxH3Availability().enabled;
 }
 const MINIMAX_HAILUO_RE = /^MiniMax-Hailuo-(?:02|2\.3(?:-Fast)?)$/iu;
 const ALLOWED_VIDEO_MODEL_RE = /^(kling-|happyhorse-|wan|veo-)/i;
@@ -1420,6 +1453,8 @@ export async function submitMiniMaxVideoSegment({
   const transport = createMiniMaxVideoTransport({
     baseUrl: BASE(),
     apiKey: KEY(),
+    h3BaseUrl: MINIMAX_H3_BASE(),
+    h3ApiKey: miniMaxH3EnvironmentKey(),
     h3Enabled: miniMaxH3Enabled(),
     timeoutMs: 60000,
   });
@@ -1442,6 +1477,8 @@ export async function queryMiniMaxVideoSegment({ taskId, model, signal }) {
   const transport = createMiniMaxVideoTransport({
     baseUrl: BASE(),
     apiKey: KEY(),
+    h3BaseUrl: MINIMAX_H3_BASE(),
+    h3ApiKey: miniMaxH3EnvironmentKey(),
     h3Enabled: miniMaxH3Enabled(),
     timeoutMs: 30000,
   });
@@ -1521,7 +1558,7 @@ export async function generateVideo({
       referencesUsed: references.length,
       referenceMode:
         references.length > 1
-          ? info.adapter === "unified"
+          ? ["unified", "minimax-h3"].includes(info.adapter)
             ? "multi-reference"
             : "multi-reference-analysis+first-frame"
           : references.length

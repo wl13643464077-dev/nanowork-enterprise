@@ -448,6 +448,37 @@ function privateSnapshotPipelineFixture() {
   };
 }
 
+test("新建流水线持久化v2视觉策略，旧task_json缺版本读取与重试上下文不被补写", (t) => {
+  const fixture = pipelineFixture();
+  t.after(() => fixture.db.close());
+
+  assert.equal(fixture.created.task.visual_policy_version, "v2");
+
+  const legacyTask = structuredClone(fixture.created.task);
+  delete legacyTask.visual_policy_version;
+  const legacyId = fixture.repository.createJob({
+    tenantId: 7,
+    createdBy: 71,
+    title: "历史mix视觉任务",
+    task: legacyTask,
+    persona: {},
+    settings: {},
+    workflow: { mode: "copilot" },
+  });
+  const persistedLegacy = fixture.repository.getJob(7, legacyId);
+  assert.equal(
+    Object.hasOwn(persistedLegacy.task, "visual_policy_version"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(
+      fixture.pipeline.inspect({ tenantId: 7, pipelineId: legacyId }).task,
+      "visual_policy_version",
+    ),
+    false,
+  );
+});
+
 const boss = Object.freeze({ id: 71, name: "老板", role: "boss" });
 
 test("internal_auto让已认证发起人的内部报告0到9连续执行且不授予外发或业务采纳", async (t) => {
@@ -1142,7 +1173,9 @@ test("0→9流水线按pick/review/force/auto停站，且下游只读数据库�
     "enable_deck",
     "xhs_style",
     "dy_style",
+    "visual_policy_version",
   ]);
+  assert.equal(created.task.visual_policy_version, "v2");
   assert.equal(fixture.contextCalls[0].workflow.mode, "copilot");
   assert.equal(fixture.contextCalls[0].companyProfile.brand, "三石餐饮");
   assert.equal(Object.hasOwn(fixture.contextCalls[0].task, "brand"), false);
@@ -1345,6 +1378,45 @@ test("进程中断的running工位必须显式恢复，不会默认重复调用A
   assert.equal(state.status, "awaiting_approval");
   assert.equal(state.pendingStation, 0);
   assert.equal(state.stations[0].attempt, 2);
+  assert.equal(invocations.length, 1);
+});
+
+test("自动中断恢复仍在3次attempt后停止，管理层手动重试可超过上限", async (t) => {
+  const fixture = pipelineFixture();
+  t.after(() => fixture.db.close());
+  const { db, pipeline, created, invocations } = fixture;
+  db.prepare(
+    `UPDATE content_production_pipeline_stations
+    SET status='running',attempt=3,started_at='2026-07-31T22:00:00.000Z',
+        updated_at='2026-07-31T22:00:00.000Z'
+    WHERE pipeline_id=? AND station_idx=0`,
+  ).run(created.id);
+
+  const autoStopped = pipeline.recoverInterrupted({
+    tenantId: 7,
+    pipelineId: created.id,
+  });
+  assert.equal(autoStopped.status, "failed");
+  assert.equal(
+    autoStopped.stations[0].failure.code,
+    "CONTENT_PIPELINE_RETRY_LIMIT_REACHED",
+  );
+  assert.equal(autoStopped.retryPolicy.automaticMaxRetries, 2);
+  assert.equal(autoStopped.retryPolicy.automaticMaxStationAttempts, 3);
+  assert.equal(autoStopped.retryPolicy.manualUnlimited, true);
+  assert.equal(autoStopped.stations[0].retry.remaining, null);
+  assert.equal(autoStopped.stations[0].retry.manualAllowed, true);
+  assert.equal(autoStopped.stations[0].retry.manualUnlimited, true);
+  assert.equal(autoStopped.stations[0].retry.automaticRemaining, 0);
+  assert.equal(invocations.length, 0);
+
+  const manuallyRetried = await pipeline.retry({
+    tenantId: 7,
+    pipelineId: created.id,
+  });
+  assert.equal(manuallyRetried.status, "awaiting_approval");
+  assert.equal(manuallyRetried.pendingStation, 0);
+  assert.equal(manuallyRetried.stations[0].attempt, 4);
   assert.equal(invocations.length, 1);
 });
 

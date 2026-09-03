@@ -1,6 +1,48 @@
 import { Router } from 'express';
+import { q } from '../db.js';
 
 const r = Router();
+
+// 新手指引版本只能由服务端推进。前端通过 GET 读取，不得自行声明版本、岗位或用户。
+export const ONBOARDING_VERSION = 1;
+const ONBOARDING_OUTCOMES = new Set(['completed', 'dismissed']);
+
+function onboardingState(user) {
+  const tenantId = Number(user?.tenant_id);
+  const userId = Number(user?.id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+    return null;
+  }
+
+  // 即使路由已经运行在 tenantScope 中，这里仍同时校验主键和 tenant_id，避免以后独立复用时
+  // 因遗漏作用域而读到其他企业账号的完成态。
+  const row = q.get(
+    `SELECT onboarding_version,onboarding_role,onboarding_completed_at,onboarding_outcome
+     FROM users WHERE id=? AND tenant_id=?`,
+    userId,
+    tenantId,
+  );
+  if (!row) return null;
+
+  const completedVersion = Number(row.onboarding_version) || 0;
+  const completedRole = row.onboarding_role || null;
+  const completedAt = row.onboarding_completed_at || null;
+  const outcome = ONBOARDING_OUTCOMES.has(row.onboarding_outcome)
+    ? row.onboarding_outcome
+    : null;
+  return {
+    currentVersion: ONBOARDING_VERSION,
+    completedVersion,
+    completedRole,
+    completedAt,
+    outcome,
+    complete:
+      completedVersion === ONBOARDING_VERSION &&
+      completedRole === user.role &&
+      Boolean(completedAt) &&
+      Boolean(outcome),
+  };
+}
 
 // 业务枚举单一事实来源（审计报告 P1）：前端各页面的硬编码副本统一从这里读取。
 // 颜色值为 antd Tag 预设色名，与 web/src/components/Kit.tsx 的 stageColor/gradeColor 保持一致。
@@ -32,5 +74,50 @@ const ENUMS = Object.freeze({
 });
 
 r.get('/enums', (req, res) => res.json(ENUMS));
+
+r.get('/onboarding', (req, res) => {
+  const state = onboardingState(req.user);
+  if (!state) return res.status(404).json({ error: '当前账号不存在或不属于该企业' });
+  return res.json(state);
+});
+
+r.put('/onboarding', (req, res) => {
+  const outcome = req.body?.outcome;
+  if (!ONBOARDING_OUTCOMES.has(outcome)) {
+    return res.status(400).json({ error: 'outcome 仅支持 completed 或 dismissed' });
+  }
+
+  const tenantId = Number(req.user?.tenant_id);
+  const userId = Number(req.user?.id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+    return res.status(404).json({ error: '当前账号不存在或不属于该企业' });
+  }
+
+  // 同一个版本、岗位和结果重复提交时不刷新完成时间，确保请求真正幂等。
+  // userId / tenantId / role / version 全部取自服务端登录态，请求体里的同名字段会被忽略。
+  const updated = q.run(
+    `UPDATE users
+     SET onboarding_version=?, onboarding_role=?, onboarding_completed_at=datetime('now','localtime'), onboarding_outcome=?
+     WHERE id=? AND tenant_id=?
+       AND (
+         onboarding_version != ?
+         OR COALESCE(onboarding_role,'') != ?
+         OR COALESCE(onboarding_outcome,'') != ?
+         OR onboarding_completed_at IS NULL
+       )`,
+    ONBOARDING_VERSION,
+    req.user.role,
+    outcome,
+    userId,
+    tenantId,
+    ONBOARDING_VERSION,
+    req.user.role,
+    outcome,
+  );
+  if (!updated.changes && !onboardingState(req.user)) {
+    return res.status(404).json({ error: '当前账号不存在或不属于该企业' });
+  }
+  return res.json(onboardingState(req.user));
+});
 
 export default r;

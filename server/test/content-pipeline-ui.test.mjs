@@ -258,7 +258,10 @@ test("approval policy presets are exact and only privileged creators can configu
   assert.deepEqual(contentPipelinePresetStations("efficient"), [8]);
   assert.deepEqual(contentPipelinePresetStations("key"), [0, 3, 5, 6, 8]);
   assert.deepEqual(contentPipelinePresetStations("internal_auto"), []);
-  assert.equal(contentPipelineWorkflowModeForPreset("internal_auto"), "fullauto");
+  assert.equal(
+    contentPipelineWorkflowModeForPreset("internal_auto"),
+    "fullauto",
+  );
   assert.equal(contentPipelineWorkflowModeForPreset("efficient"), "autopilot");
   assert.equal(contentPipelineWorkflowModeForPreset("key"), "copilot");
   assert.equal(contentPipelineWorkflowModeForPreset("custom"), "copilot");
@@ -412,6 +415,8 @@ test("老板创建流水线可明确勾选付费媒体上限，未勾选则工�
   assert.match(workbench, /name="paidMediaAuthorized"/u);
   assert.match(workbench, /付费媒体授权/u);
   assert.match(workbench, /最大费用上限/u);
+  assert.match(workbench, /正文配图最多/u);
+  assert.match(workbench, /封面最多/u);
   assert.match(
     workbench,
     /\/content\/pipelines\/paid-media-estimate\?imageCount=/u,
@@ -425,7 +430,14 @@ test("老板创建流水线可明确勾选付费媒体上限，未勾选则工�
     workbench,
     /activePipeline\.status === 'awaiting_media_authorization'/u,
   );
-  assert.match(workbench, /等待老板授权后才调用图片或素材服务/u);
+  assert.match(workbench, /工位5等待老板授权/u);
+  assert.match(workbench, /const canReauthorizeFailedMedia =/u);
+  assert.match(
+    workbench,
+    /\[5, 6\]\.includes\(Number\(failedStation\?\.stationIdx\)\)/u,
+  );
+  assert.match(workbench, /重新授权配图\+封面上限/u);
+  assert.match(workbench, /已授权素材[\s\S]{0,80}GPT Image 2/u);
 });
 
 test("station9等待指标时UI只提供真实数据回传，不提供普通审批绕过", () => {
@@ -490,13 +502,14 @@ test("pipeline UI renders provider image assets for media station and publish pa
   assert.match(types, /export type ContentPipelineProviderAsset/u);
   assert.match(types, /providerAssets\?: ContentPipelineProviderAsset\[\]/u);
   assert.match(workbench, /providerAssets\.map\(asset =>/u);
-  assert.match(workbench, /生成图片与交付素材/u);
+  assert.match(workbench, /真实图片产物/u);
+  assert.match(workbench, /可点开查看原图或直接下载/u);
   assert.match(workbench, /已投影到发布包/u);
   assert.match(workbench, /asset\.previewUrl/u);
   assert.match(workbench, /asset\.downloadUrl/u);
   assert.match(workbench, /alt=\{asset\.filename/u);
   assert.match(styles, /\.cpw-provider-assets/u);
-  assert.match(styles, /object-fit:\s*cover/u);
+  assert.match(styles, /object-fit:\s*contain/u);
   assert.doesNotMatch(workbench, /dangerouslySetInnerHTML/u);
 });
 
@@ -532,6 +545,92 @@ test("queued retry, resume and approval use a separate local receipt until autho
   assert.match(workbench, /不会把旧失败快照当成新结果/u);
   assert.match(workbench, /!queuedForActive && activePipeline\.failure/u);
   assert.match(workbench, /!queuedForActive && station\.failureText/u);
+});
+
+test("失败工位只在红色Alert展示详细原因，重试入口遵守工位服务端边界", () => {
+  const workbench = read("web/src/components/ContentPipelineWorkbench.tsx");
+
+  assert.match(workbench, /if \(station\.status === 'failed'\) return '';/u);
+  assert.match(workbench, /function stationManualRetryAllowed/u);
+  assert.match(
+    workbench,
+    /const canRetryFailedStation =[\s\S]{0,260}activePipeline\?\.status === 'failed'[\s\S]{0,120}stationManualRetryAllowed\(failedStation\)/u,
+  );
+  assert.match(workbench, /\{canRetryFailedStation && \(/u);
+  assert.match(
+    workbench,
+    /const canRetryStation =[\s\S]{0,240}station\.status === 'failed'[\s\S]{0,120}manualRetryAllowed/u,
+  );
+  assert.match(workbench, /description=\{stationRetryHint \|\| undefined\}/u);
+  assert.match(
+    workbench,
+    /canRetryStation \? \([\s\S]{0,500}onClick=\{\(\) => void runLifecycleAction\('retry'\)\}[\s\S]{0,120}重试本工位/u,
+  );
+  assert.match(workbench, /当前账号没有失败工位重试权限/u);
+  assert.match(workbench, /可手动重试·不限次数/u);
+  assert.match(workbench, /station\.retry\?\.remaining == null/u);
+  assert.match(workbench, /剩余 \$\{Math\.floor\(remaining\)\} 次/u);
+});
+
+test("内容流水线只把真实位图素材计入图片交付", () => {
+  const workbench = read("web/src/components/ContentPipelineWorkbench.tsx");
+
+  assert.match(workbench, /function isDeliverableBitmapProviderAsset/u);
+  assert.match(
+    workbench,
+    /NON_BITMAP_ASSET[^\n]+image\\\/svg[^\n]+占位[^\n]+示意图/u,
+  );
+  assert.match(
+    workbench,
+    /station\.providerAssets\.filter\(isDeliverableBitmapProviderAsset\)/u,
+  );
+  assert.match(
+    workbench,
+    /if \(!isDeliverableBitmapProviderAsset\(asset\)\) continue;/u,
+  );
+  assert.match(workbench, /SVG、HTML 卡片和占位图不会展示或计入交付/u);
+});
+
+test("mix默认优先已授权真实素材并由GPT Image 2补齐，real仍严格阻断", () => {
+  const workbench = read("web/src/components/ContentPipelineWorkbench.tsx");
+
+  assert.match(
+    workbench,
+    /value: 'real', label: '仅已授权真实素材（不足即停）'/u,
+  );
+  assert.match(
+    workbench,
+    /value: 'mix', label: '已授权真实素材优先，不足由 GPT Image 2 补齐'/u,
+  );
+  assert.match(
+    workbench,
+    /IMAGE_MODE_OPTIONS\.map\(option =>[\s\S]{0,120}option\.value !== 'real'[\s\S]{0,180}disabled: !realMaterialProviderAvailable/u,
+  );
+  assert.match(workbench, /String\(values\.imageMode \|\| ''\) === 'real'/u);
+  assert.doesNotMatch(
+    workbench,
+    /\['real', 'mix'\]\.includes\(String\(values\.imageMode/u,
+  );
+  assert.match(workbench, /imageMode: 'mix'/u);
+  assert.match(
+    workbench,
+    /fallback\?\.strategy === 'licensed_material_to_ai_image'/u,
+  );
+  assert.match(workbench, /已授权真实素材不足，剩余配图已由 GPT Image 2 补齐/u);
+});
+
+test("可交付图片按授权素材和AI生成分开标注，不把位图冒充实拍", () => {
+  const workbench = read("web/src/components/ContentPipelineWorkbench.tsx");
+
+  assert.match(workbench, /function isLicensedMaterialAsset/u);
+  assert.match(workbench, /asset\.rights\?\.confirmed === true/u);
+  assert.match(workbench, /asset\.rights\?\.commercialUse === true/u);
+  assert.match(workbench, /已授权真实素材/u);
+  assert.match(workbench, /asset\.kind === 'image'/u);
+  assert.match(workbench, /AI 生成 · \$\{model\}/u);
+  assert.match(workbench, /providerAssetSourceMeta\(asset\)/u);
+  assert.match(workbench, /张可交付图片/u);
+  assert.doesNotMatch(workbench, /张真图|封面真图|可交付真图|实拍/u);
 });
 
 test("老板自定义审批UI锁定角色、中文岗位、内部流转与真实素材能力边界", () => {
@@ -624,7 +723,10 @@ test("内容团队公开入口是一句话对话，内部默认自动接力并�
   assert.match(workbench, /你只需发一句话/u);
   assert.match(workbench, /className="cpw-composer-settings"/u);
   assert.match(workbench, /更多要求 \/ 后台设置/u);
-  assert.match(workbench, /contentPipelineWorkflowModeForPreset\(values.approvalPreset\)/u);
+  assert.match(
+    workbench,
+    /contentPipelineWorkflowModeForPreset\(values.approvalPreset\)/u,
+  );
   assert.match(workbench, /workflowMode: 'fullauto'/u);
   assert.match(workbench, /approvalPreset: 'internal_auto'/u);
   assert.match(workbench, /\{ mode: 'internal_auto' as const \}/u);
@@ -648,7 +750,10 @@ test("内容团队公开入口是一句话对话，内部默认自动接力并�
   assert.match(styles, /\.cpw-station-fold/u);
   assert.match(workbench, /cpw-assistant-report[\s\S]*cpw-artifact/u);
   assert.doesNotMatch(workbench, /<pre>\{safeOutput\(/u);
-  assert.doesNotMatch(workbench, /<pre>[\s\S]*JSON\.stringify\(station\.output/u);
+  assert.doesNotMatch(
+    workbench,
+    /<pre>[\s\S]*JSON\.stringify\(station\.output/u,
+  );
   assert.match(styles, /\.cpw-message-row/u);
   assert.match(styles, /\.cpw-chat-composer/u);
   assert.match(styles, /\.cpw-assistant-report/u);
@@ -674,10 +779,15 @@ test("老板可切换简洁/标准/专业三档视图，简洁档只保留交付
     workbench,
     /viewMode === 'simple'[\s\S]{0,120}STATION_ATTENTION_STATUSES\.has/u,
   );
-  // 过程与费用、主产物、素材网格只在专业档展示。
-  assert.match(workbench, /viewMode === 'pro' &&\s*\n?\s*\(visiblePhaseEvents/u);
+  // 过程与费用和内部主产物只在专业档展示；真实图片在标准档也必须直接可见。
+  assert.match(
+    workbench,
+    /viewMode === 'pro' &&\s*\n?\s*\(visiblePhaseEvents/u,
+  );
   assert.match(workbench, /viewMode === 'pro' && primaryArtifact/u);
-  assert.match(workbench, /viewMode === 'pro' && providerAssets\.length > 0/u);
+  assert.match(workbench, /\{providerAssets\.length > 0 && \(/u);
+  assert.doesNotMatch(workbench, /viewMode === 'pro' && providerAssets\.length > 0/u);
+  assert.match(workbench, /BOSS_OPEN_STATIONS = new Set\(\[4, 5, 6, 8, 9\]\)/u);
   assert.match(styles, /\.cpw-view-switch/u);
   assert.match(styles, /\.cpw-boss-gallery-grid/u);
   assert.match(styles, /\.cpw-boss-packs/u);

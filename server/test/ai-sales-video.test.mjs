@@ -36,9 +36,18 @@ test('injectable provider/composer executes exactly three ten-second segments fo
     references: [{ source: 'inline', dataUrl: 'data:image/png;base64,YWJj' }],
   });
   const submitted = [];
+  const invocationMarkers = [];
+  const segmentStates = [];
   const result = await executeAiSalesVideoPlan({
     plan,
+    onProviderInvocationStarted: async ({ segment }) => {
+      invocationMarkers.push(segment.index);
+    },
+    onSegmentState: async state => {
+      segmentStates.push(state);
+    },
     submitSegment: async input => {
+      assert.equal(invocationMarkers.at(-1), input.segment.index, '供应商调用前必须先写入调用标记');
       submitted.push(input);
       return {
         taskId: `task-${input.segment.index}`,
@@ -56,6 +65,39 @@ test('injectable provider/composer executes exactly three ten-second segments fo
   assert.equal(result.url, 'https://cdn.test/composed-30s.mp4');
   assert.equal(result.composition.url, 'https://cdn.test/composed-30s.mp4');
   assert.deepEqual(submitted.map(input => input.durationSeconds), [10, 10, 10]);
+  assert.deepEqual(invocationMarkers, [1, 2, 3]);
+  assert.deepEqual(
+    segmentStates.map(state => [state.segment.index, state.status]),
+    [
+      [1, 'provider_ready'], [1, 'downloaded'],
+      [2, 'provider_ready'], [2, 'downloaded'],
+      [3, 'provider_ready'], [3, 'downloaded'],
+    ],
+  );
+  assert.ok(segmentStates.every(state => !Object.hasOwn(state, 'url') && !Object.hasOwn(state, 'localPath')));
+});
+
+test('a durable invocation marker failure stops execution before the paid provider call', async () => {
+  const plan = buildAiSalesVideoPlan({
+    brief: '验证调用前的账务安全标记',
+    references: [{ source: 'inline', dataUrl: 'data:image/png;base64,YWJj' }],
+  });
+  let providerCalls = 0;
+  await assert.rejects(
+    executeAiSalesVideoPlan({
+      plan,
+      onProviderInvocationStarted: async () => {
+        throw new Error('durable marker unavailable');
+      },
+      submitSegment: async () => {
+        providerCalls += 1;
+        return { url: 'https://provider.test/must-not-run.mp4' };
+      },
+      compose: async () => ({ url: 'https://cdn.test/must-not-run.mp4' }),
+    }),
+    /durable marker unavailable/u,
+  );
+  assert.equal(providerCalls, 0);
 });
 
 test('brief and reference validation rejects empty input', () => {

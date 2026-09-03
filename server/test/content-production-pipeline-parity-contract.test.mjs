@@ -422,6 +422,11 @@ test("ImageHunt核权素材必须接入idx5 real/mix默认运行时并保留授�
   );
   requirePattern(
     pipelineRouteSource,
+    /materialSearchExecutionClass:\s*["']local_zero_cost["']/u,
+    "idx5本地授权素材检索没有显式声明零成本非外调边界",
+  );
+  requirePattern(
+    pipelineRouteSource,
     /licensedMaterialProvider:\s*true[\s\S]{0,200}imageModes:[\s\S]{0,100}["']real["'][\s\S]{0,100}["']mix["']/u,
     "内容流水线没有向创建门公开real/mix真实可用能力",
   );

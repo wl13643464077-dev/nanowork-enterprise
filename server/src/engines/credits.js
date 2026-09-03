@@ -18,6 +18,11 @@ const DEFAULT_BILLING = {
   },
   image: { 'gpt-image-2': 0.5, default: 0.5 },
   video: {
+    // MiniMax Paygo 价目核验于 2026-09-01：Hailuo 02 / 2.3 768P、10秒
+    // $0.56，按当日 USD/CNY 6.7809 折算为 ¥3.7973，本地单段成本取 ¥3.80。
+    // AI带货员会把30秒任务拆为3个10秒真实供应商任务。
+    'MiniMax-Hailuo-02': 3.8,
+    'MiniMax-Hailuo-2.3': 3.8,
     'runninghub-avatar-15': 12,
     'runninghub-avatar-30': 12,
     'runninghub-avatar-60': 24,

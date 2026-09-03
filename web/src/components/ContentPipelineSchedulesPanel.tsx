@@ -150,7 +150,7 @@ function editValues(schedule: ContentPipelineSchedule): Partial<ScheduleForm> {
     industry: String(task.industry || ''),
     requirement: String(task.material || ''),
     platforms: Array.isArray(task.platforms) ? task.platforms : ['小红书'],
-    imageMode: (task.image_mode || 'ai') as ScheduleForm['imageMode'],
+    imageMode: (task.image_mode || 'mix') as ScheduleForm['imageMode'],
     imageCount: task.image_count == null ? null : Number(task.image_count),
     enableDeck: task.enable_deck === true,
     refLink: String(task.ref_link || ''),
@@ -189,16 +189,15 @@ export default function ContentPipelineSchedulesPanel({
 
   const imageOptions = useMemo(
     () => [
-      { value: 'ai', label: 'AI 生成' },
+      { value: 'ai', label: '仅 AI 生成' },
       {
         value: 'real',
-        label: realMaterialProviderAvailable ? '真实素材' : '真实素材（未接通）',
+        label: realMaterialProviderAvailable ? '仅已授权真实素材（不足即停）' : '仅已授权真实素材（通道未接通）',
         disabled: !realMaterialProviderAvailable,
       },
       {
         value: 'mix',
-        label: realMaterialProviderAvailable ? '真实素材 + AI' : '真实素材 + AI（未接通）',
-        disabled: !realMaterialProviderAvailable,
+        label: '已授权真实素材优先，不足由 GPT Image 2 补齐',
       },
     ],
     [realMaterialProviderAvailable],
@@ -233,7 +232,7 @@ export default function ContentPipelineSchedulesPanel({
       everyHours: 24,
       type: '日更选题',
       platforms: ['小红书'],
-      imageMode: 'ai',
+      imageMode: 'mix',
       imageCount: null,
       enableDeck: false,
       workflowMode: 'fullauto',
@@ -252,8 +251,8 @@ export default function ContentPipelineSchedulesPanel({
 
   const save = async () => {
     const values = await form.validateFields();
-    if (['real', 'mix'].includes(String(values.imageMode)) && !realMaterialProviderAvailable) {
-      message.error('真实素材 provider 尚未接通');
+    if (String(values.imageMode) === 'real' && !realMaterialProviderAvailable) {
+      message.error('严格真实素材模式尚未接通已验证的授权素材通道');
       return;
     }
     let brief;
@@ -496,7 +495,16 @@ export default function ContentPipelineSchedulesPanel({
             <Form.Item name="platforms" label="目标平台" rules={[{ required: true, type: 'array', min: 1 }]}>
               <Select mode="multiple" options={PLATFORM_OPTIONS} />
             </Form.Item>
-            <Form.Item name="imageMode" label="配图来源" rules={[{ required: true }]}>
+            <Form.Item
+              name="imageMode"
+              label="配图来源"
+              rules={[{ required: true }]}
+              extra={
+                realMaterialProviderAvailable
+                  ? '素材优先模式会先用已授权真实素材，缺口由 GPT Image 2 补齐。'
+                  : '严格真实素材模式暂不可用；素材优先模式仍可选，未取得授权素材时由 GPT Image 2 生成。'
+              }
+            >
               <Select options={imageOptions} />
             </Form.Item>
             <Form.Item name="imageCount" label="配图数量（留空为自动）">

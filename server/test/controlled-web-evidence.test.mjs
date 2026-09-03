@@ -432,3 +432,54 @@ test('受控网页正文核验会重新记录重定向、MIME和大小失败，�
   assert.ok(calls.every(call => call.options.timeoutMs === 250));
   assert.ok(calls.every(call => call.options.signal === null));
 });
+
+test('TinyFish路径不虚报逐跳重定向复验，本地路径仍保留真实安全声明', { concurrency: false }, async () => {
+  const previousApiKey = process.env.TINYFISH_API_KEY;
+  const requestedUrl = 'https://public.example/article';
+  try {
+    process.env.TINYFISH_API_KEY = 'unit-test-token-controlled-tinyfish';
+    const tinyfishResult = await fetchControlledWebEvidence([
+      { title: '公开正文', url: requestedUrl },
+    ], {
+      tinyfishFetchFn: async (urls) => ({
+        results: [{
+          title: 'TinyFish渲染正文',
+          requestedUrl: urls[0],
+          url: 'https://public.example/article-final',
+          snippet: 'TinyFish渲染摘要',
+          body: 'TinyFish渲染后的公开网页正文满足最小证据长度。'.repeat(5),
+        }],
+        failures: [],
+      }),
+      fetchPageFn: async () => {
+        throw new Error('TinyFish成功覆盖后不应重复本地抓取');
+      },
+    });
+
+    assert.equal(tinyfishResult.provider, 'TinyFish Fetch');
+    assert.equal(tinyfishResult.evidence.ssrfProtected, true);
+    assert.equal(tinyfishResult.evidence.redirectsRevalidated, false);
+    assert.equal(tinyfishResult.evidence.renderedFetch, true);
+    assert.equal(tinyfishResult.results[0].requestedUrl, requestedUrl);
+    assert.equal(tinyfishResult.results[0].url, 'https://public.example/article-final');
+
+    delete process.env.TINYFISH_API_KEY;
+    const localResult = await fetchControlledWebEvidence([
+      { title: '公开正文', url: requestedUrl },
+    ], {
+      fetchPageFn: async url => ({
+        title: '本地受控正文',
+        url,
+        snippet: '本地受控摘要',
+        body: '本地受控抓取的公开网页正文满足最小证据长度。'.repeat(5),
+      }),
+    });
+    assert.equal(localResult.provider, 'NanoWork controlled WebFetch');
+    assert.equal(localResult.evidence.ssrfProtected, true);
+    assert.equal(localResult.evidence.redirectsRevalidated, true);
+    assert.equal(localResult.evidence.renderedFetch, false);
+  } finally {
+    if (previousApiKey === undefined) delete process.env.TINYFISH_API_KEY;
+    else process.env.TINYFISH_API_KEY = previousApiKey;
+  }
+});

@@ -9,7 +9,7 @@ import {
   TeamOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { api } from '../api/client';
+import { api, type ApiRequestError } from '../api/client';
 import EmployeeAvatar from './EmployeeAvatar';
 import { refineVoiceIntent, useVoiceInput } from './useVoiceInput';
 import './EmployeeTeamMatch.css';
@@ -60,6 +60,17 @@ type TeamPlan = {
   briefs: MemberBrief[];
 };
 
+type TeamPlanFailure = {
+  title: string;
+  reason: string;
+  outputText: string;
+  billingText: string;
+  billingState: string;
+  requestId: string;
+  code?: string;
+  retryable: boolean;
+};
+
 type DispatchedRecord = Record<string, { taskId: number; at: string }>;
 
 type TeamSummary = {
@@ -105,6 +116,58 @@ const DEPTH_OPTIONS: { value: PlanDepth; label: string; hint: string }[] = [
   { value: 'full', label: '全面', hint: '先 3 句大白话摘要，再给完整方案，专业词带解释' },
   { value: 'pro', label: '专业', hint: '深度挖掘：逐项用上每名员工的全部岗位能力，分层展开' },
 ];
+
+function teamPlanFailure(error: ApiRequestError): TeamPlanFailure {
+  const reason = String(error?.message || '队长拆解失败').trim();
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const status = Number(error?.status || 0);
+  const billing = error?.billing && typeof error.billing === 'object' ? error.billing : {};
+  const billingState = String(billing.state || billing.status || '')
+    .trim()
+    .toLowerCase();
+  const billingUnsettled = ['TEAM_PLAN_BILLING_NOT_SETTLED', 'TEAM_PLAN_BILLING_UNSETTLED'].includes(code);
+  const upstreamFailure =
+    status >= 500 ||
+    ['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(code) ||
+    /^provider_/iu.test(code) ||
+    /(真实\s*ai|上游|供应商|模型通道|真实通道)/iu.test(reason);
+  const retryable =
+    typeof error?.retryable === 'boolean'
+      ? error.retryable
+      : !status || status === 408 || status === 409 || status === 422 || status === 429 || status >= 500;
+
+  let billingText = billingUnsettled
+    ? '账务状态尚未确认 settled，本次不会保存拆解或自动派活；请凭请求编号核对后重试。'
+    : '服务未返回退款状态，请以积分流水为准；如需排查请提供下方请求编号。';
+  if (billingUnsettled && billingState) {
+    billingText = `账务状态为 ${billingState}，尚未确认 settled；本次不会保存拆解或自动派活，请凭请求编号核对。`;
+  } else if (billingState === 'released' || billing.refunded === true) {
+    billingText = '预授权已全额退回（已退款），本次拆解未扣费。';
+  } else if (billingState === 'not_applicable') {
+    billingText = '本次未进入计费，没有产生 AI 费用。';
+  } else if (billingState === 'pending_reconciliation' || billing.pendingReconciliation === true) {
+    billingText = '本次未产生拆解产出，但预授权退回状态正在对账，请凭请求编号核对。';
+  } else if (billingState) {
+    billingText = `本次未产生拆解产出；账务状态为 ${billingState}，请凭请求编号核对。`;
+  }
+
+  return {
+    title: billingUnsettled
+      ? '账务待核对，本次拆解已停止派活'
+      : upstreamFailure
+        ? '真实上游暂时异常，队长拆解未完成'
+        : '队长拆解未完成',
+    reason,
+    outputText: billingUnsettled
+      ? '真实拆解虽已返回，但系统未保存、未展示、未自动派活，也未用模板或降级底稿代替。'
+      : '本次没有生成拆解产出，系统未使用模板或降级底稿代替。',
+    billingText,
+    billingState,
+    requestId: String(error?.requestId || '未返回').trim(),
+    code: code || undefined,
+    retryable,
+  };
+}
 
 function readStoredMatch(): StoredMatch | null {
   try {
@@ -193,6 +256,49 @@ function dagStages(members: MatchedTeamMember[]) {
   return [...stages.entries()].sort((a, b) => a[0] - b[0]).map(([, list]) => list);
 }
 
+function splitSummaryStatements(summary: string) {
+  const text = String(summary || '').trim();
+  if (!text) return [];
+  const statements: string[] = (text.match(/[^。！？!?；;\n]+[。！？!?；;]?/gu) || [])
+    .map(statement => statement.trim())
+    .filter(Boolean);
+  if (statements.length !== 1 || Array.from(statements[0]).length <= 220) return statements;
+
+  // 极少数模型会返回完全无句号的长段落；在自然停顿处拆开，避免 1,600 字整段变成粗体 lead。
+  const characters = Array.from(String(statements[0]));
+  let splitAt = Math.min(180, characters.length - 1);
+  for (let index = splitAt; index >= 110; index -= 1) {
+    if (/[\s，、：）)]/u.test(characters[index])) {
+      splitAt = index + 1;
+      break;
+    }
+    const before = characters[index - 1] || '';
+    const after = characters[index] || '';
+    if (/[A-Za-z0-9]/u.test(before) !== /[A-Za-z0-9]/u.test(after)) {
+      splitAt = index;
+      break;
+    }
+  }
+  return [characters.slice(0, splitAt).join('').trim(), characters.slice(splitAt).join('').trim()].filter(Boolean);
+}
+
+const METRIC_VALUE_TOKEN_PATTERN =
+  /(\d{4}-\d{2}-\d{2}(?:\s*(?:至|到|~|～|—|–)\s*\d{4}-\d{2}-\d{2})?|(?:[<>≤≥]\s*)?\d+(?:[.,]\d+)?(?:\s*(?:-|–|—|~|～|至)\s*\d+(?:[.,]\d+)?)?\s*(?:亿元|万元|元|天|人|张|米|m²|㎡|m|%|％)|\d{1,2}\/\d{1,2}(?:[–—-]\d{1,2})?|[A-Za-z][A-Za-z0-9.+_-]*)/gu;
+
+function renderMetricValue(value: string) {
+  return String(value || '')
+    .split(METRIC_VALUE_TOKEN_PATTERN)
+    .map((part, index) =>
+      part && index % 2 === 1 ? (
+        <span className="team-summary-number-token" key={`${index}-${part}`}>
+          {part}
+        </span>
+      ) : (
+        part
+      ),
+    );
+}
+
 export default function EmployeeTeamMatch({
   deptColorOf,
   onDispatch,
@@ -232,7 +338,7 @@ export default function EmployeeTeamMatch({
   const [depth, setDepth] = useState<PlanDepth>('full');
   const [mode, setMode] = useState<DispatchMode>('semi');
   const [planning, setPlanning] = useState(false);
-  const [planError, setPlanError] = useState('');
+  const [planError, setPlanError] = useState<TeamPlanFailure | null>(null);
   // 正在派出的成员 idx 集合；auto 模式按顺序推进
   const [dispatchingIdx, setDispatchingIdx] = useState<number | null>(null);
   const [bulkDispatching, setBulkDispatching] = useState(false);
@@ -261,6 +367,16 @@ export default function EmployeeTeamMatch({
     [plan, dispatched],
   );
   const teamMemberIdxs = useMemo(() => (team ? team.members.map(member => member.idx) : []), [team]);
+  const summaryStatements = useMemo(
+    () => splitSummaryStatements(String(teamSummary?.summary || '')),
+    [teamSummary?.summary],
+  );
+  const summaryLead = summaryStatements[0] || String(teamSummary?.summary || '').trim();
+  const summaryDetails = summaryStatements.slice(1);
+  const summaryPlainText = summaryStatements.join(' ');
+  const summaryDetailsText = summaryDetails.join(' ');
+  const summaryNeedsDisclosure = summaryDetailsText.length > 260 || summaryDetails.length > 3;
+  const summaryPreview = summaryDetails.slice(0, 2).join(' ');
 
   useEffect(() => {
     persistMatch(stored);
@@ -281,7 +397,7 @@ export default function EmployeeTeamMatch({
       const matched = payload?.team as MatchedTeam | undefined;
       if (!matched?.members?.length) throw new Error('没有匹配到合适的员工，换个说法再试试');
       setStored({ query, team: matched, matchedAt: new Date().toISOString(), plan: null, dispatched: {} });
-      setPlanError('');
+      setPlanError(null);
       setFocusIdx(matched.members.find(member => member.roleInTeam === '队长')?.idx ?? matched.members[0].idx);
     } catch (err: any) {
       setError(err?.message || '匹配失败，请稍后再试');
@@ -339,27 +455,49 @@ export default function EmployeeTeamMatch({
   const runPlan = async () => {
     if (!stored || !team) return;
     setPlanning(true);
-    setPlanError('');
+    setPlanError(null);
     try {
-      const payload = await api.post('/employees/team-plan', {
-        text: stored.query,
-        depth,
-        members: team.members.map(member => ({
-          idx: member.idx,
-          roleInTeam: member.roleInTeam,
-          task: member.task,
-          dependsOn: member.dependsOn,
-        })),
-      });
+      const payload = await api.post(
+        '/employees/team-plan',
+        {
+          text: stored.query,
+          depth,
+          members: team.members.map(member => ({
+            idx: member.idx,
+            roleInTeam: member.roleInTeam,
+            task: member.task,
+            dependsOn: member.dependsOn,
+          })),
+        },
+        { silent: true },
+      );
       const nextPlan = payload?.plan as TeamPlan | undefined;
-      if (!nextPlan?.briefs?.length) throw new Error('队长没有给出有效拆解，请重试');
+      if (!nextPlan?.briefs?.length) {
+        throw Object.assign(new Error('真实上游未返回有效拆解，不会用模板冒充产出'), {
+          code: 'TEAM_PLAN_INVALID_RESPONSE',
+          retryable: true,
+          requestId: payload?.requestId,
+          billing: payload?.billing,
+        });
+      }
+      const billingState = String(payload?.billing?.state || '')
+        .trim()
+        .toLowerCase();
+      if (billingState !== 'settled') {
+        throw Object.assign(new Error('真实拆解已返回，但账务尚未确认结算；为避免误派活，本次结果已拦截'), {
+          code: 'TEAM_PLAN_BILLING_NOT_SETTLED',
+          retryable: false,
+          requestId: payload?.requestId,
+          billing: payload?.billing,
+        });
+      }
       setStored(current => (current ? { ...current, plan: nextPlan, dispatched: {} } : current));
       if (mode === 'auto') {
         message.info('队长拆解完成，自动派出中…');
         await dispatchAll(nextPlan.briefs);
       }
     } catch (err: any) {
-      setPlanError(err?.message || '队长拆解失败，请稍后再试');
+      setPlanError(teamPlanFailure(err as ApiRequestError));
     } finally {
       setPlanning(false);
     }
@@ -392,7 +530,7 @@ export default function EmployeeTeamMatch({
   const closeBoard = () => {
     setStored(null);
     setFocusIdx(null);
-    setPlanError('');
+    setPlanError(null);
     setSummaryError('');
   };
 
@@ -613,7 +751,32 @@ export default function EmployeeTeamMatch({
               </Button>
             </div>
             <p className="team-plan-hint">{depthHint}</p>
-            {planError && <Alert type="error" showIcon message={planError} />}
+            {planError && (
+              <Alert
+                type="error"
+                showIcon
+                message={planError.title}
+                description={
+                  <div className="team-plan-error-details">
+                    <div>{planError.reason}</div>
+                    <div>{planError.outputText}</div>
+                    <div>费用处理：{planError.billingText}</div>
+                    <div>
+                      请求编号：<code>{planError.requestId}</code>
+                      {planError.code ? ` · 错误码：${planError.code}` : ''}
+                    </div>
+                    <div>{planError.retryable ? '可以直接重试。' : '请先按上方原因修正输入后再试。'}</div>
+                  </div>
+                }
+                action={
+                  planError.retryable ? (
+                    <Button size="small" danger loading={planning} onClick={() => void runPlan()}>
+                      重新尝试拆解
+                    </Button>
+                  ) : undefined
+                }
+              />
+            )}
             {planning && (
               <AiWorkingSteps
                 phases={[
@@ -728,27 +891,73 @@ export default function EmployeeTeamMatch({
                 )}
                 {teamSummary && (
                   <div className="team-summary-body">
-                    <div className="team-summary-conclusion">
-                      <span className="team-summary-label">整体收尾汇报</span>
-                      {teamSummary.summary
-                        .split(/\n+/u)
-                        .filter(Boolean)
-                        .map((paragraph, index) => (
-                          <p key={index}>{paragraph}</p>
-                        ))}
-                    </div>
-                    {(teamSummary.keyNumbers || []).length > 0 && (
-                      <div className="team-summary-numbers" aria-label="关键数据">
-                        {(teamSummary.keyNumbers || []).map((item, index) => (
-                          <div className="team-summary-number" key={index}>
-                            <strong>{item.value}</strong>
-                            <span>{item.label}</span>
-                            {item.source && <small>出自 {item.source}</small>}
-                          </div>
-                        ))}
+                    <section className="team-summary-conclusion" aria-labelledby="team-summary-conclusion-title">
+                      <div className="team-summary-section-head">
+                        <span className="team-summary-label" id="team-summary-conclusion-title">
+                          整体收尾汇报
+                        </span>
+                        {summaryNeedsDisclosure && <small>{summaryPlainText.length} 字 · 已收起长汇报</small>}
                       </div>
+                      <div className="team-summary-conclusion-copy">
+                        <p className="team-summary-lead">{summaryLead}</p>
+                        {summaryNeedsDisclosure ? (
+                          <details className="team-summary-disclosure">
+                            <summary>
+                              <span className="team-summary-preview">{summaryPreview}</span>
+                              <span className="team-summary-disclosure-action">
+                                <span className="when-closed">展开完整汇报</span>
+                                <span className="when-open">收起完整汇报</span>
+                              </span>
+                            </summary>
+                            <div className="team-summary-detail-list">
+                              {summaryDetails.map((statement, index) => (
+                                <p key={index}>{statement}</p>
+                              ))}
+                            </div>
+                          </details>
+                        ) : (
+                          <div className="team-summary-detail-list">
+                            {summaryDetails.map((statement, index) => (
+                              <p key={index}>{statement}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                    {(teamSummary.keyNumbers || []).length > 0 && (
+                      <section className="team-summary-metrics" aria-labelledby="team-summary-metrics-title">
+                        <div className="team-summary-section-head">
+                          <span className="team-summary-label" id="team-summary-metrics-title">
+                            关键指标
+                          </span>
+                          <small>{teamSummary.keyNumbers?.length} 项 · 来自本次成员汇总</small>
+                        </div>
+                        <div
+                          className="team-summary-numbers"
+                          aria-label="关键数据"
+                          data-count={teamSummary.keyNumbers?.length || 0}
+                        >
+                          {(teamSummary.keyNumbers || []).map((item, index) => (
+                            <article
+                              className={`team-summary-number${item.value.length > 14 ? ' is-wide' : ''}`}
+                              key={index}
+                            >
+                              <span>{item.label}</span>
+                              <strong className={item.value.length <= 14 ? 'is-atomic' : 'is-long'} title={item.value}>
+                                {renderMetricValue(item.value)}
+                              </strong>
+                              {item.source && (
+                                <small className="team-summary-number-source" title={`数据来源：${item.source}`}>
+                                  <span>来源</span>
+                                  <b>{item.source}</b>
+                                </small>
+                              )}
+                            </article>
+                          ))}
+                        </div>
+                      </section>
                     )}
-                    <div className="team-summary-progress">
+                    <section className="team-summary-progress">
                       <span className="team-summary-label">各成员交付情况</span>
                       {teamSummary.progress.map(row => (
                         <div
@@ -768,9 +977,9 @@ export default function EmployeeTeamMatch({
                           <p className="team-summary-highlight">{row.highlight || '—'}</p>
                         </div>
                       ))}
-                    </div>
+                    </section>
                     {teamSummary.nextActions.length > 0 && (
-                      <div className="team-summary-actions-list">
+                      <section className="team-summary-actions-list">
                         <span className="team-summary-label">下一步行动计划</span>
                         <ol>
                           {teamSummary.nextActions.map((action, index) => (
@@ -780,13 +989,17 @@ export default function EmployeeTeamMatch({
                             </li>
                           ))}
                         </ol>
-                      </div>
+                      </section>
                     )}
                     {teamSummary.risks && <Alert type="warning" showIcon message={`风险提醒：${teamSummary.risks}`} />}
-                    <small className="team-summary-time">
-                      汇总时间：{new Date(teamSummary.summarizedAt).toLocaleString('zh-CN')} ·
-                      汇总只读真实产出，重新汇总会拉取最新进度
-                    </small>
+                    <footer className="team-summary-time">
+                      <span className="team-summary-time-label">汇总时间</span>
+                      <time dateTime={teamSummary.summarizedAt}>
+                        {new Date(teamSummary.summarizedAt).toLocaleString('zh-CN')}
+                      </time>
+                      <i aria-hidden="true">·</i>
+                      <span>汇总只读真实产出，重新汇总会拉取最新进度</span>
+                    </footer>
                   </div>
                 )}
               </div>

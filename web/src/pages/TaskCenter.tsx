@@ -100,6 +100,34 @@ const pipelinePhaseLabels: Record<string, string> = {
   recover: '中断恢复',
 };
 
+const DETAIL_RUNNING_REFRESH_MS = 2_000;
+const DETAIL_ATTENTION_REFRESH_MS = 12_000;
+
+function detailRefreshInterval(detail: any): number | null {
+  if (!detail) return null;
+  if (String(detail.state || '') === 'running') return DETAIL_RUNNING_REFRESH_MS;
+  const attentionStates = [detail.state, detail.status, detail.billing?.state].map(value =>
+    String(value || '').toLowerCase(),
+  );
+  return attentionStates.some(value => ['failed', 'blocked', 'pending_reconciliation'].includes(value))
+    ? DETAIL_ATTENTION_REFRESH_MS
+    : null;
+}
+
+function taskRefFromSourceKey(sourceKey: string) {
+  const match = /^([a-z_]+):(\d+)$/u.exec(String(sourceKey || ''));
+  if (!match) return null;
+  const [, kind, rawId] = match;
+  const id = Number(rawId);
+  return taskKinds.has(kind) && Number.isSafeInteger(id) && id > 0 ? { kind, id } : null;
+}
+
+function isFailedTask(detail: any) {
+  const state = String(detail?.state || '').toLowerCase();
+  const status = String(detail?.status || '').toLowerCase();
+  return state === 'failed' || status === 'failed' || status === '失败';
+}
+
 // 证据事实表：把证据对象的一级标量字段渲染成人能读的事实行（常见字段中文化），
 // 完整原始 JSON 收进「查看原始证据」折叠区——老板先看人话，审计仍可穿透。
 const EVIDENCE_LABELS: Record<string, string> = {
@@ -198,6 +226,7 @@ export default function TaskCenter() {
   const [detail, setDetail] = useState<any>(null);
   const [detailError, setDetailError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailRefreshing, setDetailRefreshing] = useState(false);
   const [pipelineLifecycleMutation, setPipelineLifecycleMutation] = useState('');
   const [wechatMutation, setWechatMutation] = useState('');
 
@@ -254,20 +283,41 @@ export default function TaskCenter() {
     return () => window.clearTimeout(initial);
   }, [openDetailByRef]);
   useEffect(() => {
+    const refreshInterval = detailRefreshInterval(detail);
     if (
       !detailKey ||
-      detail?.state !== 'running' ||
-      !taskKinds.has(String(detail.kind || '')) ||
-      !Number.isSafeInteger(Number(detail.id))
-    )
+      !refreshInterval ||
+      !taskKinds.has(String(detail?.kind || '')) ||
+      !Number.isSafeInteger(Number(detail?.id))
+    ) {
       return undefined;
+    }
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         openDetailByRef(detail.kind, Number(detail.id), detail.sourceKey, true);
       }
-    }, 2000);
+    }, refreshInterval);
     return () => window.clearInterval(timer);
-  }, [detail?.id, detail?.kind, detail?.sourceKey, detail?.state, detailKey, openDetailByRef]);
+  }, [detail, detailKey, openDetailByRef]);
+
+  const refreshCurrentDetail = useCallback(async () => {
+    const ref =
+      detail && taskKinds.has(String(detail.kind || '')) && Number.isSafeInteger(Number(detail.id))
+        ? { kind: String(detail.kind), id: Number(detail.id) }
+        : taskRefFromSourceKey(detailKey);
+    if (!ref) return;
+    setDetailRefreshing(true);
+    setDetailError('');
+    try {
+      const latest = await api.get(`/task-center/${ref.kind}/${ref.id}`, { silent: true });
+      setDetail(latest);
+      load(true);
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : '任务状态刷新失败');
+    } finally {
+      setDetailRefreshing(false);
+    }
+  }, [detail, detailKey, load]);
 
   const openDetail = (row: any) => {
     window.history.replaceState(null, '', row.deepLink || `/tasks?kind=${row.kind}&id=${row.id}`);
@@ -354,6 +404,7 @@ export default function TaskCenter() {
     setDetailKey('');
     setDetail(null);
     setDetailError('');
+    setDetailRefreshing(false);
   };
   const items = data?.items || [];
   const s = data?.summary || {};
@@ -536,6 +587,17 @@ export default function TaskCenter() {
       <Drawer
         className="task-center-drawer"
         title="任务详情"
+        extra={
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={detailRefreshing}
+            disabled={!detailKey}
+            onClick={() => void refreshCurrentDetail()}
+          >
+            刷新任务状态
+          </Button>
+        }
         width="min(640px, 100vw)"
         open={Boolean(detailKey)}
         onClose={closeDetail}
@@ -573,6 +635,37 @@ export default function TaskCenter() {
                   </Button>
                 )}
               </div>
+              {detail.kind === 'content_pipeline' && isFailedTask(detail) && detail.pipeline?.pipelineDeepLink && (
+                <Alert
+                  className="task-center-detail__recovery"
+                  type="error"
+                  showIcon
+                  message="内容流水线有失败工位"
+                  description="这是已保存的失败状态；前往内容生产仓查看错误原因，并由你决定是否重试。系统不会自动触发付费重跑。"
+                  action={
+                    <Button type="primary" href={detail.pipeline.pipelineDeepLink}>
+                      前往重试失败工位
+                    </Button>
+                  }
+                />
+              )}
+              {detail.kind === 'media' && isFailedTask(detail) && (
+                <Alert
+                  className="task-center-detail__recovery"
+                  type="error"
+                  showIcon
+                  message="AI带货员任务需要重新处理"
+                  description="这是旧失败任务的历史快照，不会自动变成成功。请返回AI带货员检查素材、目标和模型配置，再由你人工重新提交；此处不会自动付费重跑。"
+                  action={
+                    <Button
+                      type="primary"
+                      href={`/content?tab=media&mediaJobId=${encodeURIComponent(String(detail.id))}`}
+                    >
+                      返回AI带货员重新处理
+                    </Button>
+                  }
+                />
+              )}
               <dl className="task-center-detail__facts">
                 <div>
                   <dt>当前步骤</dt>

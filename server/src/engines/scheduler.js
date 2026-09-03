@@ -163,8 +163,12 @@ function clockParts(now = new Date()) {
 
 function databaseLocalTimestamp(now = new Date()) {
   const value = now instanceof Date ? now : new Date(now);
-  const pad = (part) => String(part).padStart(2, "0");
-  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+  if (!Number.isFinite(value.getTime())) throw new TypeError("now must be a valid date");
+  // Runtime tables are written with SQLite datetime('now','localtime'). Let
+  // SQLite perform the wall-clock conversion here as well. The independent
+  // Asia/Shanghai business clock must never be used to age runtime rows.
+  return q.get("SELECT datetime(?,'localtime') value", value.toISOString())
+    ?.value;
 }
 
 function runOnce(jobKey, fn) {
@@ -517,8 +521,10 @@ export function recoverStaleContentAutomationRuns(
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new TypeError("staleMinutes must be a positive number");
   }
-  const clock = clockParts(now);
-  const cutoff = clockParts(new Date(now.getTime() - minutes * 60_000)).local;
+  const recoveryLocal = databaseLocalTimestamp(now);
+  const cutoff = databaseLocalTimestamp(
+    new Date(now.getTime() - minutes * 60_000),
+  );
   const candidates = q.all(
     `SELECT id,rule_id,trigger,scheduled_for,started_at,content_id
     FROM content_automation_runs
@@ -604,7 +610,7 @@ export function recoverStaleContentAutomationRuns(
             deliveredAttemptCount: specialRecovery.deliveredAttempts.length,
           },
         }),
-        clock.local,
+        recoveryLocal,
         curTenant(),
         run.id,
       );
@@ -622,7 +628,7 @@ export function recoverStaleContentAutomationRuns(
             WHERE newer.tenant_id=? AND newer.rule_id=? AND newer.id>?
           )`,
         message,
-        clock.local,
+        recoveryLocal,
         curTenant(),
         run.rule_id,
         curTenant(),
@@ -668,8 +674,9 @@ export function recoverStaleAgentTasks(
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new TypeError("staleMinutes must be a positive number");
   }
-  const clock = clockParts(now);
-  const cutoff = clockParts(new Date(now.getTime() - minutes * 60_000)).local;
+  const cutoff = databaseLocalTimestamp(
+    new Date(now.getTime() - minutes * 60_000),
+  );
   const cutoffTimestamp = now.getTime() - minutes * 60_000;
   const candidates = q.all(
     `SELECT id,output_id,created_at FROM agent_tasks
@@ -781,8 +788,10 @@ export function recoverStaleContentEmployeeRuns(
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new TypeError("staleMinutes must be a positive number");
   }
-  const clock = clockParts(now);
-  const cutoff = clockParts(new Date(now.getTime() - minutes * 60_000)).local;
+  const recoveryLocal = databaseLocalTimestamp(now);
+  const cutoff = databaseLocalTimestamp(
+    new Date(now.getTime() - minutes * 60_000),
+  );
   const candidates = q.all(
     `SELECT id,result_md,ai_mode,snapshot_json,created_at,updated_at
     FROM content_employee_runs
@@ -840,7 +849,7 @@ export function recoverStaleContentEmployeeRuns(
         WHERE tenant_id=? AND id=? AND status='生成中'`,
         nextStatus,
         JSON.stringify({ ...snapshot, ...(billing ? { billing } : {}) }),
-        clock.local,
+        recoveryLocal,
         curTenant(),
         run.id,
       );
@@ -872,6 +881,31 @@ export function recoverStaleContentEmployeeRuns(
   return recovered;
 }
 
+function mediaProviderExecutionEvidence(snapshot, jobTaskId = null) {
+  const providerExecution = isPlainObject(snapshot?.providerExecution)
+    ? snapshot.providerExecution
+    : {};
+  const segmentTaskIds = (Array.isArray(providerExecution.segments)
+    ? providerExecution.segments
+    : [])
+    .map((segment) => String(segment?.taskId || "").trim())
+    .filter(Boolean);
+  const activityTimestamps = [
+    providerExecution.updatedAt,
+    providerExecution.lastActivityAt,
+  ]
+    .map((value) => Date.parse(String(value || "")))
+    .filter(Number.isFinite);
+  return {
+    invocationStarted: providerExecution.invocationStarted === true,
+    hasProviderTaskId:
+      Boolean(String(jobTaskId || "").trim()) || segmentTaskIds.length > 0,
+    segmentTaskCount: segmentTaskIds.length,
+    lastActivityTimestamp:
+      activityTimestamps.length > 0 ? Math.max(...activityTimestamps) : null,
+  };
+}
+
 export function recoverStaleMediaJobs(
   now = new Date(),
   staleMinutes = MEDIA_JOB_STALE_MINUTES,
@@ -881,7 +915,8 @@ export function recoverStaleMediaJobs(
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new TypeError("staleMinutes must be a positive number");
   }
-  const cutoff = clockParts(new Date(now.getTime() - minutes * 60_000)).local;
+  const cutoffTimestamp = now.getTime() - minutes * 60_000;
+  const cutoff = databaseLocalTimestamp(new Date(cutoffTimestamp));
   const candidates = q.all(
     `SELECT id,kind,url,task_id,result_id,snapshot_json,created_at
     FROM media_jobs
@@ -892,17 +927,6 @@ export function recoverStaleMediaJobs(
   );
   const recovered = [];
   for (const candidate of candidates) {
-    // 已取得视频供应商 task_id 时，继续由既有轮询路径追踪终态，不能因本地耗时长而退款。
-    if (candidate.kind === "video" && String(candidate.task_id || "").trim()) {
-      recovered.push({
-        tenantId: curTenant(),
-        jobId: Number(candidate.id),
-        status: "处理中",
-        billingState: "held",
-        action: "continue_provider_polling",
-      });
-      continue;
-    }
     db.exec("BEGIN IMMEDIATE");
     try {
       const job = q.get(
@@ -917,19 +941,72 @@ export function recoverStaleMediaJobs(
         db.exec("COMMIT");
         continue;
       }
-      if (job.kind === "video" && String(job.task_id || "").trim()) {
+      const snapshot = safeJsonParse(job.snapshot_json, {}) || {};
+      const providerEvidence = mediaProviderExecutionEvidence(
+        snapshot,
+        job.task_id,
+      );
+      // created_at is only the coarse candidate index. Long multi-segment
+      // work persists an ISO provider heartbeat; a fresh heartbeat wins and
+      // prevents the recovery pass from killing an active 30-minute job.
+      if (
+        providerEvidence.lastActivityTimestamp != null &&
+        providerEvidence.lastActivityTimestamp > cutoffTimestamp
+      ) {
         db.exec("COMMIT");
         continue;
       }
       const hold = holdForRef("media_job", job.id);
-      const snapshot = safeJsonParse(job.snapshot_json, {}) || {};
       const hasDelivery =
         job.result_id != null || Boolean(String(job.url || "").trim());
+      const hasProviderWork =
+        providerEvidence.invocationStarted || providerEvidence.hasProviderTaskId;
       let billing = snapshot.billing || null;
+      if (hasProviderWork && !hasDelivery) {
+        // An invocation marker is persisted before the paid call. A provider
+        // may have accepted work even when its task id never reached SQLite,
+        // so both that marker and nested segment task ids suppress refunds.
+        billing = twoPhaseBillingSummary({
+          state: "pending_reconciliation",
+          hold,
+          note:
+            "已存在供应商调用证据；恢复器不重放外部调用、不假称正在轮询，预授权保留待现有任务恢复或人工对账。",
+        });
+        const updated = q.run(
+          `UPDATE media_jobs SET status='失败',error=?,snapshot_json=?
+          WHERE tenant_id=? AND id=? AND status='处理中'`,
+          "服务恢复发现已有供应商任务；已停止旧执行，可在AI带货员中复用原任务恢复合成，不会重复生成",
+          JSON.stringify({
+            ...snapshot,
+            billing,
+            providerRecovery: {
+              state: "pending_reconciliation",
+              action: "continue_existing_provider_work",
+              invocationStarted: providerEvidence.invocationStarted,
+              providerTaskEvidenceCount:
+                providerEvidence.segmentTaskCount +
+                (String(job.task_id || "").trim() ? 1 : 0),
+            },
+          }),
+          curTenant(),
+          job.id,
+        );
+        if (!updated.changes)
+          throw new Error(`媒体任务#${job.id}恢复状态发生并发冲突`);
+        db.exec("COMMIT");
+        recovered.push({
+          tenantId: curTenant(),
+          jobId: Number(job.id),
+          status: "失败",
+          billingState: "pending_reconciliation",
+          action: "continue_existing_provider_work",
+        });
+        continue;
+      }
       if (hold && !hasDelivery) {
         const released = releaseHeldCreditInCurrentTransaction(
           hold,
-          `媒体任务#${job.id}超时且无业务产物/供应商任务号，恢复时全额退回`,
+          `媒体任务#${job.id}超时且无业务产物/供应商调用证据，恢复时全额退回`,
         );
         if (!released)
           throw new Error(`媒体任务#${job.id}的预授权无法原子释放`);
@@ -937,7 +1014,7 @@ export function recoverStaleMediaJobs(
           state: "released",
           hold,
           settled: released,
-          note: "服务恢复确认没有业务产物或可继续轮询的供应商任务，预授权已全额退回。",
+          note: "服务恢复确认没有业务产物、供应商调用标记或任务号，预授权已全额退回。",
         });
       } else if (hold && hasDelivery) {
         billing = twoPhaseBillingSummary({
@@ -949,7 +1026,7 @@ export function recoverStaleMediaJobs(
       const nextStatus = hasDelivery ? "成功" : "失败";
       const error = hasDelivery
         ? null
-        : `任务超过${minutes}分钟且未形成产物或供应商任务号，服务恢复时已安全终止`;
+        : `任务超过${minutes}分钟且未形成产物或供应商调用证据，服务恢复时已安全终止`;
       const updated = q.run(
         `UPDATE media_jobs
         SET status=?,credits=?,error=?,snapshot_json=?
@@ -995,7 +1072,7 @@ export function recoverStaleMediaJobs(
 // 使用有限免费retry，避免永久running与重复收费。
 export function recoverStaleToolboxRuns(now = new Date()) {
   if (!tableExists("tool_runs")) return [];
-  const clock = clockParts(now);
+  const recoveryLocal = databaseLocalTimestamp(now);
   const candidates = q.all(
     `SELECT id FROM tool_runs
     WHERE tenant_id=? AND status='running'
@@ -1005,8 +1082,8 @@ export function recoverStaleToolboxRuns(now = new Date()) {
         OR (timeout_at IS NULL AND updated_at<=datetime(?,'-${TOOLBOX_RUN_STALE_MINUTES} minutes'))
       ) ORDER BY id`,
     curTenant(),
-    clock.local,
-    clock.local,
+    recoveryLocal,
+    recoveryLocal,
   );
   const recovered = [];
   for (const candidate of candidates) {
@@ -1069,8 +1146,8 @@ export function recoverStaleToolboxRuns(now = new Date()) {
           message:
             "后台任务超过执行时限，已安全终止；可在任务中心使用免费重试。",
         }),
-        clock.local,
-        clock.local,
+        recoveryLocal,
+        recoveryLocal,
         curTenant(),
         run.id,
       );
@@ -1567,7 +1644,9 @@ function runTenantJobs(
   result.skillLearningRunsRecovered = recoverStaleSkillLearningRuns({ now }).length;
   result.agentTasksRecovered = recoverStaleAgentTasks(now).length;
   result.mediaJobsRecovered = recoverStaleMediaJobs(now).filter(
-    (item) => item.action !== "continue_provider_polling",
+    // Existing provider work remains open for recovery/reconciliation and is
+    // not a terminal local recovery, regardless of the specific action label.
+    (item) => item.status !== "处理中",
   ).length;
   result.toolboxRunsRecovered = recoverStaleToolboxRuns(now).length;
   result.feishuExportsRecovered = recoverStaleFeishuExports(now).length;

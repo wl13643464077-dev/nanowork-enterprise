@@ -98,6 +98,19 @@
   --stat-value: var(--font-5);
 }
 
+/* 运行就绪矩阵中的主备 provider 标签。 */
+.runtime-readiness-provider-cell {
+  font-size: var(--font-1);
+}
+
+.runtime-readiness-provider-list {
+  margin-top: 5px;
+}
+
+.runtime-readiness-provider-tag {
+  margin: 0;
+}
+
 /* 紧凑密度：同一套组件服务门店大屏与老板笔记本，切换是配置而非重设计。
    用法：<html data-density="compact"> */
 :root[data-density='compact'] {

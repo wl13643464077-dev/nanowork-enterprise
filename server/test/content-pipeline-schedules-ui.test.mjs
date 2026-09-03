@@ -36,6 +36,17 @@ test("内容流水线工作台提供计划CRUD、立即运行与三种北京时�
   assert.match(workbench, /定时运行完整团队/u);
 });
 
+test("定时流水线默认素材优先，仅严格real模式受素材通道门禁", () => {
+  assert.match(panel, /imageMode: \(task\.image_mode \|\| 'mix'\)/u);
+  assert.match(panel, /imageMode: 'mix'/u);
+  assert.match(panel, /仅已授权真实素材（不足即停）/u);
+  assert.match(panel, /已授权真实素材优先，不足由 GPT Image 2 补齐/u);
+  assert.match(panel, /String\(values\.imageMode\) === 'real'/u);
+  assert.doesNotMatch(panel, /\['real', 'mix'\]\.includes\(String\(values\.imageMode\)\)/u);
+  assert.doesNotMatch(panel, /value: 'mix'[\s\S]{0,180}disabled: !realMaterialProviderAvailable/u);
+  assert.match(panel, /素材优先模式仍可选，未取得授权素材时由 GPT Image 2 生成/u);
+});
+
 test("定时计划卡片显示中文策略与权威状态，不暴露原始状态码", () => {
   assert.match(panel, /function scheduleApprovalMeta\(schedule/u);
   assert.match(panel, /全自动 · 不停审/u);

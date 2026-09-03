@@ -41,6 +41,21 @@ function timeoutFor(url: string) {
 // 外部取消与内部超时并存：任一触发即中止请求；用户主动取消不弹全局错误提示。
 export type RequestOptions = { signal?: AbortSignal; silent?: boolean };
 
+export type ApiRequestError = Error & {
+  status?: number;
+  code?: string;
+  retryable?: boolean;
+  requestId?: string;
+  billing?: Record<string, unknown>;
+};
+
+function requestError(
+  messageText: string,
+  meta: Omit<ApiRequestError, keyof Error | 'name' | 'message'> = {},
+): ApiRequestError {
+  return Object.assign(new Error(messageText), { name: 'ApiRequestError', ...meta });
+}
+
 async function request(method: string, url: string, body?: any, options: RequestOptions = {}) {
   let res: Response;
   const external = options.signal;
@@ -76,15 +91,18 @@ async function request(method: string, url: string, body?: any, options: Request
     // 网络层失败（断网/超时/服务未响应）——此前唯一会"完全静默"的路径。
     // 节流 3s：避免一个页面并发多个请求时错误提示刷屏。
     const now = Date.now();
+    const failureMessage = aborted
+      ? `请求超过${Math.round(timeoutMs / 1000)}秒，已自动停止，请稍后重试`
+      : '网络连接失败，请检查网络后重试';
     if (!options.silent && now - lastNetErrAt > 3000) {
       lastNetErrAt = now;
-      message.error(
-        aborted
-          ? `请求超过${Math.round(timeoutMs / 1000)}秒，已自动停止，请缩短要求后重试`
-          : '网络连接失败，请检查网络后重试',
-      );
+      message.error(failureMessage);
     }
-    throw e;
+    throw requestError(failureMessage, {
+      code: aborted ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR',
+      retryable: true,
+      requestId,
+    });
   } finally {
     window.clearTimeout(timeout);
     external?.removeEventListener('abort', onExternalAbort);
@@ -97,7 +115,21 @@ async function request(method: string, url: string, body?: any, options: Request
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (!options.silent) message.error(data.error || `请求失败 (${res.status})`);
-    throw new Error(data.error || `HTTP ${res.status}`);
+    throw requestError(data.error || `HTTP ${res.status}`, {
+      status: res.status,
+      code: typeof data.code === 'string' ? data.code : undefined,
+      retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
+      requestId:
+        (typeof data.requestId === 'string' && data.requestId.trim()) || res.headers.get('x-request-id') || requestId,
+      billing: data.billing && typeof data.billing === 'object' ? data.billing : undefined,
+    });
+  }
+  // 成功响应也带上可关联的请求编号。team-plan 会在客户端做第二道账务门禁；
+  // 若服务端意外以 2xx 返回非 settled 状态，页面仍能给出真实排查编号。
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const responseRequestId =
+      (typeof data.requestId === 'string' && data.requestId.trim()) || res.headers.get('x-request-id') || requestId;
+    data.requestId = responseRequestId;
   }
   return data;
 }

@@ -281,7 +281,7 @@ function settledImageBridge(input, calls = []) {
         attempted = {
           attemptId:
             `content-production-pipeline:pipeline:${input.runId}:station:` +
-            `${input.employeeIdx}:provider:image:attempt:1`,
+            `${input.employeeIdx}:provider:image:attempt:${input.attemptOrdinal ?? 1}`,
           kind: "image",
           status: "settled",
           requestedCount: count,
@@ -481,7 +481,10 @@ test("10个工位全部加载canonical完整包、adapter变量和真实上游�
     }
     assert.match(call.args.system, /本次执行模式·Paihuo 0→9真实生产流水线/u);
     assert.match(call.args.system, /岗位运行包装载凭证/u);
-    assert.match(call.args.system, /【你的多项工作能力\(本次工作逐项运用,产出要能看出每项的痕迹\)】/u);
+    assert.match(
+      call.args.system,
+      /【你的多项工作能力\(本次工作逐项运用,产出要能看出每项的痕迹\)】/u,
+    );
     assert.match(call.args.system, /【内部岗位执行模板】/u);
     assert.equal(
       call.args.system.includes(JSON.stringify(context.canonicalProfile)),
@@ -1043,7 +1046,10 @@ test("run_research重复情报渠道时合并覆盖项并去掉重复事实句",
   });
   const unique = canonicalizeRunResearchUniqueFields(source);
   assert.equal(unique.changed, true);
-  assert.equal(unique.parsed.facts.length, VALID_CONTENT_EMPLOYEE_OUTPUTS[1].facts.length);
+  assert.equal(
+    unique.parsed.facts.length,
+    VALID_CONTENT_EMPLOYEE_OUTPUTS[1].facts.length,
+  );
   assert.equal(
     unique.parsed.source_coverage.length,
     VALID_CONTENT_EMPLOYEE_OUTPUTS[1].source_coverage.length,
@@ -1100,7 +1106,8 @@ test("run_research重复channel时本地合并后直接交付且不二次调用�
   assert.equal(modelCalls, 1);
   assert.equal(result.result.data.source_coverage.length, 3);
   assert.equal(
-    new Set(result.result.data.source_coverage.map((item) => item.channel)).size,
+    new Set(result.result.data.source_coverage.map((item) => item.channel))
+      .size,
     3,
   );
 });
@@ -1328,7 +1335,9 @@ test("run_research返工后仍缺引用时，把失败字段改写成缺证披�
   ];
   const invalid = clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[1]);
   invalid.summary = "全国餐饮外卖规模已达83731亿，同比增长8.3%。";
-  invalid.facts = invalid.facts.map((item) => item.replace(/\s*\[来源\d+\]/gu, ""));
+  invalid.facts = invalid.facts.map((item) =>
+    item.replace(/\s*\[来源\d+\]/gu, ""),
+  );
   invalid.data_points = [
     "全国规模83731亿，未给出快照出处。",
     "同比增速8.3%，快照未支持。",
@@ -1362,9 +1371,15 @@ test("run_research返工后仍缺引用时，把失败字段改写成缺证披�
 
   const result = await registry.invoke(1, context);
   assert.equal(modelCalls, 2);
-  assert.equal(result.evidence.productionRuntime.contractRepair.attempted, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.attempted,
+    true,
+  );
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   assert.match(result.result.data.summary, /无可验证事实/u);
   assert.match(result.result.data.data_points[0], /无可验证事实/u);
   assert.equal(result.result.data.sources.length >= 2, true);
@@ -1430,9 +1445,15 @@ test("run_benchmark返工后仍缺引用时，把对标项改写成缺证披露�
 
   const result = await registry.invoke(2, context);
   assert.equal(modelCalls, 2);
-  assert.equal(result.evidence.productionRuntime.contractRepair.attempted, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.attempted,
+    true,
+  );
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   assert.equal(result.result.data.benchmarks.length >= 3, true);
   assert.match(result.result.data.benchmarks[0].title, /无可验证事实/u);
   assert.match(result.result.data.benchmarks[0].why_hot, /无可验证事实/u);
@@ -1516,7 +1537,10 @@ test("工位9无发布指标时注入缺口复盘提示，并把虚构指标救�
   const result = await registry.invoke(9, pipelineContext(9));
   assert.match(captured[0].args.system, /复盘官无数据安全返工模式/u);
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   assert.equal(result.result.data.profile_updates.length, 0);
   assert.match(result.result.data.report, /指标计划|T\+1|预测性/u);
 });
@@ -1547,9 +1571,15 @@ test("run_media带engine多余字段时先剥成契约形状再交付", async ()
   });
   const result = await registry.invoke(5, pipelineContext(5));
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   assert.deepEqual(Object.keys(result.result.data), ["images"]);
-  assert.equal(result.result.data.images.every((item) => !item.file), true);
+  assert.equal(
+    result.result.data.images.every((item) => !item.file),
+    true,
+  );
   assert.ok(modelCalls >= 1);
 });
 
@@ -1576,7 +1606,10 @@ test("run_media重复slot时自动改成唯一点位并继续交付", async () =
   });
   const result = await registry.invoke(5, pipelineContext(5));
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   const slots = result.result.data.images.map((item) => item.slot);
   assert.equal(new Set(slots).size, slots.length);
   assert.ok(slots.includes("文章首屏"));
@@ -1603,43 +1636,56 @@ test("run_cover封面不足3张时自动补齐唯一样式并继续交付", asyn
   });
   const result = await registry.invoke(6, pipelineContext(6));
   assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.succeeded,
+    true,
+  );
   assert.equal(result.result.data.covers.length, 3);
   const styles = result.result.data.covers.map((item) => item.style);
   assert.equal(new Set(styles).size, styles.length);
   assert.ok(modelCalls >= 1);
 });
 
-test("run_media返工后仍写出品稳定时，把信息图改成待核验并交付", { concurrency: false }, async () => {
-  const invalid = clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[5]);
-  invalid.images[0].svg = invalid.images[0].svg.replace(
-    "行动闭环",
-    "出品稳定",
-  );
-  const events = [];
-  let modelCalls = 0;
-  const registry = productionRegistry({
-    events,
-    validateOutputFn: validateContentEmployeeOutputContract,
-    specialProviderBridgeFactory: async (input) =>
-      settledImageBridge(input, []),
-    responseFor: () => {
-      modelCalls += 1;
-      return {
-        text: JSON.stringify(invalid),
-        mode: "api",
-        model: "yunwu-real-text-model",
-        usage: { inputTokens: 40, outputTokens: 20 },
-      };
-    },
-  });
-  const result = await registry.invoke(5, pipelineContext(5));
-  assert.equal(modelCalls, 2);
-  assert.equal(result.evidence.productionRuntime.contractRepair.rescued, true);
-  assert.equal(result.evidence.productionRuntime.contractRepair.succeeded, true);
-  assert.match(result.result.data.images[0].svg, /待核验/u);
-  assert.doesNotMatch(result.result.data.images[0].svg, /出品稳定/u);
-});
+test(
+  "run_media返工后仍写出品稳定时，把信息图改成待核验并交付",
+  { concurrency: false },
+  async () => {
+    const invalid = clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[5]);
+    invalid.images[0].svg = invalid.images[0].svg.replace(
+      "行动闭环",
+      "出品稳定",
+    );
+    const events = [];
+    let modelCalls = 0;
+    const registry = productionRegistry({
+      events,
+      validateOutputFn: validateContentEmployeeOutputContract,
+      specialProviderBridgeFactory: async (input) =>
+        settledImageBridge(input, []),
+      responseFor: () => {
+        modelCalls += 1;
+        return {
+          text: JSON.stringify(invalid),
+          mode: "api",
+          model: "yunwu-real-text-model",
+          usage: { inputTokens: 40, outputTokens: 20 },
+        };
+      },
+    });
+    const result = await registry.invoke(5, pipelineContext(5));
+    assert.equal(modelCalls, 2);
+    assert.equal(
+      result.evidence.productionRuntime.contractRepair.rescued,
+      true,
+    );
+    assert.equal(
+      result.evidence.productionRuntime.contractRepair.succeeded,
+      true,
+    );
+    assert.match(result.result.data.images[0].svg, /待核验/u);
+    assert.doesNotMatch(result.result.data.images[0].svg, /出品稳定/u);
+  },
+);
 
 test("Agentic候选充足但受控正文不足2条时明确报sources缺口，不调用最终模型", async () => {
   const onlyOne = [
@@ -2131,9 +2177,12 @@ test("工位5可注入独立provider bridge，真实产物与bridge证据进入�
       };
     },
   });
-  const result = await registry.invoke(5, pipelineContext(5));
+  const context = pipelineContext(5);
+  context.workflow.stationAttempt = 3;
+  const result = await registry.invoke(5, context);
   assert.equal(bridgeInputs.length, 1);
   assert.equal(bridgeInputs[0].employeeIdx, 5);
+  assert.equal(bridgeInputs[0].attemptOrdinal, 3);
   assert.equal(bridgeInputs[0].request.image_mode, "ai");
   assert.equal(bridgeInputs[0].request.image_count, 2);
   assert.equal(Object.hasOwn(bridgeInputs[0].request, "size"), false);
@@ -2156,6 +2205,59 @@ test("工位5可注入独立provider bridge，真实产物与bridge证据进入�
   assert.equal(
     result.evidence.productionRuntime.specialRuntime.bridge.attempts[0].status,
     "settled",
+  );
+});
+
+test("工位5混合模式无授权素材时允许GPT Image 2位图补齐，不触发SVG回退禁令", async () => {
+  const registry = productionRegistry({
+    specialProviderBridgeFactory: async () => ({
+      providers: {
+        material: async () => ({
+          assets: [],
+          provider: { name: "licensed-material-library", mode: "local" },
+        }),
+        image: async ({ count }) => ({
+          images: Array.from({ length: count }, (_, index) => ({
+            url: `https://cdn.example/gpt-image-2-${index + 1}.png`,
+            mimeType: "image/png",
+          })),
+          provider: {
+            name: "yunwu-image",
+            model: "gpt-image-2",
+            mode: "api",
+          },
+          model: "gpt-image-2",
+          mode: "api",
+          usage: { imageCount: count, tokenUsageApplicable: false },
+        }),
+      },
+      evidence: () => ({
+        schemaVersion: "nanowork.content-special-provider-bridge/2",
+        attempts: [],
+        credentialsIncluded: false,
+      }),
+    }),
+  });
+  const context = pipelineContext(5);
+  context.brief.image_mode = "mix";
+  context.task.image_mode = "mix";
+
+  const result = await registry.invoke(5, context);
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.result.specialRuntime.evidence.fallback.strategy,
+    "licensed_material_to_ai_image",
+  );
+  assert.equal(
+    result.result.specialRuntime.evidence.fallback.to,
+    "gpt-image-2",
+  );
+  assert.ok(
+    result.result.specialRuntime.artifacts.every(
+      (artifact) =>
+        artifact.kind === "image" && artifact.mimeType === "image/png",
+    ),
   );
 });
 
@@ -2212,6 +2314,92 @@ test("工位6默认创建真实图片bridge，逐平台生图并交付无HTML的
   assert.equal(attempt.billing.state, "settled");
   assert.equal(attempt.settlement.action, "settle");
   assert.equal(attempt.provider.model, "yunwu-real-image-model");
+});
+
+test("工位6文本通道零用量超时时自动恢复一次，成功后才启动真实封面生图", async () => {
+  let textCalls = 0;
+  const captured = [];
+  const registry = productionRegistry({
+    captured,
+    specialProviderBridgeFactory: async (input) =>
+      settledImageBridge(input, []),
+    responseFor: (employeeIdx) => {
+      assert.equal(employeeIdx, 6);
+      textCalls += 1;
+      if (textCalls === 1) {
+        return {
+          text: "",
+          mode: "template",
+          model: "template",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          providerFailure: {
+            code: "provider_timeout",
+            status: 504,
+            timedOut: true,
+            retryable: true,
+          },
+        };
+      }
+      return {
+        text: JSON.stringify(VALID_CONTENT_EMPLOYEE_OUTPUTS[6]),
+        mode: "api",
+        model: "yunwu-real-text-model",
+        usage: { inputTokens: 46, outputTokens: 26 },
+      };
+    },
+  });
+
+  const result = await registry.invoke(6, pipelineContext(6));
+
+  assert.equal(textCalls, 2);
+  assert.equal(captured.length, 2);
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.attempts[0].attempt,
+    2,
+  );
+  assert.equal(
+    result.evidence.productionRuntime.contractRepair.attempts[0].kind,
+    "zero_usage_transport_retry",
+  );
+  assert.equal(result.result.specialRuntime.evidence.paihuoRealImage, true);
+});
+
+test("工位6鉴权失败不自动重试，错误明确暴露安全原因", async () => {
+  let textCalls = 0;
+  const registry = productionRegistry({
+    specialProviderBridgeFactory: async (input) =>
+      settledImageBridge(input, []),
+    responseFor: () => {
+      textCalls += 1;
+      return {
+        text: "",
+        mode: "template",
+        model: "template",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        providerFailure: {
+          code: "provider_auth_failed",
+          status: 401,
+          timedOut: false,
+          retryable: false,
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => registry.invoke(6, pipelineContext(6)),
+    (error) => {
+      assert.equal(error.code, "CONTENT_PRODUCTION_REAL_API_REQUIRED");
+      assert.match(error.message, /供应商鉴权失败/u);
+      assert.equal(
+        error.contentHandlerEvidence.providerDelivery.providerFailure.code,
+        "provider_auth_failed",
+      );
+      return true;
+    },
+  );
+  assert.equal(textCalls, 1);
 });
 
 test("工位6默认缺少图片bridge时fail closed，不把已验证HTML契约当真实封面", async () => {
@@ -2323,7 +2511,7 @@ test("工位5图片provider失败时fail closed，不用SVG示意图冒充成功
     () => registry.invoke(5, pipelineContext(5)),
     (error) => {
       assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
-      assert.match(error.message, /不会用SVG示意图冒充配图/u);
+      assert.match(error.message, /不会用SVG、HTML或不足张数冒充完整交付/u);
       return true;
     },
   );

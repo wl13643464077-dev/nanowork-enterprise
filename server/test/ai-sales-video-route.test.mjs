@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import express from 'express';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import { after, test } from 'node:test';
 
 process.env.NANOWORK_DB = ':memory:';
@@ -7,6 +9,9 @@ process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
 process.env.YUNWU_API_KEY = '';
 
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
+const { holdCredits, releaseHold } = await import('../src/engines/credits.js');
+const { buildAiSalesVideoPlan } = await import('../src/engines/ai-sales-video.js');
+const { augmentMediaJob } = await import('../src/routes/media-review.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
 
 initSchema();
@@ -92,7 +97,7 @@ test('POST /content/ai-sales-video persists a blocked 30-second plan without net
   assert.ok(snapshot.employeeExecution.workConfig.factoryDefault);
   assert.ok(snapshot.employeeExecution.jobProfile.expectedDeliverables.length > 0);
   assert.ok(snapshot.employeeExecution.runtimeBindings.currentRuntimeBindings.connectors.length > 0);
-  assert.equal(snapshot.employeeExecution.selectedRuntime.model, 'MiniMax-Hailuo-2.3-Fast');
+  assert.equal(snapshot.employeeExecution.selectedRuntime.model, 'MiniMax-Hailuo-2.3');
   assert.equal(snapshot.grounding.knowledgeBase.allowed, true);
   assert.equal(snapshot.grounding.knowledgeBase.tenantScoped, true);
   assert.equal(snapshot.grounding.web.allowed, true);
@@ -114,7 +119,6 @@ test('injected provider completes exactly three 10-second segments, settles the 
   const kbCalls = [];
   const webCalls = [];
   const runtime = {
-    skipPriceCheck: true,
     intervalMs: 1,
     timeoutMs: 100,
     kbSearch: async (categories, role, query) => {
@@ -146,7 +150,6 @@ test('injected provider completes exactly three 10-second segments, settles the 
     querySegment: async ({ taskId }) => {
       queryCalls.push(taskId);
       return {
-        taskId,
         url: `https://provider.invalid/local-sales/${taskId}.mp4`,
         status: 'success',
       };
@@ -221,7 +224,7 @@ test('injected provider completes exactly three 10-second segments, settles the 
     );
     assert.ok(hold, '任务必须有唯一的权威预授权记录');
     assert.equal(hold.status, 'settled');
-    assert.ok(Number(hold.held_credits) > 0);
+    assert.equal(Number(hold.held_credits), 1710, 'Hailuo 2.3应按¥3.80/10秒×3段×1.5毛利系数预授权');
     assert.ok(Number(hold.settled_credits) > 0);
     assert.equal(Number(hold.settled_credits), Number(row.credits));
     const ledger = q.get(`SELECT * FROM credit_logs WHERE tenant_id=? AND id=?`, 1, hold.log_id);
@@ -232,6 +235,17 @@ test('injected provider completes exactly three 10-second segments, settles the 
     assert.equal(snapshot.status, '成功');
     assert.equal(snapshot.billing.state, 'settled');
     assert.ok(Number(snapshot.billing.chargedCredits) > 0);
+    assert.equal(snapshot.providerExecution.invocationStarted, true);
+    assert.equal(snapshot.providerExecution.invocationCount, 3);
+    assert.ok(Number.isFinite(Date.parse(snapshot.providerExecution.updatedAt)));
+    assert.deepEqual(
+      snapshot.providerExecution.segments.map(segment => segment.status),
+      ['downloaded', 'downloaded', 'downloaded'],
+    );
+    assert.deepEqual(
+      snapshot.providerExecution.segments.map(segment => segment.taskId),
+      ['local-sales-task-1', 'local-sales-task-2', 'local-sales-task-3'],
+    );
     assert.equal(snapshot.result.providerCalls, 3);
     assert.equal(snapshot.grounding.knowledgeBase.tenantScoped, true);
     assert.equal(snapshot.grounding.knowledgeBase.verified, true);
@@ -255,7 +269,7 @@ test('injected provider completes exactly three 10-second segments, settles the 
   }
 });
 
-test('injected provider failure marks the job failed and releases the complete hold', async () => {
+test('provider failure after invocation retains the complete hold for reconciliation', async () => {
   q.run(`UPDATE tenants SET credits=100000 WHERE id=?`, 1);
   const submitCalls = [];
   const runtime = {
@@ -263,7 +277,10 @@ test('injected provider failure marks the job failed and releases the complete h
     submitSegment: async ({ duration }) => {
       submitCalls.push(duration);
       if (submitCalls.length === 2) throw new Error('local provider segment failure');
-      return { url: `https://provider.invalid/failure-${submitCalls.length}.mp4` };
+      return {
+        taskId: `local-failure-task-${submitCalls.length}`,
+        url: `https://provider.invalid/failure-${submitCalls.length}.mp4`,
+      };
     },
     downloadSegment: async ({ index }) => ({
       path: `/tmp/local-sales-failure-${index}.mp4`,
@@ -287,7 +304,7 @@ test('injected provider failure marks the job failed and releases the complete h
     assert.equal(body.status, 'processing');
     const row = await waitForMediaJob(body.jobId, '失败');
     assert.equal(row.url, null);
-    assert.equal(Number(row.credits), 0);
+    assert.equal(row.credits, null);
     assert.equal(submitCalls.length, 2);
     const hold = q.get(
       `SELECT * FROM credit_holds WHERE tenant_id=? AND ref_type='media_job' AND ref_id=?`,
@@ -295,18 +312,196 @@ test('injected provider failure marks the job failed and releases the complete h
       body.jobId,
     );
     assert.ok(hold);
-    assert.equal(hold.status, 'settled');
-    assert.equal(Number(hold.settled_credits), 0, '失败必须全额退回，不能留下正向实扣');
+    assert.equal(hold.status, 'held');
+    assert.equal(hold.settled_credits, null, '供应商已调用时不得伪造结算或自动退款');
     assert.ok(Number(hold.held_credits) > 0);
     const ledger = q.get(`SELECT * FROM credit_logs WHERE tenant_id=? AND id=?`, 1, hold.log_id);
-    assert.equal(Number(ledger.credits), 0);
-    assert.equal(ledger.ai_mode, 'api');
-    assert.equal(Number(q.get(`SELECT credits FROM tenants WHERE id=?`, 1).credits), balanceBefore);
+    assert.equal(Number(ledger.credits), Number(hold.held_credits));
+    assert.equal(ledger.ai_mode, 'hold');
+    assert.equal(
+      Number(q.get(`SELECT credits FROM tenants WHERE id=?`, 1).credits),
+      balanceBefore - Number(hold.held_credits),
+    );
     const snapshot = JSON.parse(row.snapshot_json);
     assert.equal(snapshot.status, '失败');
-    assert.equal(snapshot.billing.state, 'released');
-    assert.equal(Number(snapshot.billing.chargedCredits), 0);
+    assert.equal(snapshot.billing.state, 'pending_reconciliation');
+    assert.equal(snapshot.billing.chargedCredits, null);
+    assert.equal(snapshot.billing.releaseSuppressed, true);
+    assert.equal(snapshot.providerExecution.invocationStarted, true);
+    assert.equal(snapshot.providerExecution.invocationCount, 2);
+    assert.deepEqual(
+      snapshot.providerExecution.segments.map(segment => segment.status),
+      ['downloaded', 'failed', 'planned'],
+    );
+    assert.deepEqual(
+      snapshot.providerExecution.segments.map(segment => segment.taskId),
+      ['local-failure-task-1', null, null],
+    );
     assert.doesNotMatch(row.snapshot_json, /provider\.invalid|local-sales-failure/u);
+  } finally {
+    await new Promise(resolve => local.server.close(resolve));
+  }
+});
+
+test('failure before the first provider invocation releases the complete hold', async () => {
+  q.run(`UPDATE tenants SET credits=100000 WHERE id=?`, 1);
+  let providerCalls = 0;
+  const runtime = {
+    skipPriceCheck: true,
+    beforeProviderInvocation: async () => {
+      throw new Error('local pre-provider gate failure');
+    },
+    submitSegment: async () => {
+      providerCalls += 1;
+      return { url: 'https://provider.invalid/must-not-run.mp4' };
+    },
+    compose: async () => {
+      throw new Error('compose must not run before provider invocation');
+    },
+  };
+  const app = appFor(user, runtime);
+  const local = await listenApp(app);
+  const balanceBefore = Number(q.get(`SELECT credits FROM tenants WHERE id=?`, 1).credits);
+  try {
+    const response = await fetch(`${local.base}/content/ai-sales-video`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ brief: '验证供应商调用前失败退款', referenceImages: [tinyImage] }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.status, 'processing');
+    const row = await waitForMediaJob(body.jobId, '失败');
+    assert.equal(providerCalls, 0);
+    assert.equal(Number(row.credits), 0);
+    const hold = q.get(
+      `SELECT * FROM credit_holds WHERE tenant_id=? AND ref_type='media_job' AND ref_id=?`,
+      1,
+      body.jobId,
+    );
+    assert.ok(hold);
+    assert.equal(hold.status, 'settled');
+    assert.equal(Number(hold.settled_credits), 0);
+    assert.equal(Number(q.get(`SELECT credits FROM tenants WHERE id=?`, 1).credits), balanceBefore);
+    const snapshot = JSON.parse(row.snapshot_json);
+    assert.equal(snapshot.billing.state, 'released');
+    assert.equal(snapshot.providerExecution.invocationStarted, false);
+    assert.deepEqual(
+      snapshot.providerExecution.segments.map(segment => segment.status),
+      ['planned', 'planned', 'planned'],
+    );
+  } finally {
+    await new Promise(resolve => local.server.close(resolve));
+  }
+});
+
+test('refunded historical job can recover existing provider tasks with zero new submissions', async () => {
+  q.run(`UPDATE tenants SET credits=100000 WHERE id=?`, 1);
+  const plan = buildAiSalesVideoPlan({
+    brief: '复用三个已经完成的旧供应商视频片段',
+    references: [{ source: 'inline', name: '旧任务参考图', dataUrl: tinyImage }],
+    model: 'MiniMax-Hailuo-2.3',
+  });
+  const providerExecution = {
+    invocationStarted: true,
+    invocationCount: 3,
+    segments: plan.segments.map(segment => ({
+      index: segment.index,
+      durationSeconds: segment.durationSeconds,
+      status: 'downloaded',
+      taskId: `historical-provider-task-${segment.index}`,
+    })),
+  };
+  const jobId = Number(q.run(
+    `INSERT INTO media_jobs(
+      tenant_id,user_id,kind,model,prompt,status,content_run_mode,snapshot_json
+    ) VALUES(?,?,?,?,?,'失败','ai_sales_video',?)`,
+    1,
+    user.id,
+    'video',
+    plan.model,
+    '历史带货视频恢复测试',
+    JSON.stringify({ ...plan, status: '失败', providerExecution }),
+  ).lastInsertRowid);
+  const releasedHold = holdCredits({
+    userId: user.id,
+    feature: '历史带货视频恢复测试',
+    kind: 'video',
+    model: plan.model,
+    credits: 1710,
+    refType: 'media_job',
+    refId: jobId,
+  });
+  releaseHold(releasedHold, '模拟旧版本误判超时后的全额退回');
+  const projected = runWithTenant(1, () => augmentMediaJob(
+    q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', 1, jobId),
+    user,
+  ));
+  assert.equal(projected.recovery.available, true);
+  assert.equal(projected.recovery.requiresBillingConfirmation, true);
+  assert.equal(projected.recovery.providerSubmissions, 0);
+  const queryCalls = [];
+  const runtime = {
+    recoverQuery: async ({ taskId }) => {
+      queryCalls.push(taskId);
+      return { status: 'Success', url: `https://provider.invalid/${taskId}.mp4` };
+    },
+    recoverDownload: async ({ outputDir, index }) => {
+      const filePath = path.join(outputDir, `recovered-${index}.mp4`);
+      await fsp.writeFile(filePath, Buffer.from(`segment-${index}`));
+      return { path: filePath, sha256: String(index).repeat(64) };
+    },
+    recoverCompose: async ({ tenantId, segments }) => ({
+      url: `/uploads/ai-sales-video/${tenantId}/recovered-route-job.mp4`,
+      durationSeconds: 30,
+      width: 1080,
+      height: 1920,
+      videoCodec: 'h264',
+      audioCodec: 'aac',
+      segmentCount: segments.length,
+      sha256: 'a'.repeat(64),
+    }),
+  };
+  const app = appFor(user, runtime);
+  const local = await listenApp(app);
+  const balanceBefore = Number(q.get('SELECT credits FROM tenants WHERE id=?', 1).credits);
+  try {
+    const quoteResponse = await fetch(`${local.base}/content/media-jobs/${jobId}/recover-ai-sales-video`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const quote = await quoteResponse.json();
+    assert.equal(quoteResponse.status, 409);
+    assert.equal(quote.code, 'AI_SALES_VIDEO_RECOVERY_BILLING_CONFIRMATION_REQUIRED');
+    assert.equal(quote.billing.estimatedCredits, 1710);
+    assert.equal(quote.billing.providerSubmissions, 0);
+    assert.equal(queryCalls.length, 0);
+
+    const response = await fetch(`${local.base}/content/media-jobs/${jobId}/recover-ai-sales-video`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmCharge: true }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.status, 'processing');
+    assert.equal(body.recovery.providerSubmissions, 0);
+    const row = await waitForMediaJob(jobId, '成功');
+    assert.equal(row.url, '/uploads/ai-sales-video/1/recovered-route-job.mp4');
+    assert.equal(queryCalls.length, 3);
+    const snapshot = JSON.parse(row.snapshot_json);
+    assert.equal(snapshot.result.providerCalls, 0);
+    assert.equal(snapshot.result.reusedProviderTasks, 3);
+    assert.equal(snapshot.providerExecution.recovery.providerSubmissions, 0);
+    const latestHold = q.get(
+      `SELECT * FROM credit_holds WHERE tenant_id=? AND ref_type='media_job' AND ref_id=? ORDER BY id DESC LIMIT 1`,
+      1,
+      jobId,
+    );
+    assert.equal(latestHold.status, 'settled');
+    assert.equal(Number(latestHold.settled_credits), 1710);
+    assert.equal(Number(q.get('SELECT credits FROM tenants WHERE id=?', 1).credits), balanceBefore - 1710);
   } finally {
     await new Promise(resolve => local.server.close(resolve));
   }

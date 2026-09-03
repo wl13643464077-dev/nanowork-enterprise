@@ -14,6 +14,7 @@ import {
   settleHold,
 } from "./credits.js";
 import { assertContentDeliverable } from "./delivery-state.js";
+import { resolveFfmpeg } from "./media-binaries.js";
 
 export const WECHAT_DRAFT_BILLING_REF = "wechat_draft_delivery";
 export const WECHAT_DRAFT_FIXED_CREDITS = 1;
@@ -961,8 +962,10 @@ function runImageProcess(
 }
 
 export function createWechatImageProcessor({
+  // 统一解析器兜底：launchd 的最小 PATH 找不到裸命令时改用绝对路径。
   ffmpegPath = process.env.WECHAT_IMAGE_FFMPEG_PATH ||
     process.env.FFMPEG_PATH ||
+    resolveFfmpeg() ||
     "ffmpeg",
   runner = runImageProcess,
 } = {}) {

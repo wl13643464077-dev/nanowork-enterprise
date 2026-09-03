@@ -4,6 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Most fixtures in this file intentionally exercise the independent Shanghai
+// business schedule. Runtime stale-recovery has a dedicated non-Shanghai case
+// below and must follow SQLite's localtime clock instead.
+const ORIGINAL_TZ = process.env.TZ;
+process.env.TZ = 'Asia/Shanghai';
+
 const DBP = path.join(os.tmpdir(), `nanowork-scheduler-recovery-${process.pid}.db`);
 for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
   try { fs.rmSync(file, { force: true }); } catch { /* fresh database */ }
@@ -489,7 +495,7 @@ test('恢复超时数字员工任务：无产出原子退款，只有审阅链�
   q.run('DELETE FROM agent_tasks WHERE tenant_id=1 AND id=?', activeHeartbeatTaskId);
 });
 
-test('恢复超时媒体任务：无交付且无供应商任务号退款；已有产物待对账；视频任务号继续轮询', () => {
+test('恢复超时媒体任务：无交付且无调用证据退款；已有产物待对账；供应商任务保留恢复', () => {
   const staleAt = '2026-07-23 08:00:00';
   const emptyJobId = runWithTenant(1, () => Number(q.run(
     `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
@@ -545,16 +551,157 @@ test('恢复超时媒体任务：无交付且无供应商任务号退款；已�
   ));
   assert.equal(recovered.find(item => item.jobId === emptyJobId)?.billingState, 'released');
   assert.equal(recovered.find(item => item.jobId === deliveredJobId)?.billingState, 'pending_reconciliation');
-  assert.equal(recovered.find(item => item.jobId === videoJobId)?.action, 'continue_provider_polling');
+  assert.equal(recovered.find(item => item.jobId === videoJobId)?.billingState, 'pending_reconciliation');
+  assert.equal(recovered.find(item => item.jobId === videoJobId)?.action, 'continue_existing_provider_work');
   assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', emptyJobId).status, '失败');
   assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', deliveredJobId).status, '成功');
-  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', videoJobId).status, '处理中');
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', videoJobId).status, '失败');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', emptyHold.holdId).status, 'settled');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', deliveredHold.holdId).status, 'held');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', videoHold.holdId).status, 'held');
   assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 37 - 41);
   releaseHold(deliveredHold, '测试结束清理已有产物待对账占扣');
-  releaseHold(videoHold, '测试结束清理视频轮询占扣');
+  releaseHold(videoHold, '测试结束清理视频供应商任务占扣');
+  q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id=?`, videoJobId);
+});
+
+test('媒体恢复读取providerExecution：snapshot任务号或invocationStarted均禁止退款', () => {
+  const staleAt = '2026-07-23 08:00:00';
+  const insertJob = (prompt, providerExecution) => runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,snapshot_json,created_at)
+     VALUES(?,'video','MiniMax-Hailuo-2.3',?,'处理中',?,?)`,
+    creatorId,
+    prompt,
+    JSON.stringify({ providerExecution }),
+    staleAt,
+  ).lastInsertRowid));
+  const snapshotTaskJobId = insertJob('snapshot任务号', {
+    invocationStarted: false,
+    segments: [{ index: 1, taskId: 'snapshot-only-provider-task' }],
+  });
+  const invocationOnlyJobId = insertJob('已外调但未取得任务号', {
+    invocationStarted: true,
+    segments: [{ index: 1, taskId: null }],
+  });
+  const noInvocationJobId = insertJob('真正未外调', {
+    invocationStarted: false,
+    segments: [{ index: 1, taskId: null }],
+  });
+  const snapshotTaskHold = holdCredits({
+    userId: creatorId,
+    feature: 'snapshot任务号恢复测试',
+    kind: 'video',
+    model: 'MiniMax-Hailuo-2.3',
+    credits: 43,
+    refType: 'media_job',
+    refId: snapshotTaskJobId,
+  });
+  const invocationOnlyHold = holdCredits({
+    userId: creatorId,
+    feature: '已外调无任务号恢复测试',
+    kind: 'video',
+    model: 'MiniMax-Hailuo-2.3',
+    credits: 47,
+    refType: 'media_job',
+    refId: invocationOnlyJobId,
+  });
+  const noInvocationHold = holdCredits({
+    userId: creatorId,
+    feature: '真正未外调恢复测试',
+    kind: 'video',
+    model: 'MiniMax-Hailuo-2.3',
+    credits: 53,
+    refType: 'media_job',
+    refId: noInvocationJobId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  for (const jobId of [snapshotTaskJobId, invocationOnlyJobId]) {
+    const item = recovered.find(candidate => candidate.jobId === jobId);
+    assert.equal(item?.billingState, 'pending_reconciliation');
+    assert.equal(item?.action, 'continue_existing_provider_work');
+    const row = q.get('SELECT status,snapshot_json FROM media_jobs WHERE id=?', jobId);
+    assert.equal(row.status, '失败');
+    assert.equal(JSON.parse(row.snapshot_json).providerRecovery.action, 'continue_existing_provider_work');
+  }
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', snapshotTaskHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', invocationOnlyHold.holdId).status, 'held');
+  assert.equal(
+    recovered.find(item => item.jobId === noInvocationJobId)?.billingState,
+    'released',
+  );
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', noInvocationJobId).status, '失败');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', noInvocationHold.holdId).status, 'settled');
+
+  releaseHold(snapshotTaskHold, '清理snapshot任务号恢复测试占扣');
+  releaseHold(invocationOnlyHold, '清理已外调无任务号恢复测试占扣');
+  q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id IN (?,?)`,
+    snapshotTaskJobId, invocationOnlyJobId);
+});
+
+test('媒体恢复优先使用providerExecution ISO心跳，长视频仍活跃时不误杀', () => {
+  const jobId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,snapshot_json,created_at)
+     VALUES(?,'video','MiniMax-Hailuo-2.3','新鲜provider心跳','处理中',?,'2026-07-23 08:00:00')`,
+    creatorId,
+    JSON.stringify({
+      providerExecution: {
+        invocationStarted: true,
+        updatedAt: '2026-07-23T01:55:00.000Z',
+        segments: [{ index: 1, taskId: 'active-provider-task' }],
+      },
+    }),
+  ).lastInsertRowid));
+  const hold = holdCredits({
+    userId: creatorId,
+    feature: '媒体provider心跳恢复测试',
+    kind: 'video',
+    model: 'MiniMax-Hailuo-2.3',
+    credits: 59,
+    refType: 'media_job',
+    refId: jobId,
+  });
+
+  const recovered = runWithTenant(1, () => (
+    recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z'))
+  ));
+  assert.equal(recovered.some(item => item.jobId === jobId), false);
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', jobId).status, '处理中');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', hold.holdId).status, 'held');
+  releaseHold(hold, '清理媒体provider心跳恢复测试占扣');
+  q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id=?`, jobId);
+});
+
+test('SQLite localtime恢复与上海经营时钟解耦，非上海主机不误杀新任务', () => {
+  const previousTz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    // 02:00Z == 19:00 PDT on the previous day. The former Shanghai cutoff
+    // was 09:30 on July 23 and incorrectly classified both rows as stale.
+    const freshJobId = runWithTenant(1, () => Number(q.run(
+      `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
+       VALUES(?,'image','gpt-image-2','PDT新鲜任务','处理中','2026-07-22 18:50:00')`,
+      creatorId,
+    ).lastInsertRowid));
+    const staleJobId = runWithTenant(1, () => Number(q.run(
+      `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
+       VALUES(?,'image','gpt-image-2','PDT超时任务','处理中','2026-07-22 18:00:00')`,
+      creatorId,
+    ).lastInsertRowid));
+
+    const recovered = runWithTenant(1, () => (
+      recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z'))
+    ));
+    assert.equal(recovered.some(item => item.jobId === freshJobId), false);
+    assert.equal(recovered.some(item => item.jobId === staleJobId), true);
+    assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', freshJobId).status, '处理中');
+    assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', staleJobId).status, '失败');
+    q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id=?`, freshJobId);
+  } finally {
+    process.env.TZ = previousTz;
+  }
 });
 
 test('恢复超时内容员工运行：无产物原子退款，有产物保留占扣待对账，活跃运行不受影响', () => {
@@ -1029,4 +1176,6 @@ after(() => {
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch { /* cleanup */ }
   }
+  if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+  else process.env.TZ = ORIGINAL_TZ;
 });

@@ -16,6 +16,8 @@ function providerReason(status, payload) {
   if (status === 401 || status === 403 || /invalid token|unauthori[sz]ed|authentication|鉴权/i.test(raw)) return 'auth';
   if (status === 429 || /rate.?limit|too many requests|quota|insufficient balance|额度不足/i.test(raw)) return 'rate_limit';
   if (/audio duration is invalid/i.test(raw)) return 'audio_duration';
+  if (/prompt.{0,80}(?:too long|maximum length|max length|exceed|limit|1000)|(?:too long|maximum length|max length).{0,80}prompt/i.test(raw)) return 'prompt_too_long';
+  if (/size.{0,80}(?:unsupported|not support|invalid|must be|allowed)|(?:unsupported|invalid).{0,80}size/i.test(raw)) return 'unsupported_size';
   if (/unsupported model|model.+not.+support|unknown model/i.test(raw)) return 'unsupported_model';
   if (status === 404) return 'not_found';
   if (status === 400 || status === 409 || status === 422) return 'invalid_request';
@@ -30,6 +32,10 @@ function publicFailure(reason, service) {
       return { status: 503, message: `${service}当前繁忙或额度受限，请稍后重试` };
     case 'audio_duration':
       return { status: 400, message: `${service}未接受当前音频时长参数，请调整素材后重试` };
+    case 'prompt_too_long':
+      return { status: 400, message: `${service}收到的图片描述超过上游长度限制，系统需压缩后重试` };
+    case 'unsupported_size':
+      return { status: 400, message: `${service}不支持当前图片尺寸，请改用已接入规格` };
     case 'unsupported_model':
       return { status: 400, message: `${service}暂不支持当前模型，请切换已接入模型` };
     case 'not_found':

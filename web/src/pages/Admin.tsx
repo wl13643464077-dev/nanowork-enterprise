@@ -34,6 +34,7 @@ import {
   RobotOutlined,
   RollbackOutlined,
   SafetyCertificateOutlined,
+  QuestionCircleOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserOutlined,
@@ -43,6 +44,9 @@ import { StatCard, Panel } from '../components/Kit';
 import AdminDispatchPolicyPanel, { AdminDeptModulesPanel } from './AdminDispatchPolicyPanel';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
+import { AdminWebSearchPanel } from '../components/AdminWebSearchPanel';
+import { AdminMiniMaxH3Panel } from '../components/AdminMiniMaxH3Panel';
+import FeatureGuideCenter from '../components/FeatureGuideCenter';
 import './Admin.css';
 
 // ===== 常量与小工具 =====
@@ -111,6 +115,7 @@ const MENU = [
 export default function Admin() {
   const user = getUser();
   const [tab, setTab] = useState('overview');
+  const [featureGuideOpen, setFeatureGuideOpen] = useState(false);
 
   if (!user || !['boss', 'admin'].includes(user.role)) {
     return (
@@ -174,6 +179,9 @@ export default function Admin() {
         <header className="admin-topbar">
           <div className="admin-topbar-title">管理后台 · 纳米Work行业版</div>
           <Space size={12} className="admin-topbar-actions">
+            <Button size="small" icon={<QuestionCircleOutlined />} onClick={() => setFeatureGuideOpen(true)}>
+              功能使用指引
+            </Button>
             <Button size="small" icon={<RollbackOutlined />} onClick={() => (location.href = '/')}>
               返回前台
             </Button>
@@ -193,6 +201,17 @@ export default function Admin() {
           {tab === 'logs' && <LogsSecurity />}
         </div>
       </div>
+      <FeatureGuideCenter
+        open={featureGuideOpen}
+        onClose={() => setFeatureGuideOpen(false)}
+        currentPath="/admin"
+        modules={Array.isArray(user.modules) ? user.modules : []}
+        role={user.role}
+        navigate={path => {
+          location.href = path;
+        }}
+        contextKey={tab}
+      />
     </div>
   );
 }
@@ -1265,6 +1284,7 @@ function MarshalsAdmin() {
 function ApiConfig() {
   const [cfg, setCfg] = useState<any>(null);
   const [baseUrl, setBaseUrl] = useState('');
+  const [h3, setH3] = useState<any>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
   const testConn = () => {
@@ -1280,25 +1300,30 @@ function ApiConfig() {
   };
   const [rt, setRt] = useState<any>(null);
   const [bl, setBl] = useState<any>(null);
-
   const load = () =>
     api.get('/admin/api-config').then((d: any) => {
       setCfg(d);
       setBaseUrl(d.channel?.baseUrl || '');
       setRt(d.routing || {});
       setBl(d.billing || {});
+      setH3({
+        pricePer15s768p: Number(d.h3?.pricing?.pricePer15s768p || 0),
+        providerVerified: d.h3?.capability?.providerVerified === true,
+        billingVerified: d.h3?.capability?.billingVerified === true,
+        priceBasis: d.h3?.capability?.priceBasis || '',
+      });
     });
   useEffect(() => {
     load();
   }, []);
 
   const save = () =>
-    api.put('/admin/api-config', { routing: rt, billing: bl, baseUrl }).then(() => {
+    api.put('/admin/api-config', { routing: rt, billing: bl, baseUrl, h3 }).then(() => {
       message.success('接口配置已保存，立即生效');
       load();
     });
 
-  if (!cfg || !rt || !bl)
+  if (!cfg || !rt || !bl || !h3)
     return <div style={{ padding: 60, textAlign: 'center', color: 'var(--ui-muted)' }}>加载中…</div>;
 
   const setTextModel = (role: string, v: string) => setRt({ ...rt, text: { ...rt.text, [role]: v } });
@@ -1313,6 +1338,9 @@ function ApiConfig() {
     cfg.readiness?.channels?.find((item: any) => item.key === 'ai') ||
     ({ effective: cfg.channel?.available ? 'configured_unverified' : 'degraded' } as any);
   const aiState = readinessMeta(aiReadiness);
+  const searchReadiness =
+    cfg.readiness?.channels?.find((item: any) => item.key === 'web_search') ||
+    ({ effective: 'degraded', details: {} } as any);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1439,11 +1467,17 @@ function ApiConfig() {
             </div>
           </Panel>
         </Col>
+
+        <Col xs={24}>
+          <AdminWebSearchPanel readiness={searchReadiness} onRefresh={load} />
+        </Col>
+
+        <AdminMiniMaxH3Panel config={cfg.h3} value={h3} onChange={setH3} />
       </Row>
 
-      {/* C. 计费配置 */}
+      {/* D. 计费配置 */}
       <Panel
-        title="C · 计费配置"
+        title="D · 计费配置"
         extra={
           <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
             扣减公式：credits = ceil( 成本¥ × 利润系数 ÷ 积分单价 )

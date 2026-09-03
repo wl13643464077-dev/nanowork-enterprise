@@ -38,6 +38,13 @@ const DEFAULT_MIME = Object.freeze({
   material: "application/octet-stream",
 });
 
+const TERMINAL_PROVIDER_BILLING_STATES = new Set([
+  "settled",
+  "released",
+  "not_held",
+]);
+const SAFE_CONTENT_PROVIDER_ERROR_CODE = /^CONTENT_[A-Z0-9_]{1,120}$/u;
+
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -117,6 +124,51 @@ function providerOf(response, providerKind) {
     model: redactText(provider.model || response?.model || ""),
     mode: redactText(provider.mode || response?.mode || "injected"),
   };
+}
+
+function providerBillingOf(invocation) {
+  const responseBilling = isRecord(invocation?.response?.bridge?.billing)
+    ? invocation.response.bridge.billing
+    : null;
+  const failureBilling = isRecord(invocation?.billing)
+    ? invocation.billing
+    : null;
+  const billing = responseBilling || failureBilling;
+  if (!billing) return null;
+  const state = redactText(billing.state || billing.status || "")
+    .trim()
+    .toLowerCase();
+  return {
+    ...sanitizeValue(billing),
+    state: state || "unknown",
+    pendingReconciliation:
+      billing.pendingReconciliation === true ||
+      state === "pending_reconciliation",
+  };
+}
+
+function providerBillingAllowsDependentCall(billing) {
+  if (!billing) return true;
+  return (
+    billing.pendingReconciliation !== true &&
+    TERMINAL_PROVIDER_BILLING_STATES.has(billing.state)
+  );
+}
+
+function contentProviderErrorCode(error) {
+  const code = String(error?.code || "").trim();
+  return SAFE_CONTENT_PROVIDER_ERROR_CODE.test(code) ? code : null;
+}
+
+function providerFailureStatus(error) {
+  const candidates = [error?.providerStatus, error?.status];
+  for (const value of candidates) {
+    const status = Number(value);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) {
+      return status;
+    }
+  }
+  return 502;
 }
 
 function safeId(value, label) {
@@ -262,17 +314,76 @@ function normalizeCoverPlan(value, platforms) {
   });
 }
 
+function rasterMimeFromBytes(bytes) {
+  if (!bytes || bytes.length < 3) return "";
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  )
+    return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
+    return "image/jpeg";
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  )
+    return "image/webp";
+  if (
+    bytes.length >= 6 &&
+    ["GIF87a", "GIF89a"].includes(String.fromCharCode(...bytes.slice(0, 6)))
+  )
+    return "image/gif";
+  return "";
+}
+
+function rasterMimeFromBase64(value) {
+  const base64 = String(value || "").trim();
+  if (!base64 || !/^[a-z0-9+/]+={0,2}$/iu.test(base64)) return "";
+  try {
+    return rasterMimeFromBytes(Uint8Array.from(Buffer.from(base64, "base64")));
+  } catch {
+    return "";
+  }
+}
+
 function previewableRasterEntry(item) {
   if (!isRecord(item)) return false;
   const mimeType = inferMime(item, DEFAULT_MIME.image);
   if (!/^image\/(?:png|jpe?g|webp|gif)$/iu.test(mimeType)) return false;
   if (typeof item.url === "string" && /^https?:\/\//iu.test(item.url.trim())) {
-    return true;
+    try {
+      const pathname = new URL(item.url.trim()).pathname.toLowerCase();
+      if (/\.(?:svg|html?|xml|json|txt)$/iu.test(pathname)) return false;
+      return true;
+    } catch {
+      return false;
+    }
   }
-  if (typeof item.b64 === "string" && item.b64.trim()) return true;
+  if (typeof item.b64 === "string" && item.b64.trim()) {
+    const detected = rasterMimeFromBase64(item.b64);
+    return (
+      detected === mimeType ||
+      (detected === "image/jpeg" && mimeType === "image/jpg")
+    );
+  }
+  if (typeof item.content !== "string") return false;
+  const match = item.content
+    .trim()
+    .match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=]+)$/iu);
+  if (!match) return false;
+  const detected = rasterMimeFromBase64(match[2]);
+  const contentMime = match[1].toLowerCase().replace("image/jpg", "image/jpeg");
   return (
-    typeof item.content === "string" &&
-    /^data:image\/(?:png|jpe?g|webp|gif);base64,/iu.test(item.content.trim())
+    detected === contentMime &&
+    detected === mimeType.replace("image/jpg", "image/jpeg")
   );
 }
 
@@ -377,6 +488,7 @@ function attemptRecord({
   response,
   status,
   error,
+  providerErrorCode,
   billing,
   startedAt,
   completedAt,
@@ -395,6 +507,7 @@ function attemptRecord({
       ? {
           error: error.message,
           providerReason: error.providerReason || "network",
+          ...(providerErrorCode ? { providerErrorCode } : {}),
           ...(billing ? { billing: sanitizeValue(billing) } : {}),
         }
       : {}),
@@ -514,6 +627,7 @@ export async function executeContentSpecialHandlerRuntime({
       const error = sanitizeProviderError(rawError, {
         service: `${providerKind}内容供应商`,
       });
+      const providerErrorCode = contentProviderErrorCode(rawError);
       const billing = isRecord(rawError?.billing)
         ? sanitizeValue(rawError.billing)
         : null;
@@ -525,12 +639,19 @@ export async function executeContentSpecialHandlerRuntime({
           response: null,
           status: "failed",
           error,
+          providerErrorCode,
           billing,
           startedAt: attemptStartedAt,
           completedAt: now().toISOString(),
         }),
       );
-      return { skipped: false, response: null, error, billing };
+      return {
+        skipped: false,
+        response: null,
+        error,
+        providerErrorCode,
+        billing,
+      };
     }
   };
 
@@ -640,13 +761,23 @@ export async function executeContentSpecialHandlerRuntime({
           .filter(Boolean)
           .slice(0, 6)
       : [];
+    const visualPolicyVersion = String(
+      request.visual_policy_version || request.visualPolicyVersion || "legacy",
+    )
+      .trim()
+      .toLowerCase();
     const materialCount =
       mode === "real"
         ? total
         : mode === "mix"
-          ? Math.max(1, Math.floor(total / 2))
+          ? visualPolicyVersion === "v2"
+            ? total
+            : Math.ceil(total / 2)
           : 0;
     let materialArtifacts = [];
+    let materialBilling = null;
+    let materialProviderFailed = false;
+    let materialProviderErrorCode = null;
     if (materialCount > 0) {
       const material = await invoke("material", "licensed_material_search", {
         count: materialCount,
@@ -654,14 +785,36 @@ export async function executeContentSpecialHandlerRuntime({
         imagePlan: plan.slice(0, materialCount),
         platforms,
       });
-      const entries = normalizeMediaEntries(material.response).slice(
-        0,
-        materialCount,
-      );
-      const provider = providerOf(material.response, "material");
-      materialArtifacts = entries.map((item, index) =>
-        mediaArtifact(item, context, provider, fallback, index, "material"),
-      );
+      materialBilling = providerBillingOf(material);
+      materialProviderFailed = Boolean(material.error);
+      materialProviderErrorCode = material.providerErrorCode || null;
+      if (material.error && mode === "real") {
+        const partialEvidence = buildEvidence({
+          executionKind,
+          runId,
+          invocationId,
+          startedAt,
+          now,
+          attempts,
+          fallback,
+          artifacts: materialArtifacts,
+        });
+        throw runtimeFailure(
+          "已授权真实素材供应商调用失败，已停止任务；不会把未取得的素材冒充为真实素材",
+          partialEvidence,
+          providerFailureStatus(material.error),
+          material.billing,
+        );
+      }
+      if (!material.error) {
+        const entries = normalizeMediaEntries(material.response)
+          .filter(previewableRasterEntry)
+          .slice(0, materialCount);
+        const provider = providerOf(material.response, "material");
+        materialArtifacts = entries.map((item, index) =>
+          mediaArtifact(item, context, provider, fallback, index, "material"),
+        );
+      }
     }
     if (mode === "real" && materialArtifacts.length !== total) {
       const partialEvidence = buildEvidence({
@@ -680,22 +833,56 @@ export async function executeContentSpecialHandlerRuntime({
         422,
       );
     }
-    if (mode === "mix" && materialArtifacts.length === 0) {
-      const partialEvidence = buildEvidence({
-        executionKind,
-        runId,
-        invocationId,
-        startedAt,
-        now,
-        attempts,
-        fallback,
-        artifacts: [],
-      });
+    if (
+      mode === "mix" &&
+      materialArtifacts.length < total &&
+      !providerBillingAllowsDependentCall(materialBilling)
+    ) {
+      const partialEvidence = {
+        ...buildEvidence({
+          executionKind,
+          runId,
+          invocationId,
+          startedAt,
+          now,
+          attempts,
+          fallback,
+          artifacts: materialArtifacts,
+        }),
+        billingGate: {
+          providerKind: "material",
+          state: materialBilling.state,
+          pendingReconciliation: materialBilling.pendingReconciliation === true,
+          allowedToCallImageProvider: false,
+          action: "blocked_before_ai_image_fill",
+        },
+      };
       throw runtimeFailure(
-        "真实素材+AI混合模式没有取得任何已授权素材，已停止任务；不会降级成纯AI生图",
+        `授权素材账务尚未终结（state=${materialBilling.state}），已在GPT Image 2补图前停止；不会叠加新的图片预授权，请先完成当前素材占扣对账后重试`,
         partialEvidence,
-        422,
+        409,
+        materialBilling,
       );
+    }
+    if (mode === "mix" && materialArtifacts.length < materialCount) {
+      const materialFallbackReason = materialProviderFailed
+        ? `已授权真实素材供应商调用失败${
+            materialProviderErrorCode
+              ? `（错误码${materialProviderErrorCode}）`
+              : ""
+          }；缺口自动交给GPT Image 2生成，AI生成图不会标记为实拍或授权素材`
+        : `已授权真实素材只取得${materialArtifacts.length}/${materialCount}张；` +
+          "缺口自动交给GPT Image 2生成，AI生成图不会标记为实拍或授权素材";
+      fallback = {
+        used: true,
+        from: "licensed_material_search",
+        to: "gpt-image-2",
+        strategy: "licensed_material_to_ai_image",
+        ...(materialProviderErrorCode
+          ? { providerErrorCode: materialProviderErrorCode }
+          : {}),
+        reason: materialFallbackReason,
+      };
     }
     if (mode === "real") {
       artifacts = materialArtifacts;
@@ -713,8 +900,34 @@ export async function executeContentSpecialHandlerRuntime({
               platforms,
             })
           : { skipped: true, response: null, error: null };
+      if (image.error) {
+        const partialEvidence = buildEvidence({
+          executionKind,
+          runId,
+          invocationId,
+          startedAt,
+          now,
+          attempts,
+          fallback,
+          artifacts: materialArtifacts,
+        });
+        throw runtimeFailure(
+          `${mode === "mix" ? "GPT Image 2补图" : "AI图片"}供应商调用失败，已停止任务；不会用SVG、HTML或不足张数冒充完整交付`,
+          partialEvidence,
+          providerFailureStatus(image.error),
+          image.billing,
+        );
+      }
       const provider = providerOf(image.response, "image");
+      if (
+        fallback.used === true &&
+        fallback.strategy === "licensed_material_to_ai_image" &&
+        provider.model
+      ) {
+        fallback = { ...fallback, to: provider.model };
+      }
       const imageArtifacts = normalizeMediaEntries(image.response)
+        .filter(previewableRasterEntry)
         .slice(0, imageCount)
         .map((item, index) =>
           mediaArtifact(
@@ -726,7 +939,7 @@ export async function executeContentSpecialHandlerRuntime({
           ),
         );
       artifacts = [...materialArtifacts, ...imageArtifacts];
-      if (mode === "mix" && imageCount > 0 && imageArtifacts.length === 0) {
+      if (imageCount > 0 && imageArtifacts.length !== imageCount) {
         const partialEvidence = buildEvidence({
           executionKind,
           runId,
@@ -738,24 +951,7 @@ export async function executeContentSpecialHandlerRuntime({
           artifacts,
         });
         throw runtimeFailure(
-          "真实素材+AI混合模式的AI图片供应商未返回产物，已停止任务；不会把文本回退冒充完整混合交付",
-          partialEvidence,
-          422,
-        );
-      }
-      if (!artifacts.length) {
-        const partialEvidence = buildEvidence({
-          executionKind,
-          runId,
-          invocationId,
-          startedAt,
-          now,
-          attempts,
-          fallback,
-          artifacts,
-        });
-        throw runtimeFailure(
-          "AI配图模式未取得真实位图，已停止任务；不会用SVG示意图冒充配图",
+          `${mode === "mix" ? "GPT Image 2补图" : "AI配图"}只取得${imageArtifacts.length}/${imageCount}张可预览位图，已停止任务；不会用SVG示意图冒充配图，也不会用HTML或不足张数冒充完整交付`,
           partialEvidence,
           502,
         );
@@ -846,9 +1042,7 @@ export async function executeContentSpecialHandlerRuntime({
       if (image.skipped || image.error || artifacts.length !== plan.length) {
         fallback = {
           used: true,
-          from: image.skipped
-            ? "image_provider_unavailable"
-            : "image_provider",
+          from: image.skipped ? "image_provider_unavailable" : "image_provider",
           to: "text_provider_html",
           reason: image.error
             ? image.error.message
@@ -870,7 +1064,11 @@ export async function executeContentSpecialHandlerRuntime({
             mimeType: DEFAULT_MIME.html,
             provider: htmlProvider,
             fallback,
-            fileName: artifactFileName({ ...context, index, extension: "html" }),
+            fileName: artifactFileName({
+              ...context,
+              index,
+              extension: "html",
+            }),
           }),
           content: item.content,
           ...(item.platform ? { platform: redactText(item.platform) } : {}),

@@ -48,6 +48,7 @@ import {
   AppstoreOutlined,
   ToolOutlined,
   RocketOutlined,
+  PlayCircleOutlined,
   TeamOutlined,
   WarningOutlined,
   SearchOutlined,
@@ -59,6 +60,8 @@ import { api, getUser, clearAuth } from '../api/client';
 import { PageSkeleton } from '../components/Kit';
 import CommandPalette, { rememberRecent } from '../components/CommandPalette';
 import { RouteErrorBoundary } from '../components/AppErrorBoundary';
+import FeatureGuideCenter from '../components/FeatureGuideCenter';
+import RoleOnboarding from '../components/RoleOnboarding';
 import './MainLayout.css';
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
@@ -363,6 +366,8 @@ export default function MainLayout() {
   const [mailOpen, setMailOpen] = useState(false);
   const [mailTab, setMailTab] = useState('all');
   const [helpOpen, setHelpOpen] = useState(false);
+  const [featureGuideOpen, setFeatureGuideOpen] = useState(false);
+  const [onboardingNonce, setOnboardingNonce] = useState(0);
   const [personalFeishuOpen, setPersonalFeishuOpen] = useState(false);
   const [personalFeishu, setPersonalFeishu] = useState<any>(null);
   const [personalFeishuBind, setPersonalFeishuBind] = useState<any>(null);
@@ -474,6 +479,7 @@ export default function MainLayout() {
           <button
             type="button"
             className="os-cmdk-trigger"
+            data-onboarding="search"
             aria-label={`打开全局搜索与命令面板（${isMacLike ? '⌘K' : 'Ctrl+K'}）`}
             aria-keyshortcuts={isMacLike ? 'Meta+K' : 'Control+K'}
             onClick={() => setCmdkOpen(true)}
@@ -550,6 +556,7 @@ export default function MainLayout() {
               <button
                 type="button"
                 className="os-ask-brain"
+                data-onboarding="assistant"
                 aria-label={`打开${assistantCopy.title}`}
                 aria-expanded={aiOpen}
                 aria-controls="boss-assistant-inspector"
@@ -650,7 +657,13 @@ export default function MainLayout() {
             </Badge>
           </Tooltip>
           <Tooltip title="帮助中心">
-            <button type="button" className="os-icon-btn" aria-label="打开帮助中心" onClick={() => setHelpOpen(true)}>
+            <button
+              type="button"
+              className="os-icon-btn os-help-btn"
+              data-onboarding="help"
+              aria-label="打开帮助中心"
+              onClick={() => setHelpOpen(true)}
+            >
               <QuestionCircleOutlined className="os-ic" />
             </button>
           </Tooltip>
@@ -685,7 +698,11 @@ export default function MainLayout() {
 
       <div className="os-mid">
         {/* 左侧：企业作战系统 */}
-        <aside className={`os-left ${navCollapsed ? 'os-left--collapsed' : ''}`} aria-label="经营模块导航">
+        <aside
+          className={`os-left ${navCollapsed ? 'os-left--collapsed' : ''}`}
+          data-onboarding="navigation"
+          aria-label="经营模块导航"
+        >
           <div className="os-left-head">
             <span className="os-left-title">门店经营中心</span>
             <Tooltip title={navCollapsed ? '展开导航' : '收起导航'} placement="right">
@@ -721,25 +738,36 @@ export default function MainLayout() {
         </aside>
 
         {/* 中间：企业经营大屏（内容页保持浅色清晰） */}
-        <main className="os-center">
+        <main className="os-center" data-onboarding="workspace">
           <div className="os-page-head">
             <div className="os-page-heading">
               <span className="os-page-context">{currentGroup}</span>
               <span className="os-page-title">{menuLabel(current)}</span>
             </div>
-            {canUseAdvisor && (
+            <div className="os-page-actions">
               <button
                 type="button"
-                className="os-page-assistant"
-                aria-label={`打开${assistantCopy.title}`}
-                aria-expanded={aiOpen}
-                aria-controls="boss-assistant-inspector"
-                onClick={() => setAiOpen(true)}
+                className="os-page-assistant os-page-guide"
+                aria-label="打开当前页面功能使用指引"
+                onClick={() => setFeatureGuideOpen(true)}
               >
-                <RobotOutlined />
-                <span>{assistantCopy.short}</span>
+                <QuestionCircleOutlined />
+                <span>本页怎么用</span>
               </button>
-            )}
+              {canUseAdvisor && (
+                <button
+                  type="button"
+                  className="os-page-assistant"
+                  aria-label={`打开${assistantCopy.title}`}
+                  aria-expanded={aiOpen}
+                  aria-controls="boss-assistant-inspector"
+                  onClick={() => setAiOpen(true)}
+                >
+                  <RobotOutlined />
+                  <span>{assistantCopy.short}</span>
+                </button>
+              )}
+            </div>
           </div>
           <div className="os-page-body">
             {/* 路由级边界：单页异常不再白屏整站，外壳与导航保持可用 */}
@@ -912,16 +940,44 @@ export default function MainLayout() {
         open={helpOpen}
         onClose={() => setHelpOpen(false)}
       >
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 14,
-            fontSize: 13,
-            color: 'var(--ui-text-2)',
-            lineHeight: 1.8,
-          }}
-        >
+        <div className="os-help-stack">
+          <div className="os-help-card os-help-card--primary">
+            <b>
+              <RocketOutlined /> 角色上手清单
+            </b>
+            <div className="os-help-card-copy">
+              系统会根据当前岗位和已开通权限，带你认识最常用的工作入口。关闭后也可以随时重开。
+            </div>
+            <Button
+              type="primary"
+              block
+              icon={<PlayCircleOutlined />}
+              onClick={() => {
+                setHelpOpen(false);
+                setOnboardingNonce(value => value + 1);
+              }}
+            >
+              打开我的新手指引
+            </Button>
+          </div>
+          <div className="os-help-card">
+            <b>
+              <QuestionCircleOutlined /> 功能使用指引
+            </b>
+            <div className="os-help-card-copy">
+              按当前页面告诉你准备什么、怎么操作、结果在哪里看，也可搜索所有已开通功能。
+            </div>
+            <Button
+              block
+              icon={<PlayCircleOutlined />}
+              onClick={() => {
+                setHelpOpen(false);
+                setFeatureGuideOpen(true);
+              }}
+            >
+              打开功能使用指引
+            </Button>
+          </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>
               <RocketOutlined /> {dailyGuide.title}
@@ -934,7 +990,7 @@ export default function MainLayout() {
               <TeamOutlined /> 餐饮数字员工怎么用
             </b>
             <br />
-            按分部或问题关键词找到员工，用一句话说明要解决的问题即可派活。岗位会自行补齐公开信息并调用技能、知识库和联网工具；任务进度、结果与费用统一在任务中心查看。
+            先按岗位介绍找到匹配员工，再写清真实业务背景、目标、用途、交付格式、负责人和截止时间，并上传可核验材料。不确定的公开信息不会自动补造；提交后在任务中心检查输入、输出、证据、质量门、费用和失败原因。
           </div>
           <div style={{ background: 'var(--ui-surface-2)', borderRadius: 10, padding: 14 }}>
             <b>
@@ -1040,6 +1096,30 @@ export default function MainLayout() {
         ) : null}
       </Modal>
 
+      <FeatureGuideCenter
+        open={featureGuideOpen}
+        onClose={() => setFeatureGuideOpen(false)}
+        currentPath={loc.pathname}
+        currentSearch={loc.search}
+        modules={modules}
+        role={user?.role}
+        navigate={path => nav(path)}
+        onOpenOnboarding={() => setOnboardingNonce(value => value + 1)}
+        contextKey={
+          loc.pathname === '/execution'
+            ? ['boss', 'ops_director', 'manager', 'admin'].includes(String(user?.role || ''))
+              ? 'manager'
+              : 'staff'
+            : undefined
+        }
+      />
+      <RoleOnboarding
+        user={user}
+        modules={modules}
+        navigate={path => nav(path)}
+        manualOpenNonce={onboardingNonce}
+        suspended={helpOpen || featureGuideOpen}
+      />
       <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} navItems={paletteNavItems} modules={modules} />
     </div>
   );

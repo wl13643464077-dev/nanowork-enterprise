@@ -14,8 +14,14 @@ import {
   yunwuUsage,
   yunwuApiKey,
   yunwuKeySource,
+  miniMaxH3Availability,
 } from '../engines/yunwu.js';
 import { providerResponseError, sanitizeProviderError } from '../engines/provider-errors.js';
+import {
+  agenticWebResearch,
+  assessWebResearchMaterial,
+} from '../engines/agentic-web-research.js';
+import { fetchControlledWebEvidence } from '../engines/controlled-web-evidence.js';
 import { getRules } from '../engines/risk.js';
 import {
   buildRuntimeReadiness,
@@ -49,6 +55,237 @@ function catalogEmployeesForDepartment(marshalId) {
 function requirePlatformConfigOwner(req, res, next) {
   if (curTenant() !== 1) return res.status(403).json({ error: '模型通道、平台计费和API密钥仅平台总部可配置' });
   next();
+}
+
+const MINIMAX_H3_MODEL_ID = 'MiniMax-H3';
+const MINIMAX_H3_CAPABILITY_KEY = 'minimax_h3_capability';
+
+function h3PricePer15s768p(config = billing()) {
+  const value = Number(config?.video?.[MINIMAX_H3_MODEL_ID]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function h3CapabilityConfig() {
+  const value = getConfig(MINIMAX_H3_CAPABILITY_KEY, {}) || {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function h3AdminConfig() {
+  const capability = h3CapabilityConfig();
+  const pricePer15s768p = h3PricePer15s768p();
+  const availability = miniMaxH3Availability();
+  const deploymentEnabled = availability.deploymentFlagEnabled;
+  const apiKeyConfigured = availability.credentialConfigured;
+  const providerVerified = capability.providerVerified === true;
+  const billingVerified = capability.billingVerified === true;
+  const priceConfigured = pricePer15s768p > 0;
+  const blockers = [];
+  if (!deploymentEnabled) blockers.push('服务端总开关 NANOWORK_MINIMAX_H3_ENABLED 尚未开启');
+  if (!apiKeyConfigured) blockers.push('服务端尚未配置 MINIMAX_API_KEY');
+  if (!providerVerified) blockers.push('供应商能力尚未由平台负责人核验');
+  if (!priceConfigured) blockers.push('尚未填写 H3 768P 每15秒单段成本');
+  if (!billingVerified) blockers.push('单段计价尚未由平台负责人核验');
+  return {
+    model: MINIMAX_H3_MODEL_ID,
+    pricing: {
+      currency: 'CNY',
+      unit: '15_seconds_768p_segment',
+      pricePer15s768p,
+      thirtySecondCost: Math.round(pricePer15s768p * 2 * 10000) / 10000,
+      segmentCount: 2,
+    },
+    capability: {
+      providerVerified,
+      billingVerified,
+      verifiedAt: capability.verifiedAt || null,
+      verifiedBy: capability.verifiedBy ?? null,
+      providerVerifiedAt: capability.providerVerifiedAt || null,
+      providerVerifiedBy: capability.providerVerifiedBy ?? null,
+      billingVerifiedAt: capability.billingVerifiedAt || null,
+      billingVerifiedBy: capability.billingVerifiedBy ?? null,
+      priceBasis: String(capability.priceBasis || '').slice(0, 500),
+      updatedAt: capability.updatedAt || null,
+      updatedBy: capability.updatedBy ?? null,
+    },
+    readiness: {
+      deploymentEnabled,
+      apiKeyConfigured,
+      priceConfigured,
+      ready: blockers.length === 0,
+      blockers,
+    },
+  };
+}
+
+function normalizedH3Update(value, req, proposedBilling) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw Object.assign(new Error('MiniMax H3 配置格式不正确'), { status: 400 });
+  }
+  const previous = h3CapabilityConfig();
+  const priceCandidate = value.pricePer15s768p === undefined
+    ? h3PricePer15s768p(proposedBilling)
+    : Number(value.pricePer15s768p);
+  if (!Number.isFinite(priceCandidate) || priceCandidate < 0 || priceCandidate > 1_000_000) {
+    throw Object.assign(new Error('H3 768P 每15秒单段成本必须是0到1000000之间的有效人民币金额'), { status: 400 });
+  }
+  const providerVerified = value.providerVerified === undefined
+    ? previous.providerVerified === true
+    : value.providerVerified === true;
+  const billingVerified = value.billingVerified === undefined
+    ? previous.billingVerified === true
+    : value.billingVerified === true;
+  if (value.providerVerified !== undefined && typeof value.providerVerified !== 'boolean') {
+    throw Object.assign(new Error('H3 供应商核验状态必须是布尔值'), { status: 400 });
+  }
+  if (value.billingVerified !== undefined && typeof value.billingVerified !== 'boolean') {
+    throw Object.assign(new Error('H3 计价核验状态必须是布尔值'), { status: 400 });
+  }
+  if (providerVerified && !miniMaxH3Availability().credentialConfigured) {
+    throw Object.assign(new Error('未配置服务端 MINIMAX_API_KEY，不能确认 H3 供应商能力'), { status: 409 });
+  }
+  if (billingVerified && priceCandidate <= 0) {
+    throw Object.assign(new Error('H3 768P 每15秒单段成本必须大于0，才能确认计价'), { status: 409 });
+  }
+  const priceBasis = String(value.priceBasis === undefined ? previous.priceBasis || '' : value.priceBasis).trim().slice(0, 500);
+  if (billingVerified && !priceBasis) {
+    throw Object.assign(new Error('确认 H3 计价前必须填写价格依据（供应商价目、合同或账单）'), { status: 409 });
+  }
+
+  const now = new Date().toISOString();
+  const actorId = Number(req.user?.id) || null;
+  const priceChanged = h3PricePer15s768p() !== priceCandidate;
+  const basisChanged = String(previous.priceBasis || '') !== priceBasis;
+  const providerReverified = providerVerified && previous.providerVerified !== true;
+  const billingReverified = billingVerified
+    && (previous.billingVerified !== true || priceChanged || basisChanged);
+  const providerVerifiedAt = providerReverified ? now : previous.providerVerifiedAt || null;
+  const providerVerifiedBy = providerReverified ? actorId : previous.providerVerifiedBy ?? null;
+  const billingVerifiedAt = billingReverified ? now : previous.billingVerifiedAt || null;
+  const billingVerifiedBy = billingReverified ? actorId : previous.billingVerifiedBy ?? null;
+  const fullyVerified = providerVerified && billingVerified;
+  const verifiedAt = fullyVerified
+    ? (providerReverified || billingReverified ? now : previous.verifiedAt || now)
+    : null;
+  const verifiedBy = fullyVerified
+    ? (providerReverified || billingReverified ? actorId : previous.verifiedBy ?? actorId)
+    : null;
+
+  return {
+    pricePer15s768p: priceCandidate,
+    capability: {
+      schemaVersion: 'minimax-h3-capability.v1',
+      providerVerified,
+      billingVerified,
+      verifiedAt,
+      verifiedBy,
+      providerVerifiedAt,
+      providerVerifiedBy,
+      billingVerifiedAt,
+      billingVerifiedBy,
+      priceBasis,
+      updatedAt: now,
+      updatedBy: actorId,
+    },
+  };
+}
+
+const WEB_SEARCH_ACCEPTANCE_QUERY = '市场监管总局 餐饮服务食品安全操作规范 官方公开信息';
+const WEB_SEARCH_TEST_IN_FLIGHT = new Map();
+
+function rawProviderRoute(result) {
+  if (!Array.isArray(result?.evidence?.providerRoute)) return [];
+  return result.evidence.providerRoute
+    .slice(0, 3)
+    .map(item => String(item || '').trim().slice(0, 80))
+    .filter(Boolean);
+}
+
+function resultUsesClaude(result, route) {
+  if (result?.evidence?.schemaVersion === 'nanowork.agentic-web-research/1') return true;
+  if (result?.evidence?.claude && typeof result.evidence.claude === 'object') return true;
+  const descriptor = [
+    ...route,
+    result?.provider,
+    result?.evidence?.provider,
+    result?.evidence?.executionMode,
+    result?.evidence?.claude?.provider,
+    result?.evidence?.claude?.executionMode,
+    result?.evidence?.fallback?.provider,
+    result?.evidence?.fallbackProvider,
+  ].map(item => String(item || '')).join(' ');
+  return /(?:claude|yunwu)/iu.test(descriptor);
+}
+
+function resultCandidates(result) {
+  for (const value of [result?.fetchCandidates, result?.results]) {
+    if (Array.isArray(value) && value.length) return value;
+  }
+  return [];
+}
+
+// 审计边界：TinyFish 只有“严格直达路由 + 引擎正文质量门”能直接通过。
+// 旧版 Claude 结果可能没有 providerRoute/fallback 字段，因此还必须从
+// provider / executionMode 识别；任何出现 Claude 的路径都重新受控抓正文。
+export async function evaluateAdminWebSearchResult(result, {
+  testQuery = WEB_SEARCH_ACCEPTANCE_QUERY,
+  controlledFetchFn = fetchControlledWebEvidence,
+  signal = null,
+} = {}) {
+  const rawRoute = rawProviderRoute(result);
+  const usesClaude = resultUsesClaude(result, rawRoute);
+  const strictTinyfishDirect = rawRoute.length === 1
+    && rawRoute[0] === 'tinyfish'
+    && !usesClaude;
+  const route = usesClaude && !rawRoute.some(item => /(?:claude|yunwu)/iu.test(item))
+    ? [...rawRoute.slice(0, 2), 'claude_websearch']
+    : rawRoute.length
+      ? rawRoute
+      : [usesClaude ? 'claude_websearch' : 'unknown'];
+  const candidates = resultCandidates(result);
+  const candidateCount = candidates.length;
+  const tinyfishQualityPassed = result?.evidence?.tinyfish?.qualityGate?.passed === true;
+  let controlledQuality = null;
+  if (usesClaude && result?.candidateReady === true && candidateCount >= 5) {
+    const controlled = await controlledFetchFn(candidates, {
+      limit: 8,
+      timeoutMs: 15_000,
+      signal,
+    });
+    controlledQuality = assessWebResearchMaterial(controlled?.results, testQuery);
+  }
+  const directPassed = strictTinyfishDirect
+    && result?.ok === true
+    && result?.candidateReady === true
+    && candidateCount >= 5
+    && tinyfishQualityPassed;
+  const claudePassed = usesClaude
+    && result?.candidateReady === true
+    && candidateCount >= 5
+    && controlledQuality?.passed === true;
+  return {
+    ok: directPassed || claudePassed,
+    provider: result?.provider || null,
+    providerId: strictTinyfishDirect ? 'tinyfish' : usesClaude ? 'claude_websearch' : String(route.at(-1) || '').slice(0, 80),
+    providerRoute: route,
+    candidateCount,
+    fallbackTriggered: usesClaude,
+    verifiedPageCount: Number(usesClaude
+      ? controlledQuality?.fetchedPageCount || 0
+      : result?.evidence?.tinyfish?.fetchedPageCount || 0),
+    materialQualityPassed: directPassed ? true : claudePassed,
+  };
+}
+
+async function singleFlightWebSearchTest(key, task) {
+  const existing = WEB_SEARCH_TEST_IN_FLIGHT.get(key);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(task);
+  WEB_SEARCH_TEST_IN_FLIGHT.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (WEB_SEARCH_TEST_IN_FLIGHT.get(key) === pending) WEB_SEARCH_TEST_IN_FLIGHT.delete(key);
+  }
 }
 
 // ===== BE-M5：SSRF 防护 =====
@@ -333,17 +570,48 @@ r.get('/api-config', requirePlatformConfigOwner, (req, res) => {
     },
     routing: routing(),
     billing: billing(),
+    h3: h3AdminConfig(),
     riskRules: getRules(),
     usage: yunwuUsage(),
     readiness,
   });
 });
 r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
-  const { routing: rt, billing: bl, baseUrl, apiKey } = req.body || {};
+  const { routing: rt, billing: bl, baseUrl, apiKey, h3 } = req.body || {};
   if (apiKey !== undefined && String(apiKey || '').trim()) {
     return res.status(400).json({
       error: 'API Key 仅支持通过服务端 YUNWU_API_KEY 环境变量配置，本次输入未保存',
     });
+  }
+  let h3Update = null;
+  let nextBilling = bl;
+  const genericH3Price = bl && typeof bl === 'object' && !Array.isArray(bl)
+    && bl.video && typeof bl.video === 'object' && !Array.isArray(bl.video)
+    && Object.prototype.hasOwnProperty.call(bl.video, MINIMAX_H3_MODEL_ID)
+    ? Number(bl.video[MINIMAX_H3_MODEL_ID])
+    : null;
+  if (h3 === undefined && genericH3Price !== null && genericH3Price !== h3PricePer15s768p()) {
+    return res.status(409).json({
+      error: '修改 MiniMax H3 单段价格时必须同时提交 H3 核验信息，避免旧核验记录误用于新价格',
+    });
+  }
+  if (h3 !== undefined) {
+    try {
+      const currentBilling = billing();
+      const proposedBilling = bl && typeof bl === 'object' && !Array.isArray(bl)
+        ? { ...currentBilling, ...bl, video: { ...currentBilling.video, ...(bl.video || {}) } }
+        : currentBilling;
+      h3Update = normalizedH3Update(h3, req, proposedBilling);
+      nextBilling = {
+        ...proposedBilling,
+        video: {
+          ...proposedBilling.video,
+          [MINIMAX_H3_MODEL_ID]: h3Update.pricePer15s768p,
+        },
+      };
+    } catch (error) {
+      return res.status(error.status || 400).json({ error: error.message });
+    }
   }
   if (baseUrl) {
     // 先做 DNS 解析校验（BE-M5），任何失败都不落库
@@ -351,9 +619,15 @@ r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
     catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
   }
   if (rt) setConfig('model_routing', rt);
-  if (bl) setConfig('billing', bl);
-  logOp(req.user, '管理后台', '修改接口配置', [rt && '模型路由', bl && '计费', baseUrl && 'BaseURL'].filter(Boolean).join('+'));
-  res.json({ ok: true });
+  if (nextBilling) setConfig('billing', nextBilling);
+  if (h3Update) setConfig(MINIMAX_H3_CAPABILITY_KEY, h3Update.capability);
+  logOp(req.user, '管理后台', '修改接口配置', [
+    rt && '模型路由',
+    nextBilling && '计费',
+    baseUrl && 'BaseURL',
+    h3Update && `MiniMax H3（供应商${h3Update.capability.providerVerified ? '已核验' : '未核验'}、计价${h3Update.capability.billingVerified ? '已核验' : '未核验'}）`,
+  ].filter(Boolean).join('+'));
+  res.json({ ok: true, h3: h3AdminConfig() });
 });
 
 // 存量版本曾把云雾 Key 明文写入 sys_config。升级后仅兼容读取，绝不自动删除；
@@ -426,6 +700,83 @@ r.post('/api-config/test', requirePlatformConfigOwner, async (req, res) => {
     });
   } finally {
     if (timer) clearTimeout(timer);
+  }
+});
+
+// 联网主备链显式验收：固定使用无敏感数据的公开餐饮查询，避免把该接口
+// 变成任意搜索代理。只有通过候选与正文质量门才记录为已连接。
+r.post('/web-search/test', requirePlatformConfigOwner, async (req, res) => {
+  const tenantId = curTenant();
+  try {
+    const acceptance = await singleFlightWebSearchTest(`${tenantId}:${Number(req.user?.id) || 0}`, async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60_000);
+      try {
+        const result = await agenticWebResearch(WEB_SEARCH_ACCEPTANCE_QUERY, {
+          maxResults: 8,
+          timeoutMs: 42_000,
+          signal: controller.signal,
+          researchMode: 'simple_search',
+        });
+        return evaluateAdminWebSearchResult(result, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+    const {
+      ok,
+      provider,
+      providerId,
+      providerRoute: route,
+      candidateCount,
+      fallbackTriggered,
+      verifiedPageCount,
+      materialQualityPassed,
+    } = acceptance;
+    recordRuntimeReadinessCheck('web_search', {
+      tenantId,
+      outcome: ok ? 'passed' : 'failed',
+      checkedBy: req.user.id,
+      evidence: {
+        providerId,
+        provider: String(provider || '').slice(0, 120),
+        providerRoute: route,
+        candidateCount,
+        fallbackTriggered,
+        verifiedPageCount,
+        materialQualityPassed,
+      },
+      error: ok ? '' : '联网主备链未通过候选与正文质量门',
+    });
+    logOp(
+      req.user,
+      '管理后台',
+      '测试联网检索',
+      ok ? `${route.join('→')}，${candidateCount}条候选` : '主备链质量门未通过',
+    );
+    return res.json({
+      ok,
+      provider,
+      providerRoute: route,
+      candidateCount,
+      fallbackTriggered,
+      verifiedPageCount,
+      ...(ok ? {} : { error: '联网主备链未通过质量门，请检查服务端配置后重试' }),
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'web_search'),
+    });
+  } catch (error) {
+    const safe = sanitizeProviderError(error, { service: '分层联网检索服务' });
+    recordRuntimeReadinessCheck('web_search', {
+      tenantId,
+      outcome: 'failed',
+      checkedBy: req.user.id,
+      error: safe.message,
+    });
+    return res.json({
+      ok: false,
+      error: safe.message,
+      readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'web_search'),
+    });
   }
 });
 

@@ -745,6 +745,127 @@ test(
 );
 
 test(
+  "分层候选受控正文全失败后才启动旧检索灾备，并用新候选重新完成正文核验",
+  { concurrency: false },
+  async () => {
+    const idx = 103;
+    const execution = employeeExecution(idx);
+    const task = taskFor(idx);
+    const fallbackSource = {
+      title: "餐饮经营公开规范灾备来源103",
+      url: "https://legacy-recovery.test/103",
+      snippet: "餐饮门店经营与食品安全公开规范，可供本轮任务核验。",
+    };
+    const fixture = clone(
+      buildRestaurantOutputDeliverableFixture(idx, {
+        title: task.title,
+        type: task.type,
+        requirement: task.requirement,
+      }),
+    );
+    fixture.decision_context.problem = `${task.title}：${fixture.decision_context.problem}`;
+    fixture.decision_context.sources[0].source =
+      `${fallbackSource.title}｜${fallbackSource.url}`;
+    pointExecutionEvidenceAtSource(
+      fixture,
+      fixture.decision_context.sources[0].source,
+    );
+
+    let legacyCalls = 0;
+    const controlledCalls = [];
+    const generationCalls = [];
+    const output = await marshalWork(testMarshal, task, "boss", {
+      employeeExecution: execution,
+      requireAgenticResearch: true,
+      parallelInjectedWebSearch: false,
+      agenticWebResearchFn: async () => candidateAgenticEvidence(idx),
+      webSearchFn: async () => {
+        legacyCalls += 1;
+        return {
+          attempted: true,
+          ok: true,
+          provider: "legacy-recovery-search",
+          results: [fallbackSource],
+          evidence: { externalCall: true },
+        };
+      },
+      controlledWebFetchFn: async (sources) => {
+        controlledCalls.push(sources);
+        if (controlledCalls.length === 1) {
+          assert.equal(legacyCalls, 0, "首批候选核验前不得提前启动旧检索");
+          return {
+            attempted: true,
+            ok: false,
+            provider: "mock-controlled-web-evidence",
+            results: [],
+            note: "首批正文均未取得",
+            evidence: {
+              schemaVersion: "nanowork.controlled-web-evidence/1",
+              requested: sources.length,
+              fetched: 0,
+              failures: [
+                { host: "forged.example", code: "CONTROLLED_WEB_FETCH_FAILED" },
+              ],
+              externalCall: true,
+              ssrfProtected: true,
+              redirectsRevalidated: true,
+            },
+          };
+        }
+        assert.equal(legacyCalls, 1, "首批正文失败后必须只启动一次旧检索灾备");
+        assert.equal(sources[0].url, fallbackSource.url);
+        return {
+          attempted: true,
+          ok: true,
+          provider: "mock-controlled-web-evidence",
+          results: [
+            {
+              ...fallbackSource,
+              body: "受控网页正文灾备103：餐饮门店经营与食品安全公开规范已经读取并净化，包含适用范围、执行责任、复核动作和证据边界；本段仅用于验证首批候选失败后更换来源的灾备闭环，未知事实继续标注待核验。",
+            },
+          ],
+          evidence: {
+            schemaVersion: "nanowork.controlled-web-evidence/1",
+            requested: sources.length,
+            fetched: 1,
+            failures: [],
+            externalCall: true,
+            ssrfProtected: true,
+            redirectsRevalidated: true,
+          },
+        };
+      },
+      generateFn: async (args) => {
+        generationCalls.push(args);
+        return {
+          text: JSON.stringify(fixture),
+          mode: "api",
+          model: "legacy-recovery-test-model",
+          usage: { inputTokens: 23, outputTokens: 37 },
+        };
+      },
+    });
+
+    assert.equal(legacyCalls, 1);
+    assert.equal(controlledCalls.length, 2);
+    assert.equal(generationCalls.length, 1);
+    assert.equal(output.web.ok, true);
+    assert.match(JSON.stringify(output.web), /legacy-recovery\.test\/103/u);
+    assert.doesNotMatch(
+      JSON.stringify(output.web),
+      /https:\/\/forged\.example\/103\/candidate/u,
+      "未核验候选完整URL不得进入最终快照；失败审计只保留host与错误码",
+    );
+    assert.equal(
+      output.web.channels.find(
+        (channel) => channel.kind === "controlled_web_fetch",
+      )?.evidence?.legacyRecoveryTriggered,
+      true,
+    );
+  },
+);
+
+test(
   "受控网页正文或101/102地图失败时保留全部web证据且不得调用最终生成",
   { concurrency: false },
   async () => {

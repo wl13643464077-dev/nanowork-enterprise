@@ -8,6 +8,7 @@ import {
   mergeContentSpecialProviderBillingEvidence,
 } from "../src/engines/content-special-provider-bridge.js";
 import { executeContentSpecialHandlerRuntime } from "../src/engines/content-special-handler-runtime.js";
+import { canonicalContentEmployeeProfileFor } from "../src/engines/canonical-employee-profile.js";
 
 function employeePackage(idx = 5) {
   return {
@@ -155,6 +156,14 @@ test("bridge强制要求租户、用户、run、employee、完整员工包、图
   assert.throws(
     () =>
       createContentSpecialProviderBridge(
+        { ...complete, attemptOrdinal: 0 },
+        billingDependencies().dependencies,
+      ),
+    /attemptOrdinal必须是正整数/u,
+  );
+  assert.throws(
+    () =>
+      createContentSpecialProviderBridge(
         {
           ...complete,
           request: {
@@ -191,7 +200,8 @@ test("真实图片provider严格按hold→供应商→业务持久化→settle�
       providerPrompts.push(input.prompt);
       assert.match(input.prompt, /完整内容员工包/u);
       assert.match(input.prompt, /视觉策划/u);
-      assert.match(input.prompt, /完整单派提示词/u);
+      assert.match(input.prompt, /真实 PNG\/JPEG\/WebP\/GIF 位图/u);
+      assert.ok(input.prompt.length <= 900);
       return {
         model: input.model,
         url: `https://images.example/${events.filter((item) => item.startsWith("generate:")).length}.png`,
@@ -242,9 +252,18 @@ test("真实图片provider严格按hold→供应商→业务持久化→settle�
   const evidence = bridge.evidence();
   assert.equal(evidence.schemaVersion, CONTENT_SPECIAL_PROVIDER_BRIDGE_SCHEMA);
   assert.equal(evidence.employeePackage.fullPackageInjected, true);
+  assert.equal(evidence.employeePackage.fullPackageLoadedServerSide, true);
+  assert.equal(
+    evidence.employeePackage.providerPackageMode,
+    "compiled_visual_execution_package",
+  );
+  assert.ok(evidence.employeePackage.providerPackageChars <= 320);
   assert.equal(evidence.employeePackage.capabilityCount, 1);
   assert.match(evidence.employeePackage.fingerprint, /^sha256:[a-f0-9]{64}$/u);
   assert.equal(evidence.request.rawPromptIncluded, false);
+  assert.equal(evidence.idempotency.attemptOrdinal, 1);
+  assert.equal(evidence.idempotency.stableWithinStationAttempt, true);
+  assert.equal(evidence.idempotency.distinctAcrossStationAttempts, true);
   assert.equal(evidence.attempts[0].status, "settled");
   assert.equal(evidence.attempts[0].billing.chargedCredits, 150);
   assert.deepEqual(evidence.attempts[0].hold, {
@@ -291,6 +310,64 @@ test("真实图片provider严格按hold→供应商→业务持久化→settle�
     /首图机会点|门店新客流|结尾行动项|七日动作清单/u,
   );
   assert.equal(evidence.credentialsIncluded, false);
+});
+
+test("完整多媒体师员工包会编译为OpenLux图片接口可接受的900字符以内提示词", async () => {
+  const providerPrompts = [];
+  const profile = canonicalContentEmployeeProfileFor(5);
+  assert.ok(JSON.stringify(profile).length > 30_000);
+  const { dependencies } = billingDependencies({
+    async generateImageFn(input) {
+      providerPrompts.push(input.prompt);
+      return {
+        model: input.model,
+        url: "https://images.example/full-profile.png",
+        mimeType: "image/png",
+      };
+    },
+  });
+  const bridge = createContentSpecialProviderBridge(
+    baseInput({
+      employeePackage: profile,
+      request: {
+        prompt: "为北京餐饮门店开业内容生成真实商业摄影风配图。".repeat(80),
+        image_mode: "ai",
+        image_count: 1,
+        platforms: ["小红书"],
+      },
+    }),
+    dependencies,
+  );
+
+  await bridge.providers.image({
+    purpose: "content_images",
+    count: 1,
+    imagePlan: [
+      {
+        slot: "开业主视觉",
+        desc: "真实中式餐厅开业场景，暖色灯光，桌面菜品清晰，不出现虚构价格",
+      },
+    ],
+    variables: {
+      media_request: {
+        mode: "ai",
+        imageCount: 1,
+        platforms: ["小红书"],
+      },
+    },
+  });
+
+  assert.equal(providerPrompts.length, 1);
+  assert.ok(providerPrompts[0].length <= 900);
+  assert.match(providerPrompts[0], /开业主视觉/u);
+  assert.match(providerPrompts[0], /禁止 SVG/u);
+  const evidence = bridge.evidence();
+  assert.ok(evidence.employeePackage.providerPackageChars <= 320);
+  assert.equal(
+    evidence.attempts[0].imageSlots[0].providerPromptWithinLimit,
+    true,
+  );
+  assert.ok(evidence.attempts[0].imageSlots[0].providerPromptChars <= 900);
 });
 
 test("idx6封面bridge按平台逐图传递竖版/横版尺寸，持久化与hold/settle证据完整", async () => {
@@ -541,7 +618,7 @@ test("文本与专项provider账务统一汇总，全部结算计入总实扣，
   assert.equal(released.chargedCredits, 12);
 });
 
-test("工位5图片供应商失败或空结果时先释放hold，AI配图fail closed不进SVG回退", async () => {
+test("工位5图片供应商已外调但返回空结果时保留hold待对账，AI配图fail closed不进SVG回退", async () => {
   const secret = "sk-provider-failure-secret-123456";
   const { events, dependencies } = billingDependencies({
     async generateImageFn(input) {
@@ -604,21 +681,26 @@ test("工位5图片供应商失败或空结果时先释放hold，AI配图fail cl
     runtimeError = error;
   }
 
-  // AI配图必须真图：图片供应商空结果时整体失败退款，不调用文本SVG回退。
+  // AI配图必须真图：图片供应商空结果时整体失败并留扣待对账，不调用文本SVG回退。
   assert.ok(runtimeError, "AI配图空结果必须fail closed");
   assert.equal(runtimeError.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
-  assert.match(runtimeError.message, /不会用SVG示意图冒充配图/u);
+  assert.match(runtimeError.message, /不会用SVG、HTML或不足张数冒充完整交付/u);
   assert.equal(runtimeError.evidence.fallback.used, false);
   assert.equal(runtimeError.evidence.paihuoRealImage, false);
   assert.deepEqual(events, [
     "estimate:image:gpt-image-2",
     "hold:image:75",
     "generate:empty",
-    "release:1",
   ]);
   const evidence = bridge.evidence();
-  assert.equal(evidence.attempts[0].status, "released");
-  assert.equal(evidence.attempts[0].billing.chargedCredits, 0);
+  assert.equal(evidence.attempts[0].status, "pending_reconciliation");
+  assert.equal(evidence.attempts[0].billing.chargedCredits, null);
+  assert.equal(evidence.attempts[0].billing.heldCredits, 75);
+  assert.equal(evidence.attempts[0].billing.releaseSuppressed, true);
+  assert.equal(
+    evidence.attempts[0].billing.reconciliationReason,
+    "external_invocation_started",
+  );
   assert.equal(evidence.attempts[0].delivery, null);
   assert.equal(evidence.request.imageCount, 1);
   assert.equal(evidence.request.imageCountMode, "explicit");
@@ -627,7 +709,7 @@ test("工位5图片供应商失败或空结果时先释放hold，AI配图fail cl
     "dy_style",
   ]);
   assert.equal(evidence.attempts[0].requestedCount, 1);
-  assert.equal(evidence.attempts[0].settlement.action, "release");
+  assert.equal(evidence.attempts[0].settlement.action, "hold_retained");
   assert.doesNotMatch(
     JSON.stringify({ error: runtimeError.evidence, evidence }),
     /provider-failure-secret/u,
@@ -636,6 +718,53 @@ test("工位5图片供应商失败或空结果时先释放hold，AI配图fail cl
     JSON.stringify({ error: runtimeError.evidence, evidence }),
     /不得进入凭空生图/u,
   );
+});
+
+test("多图生成部分成功后上游失败时保留全部hold待对账，不落库也不自动退款", async () => {
+  const secret = "sk-partial-image-secret-123456";
+  let generated = 0;
+  const { events, dependencies } = billingDependencies({
+    async generateImageFn() {
+      generated += 1;
+      events.push(`generate:partial:${generated}`);
+      if (generated === 2) throw new Error(`upstream failed ${secret}`);
+      return {
+        model: "gpt-image-2",
+        url: "https://images.example/partial-1.png",
+      };
+    },
+  });
+  const bridge = createContentSpecialProviderBridge(baseInput(), dependencies);
+
+  await assert.rejects(
+    bridge.providers.image({ count: 2, purpose: "content_images" }),
+    (error) => {
+      assert.equal(error.deliveryPhase, "generate");
+      assert.equal(error.billing.state, "pending_reconciliation");
+      assert.equal(error.billing.heldCredits, 150);
+      assert.equal(error.billing.chargedCredits, null);
+      assert.equal(error.billing.externalInvocationStarted, true);
+      assert.equal(error.billing.releaseSuppressed, true);
+      assert.equal(
+        error.billing.reconciliationReason,
+        "external_invocation_started",
+      );
+      const evidence = error.contentSpecialProviderBridgeEvidence;
+      assert.equal(evidence.attempts[0].status, "pending_reconciliation");
+      assert.equal(evidence.attempts[0].settlement.action, "hold_retained");
+      assert.doesNotMatch(
+        JSON.stringify({ error, evidence }),
+        /partial-image-secret/u,
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(events, [
+    "estimate:image:gpt-image-2",
+    "hold:image:150",
+    "generate:partial:1",
+    "generate:partial:2",
+  ]);
 });
 
 test("Paihuo image_count为null时保留auto语义，不采用运行时默认4张", async () => {
@@ -732,7 +861,7 @@ test("仅小红书且未显式指定尺寸时选供应商竖版安全尺寸，�
   assert.equal(other.evidence.request.sizeSource, "generic_default");
 });
 
-test("业务持久化失败时全额释放，不允许settle，也不返回可交付provider结果", async () => {
+test("供应商已返回后业务持久化失败时保留hold待对账，不允许settle或自动退款", async () => {
   const { events, dependencies } = billingDependencies({
     async generateImageFn() {
       events.push("generate:ok");
@@ -762,10 +891,13 @@ test("业务持久化失败时全额释放，不允许settle，也不返回可�
     bridge.providers.image({ count: 1, purpose: "content_images" }),
     (error) => {
       assert.equal(error.deliveryPhase, "persist");
-      assert.equal(error.billing.state, "released");
+      assert.equal(error.billing.state, "pending_reconciliation");
+      assert.equal(error.billing.heldCredits, 75);
+      assert.equal(error.billing.chargedCredits, null);
+      assert.equal(error.billing.releaseSuppressed, true);
       assert.equal(
         error.contentSpecialProviderBridgeEvidence.attempts[0].status,
-        "released",
+        "pending_reconciliation",
       );
       return true;
     },
@@ -775,7 +907,6 @@ test("业务持久化失败时全额释放，不允许settle，也不返回可�
     "hold:image:75",
     "generate:ok",
     "persist:fail",
-    "release:1",
   ]);
 });
 
@@ -817,6 +948,160 @@ test("素材provider也独立预授权，只有素材持久化成功才结算", 
     "persist:material",
     "settle:1:40",
   ]);
+});
+
+test("混合模式未知素材provider为空时留扣待对账，禁止叠加GPT Image 2付费调用", async () => {
+  const { events, dependencies } = billingDependencies({
+    async materialSearchFn(input) {
+      events.push(`material:${input.count}:empty`);
+      return {
+        assets: [],
+        provider: {
+          name: "licensed-library",
+          model: "licensed-search",
+          mode: "local",
+        },
+        cost: { credits: 0 },
+      };
+    },
+    async generateImageFn(input) {
+      events.push(`generate:${input.model}`);
+      return {
+        model: input.model,
+        url: `https://images.example/fallback-${events.filter((item) => item.startsWith("generate:")).length}.png`,
+        mimeType: "image/png",
+      };
+    },
+  });
+  const bridge = createContentSpecialProviderBridge(
+    baseInput({
+      request: {
+        ...baseInput().request,
+        image_mode: "mix",
+        image_count: 2,
+      },
+    }),
+    dependencies,
+  );
+
+  await assert.rejects(
+    executeContentSpecialHandlerRuntime({
+      executionKind: "media_generation_with_svg_fallback",
+      runId: 49,
+      invocationId: "handler-mix-fallback",
+      prompt: { system: "完整岗位", user: "真实素材优先，缺口补图" },
+      variables: {
+        media_request: {
+          mode: "mix",
+          imageCount: 2,
+          platforms: ["小红书"],
+          plan: [
+            { slot: "首图", desc: "餐饮门店主题首图" },
+            { slot: "行动图", desc: "老板下一步行动清单" },
+          ],
+        },
+      },
+      providers: bridge.providers,
+      now: clock(),
+    }),
+    (error) => {
+      assert.equal(error.status, 409);
+      assert.match(error.message, /账务尚未终结/u);
+      assert.equal(error.billing.state, "pending_reconciliation");
+      assert.equal(error.billing.heldCredits, 75);
+      return true;
+    },
+  );
+
+  assert.equal(events.filter((item) => item.startsWith("release:")).length, 0);
+  assert.equal(events.filter((item) => item.startsWith("generate:")).length, 0);
+  assert.equal(events.filter((item) => item.startsWith("settle:")).length, 0);
+  const attempts = bridge.evidence().attempts;
+  assert.deepEqual(
+    attempts.map((attempt) => [attempt.kind, attempt.status]),
+    [["material", "pending_reconciliation"]],
+  );
+  assert.equal(attempts[0].billing.chargedCredits, null);
+  assert.equal(attempts[0].billing.heldCredits, 75);
+  assert.equal(attempts[0].billing.releaseSuppressed, true);
+});
+
+test("混合模式本地零成本授权素材为空时安全释放，并继续GPT Image 2补齐", async () => {
+  const { events, dependencies } = billingDependencies({
+    materialSearchExecutionClass: "local_zero_cost",
+    async materialSearchFn(input) {
+      events.push(`material:${input.count}:local-empty`);
+      return {
+        assets: [],
+        provider: {
+          name: "tenant-licensed-material-db",
+          model: "licensed-search",
+          mode: "local",
+        },
+        cost: { credits: 0 },
+      };
+    },
+    async generateImageFn(input) {
+      events.push(`generate:${input.model}`);
+      return {
+        model: input.model,
+        url: `https://images.example/local-fallback-${events.filter((item) => item.startsWith("generate:")).length}.png`,
+        mimeType: "image/png",
+      };
+    },
+  });
+  const bridge = createContentSpecialProviderBridge(
+    baseInput({
+      request: {
+        ...baseInput().request,
+        image_mode: "mix",
+        image_count: 2,
+      },
+    }),
+    dependencies,
+  );
+
+  const output = await executeContentSpecialHandlerRuntime({
+    executionKind: "media_generation_with_svg_fallback",
+    runId: 50,
+    invocationId: "handler-mix-local-fallback",
+    prompt: { system: "完整岗位", user: "本地素材优先，缺口真实补图" },
+    variables: {
+      media_request: {
+        mode: "mix",
+        imageCount: 2,
+        platforms: ["小红书"],
+        plan: [
+          { slot: "首图", desc: "餐饮门店主题首图" },
+          { slot: "行动图", desc: "老板下一步行动清单" },
+        ],
+      },
+    },
+    providers: bridge.providers,
+    now: clock(),
+  });
+
+  assert.equal(output.artifacts.length, 2);
+  assert.equal(events.filter((item) => item.startsWith("release:")).length, 1);
+  assert.equal(events.filter((item) => item.startsWith("generate:")).length, 2);
+  assert.equal(events.filter((item) => item.startsWith("settle:")).length, 1);
+  assert.deepEqual(
+    bridge
+      .evidence()
+      .attempts.map((attempt) => [
+        attempt.kind,
+        attempt.status,
+        attempt.settlement.action,
+      ]),
+    [
+      ["material", "released", "release"],
+      ["image", "settled", "settle"],
+    ],
+  );
+  assert.equal(
+    bridge.evidence().providerBoundaries.material,
+    "local_zero_cost",
+  );
 });
 
 test("预授权失败时不暗调供应商API", async () => {
@@ -863,17 +1148,105 @@ test("pipeline+station+kind形成稳定且互不共用的attemptId/refId", () =>
     employeeIdx: 6,
     kind: "image",
   });
+  const image5Attempt3a = contentSpecialProviderAttemptIdentity({
+    namespace: "content-production-pipeline",
+    runId: 49,
+    employeeIdx: 5,
+    kind: "image",
+    attemptOrdinal: 3,
+  });
+  const image5Attempt3b = contentSpecialProviderAttemptIdentity({
+    namespace: "content-production-pipeline",
+    runId: 49,
+    employeeIdx: 5,
+    kind: "image",
+    attemptOrdinal: 3,
+  });
+  const image5Attempt4 = contentSpecialProviderAttemptIdentity({
+    namespace: "content-production-pipeline",
+    runId: 49,
+    employeeIdx: 5,
+    kind: "image",
+    attemptOrdinal: 4,
+  });
   assert.deepEqual(image5a, image5b);
   assert.match(
     image5a.attemptId,
     /pipeline:49:station:5:provider:image:attempt:1$/u,
   );
-  assert.equal(new Set([image5a.refId, material5.refId, image6.refId]).size, 3);
+  assert.deepEqual(image5Attempt3a, image5Attempt3b);
+  assert.match(
+    image5Attempt3a.attemptId,
+    /pipeline:49:station:5:provider:image:attempt:3$/u,
+  );
+  assert.match(
+    image5Attempt4.attemptId,
+    /pipeline:49:station:5:provider:image:attempt:4$/u,
+  );
+  assert.equal(
+    new Set([
+      image5a.refId,
+      material5.refId,
+      image6.refId,
+      image5Attempt3a.refId,
+      image5Attempt4.refId,
+    ]).size,
+    5,
+  );
   assert.ok(
-    [image5a, material5, image6].every((item) =>
-      Number.isSafeInteger(item.refId),
+    [image5a, material5, image6, image5Attempt3a, image5Attempt4].every(
+      (item) => Number.isSafeInteger(item.refId),
     ),
   );
+  assert.throws(
+    () =>
+      contentSpecialProviderAttemptIdentity({
+        runId: 49,
+        employeeIdx: 5,
+        kind: "image",
+        attemptOrdinal: 0,
+      }),
+    /attemptOrdinal必须是正整数/u,
+  );
+});
+
+test("工位第3次尝试的逐图幂等键在同轮稳定，与第4次尝试隔离", async () => {
+  const generatedKeys = [];
+  const run = async (attemptOrdinal) => {
+    const { dependencies } = billingDependencies({
+      async generateImageFn(input) {
+        generatedKeys.push(input.idempotencyKey);
+        return {
+          model: input.model,
+          url: `https://images.example/${attemptOrdinal}-${generatedKeys.length}.png`,
+        };
+      },
+    });
+    const bridge = createContentSpecialProviderBridge(
+      baseInput({ attemptOrdinal }),
+      dependencies,
+    );
+    await bridge.providers.image({
+      count: 2,
+      imagePlan: [
+        { slot: "首图", desc: "餐饮门店首图" },
+        { slot: "行动图", desc: "老板行动清单" },
+      ],
+    });
+    return bridge.evidence().attempts[0];
+  };
+
+  const attempt3 = await run(3);
+  const attempt4 = await run(4);
+  assert.match(attempt3.attemptId, /:attempt:3$/u);
+  assert.match(attempt4.attemptId, /:attempt:4$/u);
+  assert.notEqual(attempt3.hold.refId, attempt4.hold.refId);
+  assert.deepEqual(generatedKeys, [
+    "content-special-provider:pipeline:49:station:5:provider:image:attempt:3:image:1",
+    "content-special-provider:pipeline:49:station:5:provider:image:attempt:3:image:2",
+    "content-special-provider:pipeline:49:station:5:provider:image:attempt:4:image:1",
+    "content-special-provider:pipeline:49:station:5:provider:image:attempt:4:image:2",
+  ]);
 });
 
 test("已持久化并结算的稳定attempt在新bridge恢复时直接回放，不重复hold、API、INSERT或settle", async () => {
@@ -933,6 +1306,7 @@ test("已持久化并结算的稳定attempt在新bridge恢复时直接回放，�
   };
   const input = baseInput({
     attemptNamespace: "content-production-pipeline",
+    attemptOrdinal: 3,
     request: {
       prompt: "幂等恢复测试",
       image_mode: "ai",
@@ -955,6 +1329,7 @@ test("已持久化并结算的稳定attempt在新bridge恢复时直接回放，�
   assert.equal(first.bridge.replayed, false);
   assert.equal(replayed.bridge.replayed, true);
   assert.equal(replayed.bridge.attemptId, first.bridge.attemptId);
+  assert.match(replayed.bridge.attemptId, /:attempt:3$/u);
   assert.equal(events.filter((item) => item.startsWith("hold:")).length, 1);
   assert.equal(events.filter((item) => item.startsWith("generate:")).length, 1);
   assert.equal(events.filter((item) => item === "persist:image").length, 1);

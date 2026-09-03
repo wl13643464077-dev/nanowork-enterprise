@@ -124,7 +124,16 @@ test("media mix先调用素材provider，再调用图片provider，并把两类�
                 mime: "image/png",
                 desc: "工作流信息图",
               },
-              { b64: "QUJD", mime: "image/png", desc: "老板复盘场景" },
+              {
+                b64: "iVBORw0KGgo=",
+                mime: "image/png",
+                desc: "老板复盘场景",
+              },
+              {
+                url: "https://images.example/3.webp",
+                mime: "image/webp",
+                desc: "下一步行动清单",
+              },
             ],
             model: "image-model",
             mode: "api",
@@ -136,7 +145,13 @@ test("media mix先调用素材provider，再调用图片provider，并把两类�
           throw new Error("有真实产物时不应进入SVG回退");
         },
       },
-      { media_request: { mode: "mix", imageCount: 4 } },
+      {
+        media_request: {
+          mode: "mix",
+          imageCount: 4,
+          visualPolicyVersion: "v2",
+        },
+      },
     ),
   );
 
@@ -144,16 +159,16 @@ test("media mix先调用素材provider，再调用图片provider，并把两类�
     calls.map((call) => call.kind),
     ["material", "image"],
   );
-  assert.equal(calls[0].input.count, 2);
+  assert.equal(calls[0].input.count, 4);
   assert.equal(calls[1].input.count, 3);
   assert.equal(calls[1].input.materials.length, 1);
   assert.deepEqual(
     result.artifacts.map((artifact) => artifact.kind),
-    ["material", "image", "image"],
+    ["material", "image", "image", "image"],
   );
   assert.deepEqual(
     result.artifacts.map((artifact) => artifact.mimeType),
-    ["image/webp", "image/png", "image/png"],
+    ["image/webp", "image/png", "image/png", "image/webp"],
   );
   assert.ok(result.artifacts.every((artifact) => artifact.runId === "49"));
   assert.ok(
@@ -161,12 +176,60 @@ test("media mix先调用素材provider，再调用图片provider，并把两类�
       (artifact) => artifact.invocationId === "invocation-50",
     ),
   );
-  assert.equal(result.evidence.fallback.used, false);
+  assert.equal(result.evidence.fallback.used, true);
+  assert.equal(
+    result.evidence.fallback.strategy,
+    "licensed_material_to_ai_image",
+  );
+  assert.equal(result.evidence.fallback.to, "image-model");
   assert.deepEqual(result.evidence.providerKindsCalled, ["material", "image"]);
   assert.deepEqual(result.evidence.cost, {
     byCurrency: { USD: 0.08 },
     credits: 2,
   });
+});
+
+test("旧mix任务缺少visual policy版本时仍按向上取整的半数请求素材", async () => {
+  const calls = [];
+  const result = await executeContentSpecialHandlerRuntime(
+    baseInput(
+      "media_generation_with_svg_fallback",
+      {
+        async material(input) {
+          calls.push({ kind: "material", count: input.count });
+          return {
+            assets: Array.from({ length: input.count }, (_, index) => ({
+              url: `https://assets.example/legacy-${index + 1}.webp`,
+              mimeType: "image/webp",
+            })),
+            provider: { name: "licensed-material-library", mode: "local" },
+          };
+        },
+        async image(input) {
+          calls.push({ kind: "image", count: input.count });
+          return {
+            images: Array.from({ length: input.count }, (_, index) => ({
+              url: `https://images.example/legacy-${index + 1}.png`,
+              mimeType: "image/png",
+            })),
+            model: "gpt-image-2",
+            mode: "api",
+          };
+        },
+      },
+      { media_request: { mode: "mix", imageCount: 5 } },
+    ),
+  );
+
+  assert.deepEqual(calls, [
+    { kind: "material", count: 3 },
+    { kind: "image", count: 2 },
+  ]);
+  assert.equal(result.artifacts.length, 5);
+  assert.deepEqual(
+    result.artifacts.map((artifact) => artifact.kind),
+    ["material", "material", "material", "image", "image"],
+  );
 });
 
 test("station5自动数量严格取上游2-4个image_plan槽位并保留平台", async () => {
@@ -275,51 +338,260 @@ test("station5显式数量保持显式值，不被image_plan长度改写", async
   assert.deepEqual(imageInput.imagePlan, [plan[0]]);
 });
 
-test("真实素材与混合模式缺授权素材时fail closed，不改用AI冒充", async () => {
-  for (const mode of ["real", "mix"]) {
-    let imageCalls = 0;
-    let textCalls = 0;
-    await assert.rejects(
-      executeContentSpecialHandlerRuntime(
-        baseInput(
-          "media_generation_with_svg_fallback",
-          {
-            async material() {
-              return {
-                assets: [],
-                provider: { name: "licensed-material-library", mode: "api" },
-              };
-            },
-            async image() {
-              imageCalls += 1;
-              return {
-                images: [
-                  { url: "https://images.example/must-not-be-used.png" },
-                ],
-              };
-            },
-            async text() {
-              textCalls += 1;
-              return { data: { images: [{ svg: "<svg></svg>" }] } };
-            },
+test("严格真实素材模式缺授权素材时仍fail closed，不用AI冒充", async () => {
+  let imageCalls = 0;
+  await assert.rejects(
+    executeContentSpecialHandlerRuntime(
+      baseInput(
+        "media_generation_with_svg_fallback",
+        {
+          async material() {
+            return {
+              assets: [],
+              provider: { name: "licensed-material-library", mode: "api" },
+            };
           },
-          { media_request: { mode, imageCount: 2 } },
-        ),
+          async image() {
+            imageCalls += 1;
+            return { images: [] };
+          },
+        },
+        { media_request: { mode: "real", imageCount: 2 } },
       ),
-      (error) => {
-        assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
-        assert.equal(error.status, 422);
-        assert.match(error.message, /已授权素材/u);
-        return true;
+    ),
+    (error) => {
+      assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
+      assert.equal(error.status, 422);
+      assert.match(error.message, /已授权素材/u);
+      return true;
+    },
+  );
+  assert.equal(imageCalls, 0);
+});
+
+test("真实素材provider调用失败时直接fail closed，不误报素材数量不足", async () => {
+  const secret = "sk-MATERIAL-SHOULD-NOT-LEAK-123456";
+  let imageCalls = 0;
+  await assert.rejects(
+    executeContentSpecialHandlerRuntime(
+      baseInput(
+        "media_generation_with_svg_fallback",
+        {
+          async material() {
+            throw Object.assign(new Error(`material upstream ${secret}`), {
+              code: "ECONNRESET",
+            });
+          },
+          async image() {
+            imageCalls += 1;
+            return { images: [] };
+          },
+        },
+        { media_request: { mode: "real", imageCount: 2 } },
+      ),
+    ),
+    (error) => {
+      assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
+      assert.equal(error.status, 502);
+      assert.match(error.message, /真实素材供应商调用失败/u);
+      assert.doesNotMatch(error.message, /未取得足量/u);
+      assert.equal(error.evidence.artifactCount, 0);
+      assert.equal(error.evidence.providerAttempts.length, 1);
+      assert.equal(
+        Object.hasOwn(error.evidence.providerAttempts[0], "providerErrorCode"),
+        false,
+      );
+      assert.doesNotMatch(JSON.stringify(error), /MATERIAL-SHOULD-NOT-LEAK/u);
+      return true;
+    },
+  );
+  assert.equal(imageCalls, 0);
+});
+
+test("混合模式没有授权素材时由GPT Image 2补齐且明确标记AI来源", async () => {
+  let imageInput = null;
+  let textCalls = 0;
+  const result = await executeContentSpecialHandlerRuntime(
+    baseInput(
+      "media_generation_with_svg_fallback",
+      {
+        async material() {
+          return {
+            assets: [],
+            provider: { name: "licensed-material-library", mode: "local" },
+          };
+        },
+        async image(input) {
+          imageInput = input;
+          return {
+            images: Array.from({ length: input.count }, (_, index) => ({
+              url: `https://images.example/gpt-image-2-${index + 1}.png`,
+              mimeType: "image/png",
+            })),
+            provider: {
+              name: "yunwu-compatible",
+              model: "gpt-image-2",
+              mode: "api",
+            },
+            model: "gpt-image-2",
+            mode: "api",
+          };
+        },
+        async text() {
+          textCalls += 1;
+          return { data: { images: [{ svg: "<svg></svg>" }] } };
+        },
       },
+      { media_request: { mode: "mix", imageCount: 2 } },
+    ),
+  );
+
+  assert.equal(imageInput.count, 2);
+  assert.equal(textCalls, 0);
+  assert.equal(result.artifacts.length, 2);
+  assert.ok(result.artifacts.every((artifact) => artifact.kind === "image"));
+  assert.ok(
+    result.artifacts.every(
+      (artifact) =>
+        artifact.provider.model === "gpt-image-2" &&
+        artifact.fallback.strategy === "licensed_material_to_ai_image",
+    ),
+  );
+  assert.equal(result.evidence.fallback.used, true);
+  assert.equal(
+    result.evidence.fallback.strategy,
+    "licensed_material_to_ai_image",
+  );
+  assert.equal(result.evidence.fallback.to, "gpt-image-2");
+  assert.deepEqual(result.evidence.providerKindsCalled, ["material", "image"]);
+});
+
+test("混合模式素材provider不可用且账务可终结时继续由GPT Image 2补齐", async () => {
+  const errorCode = "CONTENT_SPECIAL_MATERIAL_PROVIDER_UNAVAILABLE";
+  const secret = "sk-MIX-MATERIAL-SHOULD-NOT-LEAK-123456";
+  for (const billingState of [null, "not_held", "released", "settled"]) {
+    let imageInput = null;
+    const result = await executeContentSpecialHandlerRuntime(
+      baseInput(
+        "media_generation_with_svg_fallback",
+        {
+          async material() {
+            const error = Object.assign(
+              new Error(`material provider unavailable ${secret}`),
+              { code: errorCode, status: 503 },
+            );
+            if (billingState) {
+              error.billing = {
+                state: billingState,
+                pendingReconciliation: false,
+                holdId: billingState === "not_held" ? null : 910,
+                chargedCredits: billingState === "settled" ? 0 : null,
+              };
+            }
+            throw error;
+          },
+          async image(input) {
+            imageInput = input;
+            return {
+              images: Array.from({ length: input.count }, (_, index) => ({
+                url: `https://images.example/material-fallback-${billingState || "none"}-${index + 1}.png`,
+                mimeType: "image/png",
+              })),
+              provider: {
+                name: "yunwu-compatible",
+                model: "gpt-image-2",
+                mode: "api",
+              },
+              model: "gpt-image-2",
+              mode: "api",
+            };
+          },
+        },
+        { media_request: { mode: "mix", imageCount: 2 } },
+      ),
     );
+
+    assert.equal(imageInput.count, 2);
+    assert.equal(result.artifacts.length, 2);
+    assert.equal(result.evidence.fallback.used, true);
     assert.equal(
-      imageCalls,
-      0,
-      `${mode}不得在授权素材缺失时调用AI图片provider`,
+      result.evidence.fallback.strategy,
+      "licensed_material_to_ai_image",
     );
-    assert.equal(textCalls, 0, `${mode}不得把SVG回退冒充真实素材`);
+    assert.equal(result.evidence.fallback.providerErrorCode, errorCode);
+    assert.match(result.evidence.fallback.reason, new RegExp(errorCode, "u"));
+    assert.equal(
+      result.evidence.providerAttempts[0].providerErrorCode,
+      errorCode,
+    );
+    assert.deepEqual(result.evidence.providerKindsCalled, [
+      "material",
+      "image",
+    ]);
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /MIX-MATERIAL-SHOULD-NOT-LEAK/u,
+    );
   }
+});
+
+test("混合模式部分素材的账务待对账时在AI补图前fail closed", async () => {
+  let imageCalls = 0;
+  await assert.rejects(
+    executeContentSpecialHandlerRuntime(
+      baseInput(
+        "media_generation_with_svg_fallback",
+        {
+          async material() {
+            return {
+              assets: [
+                {
+                  url: "https://assets.example/licensed.webp",
+                  mimeType: "image/webp",
+                },
+              ],
+              provider: { name: "licensed-material-library", mode: "local" },
+              bridge: {
+                billing: {
+                  state: "pending_reconciliation",
+                  pendingReconciliation: true,
+                  holdId: 901,
+                  estimatedCredits: 150,
+                  heldCredits: 150,
+                  chargedCredits: null,
+                },
+              },
+            };
+          },
+          async image() {
+            imageCalls += 1;
+            return { images: [] };
+          },
+        },
+        { media_request: { mode: "mix", imageCount: 2 } },
+      ),
+    ),
+    (error) => {
+      assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
+      assert.equal(error.status, 409);
+      assert.match(error.message, /账务尚未终结/u);
+      assert.match(error.message, /GPT Image 2补图前停止/u);
+      assert.equal(error.billing.state, "pending_reconciliation");
+      assert.equal(error.billing.holdId, 901);
+      assert.equal(error.evidence.completed, false);
+      assert.equal(error.evidence.artifactCount, 1);
+      assert.deepEqual(error.evidence.providerKindsCalled, ["material"]);
+      assert.deepEqual(error.evidence.billingGate, {
+        providerKind: "material",
+        state: "pending_reconciliation",
+        pendingReconciliation: true,
+        allowedToCallImageProvider: false,
+        action: "blocked_before_ai_image_fill",
+      });
+      return true;
+    },
+  );
+  assert.equal(imageCalls, 0);
 });
 
 test("混合模式AI图片供应失败时保留真实素材证据但不冒充完成", async () => {
@@ -348,19 +620,66 @@ test("混合模式AI图片供应失败时保留真实素材证据但不冒充完
             return { data: { images: [{ svg: "<svg></svg>" }] } };
           },
         },
-        { media_request: { mode: "mix", imageCount: 2 } },
+        {
+          media_request: {
+            mode: "mix",
+            imageCount: 2,
+            visual_policy_version: "v2",
+          },
+        },
       ),
     ),
     (error) => {
       assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
-      assert.equal(error.status, 422);
-      assert.match(error.message, /混合模式.*AI图片/u);
+      assert.equal(error.status, 502);
+      assert.match(error.message, /GPT Image 2补图供应商调用失败/u);
+      assert.doesNotMatch(error.message, /0\/1张可预览位图/u);
       assert.equal(error.evidence.artifactCount, 1);
       assert.equal(error.evidence.artifacts[0].kind, "material");
       return true;
     },
   );
   assert.equal(fallbackCalls, 0);
+});
+
+test("provider幂等冲突保留白名单错误码，不再误报AI配图0/3", async () => {
+  const secret = "sk-CONFLICT-SHOULD-NOT-LEAK-123456";
+  await assert.rejects(
+    executeContentSpecialHandlerRuntime(
+      baseInput(
+        "media_generation_with_svg_fallback",
+        {
+          async image() {
+            throw Object.assign(new Error(`attempt conflict ${secret}`), {
+              code: "CONTENT_PIPELINE_PROVIDER_ATTEMPT_CONFLICT",
+              status: 409,
+            });
+          },
+        },
+        { media_request: { mode: "ai", imageCount: 3 } },
+      ),
+    ),
+    (error) => {
+      assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
+      assert.equal(error.status, 409);
+      assert.match(error.message, /AI图片供应商调用失败/u);
+      assert.doesNotMatch(error.message, /0\/3张可预览位图/u);
+      assert.equal(error.evidence.artifactCount, 0);
+      assert.equal(error.evidence.providerAttempts.length, 1);
+      assert.equal(
+        error.evidence.providerAttempts[0].providerErrorCode,
+        "CONTENT_PIPELINE_PROVIDER_ATTEMPT_CONFLICT",
+      );
+      assert.equal(
+        error.evidence.providerAttempts[0].error,
+        "image内容供应商暂时不可用，请稍后重试",
+      );
+      const visible = JSON.stringify(error);
+      assert.doesNotMatch(visible, /CONFLICT-SHOULD-NOT-LEAK/u);
+      assert.doesNotMatch(visible, /attempt conflict/u);
+      return true;
+    },
+  );
 });
 
 test("media AI配图时图像provider失败则fail closed，不走SVG回退，失败证据不泄露密钥", async () => {
@@ -403,7 +722,9 @@ test("media AI配图时图像provider失败则fail closed，不走SVG回退，�
     (error) => {
       assert.equal(error.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
       assert.equal(error.status, 502);
-      assert.match(error.message, /不会用SVG示意图冒充配图/u);
+      assert.match(error.message, /AI图片供应商调用失败/u);
+      assert.match(error.message, /不会用SVG、HTML/u);
+      assert.doesNotMatch(error.message, /0\/1张可预览位图/u);
       const visible = JSON.stringify(error);
       assert.doesNotMatch(visible, /SHOULD_NOT_LEAK/u);
       assert.match(visible, /image内容供应商暂时不可用/u);
@@ -411,6 +732,47 @@ test("media AI配图时图像provider失败则fail closed，不走SVG回退，�
     },
   );
   assert.equal(textCalls, 0);
+});
+
+test("media AI配图拒绝SVG、HTML伪装和不足张数，不能把部分图片标成完整交付", async () => {
+  await assert.rejects(
+    () =>
+      executeContentSpecialHandlerRuntime(
+        baseInput(
+          "media_generation_with_svg_fallback",
+          {
+            async image() {
+              return {
+                images: [
+                  {
+                    url: "https://images.example/real.png",
+                    mimeType: "image/png",
+                  },
+                  {
+                    url: "https://images.example/fake.svg",
+                    mimeType: "image/png",
+                  },
+                  {
+                    content: "<html><body>placeholder</body></html>",
+                    mimeType: "image/png",
+                  },
+                ],
+                model: "gpt-image-2",
+                mode: "api",
+              };
+            },
+          },
+          { media_request: { mode: "ai", imageCount: 3 } },
+        ),
+      ),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.match(error.message, /只取得1\/3张可预览位图/u);
+      assert.match(error.message, /不足张数冒充完整交付/u);
+      assert.equal(error.evidence.artifactCount, 1);
+      return true;
+    },
+  );
 });
 
 test("cover默认逐平台调用真实图片provider，交付可预览位图且不调用HTML", async () => {

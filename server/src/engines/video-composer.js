@@ -6,6 +6,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { mediaBinarySearchDirectories } from './media-binaries.js';
+
 export const AI_SALES_VIDEO_TARGET_DURATION_SECONDS = 30;
 export const AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS = Object.freeze([2, 3]);
 export const AI_SALES_VIDEO_UPLOAD_ROOT = path.resolve(
@@ -13,8 +15,8 @@ export const AI_SALES_VIDEO_UPLOAD_ROOT = path.resolve(
   '../../data/uploads/ai-sales-video',
 );
 
-const DEFAULT_FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
-const DEFAULT_FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
+const FFMPEG_BINARY_NAME = 'ffmpeg';
+const FFPROBE_BINARY_NAME = 'ffprobe';
 const VIDEO_CODEC = 'h264';
 const AUDIO_CODEC = 'aac';
 const MAX_TENANT_ID = 2_147_483_647;
@@ -28,7 +30,95 @@ function composerError(message, code = 'AI_SALES_VIDEO_COMPOSER_INVALID') {
   return error;
 }
 
+function composerBinaryError(binaryName, code = 'AI_SALES_VIDEO_COMPOSER_BINARY_MISSING') {
+  const label = binaryName === FFPROBE_BINARY_NAME ? 'ffprobe' : 'ffmpeg';
+  const error = composerError(
+    `视频合成环境缺少可执行的 ${label}；请安装 FFmpeg，或在服务环境中配置${label === 'ffmpeg' ? ' FFMPEG_PATH' : ' FFPROBE_PATH'}`,
+    code,
+  );
+  error.binary = label;
+  return error;
+}
+
+async function defaultExecutableCheck(candidate) {
+  try {
+    const stat = await fsp.stat(candidate);
+    if (!stat.isFile()) return false;
+    await fsp.access(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveComposerBinary({
+  binaryName,
+  explicitPath,
+  pathEnv,
+  isExecutable,
+}) {
+  const configured = String(explicitPath || '').trim();
+  if (configured.includes('\0')) {
+    throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
+  }
+  if (configured && !path.isAbsolute(configured) && /[\\/]/u.test(configured)) {
+    throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
+  }
+  const executableName = configured && !path.isAbsolute(configured)
+    ? configured
+    : binaryName;
+  if (!/^[A-Za-z0-9._+-]+$/u.test(executableName)) {
+    throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
+  }
+  // 目录探测清单与 media-binaries 保持同源，launchd 最小 PATH 也能命中 Homebrew。
+  const candidates = path.isAbsolute(configured)
+    ? [path.normalize(configured)]
+    : mediaBinarySearchDirectories(pathEnv).map(directory => (
+        path.join(directory, executableName)
+      ));
+  for (const candidate of candidates) {
+    if (await isExecutable(candidate)) return candidate;
+  }
+  throw composerBinaryError(binaryName);
+}
+
+/**
+ * Resolve and preflight the native video tools before a caller creates a
+ * credit hold or starts provider work. Explicit paths win; LaunchAgent's
+ * minimal PATH is supplemented with the standard Homebrew locations.
+ */
+export async function assertAiSalesVideoComposerReady({
+  env = process.env,
+  pathEnv = env?.PATH,
+  ffmpegPath,
+  ffprobePath,
+  isExecutable = defaultExecutableCheck,
+} = {}) {
+  if (typeof isExecutable !== 'function') {
+    throw new TypeError('isExecutable must be a function');
+  }
+  const resolvedFfmpeg = await resolveComposerBinary({
+    binaryName: FFMPEG_BINARY_NAME,
+    explicitPath: ffmpegPath === undefined ? env?.FFMPEG_PATH : ffmpegPath,
+    pathEnv,
+    isExecutable,
+  });
+  const resolvedFfprobe = await resolveComposerBinary({
+    binaryName: FFPROBE_BINARY_NAME,
+    explicitPath: ffprobePath === undefined ? env?.FFPROBE_PATH : ffprobePath,
+    pathEnv,
+    isExecutable,
+  });
+  return {
+    ffmpegPath: resolvedFfmpeg,
+    ffprobePath: resolvedFfprobe,
+  };
+}
+
 function commandError(file, args, result) {
+  if (result?.code === 'ENOENT') {
+    return composerBinaryError(path.basename(String(file || FFMPEG_BINARY_NAME)));
+  }
   const error = composerError(
     `${path.basename(String(file || 'ffmpeg'))}执行失败${result?.stderr ? `：${String(result.stderr).slice(-500)}` : ''}`,
     'AI_SALES_VIDEO_COMPOSER_COMMAND_FAILED',
@@ -232,11 +322,26 @@ export async function composeAiSalesVideo({
   tenantId,
   segments,
   outputRoot = AI_SALES_VIDEO_UPLOAD_ROOT,
-  ffmpegPath = DEFAULT_FFMPEG,
-  ffprobePath = DEFAULT_FFPROBE,
+  ffmpegPath,
+  ffprobePath,
   runner = spawnCommand,
   targetDurationSeconds = AI_SALES_VIDEO_TARGET_DURATION_SECONDS,
 } = {}) {
+  let resolvedFfmpegPath = ffmpegPath;
+  let resolvedFfprobePath = ffprobePath;
+  if (runner === spawnCommand) {
+    const ready = await assertAiSalesVideoComposerReady({
+      ffmpegPath,
+      ffprobePath,
+    });
+    resolvedFfmpegPath = ready.ffmpegPath;
+    resolvedFfprobePath = ready.ffprobePath;
+  } else {
+    // Injected runners are hermetic test/adaptor boundaries; they receive the
+    // requested command label without inspecting the host filesystem.
+    resolvedFfmpegPath = resolvedFfmpegPath || process.env.FFMPEG_PATH || FFMPEG_BINARY_NAME;
+    resolvedFfprobePath = resolvedFfprobePath || process.env.FFPROBE_PATH || FFPROBE_BINARY_NAME;
+  }
   const safeTenantId = ensureSafeTenantId(tenantId);
   const targetDuration = Number(targetDurationSeconds);
   if (!Number.isFinite(targetDuration) || targetDuration <= 0 || targetDuration > 3600) {
@@ -264,10 +369,10 @@ export async function composeAiSalesVideo({
       ];
       let result;
       try {
-        result = await runner(ffprobePath, args, { cwd: tempDir });
+        result = await runner(resolvedFfprobePath, args, { cwd: tempDir });
       } catch (error) {
         if (error?.code?.startsWith('AI_SALES_VIDEO_COMPOSER_')) throw error;
-        throw commandError(ffprobePath, args, error);
+        throw commandError(resolvedFfprobePath, args, error);
       }
       probes.push(parseProbeResult(result, `第${index + 1}段`));
     }
@@ -288,13 +393,13 @@ export async function composeAiSalesVideo({
       tempOutput,
     );
     try {
-      const result = await runner(ffmpegPath, ffmpegArgs, { cwd: tempDir });
+      const result = await runner(resolvedFfmpegPath, ffmpegArgs, { cwd: tempDir });
       if (result?.code !== undefined && Number(result.code) !== 0) {
-        throw commandError(ffmpegPath, ffmpegArgs, result);
+        throw commandError(resolvedFfmpegPath, ffmpegArgs, result);
       }
     } catch (error) {
       if (error?.code?.startsWith('AI_SALES_VIDEO_COMPOSER_')) throw error;
-      throw commandError(ffmpegPath, ffmpegArgs, error);
+      throw commandError(resolvedFfmpegPath, ffmpegArgs, error);
     }
     const outputStat = await fsp.stat(tempOutput).catch(() => null);
     if (!outputStat?.isFile() || outputStat.size < 1) {
@@ -302,7 +407,7 @@ export async function composeAiSalesVideo({
     }
     let outputProbeResult;
     try {
-      outputProbeResult = await runner(ffprobePath, [
+      outputProbeResult = await runner(resolvedFfprobePath, [
         '-v', 'error',
         '-show_entries', 'format=duration:stream=codec_name,codec_type,width,height',
         '-of', 'json',
@@ -310,7 +415,7 @@ export async function composeAiSalesVideo({
       ], { cwd: tempDir });
     } catch (error) {
       if (error?.code?.startsWith('AI_SALES_VIDEO_COMPOSER_')) throw error;
-      throw commandError(ffprobePath, [], error);
+      throw commandError(resolvedFfprobePath, [], error);
     }
     const outputProbe = parseOutputDuration(outputProbeResult, targetDuration);
     await fsp.mkdir(tenantDir, { recursive: true, mode: 0o750 });

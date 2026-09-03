@@ -2666,50 +2666,82 @@ export async function marshalWork(marshal, task, role, options = {}) {
         : []),
     ].join("\n");
     const calls = [];
+    let runLegacySearch = null;
     if (webRequested) {
+      const agenticPromise = research
+        ? research(publicResearchQuery, {
+            maxResults: 12,
+            timeoutMs: Math.min(
+              EMPLOYEE_AGENTIC_RESEARCH_TIMEOUT_MAX_MS,
+              Math.max(90_000, Number(workConfig.timeoutSeconds || 0) * 1000),
+            ),
+            signal: options.signal,
+            onProgress: options.onResearchProgress,
+          })
+        : Promise.resolve({
+            attempted: false,
+            ok: false,
+            provider: agenticReadiness.provider,
+            results: [],
+            note: agenticReadiness.cliReady
+              ? "云雾 WebSearch 调研凭据未就绪"
+              : "Claude WebSearch 调研执行器未就绪",
+            evidence: {
+              ...agenticReadiness,
+              externalCall: false,
+              toolCalls: 0,
+            },
+          });
       calls.push({
         kind: "agentic_web_research",
-        promise: research
-          ? research(publicResearchQuery, {
-              maxResults: 12,
-              timeoutMs: Math.min(
-                EMPLOYEE_AGENTIC_RESEARCH_TIMEOUT_MAX_MS,
-                Math.max(90_000, Number(workConfig.timeoutSeconds || 0) * 1000),
-              ),
-              signal: options.signal,
-              onProgress: options.onResearchProgress,
-            })
-          : Promise.resolve({
-              attempted: false,
-              ok: false,
-              provider: agenticReadiness.provider,
-              results: [],
-              note: agenticReadiness.cliReady
-                ? "云雾 WebSearch 调研凭据未就绪"
-                : "Claude WebSearch 调研执行器未就绪",
-              evidence: {
-                ...agenticReadiness,
-                externalCall: false,
-                toolCalls: 0,
-              },
-            }),
+        promise: agenticPromise,
       });
-      calls.push({
-        kind: "web_search",
-        promise: locationIntelligenceRequired
+      runLegacySearch = () => {
+        // 默认 webSearch 已包含分层入口；这里是分层失败后的最后灾备，必须
+        // 显式跳过同一主备链。注入适配器保持原调用契约。
+        const fallbackSearch = typeof options.webSearchFn === "function"
+          ? search
+          : (query, searchOptions = {}) =>
+              search(query, { ...searchOptions, skipTiered: true });
+        return locationIntelligenceRequired
           ? locationBusinessWebSearch(
-              search,
+              fallbackSearch,
               task,
               options.signal,
               employeeResearchPlan,
             )
-          : search(`${ragQuery} 餐饮门店`, {
+          : fallbackSearch(`${ragQuery} 餐饮门店`, {
               max: 6,
               timeoutMs: 9000,
               signal: options.signal,
               fallbackOrder: "web_first",
-            }),
-      });
+            });
+      };
+      // 测试/私有注入保留旧双通道并发契约；生产默认严格顺序，只有
+      // TinyFish→Claude 没形成可核验候选时才继续旧商业/免 Key 灾备。
+      const preserveInjectedParallelSearch =
+        options.parallelInjectedWebSearch !== false &&
+        (typeof injectedAgenticResearch === "function" ||
+          typeof options.webSearchFn === "function" ||
+          !research);
+      const legacyPromise = preserveInjectedParallelSearch
+        ? runLegacySearch()
+        : agenticPromise.then(
+            result =>
+              result?.ok === true &&
+              (result?.candidateReady === true ||
+                result?.evidence?.candidateGate?.passed === true)
+                ? {
+                    attempted: false,
+                    ok: false,
+                    provider: null,
+                    results: [],
+                    note: null,
+                  }
+                : runLegacySearch(),
+            () => runLegacySearch(),
+          );
+      calls.push({ kind: "web_search", promise: legacyPromise });
     }
     if (locationIntelligenceRequired) {
       const taskIsochroneRequest = parseTaskIsochroneRequest(task);
@@ -3013,6 +3045,280 @@ export async function marshalWork(marshal, task, role, options = {}) {
           extractedTextStored: controlledResults.length > 0,
         },
       });
+    }
+    // TinyFish 已在分层入口通过材料门时，旧商业/免 Key 检索不会提前运行。
+    // 但后续安全抓取仍可能因重定向、MIME、正文相关性或临时网络问题把
+    // 这批候选全部淘汰。此时必须再换一批 legacy 候选并受控抓取一次，
+    // 不能因为“曾经有候选”就永久丢掉原有灾备能力。
+    const initialControlledChannel = channels.find(
+      (channel) => channel.kind === "controlled_web_fetch",
+    );
+    const initialControlledQuality = sanitizePublicSources(
+      initialControlledChannel?.results || [],
+      {
+        locationBusinessTask,
+        requireTaskRelevance: locationBusinessTask,
+        stage: "controlled_fetch_before_legacy_recovery",
+        task,
+      },
+    );
+    const initialControlledUsable =
+      initialControlledChannel?.ok === true &&
+      initialControlledQuality.accepted.length > 0 &&
+      (!locationBusinessTask ||
+        initialControlledQuality.accepted.some((source) =>
+          isDirectRestaurantSource(source, task),
+        ));
+    const legacyWasDeferred =
+      genericSourceChannel?.attempted === false &&
+      typeof runLegacySearch === "function";
+    if (
+      webRequested &&
+      legacyWasDeferred &&
+      !initialControlledUsable &&
+      (options.requireAgenticResearch === true || options.controlledWebFetchFn)
+    ) {
+      let recoveredSearch;
+      try {
+        recoveredSearch = (await runLegacySearch()) || {};
+      } catch (error) {
+        recoveredSearch = {
+          attempted: true,
+          ok: false,
+          provider: null,
+          results: [],
+          note: String(
+            error?.message || "旧检索灾备未取得新的公开来源",
+          ).slice(0, 180),
+          evidence: null,
+        };
+      }
+      const recoveredSeen = new Set();
+      const recoveredResults = (
+        Array.isArray(recoveredSearch.results) ? recoveredSearch.results : []
+      )
+        .filter((item) => {
+          const key = `${String(item?.title || "").trim()}|${String(item?.url || "").trim()}`;
+          if (!key || recoveredSeen.has(key)) return false;
+          recoveredSeen.add(key);
+          return true;
+        })
+        .map((item) => ({
+          ...item,
+          fetchedAt:
+            item?.fetchedAt ||
+            item?.fetched_at ||
+            recoveredSearch?.evidence?.fetchedAt ||
+            null,
+        }));
+      Object.assign(genericSourceChannel, {
+        attempted: recoveredSearch.attempted !== false,
+        ok: Boolean(recoveredSearch.ok),
+        provider: recoveredSearch.provider || null,
+        results: recoveredResults,
+        note: recoveredSearch.note || null,
+        evidence: recoveredSearch.evidence || null,
+      });
+
+      const recoveredCandidateQuality = sanitizePublicSources(
+        recoveredResults,
+        {
+          locationBusinessTask,
+          requireTaskRelevance: locationBusinessTask,
+          stage: "before_controlled_fetch:legacy_recovery",
+          task,
+        },
+      );
+      sourceQualityRejected.push(...recoveredCandidateQuality.rejected);
+      const recoveredCandidates = rankControlledFetchCandidates(
+        recoveredCandidateQuality.accepted,
+        { task },
+      ).filter((candidate) => {
+        const url = String(candidate?.url || "").trim();
+        if (!url || controlledCandidateUrls.has(url)) return false;
+        controlledCandidateUrls.add(url);
+        return true;
+      });
+
+      if (recoveredCandidates.length) {
+        const controlledFetch =
+          options.controlledWebFetchFn || fetchControlledWebEvidence;
+        const candidateLimit = locationBusinessTask ? 24 : 8;
+        const recoveryPool = recoveredCandidates.slice(0, candidateLimit);
+        const recoveryBatchCount = locationBusinessTask
+          ? Math.ceil(recoveryPool.length / 8)
+          : Math.min(1, recoveryPool.length);
+        const recoveryParts = [];
+        for (
+          let batchIndex = 0;
+          batchIndex < recoveryBatchCount;
+          batchIndex += 1
+        ) {
+          const batch = recoveryPool.slice(
+            batchIndex * 8,
+            batchIndex * 8 + 8,
+          );
+          if (!batch.length) break;
+          reportExecutionStage("fetch", {
+            status: "active",
+            count: batchIndex + 1,
+          });
+          try {
+            const fetched = await controlledFetch(batch, {
+              limit: 8,
+              timeoutMs: 15_000,
+              signal: options.signal,
+            });
+            recoveryParts.push({
+              ...(fetched || {}),
+              evidence: {
+                ...(fetched?.evidence || {}),
+                requested: Number(
+                  fetched?.evidence?.requested || batch.length,
+                ),
+                batch: batchIndex + 1,
+              },
+            });
+            const screened = sanitizePublicSources(fetched?.results || [], {
+              locationBusinessTask,
+              requireTaskRelevance: locationBusinessTask,
+              stage: `controlled_fetch_legacy_recovery_batch:${batchIndex + 1}`,
+              task,
+            });
+            if (
+              locationBusinessTask &&
+              screened.accepted.some((source) =>
+                isDirectRestaurantSource(source, task),
+              )
+            ) {
+              break;
+            }
+          } catch (error) {
+            recoveryParts.push({
+              attempted: true,
+              ok: false,
+              provider: "NanoWork controlled WebFetch",
+              results: [],
+              evidence: {
+                schemaVersion: "nanowork.controlled-web-evidence/1",
+                requested: batch.length,
+                externalCall: true,
+                ssrfProtected: true,
+                batch: batchIndex + 1,
+                failureCode:
+                  error?.code || "CONTROLLED_WEB_FETCH_FAILED",
+              },
+            });
+          }
+        }
+
+        const recoveryResults = recoveryParts.flatMap((part) =>
+          Array.isArray(part?.results) ? part.results : [],
+        );
+        const previousControlled = channels.find(
+          (channel) => channel.kind === "controlled_web_fetch",
+        );
+        const mergedSeen = new Set();
+        const mergedResults = [
+          ...(previousControlled?.results || []),
+          ...recoveryResults,
+        ].filter((item) => {
+          const key = String(item?.url || item?.title || "").trim();
+          if (!key || mergedSeen.has(key)) return false;
+          mergedSeen.add(key);
+          return true;
+        });
+        const recoveryFailures = recoveryParts.flatMap((part) =>
+          Array.isArray(part?.evidence?.failures)
+            ? part.evidence.failures.map((failure) =>
+                controlledFailureAuditRecord(
+                  failure,
+                  Number(part.evidence.batch) || null,
+                ),
+              )
+            : part?.evidence?.failureCode
+              ? [
+                  controlledFailureAuditRecord(
+                    { code: part.evidence.failureCode },
+                    Number(part.evidence.batch) || null,
+                  ),
+                ]
+              : [],
+        );
+        const previousEvidence = previousControlled?.evidence || null;
+        const mergedEvidence = {
+          schemaVersion: "nanowork.controlled-web-evidence/1",
+          requested:
+            Number(previousEvidence?.requested || 0) +
+            recoveryParts.reduce(
+              (sum, part) =>
+                sum + Number(part?.evidence?.requested || 0),
+              0,
+            ),
+          fetched: mergedResults.length,
+          failures: [
+            ...(Array.isArray(previousEvidence?.failures)
+              ? previousEvidence.failures
+              : []),
+            ...recoveryFailures,
+          ],
+          batchCount:
+            Number(previousEvidence?.batchCount || 0) +
+            recoveryParts.length,
+          externalCall:
+            previousEvidence?.externalCall === true ||
+            recoveryParts.some(
+              (part) => part?.evidence?.externalCall === true,
+            ),
+          ssrfProtected:
+            (previousEvidence
+              ? previousEvidence.ssrfProtected === true
+              : true) &&
+            recoveryParts.every(
+              (part) => part?.evidence?.ssrfProtected === true,
+            ),
+          redirectsRevalidated:
+            (previousEvidence
+              ? previousEvidence.redirectsRevalidated === true
+              : true) &&
+            recoveryParts.every(
+              (part) => part?.evidence?.redirectsRevalidated === true,
+            ),
+          rawResponseStored: false,
+          extractedTextStored: mergedResults.length > 0,
+          legacyRecoveryTriggered: true,
+        };
+        const mergedProviders = [
+          previousControlled?.provider,
+          ...recoveryParts.map((part) => part?.provider),
+        ].filter(Boolean);
+        const recoveryChannel = {
+          kind: "controlled_web_fetch",
+          attempted:
+            previousControlled?.attempted === true ||
+            recoveryParts.some((part) => part?.attempted !== false),
+          ok:
+            mergedResults.length > 0 &&
+            (previousControlled?.ok === true ||
+              recoveryParts.some((part) => part?.ok === true)),
+          provider:
+            [...new Set(mergedProviders)].join(" + ") ||
+            "NanoWork controlled WebFetch",
+          results: mergedResults,
+          note: mergedEvidence.failures.length
+            ? mergedResults.length
+              ? "受控网页正文部分核验失败，已仅保留成功正文"
+              : "已更换灾备来源，但受控网页正文仍未取得有效文本"
+            : null,
+          evidence: mergedEvidence,
+        };
+        if (previousControlled) Object.assign(previousControlled, recoveryChannel);
+        else channels.unshift(recoveryChannel);
+        reportExecutionStage("fetch", {
+          status: mergedResults.length > 0 ? "done" : "error",
+          count: mergedResults.length,
+        });
+      }
     }
     const controlledEvidenceResults =
       channels.find((channel) => channel.kind === "controlled_web_fetch")

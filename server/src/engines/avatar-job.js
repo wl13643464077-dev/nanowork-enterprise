@@ -23,6 +23,10 @@ import {
   settleHold,
 } from "./credits.js";
 import { decodeBase64File } from "./filehub.js";
+import {
+  missingMediaBinaryMessage,
+  resolveFfmpeg,
+} from "./media-binaries.js";
 import createMiniMaxVoiceClient from "./minimax-voice.js";
 import { parseMiniMaxAudioUrl } from "./minimax-voice.js";
 import createHeyGenAvatarClient from "./heygen-avatar.js";
@@ -562,10 +566,20 @@ async function defaultPrepareAudio({ asset, durationSeconds, signal }) {
   if (signal?.aborted) {
     throw failure("数字人任务已取消", 499, "AVATAR_CANCELLED");
   }
+  // 专用环境变量优先，其余交给统一解析器（launchd 最小 PATH 下补测 Homebrew 目录）。
+  // 在创建临时目录前就 fail-closed，避免留下孤儿目录。
+  const ffmpeg =
+    String(process.env.AVATAR_FFMPEG_PATH || "").trim() || resolveFfmpeg();
+  if (!ffmpeg) {
+    throw failure(
+      missingMediaBinaryMessage("ffmpeg"),
+      503,
+      "AVATAR_AUDIO_PREPARE_FAILED",
+    );
+  }
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "nanowork-avatar-audio-"));
   const output = path.join(directory, "bounded.wav");
   let source = asset?.path;
-  const ffmpeg = String(process.env.AVATAR_FFMPEG_PATH || "ffmpeg").trim();
   try {
     if (!source && asset?.bytes) {
       const bytes = Buffer.isBuffer(asset.bytes)

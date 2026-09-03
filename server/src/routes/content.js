@@ -76,12 +76,14 @@ import {
 import { MINIMAX_H3_MODEL, MINIMAX_HAILUO_MODELS } from '../engines/minimax-video.js';
 import {
   AI_SALES_VIDEO_UPLOAD_ROOT,
+  assertAiSalesVideoComposerReady,
   composeAiSalesVideo,
 } from '../engines/video-composer.js';
 import {
   downloadProviderVideoClip,
   waitForProviderVideo,
 } from '../engines/video-provider-download.js';
+import { recoverAiSalesVideoFromExistingTasks } from '../engines/ai-sales-video-recovery.js';
 import {
   contentEmployeeByIdx,
   contentEmployeeMetadata,
@@ -2980,7 +2982,18 @@ export async function executeContentAutomationRun({
           signal,
         });
         if (specialRuntime) {
-          if (specialProviderBridge && specialRuntime.evidence?.fallback?.used === true) {
+          const licensedMaterialAiFallback =
+            specialRuntime.evidence?.fallback?.strategy === 'licensed_material_to_ai_image'
+            && Array.isArray(specialRuntime.artifacts)
+            && specialRuntime.artifacts.length > 0
+            && specialRuntime.artifacts.every(artifact =>
+              ['material', 'image'].includes(String(artifact?.kind || ''))
+              && /^image\/(?:png|jpe?g|webp|gif)$/iu.test(String(artifact?.mimeType || '')));
+          if (
+            specialProviderBridge
+            && specialRuntime.evidence?.fallback?.used === true
+            && !licensedMaterialAiFallback
+          ) {
             throw automationError(
               `内容员工“${employee.name}”已配置真实图片provider但未取得真实图片，禁止用SVG/HTML回退冒充完整能力交付`,
               502,
@@ -5238,8 +5251,10 @@ ${String(prompt)}
 });
 
 function aiSalesVideoPriceConfigured(model) {
-  const config = getConfig('billing', {}) || {};
-  const value = config?.video?.[model];
+  // 只接受明确到模型 ID 的价格；禁止落到 video.default 后把
+  // “通用估价”冒充已核验供应商成本。billing() 同时合并了版本化
+  // 的已核价默认项和管理后台覆盖项。
+  const value = billing()?.video?.[model];
   return Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
@@ -5249,12 +5264,89 @@ function aiSalesVideoModelAllowed(model) {
   return id === MINIMAX_H3_MODEL && miniMaxH3Enabled();
 }
 
+const AI_SALES_VIDEO_PROVIDER_PROGRESS_SCHEMA = 'nanowork.ai-sales-video-provider-progress/1';
+const AI_SALES_VIDEO_PROVIDER_SEGMENT_STATUSES = new Set([
+  'planned',
+  'submitting',
+  'provider_submitted',
+  'provider_ready',
+  'downloaded',
+  'failed',
+]);
+
+function aiSalesVideoSafeProviderTaskId(value) {
+  const taskId = String(value || '').trim();
+  if (!taskId || taskId.length > 240) return null;
+  // Provider task identifiers are opaque tokens. Reject anything shaped like
+  // a URL or path so a malicious/upstream response cannot smuggle temporary
+  // delivery locations into the durable job snapshot.
+  if (/^(?:https?:|data:|file:)/iu.test(taskId) || /[\\/]/u.test(taskId)) return null;
+  return /^[\p{L}\p{N}_.:+-]+$/u.test(taskId) ? taskId : null;
+}
+
+function aiSalesVideoProviderProgressSnapshot(plan, state = {}) {
+  const currentSegments = new Map(
+    (Array.isArray(state?.segments) ? state.segments : [])
+      .map(segment => [Number(segment?.index), segment]),
+  );
+  const recovery = state?.recovery && typeof state.recovery === 'object'
+    ? {
+        schemaVersion: String(state.recovery.schemaVersion || '').slice(0, 100) || null,
+        mode: String(state.recovery.mode || '').slice(0, 100) || null,
+        stage: String(state.recovery.stage || '').slice(0, 80) || null,
+        model: String(state.recovery.model || plan?.model || '').slice(0, 160) || null,
+        providerSubmissions: Math.max(0, Number(state.recovery.providerSubmissions || 0)),
+        reusedTaskCount: Math.max(0, Number(state.recovery.reusedTaskCount || 0)),
+        retryable: state.recovery.retryable === true,
+        errorCode: String(state.recovery.errorCode || '').slice(0, 120) || null,
+      }
+    : null;
+  const updatedAt = new Date().toISOString();
+  return {
+    schemaVersion: AI_SALES_VIDEO_PROVIDER_PROGRESS_SCHEMA,
+    updatedAt,
+    lastActivityAt: updatedAt,
+    invocationStarted: state?.invocationStarted === true,
+    invocationCount: Math.max(0, Number(state?.invocationCount || 0)),
+    segments: (plan?.segments || []).map(segment => {
+      const current = currentSegments.get(Number(segment.index)) || {};
+      const status = AI_SALES_VIDEO_PROVIDER_SEGMENT_STATUSES.has(current.status)
+        ? current.status
+        : 'planned';
+      const taskId = aiSalesVideoSafeProviderTaskId(current.taskId);
+      return {
+        index: Number(segment.index),
+        durationSeconds: Number(segment.durationSeconds),
+        status,
+        taskId,
+      };
+    }),
+    ...(recovery ? { recovery } : {}),
+  };
+}
+
+function updateAiSalesVideoProviderSegment(plan, current, segment, patch = {}) {
+  const nextSegments = aiSalesVideoProviderProgressSnapshot(plan, current).segments
+    .map(item => Number(item.index) === Number(segment?.index)
+      ? {
+          ...item,
+          ...patch,
+          taskId: patch.taskId === undefined ? item.taskId : patch.taskId,
+        }
+      : item);
+  return aiSalesVideoProviderProgressSnapshot(plan, {
+    ...current,
+    segments: nextSegments,
+  });
+}
+
 function aiSalesVideoSnapshot(plan, {
   status = '阻塞',
   reason = '',
   billingState = 'not_held',
   billing = null,
   result = null,
+  providerExecution = null,
   employeeExecution = null,
   grounding = null,
 } = {}) {
@@ -5265,6 +5357,9 @@ function aiSalesVideoSnapshot(plan, {
     status,
     reason: String(reason || '').slice(0, 500),
     ...(result ? { result } : {}),
+    ...(providerExecution
+      ? { providerExecution: aiSalesVideoProviderProgressSnapshot(plan, providerExecution) }
+      : {}),
     billing: billing || {
       state: billingState,
       heldCredits: 0,
@@ -5411,7 +5506,7 @@ function publicAiSalesVideoResult(result) {
       index: segment.index,
       durationSeconds: segment.durationSeconds,
       status: segment.status,
-      taskId: segment.taskId || null,
+      taskId: aiSalesVideoSafeProviderTaskId(segment.taskId),
       // 供应商临时URL和服务器本地路径不对外回显。
       sourceSha256: segment.download?.sha256 || null,
     })),
@@ -5433,14 +5528,33 @@ async function executeAiSalesVideoJob({
   let tempDir = null;
   let result = null;
   let deliveryPersisted = false;
+  let providerInvocationStarted = false;
+  let providerExecution = aiSalesVideoProviderProgressSnapshot(plan);
   const submitSegment = runtime.submitSegment || submitMiniMaxVideoSegment;
   const querySegment = runtime.querySegment || queryMiniMaxVideoSegment;
   const downloadSegment = runtime.downloadSegment || downloadProviderVideoClip;
   let billingState = twoPhaseBillingSummary({
     state: 'held',
     hold,
-    note: 'AI带货员30秒成片已预授权；分段生成、下载或合成失败将全额退回。',
+    note: 'AI带货员30秒成片已预授权；仅供应商调用前失败可全额退回，调用开始后的异常保留待对账。',
   });
+  const persistProviderExecution = (next) => {
+    const persisted = q.run(
+      `UPDATE media_jobs SET snapshot_json=?
+      WHERE tenant_id=? AND id=? AND status='处理中'`,
+      aiSalesVideoSnapshot(plan, {
+        status: '处理中',
+        billing: billingState,
+        providerExecution: next,
+        employeeExecution,
+        grounding: grounding.evidence,
+      }),
+      tenantId,
+      jobId,
+    );
+    if (persisted.changes !== 1) throw new Error('AI带货员供应商执行状态落库失败');
+    providerExecution = aiSalesVideoProviderProgressSnapshot(plan, next);
+  };
   try {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nanowork-sales-provider-'));
     result = await executeAiSalesVideoPlan({
@@ -5480,6 +5594,39 @@ async function executeAiSalesVideoJob({
           segments: segments.map(segment => segment.localPath),
         });
       },
+      onProviderInvocationStarted: async ({ segment }) => {
+        if (typeof runtime.beforeProviderInvocation === 'function') {
+          await runtime.beforeProviderInvocation({
+            jobId,
+            segment: {
+              index: Number(segment.index),
+              durationSeconds: Number(segment.durationSeconds),
+            },
+            model: plan.model,
+          });
+        }
+        const next = updateAiSalesVideoProviderSegment(plan, {
+          ...providerExecution,
+          invocationStarted: true,
+          invocationCount: providerExecution.invocationCount + 1,
+        }, segment, {
+          status: 'submitting',
+          taskId: null,
+        });
+        // Persist before the external function is called. A failed write stops
+        // execution while the hold is still safely refundable.
+        persistProviderExecution(next);
+        providerInvocationStarted = true;
+      },
+      onSegmentState: async ({ segment, status, taskId }) => {
+        const next = updateAiSalesVideoProviderSegment(
+          plan,
+          providerExecution,
+          segment,
+          { status, taskId },
+        );
+        persistProviderExecution(next);
+      },
     });
     if (result.status !== 'success' || !String(result.url || '').startsWith('/uploads/')) {
       const error = new Error('视频合成器未返回受保护的本地成片地址');
@@ -5488,12 +5635,13 @@ async function executeAiSalesVideoJob({
     }
     const persisted = q.run(
       `UPDATE media_jobs SET status='成功',url=?,credits=NULL,error=NULL,snapshot_json=?
-      WHERE tenant_id=? AND id=?`,
+      WHERE tenant_id=? AND id=? AND status='处理中'`,
       result.url,
       aiSalesVideoSnapshot(plan, {
         status: '成功',
         billing: billingState,
         result: publicAiSalesVideoResult(result),
+        providerExecution,
         employeeExecution,
         grounding: grounding.evidence,
       }),
@@ -5517,12 +5665,14 @@ async function executeAiSalesVideoJob({
         note: '成片已交付，按本次授权的分段视频价格完成结算。',
       });
       q.run(
-        `UPDATE media_jobs SET credits=?,error=NULL,snapshot_json=? WHERE tenant_id=? AND id=?`,
+        `UPDATE media_jobs SET credits=?,error=NULL,snapshot_json=?
+        WHERE tenant_id=? AND id=? AND status='成功'`,
         settled.credits,
         aiSalesVideoSnapshot(plan, {
           status: '成功',
           billing: billingState,
           result: publicAiSalesVideoResult(result),
+          providerExecution,
           employeeExecution,
           grounding: grounding.evidence,
         }),
@@ -5537,13 +5687,15 @@ async function executeAiSalesVideoJob({
         note: '成片已技术交付，但预授权尚未完成实扣；在对账完成前不可验收入库。',
       });
       q.run(
-        `UPDATE media_jobs SET credits=NULL,error=?,snapshot_json=? WHERE tenant_id=? AND id=?`,
+        `UPDATE media_jobs SET credits=NULL,error=?,snapshot_json=?
+        WHERE tenant_id=? AND id=? AND status='成功'`,
         '成片已生成，积分结算待对账',
         aiSalesVideoSnapshot(plan, {
           status: '成功',
           reason: '积分结算待对账',
           billing: billingState,
           result: publicAiSalesVideoResult(result),
+          providerExecution,
           employeeExecution,
           grounding: grounding.evidence,
         }),
@@ -5574,13 +5726,15 @@ async function executeAiSalesVideoJob({
       });
       try {
         q.run(
-          `UPDATE media_jobs SET credits=NULL,error=?,snapshot_json=? WHERE tenant_id=? AND id=?`,
+          `UPDATE media_jobs SET credits=NULL,error=?,snapshot_json=?
+          WHERE tenant_id=? AND id=? AND status='成功'`,
           '成片已生成，积分结算待对账',
           aiSalesVideoSnapshot(plan, {
             status: '成功',
             reason,
             billing: billingState,
             result: publicAiSalesVideoResult(result),
+            providerExecution,
             employeeExecution,
             grounding: grounding.evidence,
           }),
@@ -5591,41 +5745,57 @@ async function executeAiSalesVideoJob({
       console.error(`[ai-sales-video] job#${jobId} delivered but billing state update failed:`, reason);
       return;
     }
-    try {
-      const released = releaseHold(
-        hold,
-        `AI带货员30秒成片#${jobId}未交付，预授权全额退回`,
-      );
-      billingState = twoPhaseBillingSummary({
-        state: 'released',
-        hold,
-        settled: released,
-        note: '未形成可交付成片，预授权已全额退回。',
-      });
-    } catch (releaseError) {
+    if (providerInvocationStarted) {
       billingState = twoPhaseBillingSummary({
         state: 'pending_reconciliation',
         hold,
-        error: releaseError,
-        note: '成片失败但预授权释放异常，已保留待对账。',
+        error,
+        note: '供应商调用已经开始但未形成完整成片；保留预授权待对账，禁止自动退款或重复付费调用。',
       });
+      billingState.providerInvocationStarted = true;
+      billingState.releaseSuppressed = true;
+      billingState.reconciliationReason = 'provider_invocation_started';
+    } else {
+      try {
+        const released = releaseHold(
+          hold,
+          `AI带货员30秒成片#${jobId}未进入供应商调用，预授权全额退回`,
+        );
+        billingState = twoPhaseBillingSummary({
+          state: 'released',
+          hold,
+          settled: released,
+          note: '供应商调用前失败，预授权已全额退回。',
+        });
+      } catch (releaseError) {
+        billingState = twoPhaseBillingSummary({
+          state: 'pending_reconciliation',
+          hold,
+          error: releaseError,
+          note: '供应商调用前失败但预授权释放异常，已保留待对账。',
+        });
+      }
     }
     const reason = sanitizeContentRuntimeErrorMessage(error).slice(0, 220);
-    q.run(
+    const failurePersisted = q.run(
       `UPDATE media_jobs SET status='失败',credits=?,error=?,snapshot_json=?
-      WHERE tenant_id=? AND id=?`,
+      WHERE tenant_id=? AND id=? AND status='处理中'`,
       billingState.state === 'released' ? 0 : null,
       `${reason}；${billingState.state === 'released' ? '预授权已退回' : '预授权待对账'}`,
       aiSalesVideoSnapshot(plan, {
         status: '失败',
         reason,
         billing: billingState,
+        providerExecution,
         employeeExecution,
         grounding: grounding.evidence,
       }),
       tenantId,
       jobId,
     );
+    if (failurePersisted.changes !== 1) {
+      console.error(`[ai-sales-video] job#${jobId} terminal state changed before failure write; preserving authoritative row`);
+    }
     const outputPath = result?.composition?.absolutePath || result?.composition?.path || null;
     if (outputPath) {
       const root = path.resolve(AI_SALES_VIDEO_UPLOAD_ROOT);
@@ -5650,6 +5820,186 @@ async function executeAiSalesVideoJob({
   }
 }
 
+function aiSalesVideoRecoveryRecord(row) {
+  const snapshot = safeJsonValue(row?.snapshot_json, {});
+  const providerExecution = snapshot?.providerExecution;
+  const segments = Array.isArray(providerExecution?.segments) ? providerExecution.segments : [];
+  const planSegments = Array.isArray(snapshot?.segments) ? snapshot.segments : [];
+  const recoverable =
+    row?.kind === 'video'
+    && snapshot?.workflow === AI_SALES_VIDEO_WORKFLOW
+    && [2, 3].includes(planSegments.length)
+    && segments.length === planSegments.length
+    && segments.every(segment => aiSalesVideoSafeProviderTaskId(segment?.taskId));
+  return {
+    recoverable,
+    snapshot,
+    plan: snapshot,
+    providerExecution,
+  };
+}
+
+function latestAiSalesVideoHoldRow(jobId, tenantId) {
+  return q.get(
+    `SELECT * FROM credit_holds
+    WHERE tenant_id=? AND ref_type='media_job' AND ref_id=?
+    ORDER BY id DESC LIMIT 1`,
+    tenantId,
+    jobId,
+  );
+}
+
+function settledAiSalesVideoRecoveryBilling(row) {
+  const hold = {
+    holdId: Number(row.id),
+    credits: Number(row.held_credits || 0),
+    balance: Number(q.get('SELECT credits FROM tenants WHERE id=?', row.tenant_id)?.credits || 0),
+  };
+  return twoPhaseBillingSummary({
+    state: 'settled',
+    hold,
+    settled: {
+      credits: Number(row.settled_credits || 0),
+      balance: hold.balance,
+      costYuan: null,
+    },
+    note: '该任务已有正向结算记录；本次只恢复原供应商任务，不重复生成或扣费。',
+  });
+}
+
+async function executeAiSalesVideoRecoveryJob({
+  tenantId,
+  actor,
+  jobId,
+  plan,
+  providerExecution: initialProviderExecution,
+  hold,
+  billing: initialBilling,
+  runtime = {},
+}) {
+  let providerExecution = aiSalesVideoProviderProgressSnapshot(plan, initialProviderExecution);
+  let billingState = initialBilling;
+  try {
+    const recovered = await recoverAiSalesVideoFromExistingTasks({
+      tenantId,
+      plan,
+      providerExecution,
+      query: runtime.recoverQuery || runtime.querySegment || queryMiniMaxVideoSegment,
+      download: runtime.recoverDownload,
+      compose: runtime.recoverCompose,
+      fetchImpl: runtime.fetchImpl,
+      timeoutMs: runtime.recoveryTimeoutMs || runtime.timeoutMs || 12 * 60 * 1000,
+      intervalMs: runtime.recoveryIntervalMs || runtime.intervalMs || 5000,
+      sleep: runtime.sleep,
+      onProgress: async (progress) => {
+        providerExecution = aiSalesVideoProviderProgressSnapshot(plan, progress);
+        const persisted = q.run(
+          `UPDATE media_jobs SET snapshot_json=?
+          WHERE tenant_id=? AND id=? AND status='处理中'`,
+          aiSalesVideoSnapshot(plan, {
+            status: '处理中',
+            reason: '正在复用已有供应商任务恢复30秒成片；不会重新生成视频。',
+            billing: billingState,
+            providerExecution,
+          }),
+          tenantId,
+          jobId,
+        );
+        if (persisted.changes !== 1) {
+          throw Object.assign(new Error('恢复任务状态发生并发变化，已停止本次合成'), {
+            code: 'AI_SALES_VIDEO_RECOVERY_STATE_CONFLICT',
+          });
+        }
+      },
+    });
+    providerExecution = aiSalesVideoProviderProgressSnapshot(plan, recovered.providerExecution);
+    const delivery = q.run(
+      `UPDATE media_jobs SET status='成功',url=?,credits=NULL,error=NULL,snapshot_json=?
+      WHERE tenant_id=? AND id=? AND status='处理中'`,
+      recovered.url,
+      aiSalesVideoSnapshot(plan, {
+        status: '成功',
+        reason: '已复用原供应商任务恢复成片；本次供应商新生成调用为0次。',
+        billing: billingState,
+        result: recovered.result,
+        providerExecution,
+      }),
+      tenantId,
+      jobId,
+    );
+    if (delivery.changes !== 1) {
+      throw Object.assign(new Error('恢复成片交付状态发生并发变化'), {
+        code: 'AI_SALES_VIDEO_RECOVERY_DELIVERY_CONFLICT',
+      });
+    }
+    if (hold) {
+      const settled = settleHold(hold, {
+        credits: hold.credits,
+        model: plan.model,
+        aiMode: 'api',
+        note: `AI带货员30秒成片#${jobId}复用原供应商任务恢复完成；未发起新生成`,
+      });
+      if (!settled) throw new Error('恢复成片已完成，但预授权结算状态发生变化');
+      billingState = twoPhaseBillingSummary({
+        state: 'settled',
+        hold,
+        settled,
+        note: '已复用原供应商任务恢复并交付成片；本次没有重复提交供应商生成。',
+      });
+    }
+    q.run(
+      `UPDATE media_jobs SET credits=?,error=NULL,snapshot_json=?
+      WHERE tenant_id=? AND id=? AND status='成功'`,
+      Number(billingState?.chargedCredits || 0),
+      aiSalesVideoSnapshot(plan, {
+        status: '成功',
+        reason: '已复用原供应商任务恢复成片；本次供应商新生成调用为0次。',
+        billing: billingState,
+        result: recovered.result,
+        providerExecution,
+      }),
+      tenantId,
+      jobId,
+    );
+    try {
+      notify(
+        actor.id,
+        'success',
+        'AI带货员旧任务已恢复成片',
+        '已复用原供应商任务完成30秒合成，没有重复生成；请进入媒体验收。',
+        `/content?tab=media&mediaJobId=${jobId}`,
+      );
+      logOp(actor, '内容生产仓', '恢复AI带货员旧任务', `media_job#${jobId};provider_submissions=0`);
+    } catch { /* 通知或日志失败不回滚真实成片 */ }
+  } catch (error) {
+    const reason = sanitizeContentRuntimeErrorMessage(error).slice(0, 220);
+    providerExecution = aiSalesVideoProviderProgressSnapshot(
+      plan,
+      error?.progress || providerExecution,
+    );
+    billingState = twoPhaseBillingSummary({
+      state: 'pending_reconciliation',
+      hold,
+      error,
+      note: '原供应商任务恢复未完成；没有重复提交生成，现有预授权保留供再次恢复或人工对账。',
+    });
+    q.run(
+      `UPDATE media_jobs SET status='失败',credits=NULL,error=?,snapshot_json=?
+      WHERE tenant_id=? AND id=? AND status='处理中'`,
+      `${reason}；未重复生成，预授权保留待恢复`,
+      aiSalesVideoSnapshot(plan, {
+        status: '失败',
+        reason,
+        billing: billingState,
+        providerExecution,
+      }),
+      tenantId,
+      jobId,
+    );
+    console.error(`[ai-sales-video-recovery] job#${jobId} failed:`, reason);
+  }
+}
+
 // AI带货员：H3使用2×15秒，海螺2.3使用3×10秒，服务器合成固定30秒竖版成片。
 // 路由在任何付费调用前校验凭证和后台核价，并一次性预授权全部分段上限。
 r.post('/ai-sales-video', async (req, res) => {
@@ -5665,12 +6015,12 @@ r.post('/ai-sales-video', async (req, res) => {
     const model = String(
       body.model
       || getTenantConfig('ai_sales_video', {})?.model
-      || 'MiniMax-Hailuo-2.3-Fast',
+      || 'MiniMax-Hailuo-2.3',
     ).trim();
     if (!aiSalesVideoModelAllowed(model)) {
       return res.status(400).json({
         error: model === MINIMAX_H3_MODEL
-          ? 'MiniMax H3 尚未完成云雾路由与价格核验，暂不开放调用'
+          ? 'MiniMax H3 尚未完成官方API密钥、供应商能力与价格核验，暂不开放调用'
           : 'AI带货员仅支持已接入的 MiniMax 海螺 2.3 / 2.3-Fast / 02 模型',
         model,
       });
@@ -5764,6 +6114,13 @@ r.post('/ai-sales-video', async (req, res) => {
     // against credits.js's generic fallback price for a new MiniMax model.
     if (!providerReady) reason = '未配置云雾API Key，未发起外部调用。';
     else if (!priceReady) reason = 'MiniMax 模型价格尚未在后台核验配置，未发起外部调用。';
+    else if (typeof runtime.compose !== 'function') {
+      try {
+        await assertAiSalesVideoComposerReady();
+      } catch (error) {
+        reason = `${sanitizeContentRuntimeErrorMessage(error)}，未发起外部调用。`;
+      }
+    }
 
     if (reason) {
       const finalPlan = {
@@ -5816,7 +6173,7 @@ r.post('/ai-sales-video', async (req, res) => {
     const heldBilling = twoPhaseBillingSummary({
       state: 'held',
       hold,
-      note: '已预授权全部分段上限；失败会自动全额退回。',
+      note: '已预授权全部分段上限；供应商调用前失败会全额退回，调用开始后异常将保留待对账。',
     });
     q.run(
       `UPDATE media_jobs SET status='处理中',credits=NULL,error=NULL,snapshot_json=?
@@ -5863,6 +6220,209 @@ r.post('/ai-sales-video', async (req, res) => {
         ...(jobId ? { jobId, pollUrl: aiSalesVideoPollUrl(jobId) } : {}),
       });
     }
+  }
+});
+
+// 旧带货任务恢复：只复用已持久化的供应商 taskId，绝不提交新的供应商生成。
+// 已退款的历史任务需要老板再次明确确认积分上限；已有有效占扣/实扣时不重复扣款。
+r.post('/media-jobs/:id/recover-ai-sales-video', async (req, res) => {
+  let claimed = false;
+  let jobId = null;
+  try {
+    jobId = Number(req.params.id);
+    if (!Number.isSafeInteger(jobId) || jobId < 1) {
+      return res.status(404).json({ error: '媒体任务不存在或无权访问' });
+    }
+    if (!isManagerRole(req.user)) {
+      return res.status(403).json({
+        error: '恢复已有供应商视频并确认账务只能由老板或管理层操作',
+        code: 'AI_SALES_VIDEO_RECOVERY_ROLE_FORBIDDEN',
+      });
+    }
+    const tenantId = curTenant();
+    const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+    if (!job || (!canAccessOwner(req.user, job.user_id)
+      && String(req.user?.role || '') !== 'platform_super')) {
+      return res.status(404).json({ error: '媒体任务不存在或无权访问' });
+    }
+    if (!['失败', '阻塞'].includes(String(job.status || ''))) {
+      return res.status(409).json({
+        error: job.status === '成功'
+          ? '该任务已经形成成片，无需再次恢复'
+          : '该任务当前仍在执行，请先刷新任务状态',
+        code: 'AI_SALES_VIDEO_RECOVERY_STATE_INVALID',
+      });
+    }
+    const recovery = aiSalesVideoRecoveryRecord(job);
+    if (!recovery.recoverable) {
+      return res.status(409).json({
+        error: '该任务没有完整、可复用的供应商任务号，不能执行无重复生成恢复',
+        code: 'AI_SALES_VIDEO_RECOVERY_NOT_AVAILABLE',
+      });
+    }
+    const runtime = req.app?.locals?.aiSalesVideoRuntime || {};
+    if (!runtime.recoverQuery && !runtime.querySegment && !yunwuAvailable()) {
+      return res.status(503).json({
+        error: '视频供应商查询通道未配置，无法读取原任务结果',
+        code: 'AI_SALES_VIDEO_RECOVERY_QUERY_UNAVAILABLE',
+      });
+    }
+    if (typeof runtime.recoverCompose !== 'function') {
+      await assertAiSalesVideoComposerReady();
+    }
+
+    let hold = findHoldByRef('media_job', jobId, tenantId);
+    const latestHold = latestAiSalesVideoHoldRow(jobId, tenantId);
+    const alreadySettled = latestHold?.status === 'settled'
+      && Number(latestHold.settled_credits || 0) > 0;
+    const quotedCredits = Math.max(
+      1,
+      Number(latestHold?.held_credits || 0)
+        || estimateMaxCredits('video', recovery.plan.model || job.model)
+          * Number(recovery.plan.segmentCount || recovery.plan.segments.length),
+    );
+    if (!hold && !alreadySettled && req.body?.confirmCharge !== true) {
+      return res.status(409).json({
+        error: `原任务预授权已经退回。恢复并交付成片前需要重新确认最多${quotedCredits}积分；不会重复生成供应商视频。`,
+        code: 'AI_SALES_VIDEO_RECOVERY_BILLING_CONFIRMATION_REQUIRED',
+        retryable: true,
+        billing: {
+          state: 'confirmation_required',
+          estimatedCredits: quotedCredits,
+          chargedCredits: 0,
+          providerSubmissions: 0,
+        },
+      });
+    }
+
+    const queuedExecution = aiSalesVideoProviderProgressSnapshot(
+      recovery.plan,
+      {
+        ...recovery.providerExecution,
+        recovery: {
+          schemaVersion: 'nanowork.ai-sales-video-recovery/1',
+          mode: 'reuse_existing_provider_tasks',
+          stage: 'queued',
+          model: recovery.plan.model,
+          providerSubmissions: 0,
+          reusedTaskCount: recovery.plan.segments.length,
+          retryable: true,
+        },
+      },
+    );
+    const claim = q.run(
+      `UPDATE media_jobs SET status='处理中',credits=NULL,error=NULL,snapshot_json=?
+      WHERE tenant_id=? AND id=? AND status IN ('失败','阻塞')`,
+      aiSalesVideoSnapshot(recovery.plan, {
+        status: '处理中',
+        reason: '已排队复用原供应商任务恢复30秒成片；不会重新生成视频。',
+        billing: recovery.snapshot.billing || null,
+        providerExecution: queuedExecution,
+      }),
+      tenantId,
+      jobId,
+    );
+    if (claim.changes !== 1) {
+      return res.status(409).json({
+        error: '任务状态刚刚发生变化，请刷新后再操作',
+        code: 'AI_SALES_VIDEO_RECOVERY_STATE_CONFLICT',
+      });
+    }
+    claimed = true;
+
+    try {
+      if (!hold && !alreadySettled) {
+        hold = holdCredits({
+          userId: job.user_id,
+          feature: 'AI带货员·旧任务恢复成片',
+          kind: 'video',
+          model: recovery.plan.model || job.model,
+          credits: quotedCredits,
+          note: `媒体任务#${jobId}只复用原供应商taskId恢复合成；供应商新生成调用为0次`,
+          refType: 'media_job',
+          refId: jobId,
+        });
+      }
+    } catch (error) {
+      const reason = sanitizeContentRuntimeErrorMessage(error).slice(0, 220);
+      q.run(
+        `UPDATE media_jobs SET status='失败',error=?,snapshot_json=?
+        WHERE tenant_id=? AND id=? AND status='处理中'`,
+        reason,
+        aiSalesVideoSnapshot(recovery.plan, {
+          status: '失败',
+          reason,
+          billing: recovery.snapshot.billing || null,
+          providerExecution: queuedExecution,
+        }),
+        tenantId,
+        jobId,
+      );
+      claimed = false;
+      throw error;
+    }
+
+    const billingState = hold
+      ? twoPhaseBillingSummary({
+          state: 'held',
+          hold,
+          note: '恢复成片已预授权；只复用原供应商任务，不会重复生成。',
+        })
+      : settledAiSalesVideoRecoveryBilling(latestHold);
+    q.run(
+      `UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=? AND status='处理中'`,
+      aiSalesVideoSnapshot(recovery.plan, {
+        status: '处理中',
+        reason: '正在复用原供应商任务恢复30秒成片；供应商新生成调用为0次。',
+        billing: billingState,
+        providerExecution: queuedExecution,
+      }),
+      tenantId,
+      jobId,
+    );
+    res.status(202).json({
+      jobId,
+      status: 'processing',
+      technicalStatus: '处理中',
+      pollUrl: aiSalesVideoPollUrl(jobId),
+      pollAfterMs: 3000,
+      recovery: {
+        mode: 'reuse_existing_provider_tasks',
+        providerSubmissions: 0,
+        reusedTaskCount: recovery.plan.segments.length,
+      },
+      billing: billingState,
+    });
+    const actor = { ...req.user };
+    setImmediate(() => runWithTenant(tenantId, () => executeAiSalesVideoRecoveryJob({
+      tenantId,
+      actor,
+      jobId,
+      plan: recovery.plan,
+      providerExecution: queuedExecution,
+      hold,
+      billing: billingState,
+      runtime,
+    })));
+    return undefined;
+  } catch (error) {
+    if (claimed && jobId && !res.headersSent) {
+      q.run(
+        `UPDATE media_jobs SET status='失败',error=?
+        WHERE tenant_id=? AND id=? AND status='处理中'`,
+        sanitizeContentRuntimeErrorMessage(error).slice(0, 220),
+        curTenant(),
+        jobId,
+      );
+    }
+    if (!res.headersSent) {
+      res.status(error.status || 500).json({
+        error: sanitizeContentRuntimeErrorMessage(error),
+        code: error.code || 'AI_SALES_VIDEO_RECOVERY_FAILED',
+        requestId: req.requestId,
+      });
+    }
+    return undefined;
   }
 });
 

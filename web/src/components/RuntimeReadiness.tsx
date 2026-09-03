@@ -55,6 +55,33 @@ export const readinessCapabilityTags = (item: any) => [
   },
 ];
 
+export const readinessProviderTags = (item: any) => {
+  const route = Array.isArray(item?.details?.providerRoute) ? item.details.providerRoute : [];
+  return route.map((provider: any) => {
+    const rawRole = String(provider?.role || '').trim();
+    const role = rawRole === 'primary' ? '首选' : rawRole === 'fallback' ? '自动回退' : rawRole;
+    const label = String(provider?.label || provider?.id || '').trim();
+    const verified = provider?.verified === true;
+    const ready = provider?.ready === true;
+    const configured = provider?.configured === true;
+    const stateLabel = verified
+      ? '已验证'
+      : ready
+        ? role === '首选'
+          ? '已配置'
+          : '前置齐全'
+        : configured
+          ? '待补前置'
+          : '未配置';
+    return {
+      key: String(provider?.id || `${role}-${label}`),
+      label: [role, label, stateLabel].filter(Boolean).join(' · '),
+      color: verified ? 'green' : ready ? 'blue' : configured ? 'gold' : 'default',
+      reason: String(provider?.reason || '').trim(),
+    };
+  });
+};
+
 export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?: React.ReactNode }) {
   const channels = Array.isArray(matrix?.channels) ? matrix.channels : [];
   // columns 记忆化：此前内联字面量导致每次渲染重建全部 render 闭包，antd 内部 diff 失效
@@ -75,12 +102,31 @@ export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?:
         { title: '实际状态', width: 120, render: (_: unknown, row: any) => readinessTag(row) },
         {
           title: '配置 / 验证',
-          width: 140,
-          render: (_: unknown, row: any) => (
-            <span style={{ fontSize: 'var(--font-1)' }}>
-              {readinessConfigLabel(row)} · {readinessVerificationLabel(row)}
-            </span>
-          ),
+          width: 280,
+          render: (_: unknown, row: any) => {
+            const providerTags = readinessProviderTags(row);
+            return (
+              <div className="runtime-readiness-provider-cell">
+                <div>
+                  {readinessConfigLabel(row)} · {readinessVerificationLabel(row)}
+                </div>
+                {providerTags.length > 0 && (
+                  <Space className="runtime-readiness-provider-list" size={[4, 4]} wrap>
+                    {providerTags.map(provider => (
+                      <Tag
+                        className="runtime-readiness-provider-tag"
+                        key={provider.key}
+                        color={provider.color}
+                        title={provider.reason}
+                      >
+                        {provider.label}
+                      </Tag>
+                    ))}
+                  </Space>
+                )}
+              </div>
+            );
+          },
         },
         {
           title: '执行边界',
@@ -126,7 +172,7 @@ export function RuntimeReadinessMatrix({ matrix, title }: { matrix: any; title?:
         rowKey="key"
         pagination={false}
         dataSource={channels}
-        scroll={{ x: 1080 }}
+        scroll={{ x: 1220 }}
         columns={columns}
       />
     </Panel>

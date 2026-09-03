@@ -343,14 +343,14 @@ export async function fetchControlledWebEvidence(sources, {
   const results = [];
   const failures = [];
   let usedTinyfish = false;
+  let usedLocalFetch = false;
   // 剩余待抓 URL：TinyFish（真浏览器渲染，JS 重的页面也能拿到正文）优先，
   // 失败或未覆盖的 URL 回落自研裸 HTTP 抓取。安全口径不降：URL 一律先过
   // parsePublicUrl 白检（协议/凭据/端口/内网主机拦截）再交给任一内核。
   let pending = [];
   for (const url of urls) {
     try {
-      parsePublicUrl(url);
-      pending.push(url);
+      pending.push(parsePublicUrl(url).href);
     } catch (error) {
       failures.push({ ...auditFailureTarget(url), code: error?.code || 'CONTROLLED_WEB_URL_UNSAFE' });
     }
@@ -359,18 +359,26 @@ export async function fetchControlledWebEvidence(sources, {
     try {
       const batch = await tinyfishFetchFn(pending, { signal, purpose: '为门店经营调研核验公开网页正文' });
       const got = new Set();
-      for (const page of batch.results) {
-        results.push(page);
-        got.add(page.url);
+      const pendingSet = new Set(pending);
+      for (const page of Array.isArray(batch?.results) ? batch.results : []) {
+        try {
+          const requestedUrl = parsePublicUrl(page?.requestedUrl || page?.url).href;
+          const finalUrl = parsePublicUrl(page?.url).href;
+          if (!pendingSet.has(requestedUrl)) continue;
+          results.push({ ...page, url: finalUrl, requestedUrl });
+          got.add(requestedUrl);
+          got.add(finalUrl);
+        } catch { /* TinyFish 输出再次经过静态公开URL边界，异常项直接丢弃 */ }
       }
-      // 用原始请求 URL 判断覆盖（final_url 可能跟随了重定向）
-      pending = pending.filter(url => !got.has(url) && !batch.results.some(page => page.url.startsWith(url)));
+      // 同时记录 requestedUrl 与 final_url，跟随重定向成功后不能再重复裸抓原地址。
+      pending = pending.filter(url => !got.has(url));
       usedTinyfish = results.length > 0;
     } catch {
       // TinyFish 整批失败（节流/网络）：全部回落自研内核，不记失败噪音
     }
   }
   if (pending.length) {
+    usedLocalFetch = true;
     const settled = await Promise.allSettled(pending.map(url => fetchPageFn(url, { timeoutMs, signal })));
     settled.forEach((entry, index) => {
       if (entry.status === 'fulfilled') results.push(entry.value);
@@ -383,7 +391,11 @@ export async function fetchControlledWebEvidence(sources, {
   return {
     attempted: urls.length > 0,
     ok: results.length > 0,
-    provider: usedTinyfish ? 'TinyFish Fetch + NanoWork controlled WebFetch' : 'NanoWork controlled WebFetch',
+    provider: usedTinyfish
+      ? usedLocalFetch
+        ? 'TinyFish Fetch + NanoWork controlled WebFetch'
+        : 'TinyFish Fetch'
+      : 'NanoWork controlled WebFetch',
     results,
     note: results.length ? null : '已检索到来源，但受控网页正文核验未取得有效文本',
     evidence: {
@@ -392,8 +404,12 @@ export async function fetchControlledWebEvidence(sources, {
       fetched: results.length,
       failures,
       externalCall: urls.length > 0,
+      // TinyFish 只接收已通过静态公开URL边界的目标，实际出网发生在供应商
+      // 一侧，不会让本服务连接候选主机；本地回落则额外执行DNS钉住。
       ssrfProtected: true,
-      redirectsRevalidated: true,
+      // 自研抓取会逐跳重新做URL与DNS校验；TinyFish只可核验请求URL和最终
+      // 返回URL，无法证明供应商内部每个中间跳，因此含TinyFish产物时不虚报。
+      redirectsRevalidated: !usedTinyfish,
       rawResponseStored: false,
       extractedTextStored: true,
       renderedFetch: usedTinyfish,

@@ -5,7 +5,7 @@ import { notifyCredits, api } from '../api/client';
 
 export type ReferenceImage = { id: string; name: string; url: string; size: number };
 
-export const SALES_VIDEO_DEFAULT_MODEL = 'MiniMax-Hailuo-2.3-Fast';
+export const SALES_VIDEO_DEFAULT_MODEL = 'MiniMax-Hailuo-2.3';
 const SALES_VIDEO_RESULT_STORAGE_KEY = 'nanowork.content.aiSalesVideo.last';
 
 type SalesVideoStatus = 'processing' | 'success' | 'failed' | 'blocked';
@@ -49,6 +49,7 @@ const persistSalesVideoResult = (result: any) => {
 type AiSalesVideoPanelProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialJobId?: number | null;
   refImgs: ReferenceImage[];
   setRefImgs: Dispatch<SetStateAction<ReferenceImage[]>>;
   onPickRef: (files: FileList | null) => void | Promise<void>;
@@ -65,6 +66,7 @@ type AiSalesVideoPanelProps = {
 export default function AiSalesVideoPanel({
   open,
   onOpenChange,
+  initialJobId = null,
   refImgs,
   setRefImgs,
   onPickRef,
@@ -74,6 +76,7 @@ export default function AiSalesVideoPanel({
   onTaskSubmitted,
 }: AiSalesVideoPanelProps) {
   const [submitting, setSubmitting] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [polling, setPolling] = useState(false);
   const [form] = Form.useForm();
@@ -81,6 +84,8 @@ export default function AiSalesVideoPanel({
   const pollJobRef = useRef<number | null>(null);
   const pollUrlRef = useRef('');
   const pollAttemptsRef = useRef(0);
+  const pollingActiveRef = useRef(false);
+  const restoredResultRef = useRef(false);
 
   const clearPolling = useCallback(() => {
     if (pollTimerRef.current !== null) {
@@ -90,6 +95,7 @@ export default function AiSalesVideoPanel({
     pollJobRef.current = null;
     pollUrlRef.current = '';
     pollAttemptsRef.current = 0;
+    pollingActiveRef.current = false;
     setPolling(false);
   }, []);
 
@@ -119,11 +125,7 @@ export default function AiSalesVideoPanel({
       const safeJobId = Number(jobId);
       const safePollUrl = String(pollUrl || '').trim() || `/content/media-jobs/${safeJobId}`;
       if (!Number.isSafeInteger(safeJobId) || safeJobId < 1) return;
-      if (
-        pollJobRef.current === safeJobId &&
-        pollUrlRef.current === safePollUrl &&
-        (polling || pollTimerRef.current !== null)
-      ) {
+      if (pollJobRef.current === safeJobId && pollUrlRef.current === safePollUrl && pollingActiveRef.current) {
         return;
       }
       if (pollTimerRef.current !== null) {
@@ -133,6 +135,7 @@ export default function AiSalesVideoPanel({
       pollJobRef.current = safeJobId;
       pollUrlRef.current = safePollUrl;
       pollAttemptsRef.current = 0;
+      pollingActiveRef.current = true;
       setPolling(true);
 
       const tick = async () => {
@@ -174,7 +177,7 @@ export default function AiSalesVideoPanel({
       };
       void tick();
     },
-    [applyPollResult, clearPolling, loadMaterials, loadMediaJobs, loadSummary, polling],
+    [applyPollResult, clearPolling, loadMaterials, loadMediaJobs, loadSummary],
   );
 
   const refreshResult = useCallback(async () => {
@@ -207,6 +210,9 @@ export default function AiSalesVideoPanel({
   }, [applyPollResult, clearPolling, result, startPolling]);
 
   useEffect(() => {
+    if (restoredResultRef.current) return;
+    restoredResultRef.current = true;
+    if (initialJobId) return;
     let saved: any = null;
     try {
       const raw = window.sessionStorage.getItem(SALES_VIDEO_RESULT_STORAGE_KEY);
@@ -221,7 +227,27 @@ export default function AiSalesVideoPanel({
         startPolling(saved.pollUrl, Number(saved.jobId));
       }
     });
-  }, [startPolling]);
+  }, [initialJobId, startPolling]);
+
+  useEffect(() => {
+    const jobId = Number(initialJobId);
+    if (!open || !Number.isSafeInteger(jobId) || jobId < 1) return undefined;
+    let cancelled = false;
+    const pollUrl = `/content/media-jobs/${jobId}`;
+    void api
+      .get(pollUrl, { silent: true })
+      .then((latest: any) => {
+        if (cancelled) return;
+        const status = applyPollResult(latest, jobId, pollUrl);
+        if (status === 'processing') startPolling(pollUrl, jobId);
+      })
+      .catch(() => {
+        if (!cancelled) message.error('带货任务详情加载失败，请稍后重试');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyPollResult, initialJobId, open, startPolling]);
 
   useEffect(() => () => clearPolling(), [clearPolling]);
 
@@ -275,6 +301,48 @@ export default function AiSalesVideoPanel({
     }
   };
 
+  const recoverExistingProviderTasks = useCallback(async () => {
+    const jobId = Number(result?.jobId);
+    if (!Number.isSafeInteger(jobId) || jobId < 1 || result?.recovery?.available !== true) {
+      message.info('当前任务没有可复用的完整供应商视频片段');
+      return;
+    }
+    const runRecovery = async () => {
+      setRecovering(true);
+      try {
+        const response = await api.post(
+          `/content/media-jobs/${jobId}/recover-ai-sales-video`,
+          { confirmCharge: true },
+          { silent: true },
+        );
+        const pollUrl = String(response?.pollUrl || `/content/media-jobs/${jobId}`);
+        applyPollResult(response, jobId, pollUrl);
+        if (response?.billing?.balance !== undefined) notifyCredits(response.billing.balance);
+        startPolling(pollUrl, jobId);
+        message.success('已开始复用原供应商任务恢复成片；不会重复生成视频');
+      } catch (error: any) {
+        message.error(error?.message || '旧任务恢复启动失败，请稍后重试');
+        throw error;
+      } finally {
+        setRecovering(false);
+      }
+    };
+    if (result?.recovery?.requiresBillingConfirmation) {
+      const credits = Number(
+        result?.recovery?.estimatedCredits || result?.billing?.estimatedCredits || result?.billing?.heldCredits || 0,
+      );
+      Modal.confirm({
+        title: '确认恢复这条30秒成片？',
+        content: `原任务预授权已经退回。本次只复用原供应商任务，不会重新生成；恢复成功后按原授权${credits > 0 ? `最多${credits}积分` : '上限'}结算。`,
+        okText: '确认恢复并预授权',
+        cancelText: '暂不恢复',
+        onOk: runRecovery,
+      });
+      return;
+    }
+    await runRecovery();
+  }, [applyPollResult, result, startPolling]);
+
   const currentStatus = salesVideoStatus(result);
   const resultAlert = result && (
     <Alert
@@ -319,6 +387,16 @@ export default function AiSalesVideoPanel({
             <Button size="small" loading={polling} onClick={() => void refreshResult()}>
               刷新任务结果
             </Button>
+            {result?.recovery?.available === true && (
+              <Button
+                size="small"
+                type="primary"
+                loading={recovering}
+                onClick={() => void recoverExistingProviderTasks()}
+              >
+                复用原任务恢复成片（不重复生成）
+              </Button>
+            )}
             {currentStatus === 'processing' && <Tag color="processing">后台轮询中，不会重复提交</Tag>}
             {currentStatus === 'success' && <Tag color="gold">待管理层验收 / 导入素材库</Tag>}
             {currentStatus === 'failed' && (
@@ -449,9 +527,8 @@ export default function AiSalesVideoPanel({
           <Form.Item name="model" label="视频模型">
             <Select
               options={[
-                { value: 'MiniMax-H3', label: 'MiniMax H3 · 最新多模态（需后台完成供应商与计价核验后启用）' },
-                { value: 'MiniMax-Hailuo-2.3-Fast', label: 'Hailuo 2.3 Fast · 速度与成本优先' },
                 { value: 'MiniMax-Hailuo-2.3', label: 'Hailuo 2.3 · 质量优先' },
+                { value: 'MiniMax-H3', label: 'MiniMax H3 · 最新多模态（需官方API密钥与后台双核验）' },
               ]}
             />
           </Form.Item>

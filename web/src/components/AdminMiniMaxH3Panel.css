@@ -1,0 +1,36 @@
+.admin-h3-alert {
+  margin-bottom: var(--space-4);
+}
+
+.admin-h3-readiness-card {
+  height: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.admin-h3-readiness-title {
+  margin-bottom: var(--space-2);
+  font-weight: 650;
+}
+
+.admin-h3-readiness-hint {
+  margin-top: var(--space-3);
+  color: var(--ui-muted);
+  font-size: var(--font-2);
+}
+
+.admin-h3-fields {
+  margin-top: var(--space-4);
+}
+
+.admin-h3-field-label {
+  margin-bottom: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.admin-h3-field-control {
+  width: 100%;
+}

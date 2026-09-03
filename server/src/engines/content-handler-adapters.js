@@ -663,6 +663,9 @@ async function mappedVariables(descriptor, context, resolveSettings) {
         : Object.hasOwn(brief, "imageCount")
           ? brief.imageCount
           : null;
+      const visualPolicyVersion = String(
+        brief.visual_policy_version || brief.visualPolicyVersion || "",
+      ).trim();
       return {
         title: finished.title,
         plan: JSON.stringify(plan),
@@ -677,6 +680,9 @@ async function mappedVariables(descriptor, context, resolveSettings) {
             Number(imageCount) === 0
               ? "auto"
               : "explicit",
+          ...(visualPolicyVersion === "v2"
+            ? { visual_policy_version: visualPolicyVersion }
+            : {}),
           industry: String(brief.industry || ""),
           platforms,
           plan,

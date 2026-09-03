@@ -30,12 +30,17 @@ import {
   settleHold,
 } from "../engines/credits.js";
 import {
+  CONTENT_PAID_MEDIA_AUTHORIZATION_USAGE_SCHEMA,
   CONTENT_PAID_MEDIA_PRICING_VERSION,
+  assertContentPaidMediaCumulativeBudget,
+  contentPaidMediaMaximumContentImageCount,
+  contentPaidMediaMaximumCoverImageCount,
   contentPaidMediaMaximumImageCount,
   contentPaidMediaPricingSnapshot,
   createContentPaidMediaAuthorization,
 } from "../engines/content-paid-media-authorization.js";
 import {
+  CONTENT_PRODUCTION_VISUAL_POLICY_VERSION,
   createContentProductionPipeline,
   createSqliteContentProductionPipelineRepository,
   contentPipelineUsesPredictiveRetro,
@@ -998,6 +1003,11 @@ export function ensureContentPipelineSpecialProviderAttemptSchema() {
       lease_token TEXT,
       lease_expires_at TEXT,
       hold_floor_id INTEGER NOT NULL DEFAULT 0,
+      paid_media_authorization_id TEXT,
+      authorization_max_image_count INTEGER,
+      authorization_max_credits INTEGER,
+      authorization_reserved_image_count INTEGER,
+      authorization_reserved_credits INTEGER,
       created_by INTEGER NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -1029,6 +1039,24 @@ export function ensureContentPipelineSpecialProviderAttemptSchema() {
     db.exec(`ALTER TABLE content_pipeline_special_provider_attempts
       ADD COLUMN hold_floor_id INTEGER NOT NULL DEFAULT 0`);
   }
+  const authorizationColumns = [
+    ["paid_media_authorization_id", "TEXT"],
+    ["authorization_max_image_count", "INTEGER"],
+    ["authorization_max_credits", "INTEGER"],
+    ["authorization_reserved_image_count", "INTEGER"],
+    ["authorization_reserved_credits", "INTEGER"],
+  ];
+  for (const [name, type] of authorizationColumns) {
+    if (!columns.has(name)) {
+      db.exec(
+        `ALTER TABLE content_pipeline_special_provider_attempts ADD COLUMN ${name} ${type}`,
+      );
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_content_pipeline_special_attempt_authorization
+    ON content_pipeline_special_provider_attempts(
+      tenant_id,pipeline_id,paid_media_authorization_id,status
+    )`);
 }
 
 function normalizedSpecialAttempt(input) {
@@ -1068,6 +1096,45 @@ function normalizedSpecialAttempt(input) {
       "CONTENT_PIPELINE_PROVIDER_ATTEMPT_IDENTITY_INVALID",
     );
   }
+  let authorizationUsage = null;
+  if ([5, 6].includes(stationIdx)) {
+    const usage = isRecord(input?.authorizationUsage)
+      ? input.authorizationUsage
+      : null;
+    const authorizationId = cleanText(usage?.authorizationId, 100);
+    if (
+      usage?.schemaVersion !== CONTENT_PAID_MEDIA_AUTHORIZATION_USAGE_SCHEMA ||
+      !/^sha256:[a-f0-9]{64}$/u.test(authorizationId) ||
+      usage?.providerKind !== kind
+    ) {
+      throw new ContentProductionPipelineRouteError(
+        `工位${stationIdx}缺少与当前provider一致的付费媒体累计授权预留`,
+        409,
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_USAGE_REQUIRED",
+      );
+    }
+    authorizationUsage = {
+      schemaVersion: CONTENT_PAID_MEDIA_AUTHORIZATION_USAGE_SCHEMA,
+      authorizationId,
+      providerKind: kind,
+      maximumImageCount: positiveInteger(
+        usage.maximumImageCount,
+        "付费媒体授权累计最大图片数",
+      ),
+      maximumCredits: positiveInteger(
+        usage.maximumCredits,
+        "付费媒体授权累计最大积分",
+      ),
+      requestedImageCount: positiveInteger(
+        usage.requestedImageCount,
+        "付费媒体本次预留图片数",
+      ),
+      requestedCredits: positiveInteger(
+        usage.requestedCredits,
+        "付费媒体本次预留积分",
+      ),
+    };
+  }
   const leaseToken = cleanText(input?.leaseToken, 100) || null;
   return {
     tenantId,
@@ -1079,6 +1146,7 @@ function normalizedSpecialAttempt(input) {
     refType,
     refId,
     leaseToken,
+    authorizationUsage,
   };
 }
 
@@ -1092,6 +1160,7 @@ function specialAttemptRow(identity) {
 }
 
 function assertSpecialAttemptRow(row, identity) {
+  const authorization = identity.authorizationUsage;
   if (
     !row ||
     Number(row.pipeline_id) !== identity.pipelineId ||
@@ -1099,7 +1168,14 @@ function assertSpecialAttemptRow(row, identity) {
     row.provider_kind !== identity.kind ||
     row.request_fingerprint !== identity.requestFingerprint ||
     row.billing_ref_type !== identity.refType ||
-    Number(row.billing_ref_id) !== identity.refId
+    Number(row.billing_ref_id) !== identity.refId ||
+    (row.paid_media_authorization_id &&
+      row.paid_media_authorization_id !== authorization?.authorizationId) ||
+    (row.authorization_max_image_count != null &&
+      Number(row.authorization_max_image_count) !==
+        authorization?.maximumImageCount) ||
+    (row.authorization_max_credits != null &&
+      Number(row.authorization_max_credits) !== authorization?.maximumCredits)
   ) {
     throw new ContentProductionPipelineRouteError(
       "特殊provider幂等键已存在但业务身份或请求指纹不一致，已拒绝复用",
@@ -1284,6 +1360,206 @@ function replaySpecialAttempt(row) {
   };
 }
 
+function specialAttemptDeliveredImageCount(row) {
+  return specialProviderEntries(jsonRecord(row?.output_json)).length;
+}
+
+function specialAttemptAuthorizationConsumption(row, authorizationUsage) {
+  const hold = specialAttemptCurrentCycleHold(row);
+  const storedBilling = jsonRecord(row?.billing_json);
+  const reservedImageCount = Number(
+    row?.authorization_reserved_image_count || 0,
+  );
+  const reservedCredits = Number(row?.authorization_reserved_credits || 0);
+  const deliveredImageCount = specialAttemptDeliveredImageCount(row);
+  const unitCredits = Math.max(
+    1,
+    Math.ceil(
+      Number(authorizationUsage.maximumCredits) /
+        Number(authorizationUsage.maximumImageCount),
+    ),
+  );
+  const imageCountFromCredits = (credits) =>
+    credits > 0 ? Math.max(1, Math.ceil(credits / unitCredits)) : 0;
+
+  if (hold?.status === "released") return { imageCount: 0, credits: 0 };
+  if (hold?.status === "held") {
+    const credits = Math.max(0, Number(hold.held_credits || reservedCredits));
+    return {
+      imageCount: Math.max(reservedImageCount, imageCountFromCredits(credits)),
+      credits,
+    };
+  }
+  if (hold?.status === "settled") {
+    const credits = Math.max(0, Number(hold.settled_credits || 0));
+    return {
+      imageCount: Math.max(deliveredImageCount, imageCountFromCredits(credits)),
+      credits,
+    };
+  }
+  if (["released", "failed"].includes(row?.status)) {
+    return { imageCount: 0, credits: 0 };
+  }
+  if (row?.status === "settled") {
+    const credits = Math.max(
+      0,
+      Number(storedBilling.chargedCredits ?? storedBilling.credits ?? 0),
+    );
+    return {
+      imageCount: Math.max(deliveredImageCount, imageCountFromCredits(credits)),
+      credits,
+    };
+  }
+  // claimed/persisted/pending_reconciliation都必须以全额预留占用；
+  // 历史行没有新列时，保守按授权剩余不明处理。
+  return {
+    imageCount:
+      reservedImageCount ||
+      deliveredImageCount ||
+      authorizationUsage.maximumImageCount,
+    credits:
+      reservedCredits ||
+      Number(storedBilling.estimatedCredits || 0) ||
+      authorizationUsage.maximumCredits,
+  };
+}
+
+function cumulativeSpecialAttemptAuthorizationUsage(identity) {
+  const authorizationUsage = identity.authorizationUsage;
+  if (!authorizationUsage) return { usedImageCount: 0, usedCredits: 0 };
+  const rows = q.all(
+    `SELECT a.*,h.status hold_status,h.held_credits,h.settled_credits
+    FROM content_pipeline_special_provider_attempts a
+    LEFT JOIN credit_holds h
+      ON h.tenant_id=a.tenant_id AND h.id=a.hold_id
+    WHERE a.tenant_id=? AND a.pipeline_id=?
+      AND a.station_idx IN (5,6) AND a.attempt_id<>?
+    ORDER BY a.id`,
+    identity.tenantId,
+    identity.pipelineId,
+    identity.attemptId,
+  );
+  let usedImageCount = 0;
+  let usedCredits = 0;
+  for (const row of rows) {
+    if (
+      row.paid_media_authorization_id === authorizationUsage.authorizationId &&
+      ((row.authorization_max_image_count != null &&
+        Number(row.authorization_max_image_count) !==
+          authorizationUsage.maximumImageCount) ||
+        (row.authorization_max_credits != null &&
+          Number(row.authorization_max_credits) !==
+            authorizationUsage.maximumCredits))
+    ) {
+      throw new ContentProductionPipelineRouteError(
+        "同一付费媒体授权出现不一致的累计上限，已停止新provider调用并要求对账",
+        409,
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_USAGE_CONFLICT",
+      );
+    }
+    const consumed = specialAttemptAuthorizationConsumption(
+      row,
+      authorizationUsage,
+    );
+    usedImageCount += consumed.imageCount;
+    usedCredits += consumed.credits;
+  }
+  return { usedImageCount, usedCredits };
+}
+
+function priorSpecialAttemptDelivery(identity) {
+  const rows = q.all(
+    `SELECT * FROM content_pipeline_special_provider_attempts
+    WHERE tenant_id=? AND pipeline_id=? AND station_idx=?
+      AND provider_kind=? AND attempt_id<>?
+      AND (output_json IS NOT NULL OR delivery_json IS NOT NULL
+        OR status IN ('persisted','settled','pending_reconciliation'))
+    ORDER BY id DESC`,
+    identity.tenantId,
+    identity.pipelineId,
+    identity.stationIdx,
+    identity.kind,
+    identity.attemptId,
+  );
+  for (const row of rows) {
+    const replay = replaySpecialAttempt(row);
+    if (row.request_fingerprint === identity.requestFingerprint && replay) {
+      return {
+        ...replay,
+        replayedFromAttemptId: row.attempt_id,
+        crossStationAttemptReplay: true,
+      };
+    }
+  }
+  if (!rows.length) return null;
+  return {
+    state: "pending_reconciliation",
+    status: "pending_reconciliation",
+    code: "CONTENT_PIPELINE_PROVIDER_PRIOR_DELIVERY_REQUIRES_RECONCILIATION",
+    message:
+      "此前工位尝试已有provider交付或结算证据，但请求指纹不一致或产物不完整；已禁止新付费调用并转待对账",
+  };
+}
+
+function recordPriorDeliveryReconciliationAttempt(
+  identity,
+  rawIdentity,
+  prior,
+  existing = null,
+) {
+  const usage = identity.authorizationUsage;
+  const errorJson = JSON.stringify({
+    code: prior.code,
+    message: prior.message,
+    blockedAt: new Date().toISOString(),
+  });
+  if (existing) {
+    q.run(
+      `UPDATE content_pipeline_special_provider_attempts
+      SET status='pending_reconciliation',hold_id=NULL,
+        paid_media_authorization_id=?,authorization_max_image_count=?,
+        authorization_max_credits=?,authorization_reserved_image_count=?,
+        authorization_reserved_credits=?,error_json=?,lease_token=NULL,
+        lease_expires_at=NULL,updated_at=datetime('now','localtime')
+      WHERE tenant_id=? AND attempt_id=?`,
+      usage?.authorizationId || null,
+      usage?.maximumImageCount || null,
+      usage?.maximumCredits || null,
+      usage?.requestedImageCount || null,
+      usage?.requestedCredits || null,
+      errorJson,
+      identity.tenantId,
+      identity.attemptId,
+    );
+    return;
+  }
+  q.run(
+    `INSERT INTO content_pipeline_special_provider_attempts(
+    tenant_id,pipeline_id,station_idx,provider_kind,attempt_id,
+    request_fingerprint,billing_ref_type,billing_ref_id,status,
+    paid_media_authorization_id,authorization_max_image_count,
+    authorization_max_credits,authorization_reserved_image_count,
+    authorization_reserved_credits,error_json,created_by
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    identity.tenantId,
+    identity.pipelineId,
+    identity.stationIdx,
+    identity.kind,
+    identity.attemptId,
+    identity.requestFingerprint,
+    identity.refType,
+    identity.refId,
+    "pending_reconciliation",
+    usage?.authorizationId || null,
+    usage?.maximumImageCount || null,
+    usage?.maximumCredits || null,
+    usage?.requestedImageCount || null,
+    usage?.requestedCredits || null,
+    errorJson,
+    positiveInteger(rawIdentity.userId, "特殊provider userId"),
+  );
+}
+
 export function createContentPipelineSpecialProviderAttemptStore(
   dependencies = {},
 ) {
@@ -1383,6 +1659,24 @@ export function createContentPipelineSpecialProviderAttemptStore(
     db.exec("BEGIN IMMEDIATE");
     try {
       const existing = specialAttemptRow(identity);
+      const prepareNewPaidAttempt = (reusableExisting = null) => {
+        if (!identity.authorizationUsage) return { notApplicable: true };
+        const prior = priorSpecialAttemptDelivery(identity);
+        if (prior?.state === "replay") return prior;
+        if (prior?.state === "pending_reconciliation") {
+          recordPriorDeliveryReconciliationAttempt(
+            identity,
+            rawIdentity,
+            prior,
+            reusableExisting,
+          );
+          return prior;
+        }
+        return assertContentPaidMediaCumulativeBudget(
+          identity.authorizationUsage,
+          cumulativeSpecialAttemptAuthorizationUsage(identity),
+        );
+      };
       if (existing) {
         assertSpecialAttemptRow(existing, identity);
         const replay = replaySpecialAttempt(existing);
@@ -1391,20 +1685,42 @@ export function createContentPipelineSpecialProviderAttemptStore(
           return replay;
         }
         if (["released", "failed"].includes(existing.status)) {
+          const authorizationBudget = prepareNewPaidAttempt(existing);
+          if (authorizationBudget?.state === "replay") {
+            db.exec("COMMIT");
+            return authorizationBudget;
+          }
+          if (authorizationBudget?.state === "pending_reconciliation") {
+            db.exec("COMMIT");
+            return authorizationBudget;
+          }
+          const usage = identity.authorizationUsage;
           q.run(
             `UPDATE content_pipeline_special_provider_attempts
             SET status='claimed',hold_id=NULL,output_json=NULL,delivery_json=NULL,
               billing_json=NULL,error_json=NULL,lease_token=?,lease_expires_at=?,
-              hold_floor_id=?,updated_at=datetime('now','localtime')
+              hold_floor_id=?,paid_media_authorization_id=?,
+              authorization_max_image_count=?,authorization_max_credits=?,
+              authorization_reserved_image_count=?,
+              authorization_reserved_credits=?,
+              updated_at=datetime('now','localtime')
             WHERE tenant_id=? AND attempt_id=? AND status IN ('released','failed')`,
             lease.leaseToken,
             lease.leaseExpiresAt,
             currentHoldFloor(identity),
+            usage?.authorizationId || null,
+            usage?.maximumImageCount || null,
+            usage?.maximumCredits || null,
+            usage?.requestedImageCount || null,
+            usage?.requestedCredits || null,
             identity.tenantId,
             identity.attemptId,
           );
           db.exec("COMMIT");
-          return claimed({ retriedAfterReleasedAttempt: true });
+          return claimed({
+            retriedAfterReleasedAttempt: true,
+            authorizationBudget,
+          });
         }
         if (existing.status === "claimed") {
           const recovered = reconcileStaleSpecialAttemptRow(
@@ -1428,12 +1744,25 @@ export function createContentPipelineSpecialProviderAttemptStore(
           return { state: "in_progress", status: existing.status };
         }
       }
+      const authorizationBudget = prepareNewPaidAttempt();
+      if (authorizationBudget?.state === "replay") {
+        db.exec("COMMIT");
+        return authorizationBudget;
+      }
+      if (authorizationBudget?.state === "pending_reconciliation") {
+        db.exec("COMMIT");
+        return authorizationBudget;
+      }
+      const usage = identity.authorizationUsage;
       q.run(
         `INSERT INTO content_pipeline_special_provider_attempts(
         tenant_id,pipeline_id,station_idx,provider_kind,attempt_id,
         request_fingerprint,billing_ref_type,billing_ref_id,status,
-        lease_token,lease_expires_at,hold_floor_id,created_by
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        lease_token,lease_expires_at,hold_floor_id,
+        paid_media_authorization_id,authorization_max_image_count,
+        authorization_max_credits,authorization_reserved_image_count,
+        authorization_reserved_credits,created_by
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         identity.tenantId,
         identity.pipelineId,
         identity.stationIdx,
@@ -1446,10 +1775,18 @@ export function createContentPipelineSpecialProviderAttemptStore(
         lease.leaseToken,
         lease.leaseExpiresAt,
         currentHoldFloor(identity),
+        usage?.authorizationId || null,
+        usage?.maximumImageCount || null,
+        usage?.maximumCredits || null,
+        usage?.requestedImageCount || null,
+        usage?.requestedCredits || null,
         positiveInteger(rawIdentity.userId, "特殊provider userId"),
       );
       db.exec("COMMIT");
-      return claimed({ recoveredStaleEmptyClaim: Boolean(existing) });
+      return claimed({
+        recoveredStaleEmptyClaim: Boolean(existing),
+        authorizationBudget,
+      });
     } catch (error) {
       try {
         db.exec("ROLLBACK");
@@ -1921,6 +2258,9 @@ function defaultRuntime() {
           finalizeProviderAttemptFn: specialAttemptStore.finalize,
           estimateMaxCreditsFn,
           materialSearchFn: searchLicensedMaterials,
+          // 当前实现只检索本租户已落库的授权素材，完全不触发外部请求且
+          // cost.credits恒为0；让bridge据此在空结果时安全释放素材hold。
+          materialSearchExecutionClass: "local_zero_cost",
         },
       ),
   });
@@ -2883,17 +3223,23 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         20,
       );
       if (
-        ["real", "mix"].includes(imageMode) &&
+        imageMode === "real" &&
         materialProviderAvailableFn({ tenantId, user: clone(req.user) }) !==
           true
       ) {
         throw new ContentProductionPipelineRouteError(
-          "真实素材/混合配图尚未配置可核验授权来源，当前只能使用AI配图；任务尚未创建，也未占用积分。",
+          "严格真实素材模式尚未配置可核验授权来源；可改用“真实素材 + AI”模式，由GPT Image 2自动补足。任务尚未创建，也未占用积分。",
           503,
           "CONTENT_PIPELINE_LICENSED_MATERIAL_PROVIDER_UNAVAILABLE",
         );
       }
       const workflow = workflowInput(req.body, req.user);
+      // 视觉策略版本必须随task_json持久化。只给新任务写入当前版本；旧任务
+      // 缺少该字段时保持原样，重试才能复用原有mix语义与provider幂等指纹。
+      const task = {
+        ...clone(structuredBrief.paihuoBrief),
+        visual_policy_version: CONTENT_PRODUCTION_VISUAL_POLICY_VERSION,
+      };
       if (req.body?.workflow?.paidMediaAuthorized === true) {
         const imageModel = cleanText(resolveImageModelFn(), 160);
         if (!imageModel) {
@@ -2904,7 +3250,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
           );
         }
         workflow.paidMediaAuthorization = createContentPaidMediaAuthorization({
-          task: structuredBrief.paihuoBrief,
+          task,
           actor: clone(req.user),
           imageModel,
           estimatedUnitCredits: estimateMaxCreditsFn("image", imageModel),
@@ -2915,7 +3261,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         tenantId,
         createdBy: req.user.id,
         title: structuredBrief.paihuoBrief.direction,
-        task: clone(structuredBrief.paihuoBrief),
+        task,
         persona: clone(structuredBrief.handlerContext.profile.persona),
         settings: {
           companyProfile: clone(structuredBrief.handlerContext.companyProfile),
@@ -3032,10 +3378,31 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         rawCount === undefined || rawCount === "" || rawCount === "auto"
           ? null
           : Number(rawCount);
-      const maximumImageCount = contentPaidMediaMaximumImageCount({
+      const rawPlatformCount = Number(req.query?.platformCount ?? 1);
+      if (
+        !Number.isSafeInteger(rawPlatformCount) ||
+        rawPlatformCount < 1 ||
+        rawPlatformCount > 4
+      ) {
+        throw new ContentProductionPipelineRouteError(
+          "platformCount必须是1..4的整数",
+          400,
+          "CONTENT_PAID_MEDIA_PLATFORM_COUNT_INVALID",
+        );
+      }
+      const estimateTask = {
         image_mode: "ai",
         image_count: imageCount,
-      });
+        platforms: Array.from(
+          { length: rawPlatformCount },
+          (_, index) => `platform-${index + 1}`,
+        ),
+      };
+      const maximumContentImageCount =
+        contentPaidMediaMaximumContentImageCount(estimateTask);
+      const maximumCoverImageCount =
+        contentPaidMediaMaximumCoverImageCount(estimateTask);
+      const maximumImageCount = contentPaidMediaMaximumImageCount(estimateTask);
       const imageModel = cleanText(resolveImageModelFn(), 160);
       if (!imageModel) {
         throw new ContentProductionPipelineRouteError(
@@ -3056,6 +3423,8 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
           imageModel: pricing.imageModel,
           pricingVersion: pricing.pricingVersion,
           pricingFingerprint: pricing.pricingFingerprint,
+          maximumContentImageCount,
+          maximumCoverImageCount,
           maximumImageCount,
           estimatedUnitCredits: pricing.estimatedUnitCredits,
           estimatedMaximumCredits: estimatedUnitCredits * maximumImageCount,
@@ -3252,8 +3621,39 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
           "CONTENT_PIPELINE_IMAGE_MODEL_UNAVAILABLE",
         );
       }
-      const shouldResume = current.status === "awaiting_media_authorization";
-      if (shouldResume) requireBackgroundAiGuard(req);
+      const failedMediaStation = (current.stations || []).find(
+        (station) =>
+          Number(station?.stationIdx) === Number(current.currentStation) &&
+          [5, 6].includes(Number(station?.stationIdx)) &&
+          station?.status === "failed",
+      );
+      const failedMediaCode = cleanText(
+        failedMediaStation?.failure?.code ||
+          failedMediaStation?.failureCode ||
+          current.failure?.code,
+        160,
+      );
+      const retryableAuthorizationCodes = new Set([
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_REQUIRED",
+        "CONTENT_PAID_MEDIA_REAUTHORIZATION_REQUIRED",
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_EXPIRED",
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_STALE",
+        "CONTENT_PAID_MEDIA_AUTHORIZATION_LIMIT_EXCEEDED",
+      ]);
+      const shouldRetryFailedMedia =
+        current.status === "failed" &&
+        Boolean(failedMediaStation) &&
+        retryableAuthorizationCodes.has(failedMediaCode);
+      const shouldResume =
+        current.status === "awaiting_media_authorization" ||
+        shouldRetryFailedMedia;
+      if (shouldResume) {
+        stopMutationWhenBillingUnsettled({
+          state: current,
+          action: "重新授权后恢复",
+        });
+        requireBackgroundAiGuard(req);
+      }
       const tenantId = Number(req.user.tenant_id || curTenant());
       const policy = createContentPaidMediaAuthorization({
         task: current.task,
@@ -3268,7 +3668,13 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         actor: clone(req.user),
         policy,
       });
-      if (shouldResume) queueResume({ req, pipelineId });
+      if (shouldResume) {
+        queueResume({
+          req,
+          pipelineId,
+          action: shouldRetryFailedMedia ? "retry" : "resume",
+        });
+      }
       logOpFn(
         req.user,
         "内容生产仓",
@@ -3280,6 +3686,8 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         pipeline: publicPipeline(state),
         queued: shouldResume,
         authorization: {
+          maximumContentImageCount: policy.maximumContentImageCount,
+          maximumCoverImageCount: policy.maximumCoverImageCount,
           maximumImageCount: policy.maximumImageCount,
           estimatedUnitCredits: policy.estimatedUnitCredits,
           estimatedMaximumCredits: policy.estimatedMaximumCredits,
@@ -3360,6 +3768,13 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
     try {
       const pipelineId = positiveInteger(req.params.id, "pipelineId");
       const state = inspectFor(req, pipelineId);
+      if (!isManagerRole(req.user)) {
+        throw new ContentProductionPipelineRouteError(
+          "失败工位只能由老板或管理层手动重试",
+          403,
+          "CONTENT_PIPELINE_RETRY_ROLE_FORBIDDEN",
+        );
+      }
       if (state.status !== "failed") {
         throw new ContentProductionPipelineRouteError(
           "只能重试真实执行失败的流水线；待对账任务不会重跑API",

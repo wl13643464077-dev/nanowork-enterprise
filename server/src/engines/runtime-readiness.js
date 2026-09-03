@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { getConfig, getTenantConfig } from '../db.js';
+import { agenticWebResearchReadiness } from './agentic-web-research.js';
 import { CONTENT_CONNECTOR_REGISTRY } from './content-connectors.js';
 import {
   appBotReady,
@@ -112,10 +113,19 @@ function aiConfigurationFacts() {
 }
 
 function searchConfigurationFacts() {
+  const agentic = agenticWebResearchReadiness();
   return {
+    tinyfish: String(process.env.TINYFISH_API_KEY || '').trim(),
     bocha: String(process.env.BOCHA_API_KEY || '').trim(),
     tavily: String(process.env.TAVILY_API_KEY || '').trim(),
     serper: String(process.env.SERPER_API_KEY || '').trim(),
+    claudeWebSearch: {
+      credential: String(yunwuApiKey() || '').trim(),
+      baseUrl: yunwuBaseUrl(),
+      cliReady: agentic.cliReady === true,
+      cliPath: agentic.cliPath || '',
+      model: agentic.model || '',
+    },
   };
 }
 
@@ -397,46 +407,137 @@ function schedulerReadiness() {
 }
 
 function searchReadiness({ tenantId, now }) {
+  const agentic = agenticWebResearchReadiness();
   const configuredProviders = webSearchProviders();
-  const configured = configuredProviders.length > 0;
+  const tinyfishReady = agentic.primaryReady === true;
+  // agentic.ready 表示整条分层链路可用；这里必须读取 fallbackReady，不能把
+  // TinyFish 已就绪误报成 Claude WebSearch 也已就绪。
+  const claudeFallbackReady = agentic.fallbackReady === true;
+  const claudeCredentialReady = agentic.credentialReady === true;
+  const claudeCliReady = agentic.cliReady === true;
+  const legacyProviders = configuredProviders.filter(
+    provider => !['TinyFish', 'Claude WebSearch'].includes(provider),
+  );
+  const configured = tinyfishReady || claudeFallbackReady || legacyProviders.length > 0;
+  const partiallyConfigured = !configured && claudeCredentialReady;
+  const fingerprint = runtimeReadinessConfigFingerprint('web_search', { tenantId });
   const check = verificationFor('web_search', {
     tenantId,
-    fingerprint: runtimeReadinessConfigFingerprint('web_search', { tenantId }),
+    fingerprint,
     now,
     applicable: configured,
   });
+  const verifiedProvider = String(
+    check.lastCheck?.evidence?.providerId || check.lastCheck?.evidence?.provider || '',
+  ).trim().toLowerCase();
+  const tinyfishVerified = check.verified && verifiedProvider.includes('tinyfish');
+  const claudeFallbackVerified = check.verified
+    && /(?:claude|yunwu|claude_websearch)/u.test(verifiedProvider);
+  const providerRoute = [
+    {
+      id: 'tinyfish',
+      label: 'TinyFish',
+      role: 'primary',
+      configured: tinyfishReady,
+      ready: tinyfishReady,
+      verified: tinyfishVerified,
+      reason: tinyfishVerified
+        ? '最近一次显式检索验证已通过；运行时优先调用。'
+        : tinyfishReady
+          ? '已配置 TINYFISH_API_KEY，运行时优先调用。'
+          : '未配置 TINYFISH_API_KEY，首选通道不可用。',
+    },
+    {
+      id: 'claude_websearch',
+      label: 'Claude WebSearch',
+      role: 'fallback',
+      configured: claudeCredentialReady,
+      ready: claudeFallbackReady,
+      verified: claudeFallbackVerified,
+      reason: claudeFallbackVerified
+        ? '最近一次显式检索验证已通过；TinyFish 未交付时自动回退。'
+        : claudeFallbackReady
+          ? '服务端 Claude CLI 与网关凭证均可用；TinyFish 未交付时自动回退。'
+          : claudeCredentialReady
+            ? '已配置网关凭证，但服务端 Claude CLI 不可用。'
+            : claudeCliReady
+              ? '服务端 Claude CLI 可用，但未配置 YUNWU_API_KEY。'
+              : '未配置 YUNWU_API_KEY，且服务端 Claude CLI 不可用。',
+      details: {
+        cliReady: claudeCliReady,
+        credentialReady: claudeCredentialReady,
+        cliPath: agentic.cliPath || null,
+        model: agentic.model || null,
+        provider: agentic.routes?.find(route => route.key === 'claude_websearch')?.label
+          || 'Yunwu Claude WebSearch gateway',
+      },
+    },
+  ];
+  const description = tinyfishReady
+    ? claudeFallbackReady
+      ? 'TinyFish 为首选；未交付、失败或限流时自动回退 Claude WebSearch。'
+      : 'TinyFish 首选通道已配置；Claude WebSearch 自动回退前置尚未齐全。'
+    : claudeFallbackReady
+      ? 'TinyFish 尚未配置；Claude WebSearch 自动回退前置已齐全，仍需显式验证连接。'
+      : legacyProviders.length > 0
+        ? `TinyFish 与 Claude WebSearch 主备链路未就绪；当前仅配置兼容检索源：${legacyProviders.join('、')}。`
+        : partiallyConfigured
+          ? 'TinyFish 尚未配置；Claude WebSearch 已有网关凭证，但服务端 CLI 前置尚未齐全。'
+          : 'TinyFish 首选与 Claude WebSearch 自动回退均未配置；无密钥来源不视为生产就绪。';
+  const effective = configured
+    ? check.verified
+      ? 'connected'
+      : 'configured_unverified'
+    : partiallyConfigured
+      ? 'blocked'
+      : 'degraded';
   return readinessItem({
     key: 'web_search',
     label: '联网检索',
-    description: configured
-      ? '已发现商业检索源配置，但尚需显式验收；运行时仍要求取得可引用结果。'
-      : '未配置商业检索源；代码可能尝试无密钥兜底源，但不视为生产就绪。',
-    configuration: configured ? 'ready' : 'missing',
+    description,
+    configuration: configured ? 'ready' : partiallyConfigured ? 'partial' : 'missing',
     activation: 'enabled',
-    effective: !configured
-      ? 'degraded'
-      : check.verified
-        ? 'connected'
-        : 'configured_unverified',
+    effective,
     ...check,
     canExecute: true,
     canGenerateLocalDraft: false,
     canDeliverForHumanReview: false,
     canPerformExternalAction: false,
-    missing: configured ? [] : ['博查、Tavily 或 Serper 至少一个服务端凭证'],
+    capabilitySummary: configured
+      ? check.verified
+        ? '真实联网检索通道已验证；每次运行仍须取得可引用来源证据'
+        : '真实联网检索通道已配置但尚未显式验证；不会把无密钥结果冒充已验收通道'
+      : partiallyConfigured
+        ? 'Claude WebSearch 网关凭证已配置，但 CLI 前置未齐；当前不视为真实通道就绪'
+        : '主备真实检索通道未配置；仅能尝试无密钥来源，不视为生产就绪',
+    missing: configured
+      ? []
+      : partiallyConfigured
+        ? ['服务端 Claude CLI 可执行文件（或 CONTENTCREW_CLAUDE_PATH）']
+        : ['TINYFISH_API_KEY（首选）或 Claude WebSearch 完整前置（YUNWU_API_KEY + 服务端 Claude CLI）'],
     conditions: [
+      'Provider 路由固定为 TinyFish 首选，未交付时自动回退 Claude WebSearch',
       '检索成功且至少返回一条可引用来源，才算本次任务完成联网核验',
       '无凭证兜底源不构成生产通道验收证据',
     ],
     nextAction: configured
       ? check.verified
         ? '最近检索连接测试有效；任务仍须逐次保留来源证据。'
-        : '使用授权测试查询显式验收检索源，未验收前保持“已配置·待验证”。'
-      : '配置一个商业检索源，并用授权测试查询完成验收。',
+        : '使用授权查询显式验收当前真实检索通道，未验收前保持“已配置·待验证”。'
+      : partiallyConfigured
+        ? '安装或配置服务端 Claude CLI，或配置 TINYFISH_API_KEY 作为首选通道。'
+        : '优先配置 TINYFISH_API_KEY；需要自动回退时同时准备 YUNWU_API_KEY 与服务端 Claude CLI。',
     details: {
+      preferredProvider: 'tinyfish',
+      fallbackProvider: 'claude_websearch',
+      automaticFallback: agentic.autoFallback !== false,
+      routeSummary: 'TinyFish → Claude WebSearch',
+      providerRoute,
       configuredProviders,
-      keylessFallback: 'DuckDuckGo',
+      legacyProviders,
+      keylessFallback: 'Google News RSS / DuckDuckGo',
       evidenceRequiredPerRun: true,
+      configFingerprint: fingerprint,
     },
   });
 }

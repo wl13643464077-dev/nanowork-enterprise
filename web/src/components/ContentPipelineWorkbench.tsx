@@ -77,14 +77,22 @@ type Props = {
 };
 
 const MANAGE_ROLES = new Set(['boss', 'ops_director', 'manager', 'admin', 'platform_super']);
+const PAID_MEDIA_AUTHORIZATION_SCHEMA = 'nanowork.content-paid-media-authorization/3';
+const PAID_MEDIA_REAUTHORIZATION_FAILURE_CODES = new Set([
+  'CONTENT_PAID_MEDIA_AUTHORIZATION_REQUIRED',
+  'CONTENT_PAID_MEDIA_REAUTHORIZATION_REQUIRED',
+  'CONTENT_PAID_MEDIA_AUTHORIZATION_EXPIRED',
+  'CONTENT_PAID_MEDIA_AUTHORIZATION_STALE',
+  'CONTENT_PAID_MEDIA_AUTHORIZATION_LIMIT_EXCEEDED',
+]);
 const PLATFORM_OPTIONS = ['小红书', '公众号', '抖音', '视频号', 'B站', '微博'].map(value => ({
   value,
   label: value,
 }));
 const IMAGE_MODE_OPTIONS = [
-  { value: 'ai', label: 'AI 生成' },
-  { value: 'real', label: '真实素材·全网检索' },
-  { value: 'mix', label: '真实素材 + AI 生成' },
+  { value: 'ai', label: '仅 AI 生成' },
+  { value: 'real', label: '仅已授权真实素材（不足即停）' },
+  { value: 'mix', label: '已授权真实素材优先，不足由 GPT Image 2 补齐' },
 ];
 const PIPELINE_STATION_NAMES = [
   '趋势官',
@@ -103,7 +111,7 @@ const APPROVAL_STATION_OPTIONS = PIPELINE_STATION_NAMES.map((name, stationIdx) =
   label: `${stationIdx} · ${name}`,
 }));
 const REAL_MATERIAL_PROVIDER_UNAVAILABLE =
-  '当前未取得服务端“已连接且已验证”的真实素材 provider 能力证据，因此真实素材与混合模式暂不可选；接通后再开放。';
+  '严格真实素材模式暂未取得服务端“已连接且已验证”的授权素材能力证据；可改用素材优先模式，缺图由 GPT Image 2 补齐。';
 const VERIFIED_PROVIDER_STATUSES = new Set(['ready', 'available', 'connected', 'verified', 'passed']);
 const WORKFLOW_OPTIONS: Array<{ value: ContentPipelineWorkflowMode; label: string }> = [
   { value: 'copilot', label: '关键节点审阅' },
@@ -167,9 +175,9 @@ const QUEUED_ACTION_COPY = {
     description: '页面正在等待复盘官基于本次发布记录和数值指标生成新一轮复盘产物。',
   },
   authorize: {
-    badge: '付费配图已授权',
-    message: '老板授权已保存，配图工位已排队',
-    description: '页面正在等待服务端从工位5继续；授权不包含任何对外发布动作。',
+    badge: '付费配图+封面已授权',
+    message: '老板授权已保存，媒体工位已排队',
+    description: '页面正在等待服务端继续配图或封面工位；授权不包含任何对外发布动作。',
   },
 } as const;
 
@@ -233,6 +241,8 @@ type PublicationMetricsFormValues = {
 };
 
 type PaidMediaEstimate = {
+  maximumContentImageCount: number;
+  maximumCoverImageCount: number;
   maximumImageCount: number;
   estimatedUnitCredits: number;
   estimatedMaximumCredits: number;
@@ -538,7 +548,7 @@ function phaseEventSummary(event: NonNullable<ContentPipelineStation['phaseEvent
   return fragments.join(' · ');
 }
 
-const BOSS_OPEN_STATIONS = new Set([4, 5, 8, 9]);
+const BOSS_OPEN_STATIONS = new Set([4, 5, 6, 8, 9]);
 const STATION_ATTENTION_STATUSES = new Set([
   'running',
   'failed',
@@ -570,9 +580,98 @@ function specialRuntimeFallback(station: ContentPipelineStation) {
   const runtime = station.handlerEvidence?.productionRuntime;
   const special =
     runtime && typeof runtime === 'object'
-      ? (runtime as { specialRuntime?: { fallback?: { used?: boolean } } }).specialRuntime
+      ? (
+          runtime as {
+            specialRuntime?: {
+              fallback?: {
+                used?: boolean;
+                strategy?: string;
+                from?: string;
+                to?: string;
+                reason?: string;
+              };
+            };
+          }
+        ).specialRuntime
       : null;
   return special?.fallback || null;
+}
+
+type ProviderAsset = NonNullable<ContentPipelineStation['providerAssets']>[number];
+
+const BITMAP_MEDIA_TYPE = /^image\/(?:png|jpe?g|webp|gif)$/iu;
+const BITMAP_FILENAME = /\.(?:png|jpe?g|webp|gif)$/iu;
+const NON_BITMAP_ASSET = /(?:image\/svg|\.svg(?:$|[?#])|text\/html|\.html?(?:$|[?#])|placeholder|占位|示意图)/iu;
+
+function isDeliverableBitmapProviderAsset(asset: ProviderAsset) {
+  const identity = [asset.mediaType, asset.filename, asset.kind].map(value => String(value || '').trim()).join(' ');
+  if (!identity || NON_BITMAP_ASSET.test(identity)) return false;
+  return (
+    BITMAP_MEDIA_TYPE.test(String(asset.mediaType || '').trim()) ||
+    BITMAP_FILENAME.test(String(asset.filename || '').trim())
+  );
+}
+
+type ProviderAssetWithProvenance = ProviderAsset & {
+  sourceMaterialId?: number | null;
+  rights?: {
+    confirmed?: boolean;
+    commercialUse?: boolean;
+    license?: string | null;
+  } | null;
+};
+
+function isLicensedMaterialAsset(asset: ProviderAssetWithProvenance) {
+  const sourceMaterialId = Number(asset.sourceMaterialId);
+  return (
+    asset.kind === 'material' &&
+    Number.isSafeInteger(sourceMaterialId) &&
+    sourceMaterialId > 0 &&
+    asset.rights?.confirmed === true &&
+    asset.rights?.commercialUse === true &&
+    Boolean(String(asset.rights?.license || '').trim())
+  );
+}
+
+function imageModelLabel(value: unknown) {
+  const model = String(value || '').trim();
+  return /^gpt-image-2$/iu.test(model) ? 'GPT Image 2' : model;
+}
+
+function providerAssetSourceMeta(asset: ProviderAssetWithProvenance) {
+  if (isLicensedMaterialAsset(asset)) return { label: '已授权真实素材', color: 'green' };
+  if (asset.kind === 'image') {
+    const model = imageModelLabel(asset.providerModel);
+    return { label: model ? `AI 生成 · ${model}` : 'AI 生成', color: 'purple' };
+  }
+  return { label: '来源待核验', color: 'gold' };
+}
+
+function providerAssetSourceSummary(assets: ProviderAsset[]) {
+  const licensed = assets.filter(asset => isLicensedMaterialAsset(asset)).length;
+  const aiGenerated = assets.filter(asset => asset.kind === 'image').length;
+  const pending = Math.max(0, assets.length - licensed - aiGenerated);
+  return [
+    licensed > 0 ? `已授权真实素材 ${licensed} 张` : '',
+    aiGenerated > 0 ? `AI 生成 ${aiGenerated} 张` : '',
+    pending > 0 ? `来源待核验 ${pending} 张` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function stationRetryRemainingText(station: ContentPipelineStation) {
+  if (station.retry?.manualUnlimited === true) {
+    return stationManualRetryAllowed(station) ? '可手动重试·不限次数' : '手动重试不限次数（仅失败工位）';
+  }
+  if (station.retry?.remaining == null) return '可手动重试';
+  const remaining = Number(station.retry.remaining);
+  return Number.isFinite(remaining) && remaining >= 0 ? `剩余 ${Math.floor(remaining)} 次` : '剩余次数未返回';
+}
+
+function stationManualRetryAllowed(station: ContentPipelineStation | null | undefined) {
+  if (station?.retry?.manualAllowed !== undefined) return station.retry.manualAllowed === true;
+  return station?.retry?.allowed === true;
 }
 
 function stationBossSummary(station: ContentPipelineStation & { failureText?: string }) {
@@ -581,14 +680,26 @@ function stationBossSummary(station: ContentPipelineStation & { failureText?: st
   }
   const fallback = specialRuntimeFallback(station);
   if (station.stationIdx === 5 && station.status === 'completed') {
-    const realImages = Array.isArray(station.providerAssets) ? station.providerAssets.length : 0;
-    if (realImages > 0) return `正文配图已生成（${realImages}张真图）`;
-    return fallback?.used ? '配图已出，但走了示意图回退' : '正文配图已生成';
+    const images = Array.isArray(station.providerAssets)
+      ? station.providerAssets.filter(isDeliverableBitmapProviderAsset)
+      : [];
+    if (images.length > 0) {
+      const sourceSummary = providerAssetSourceSummary(images);
+      const fillNote =
+        fallback?.strategy === 'licensed_material_to_ai_image' ? '；授权素材不足，已由 GPT Image 2 补齐' : '';
+      return `正文配图已交付 ${images.length} 张${sourceSummary ? `（${sourceSummary}）` : ''}${fillNote}`;
+    }
+    return fallback?.used ? '未取得可交付图片，示意图不作为产物' : '配图工位完成，但未返回可交付图片';
   }
   if (station.stationIdx === 6 && station.status === 'completed') {
-    const realCovers = Array.isArray(station.providerAssets) ? station.providerAssets.length : 0;
-    if (realCovers > 0) return `封面真图已生成（${realCovers}张）`;
-    return fallback?.used ? '封面是 HTML 卡，真图当时被云雾拦住' : '封面真图已生成';
+    const covers = Array.isArray(station.providerAssets)
+      ? station.providerAssets.filter(isDeliverableBitmapProviderAsset)
+      : [];
+    if (covers.length > 0) {
+      const sourceSummary = providerAssetSourceSummary(covers);
+      return `封面已交付 ${covers.length} 张${sourceSummary ? `（${sourceSummary}）` : ''}`;
+    }
+    return fallback?.used ? '未取得可交付封面，HTML 卡不作为产物' : '封面工位完成，但未返回可交付图片';
   }
   if (station.stationIdx === 8 && station.status === 'completed') {
     return Number(station.retry?.used || 0) > 0
@@ -596,7 +707,7 @@ function stationBossSummary(station: ContentPipelineStation & { failureText?: st
       : '发布包已出';
   }
   if (station.status === 'skipped') return '按任务设置跳过';
-  if (station.status === 'failed') return station.failureText || '本工位失败';
+  if (station.status === 'failed') return '';
   if (station.status === 'completed') return '阶段报告已完成';
   return '';
 }
@@ -648,7 +759,12 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
   const [form] = Form.useForm<ContentPipelineCreateFormValues>();
   const [metricsForm] = Form.useForm<PublicationMetricsFormValues>();
   const metricsPublishedAt = Form.useWatch('publishedAt', metricsForm);
-  const selectedPlatforms = Form.useWatch('platforms', form) || [];
+  const watchedPlatforms = Form.useWatch('platforms', form);
+  const selectedPlatforms = useMemo(
+    () => (Array.isArray(watchedPlatforms) ? watchedPlatforms : []),
+    [watchedPlatforms],
+  );
+  const selectedImageMode = Form.useWatch('imageMode', form);
   const selectedImageCount = Form.useWatch('imageCount', form);
   const approvalPreset = Form.useWatch('approvalPreset', form);
   const role = String(getUser()?.role || '');
@@ -778,18 +894,28 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
     let cancelled = false;
     const imageCount = Number(selectedImageCount);
     const queryValue = Number.isSafeInteger(imageCount) && imageCount > 0 ? String(imageCount) : 'auto';
+    const platformCount = Math.max(
+      1,
+      Math.min(4, new Set(selectedPlatforms.map(item => String(item || '').trim()).filter(Boolean)).size || 1),
+    );
     void api
-      .get(`/content/pipelines/paid-media-estimate?imageCount=${queryValue}`, { silent: true })
+      .get(`/content/pipelines/paid-media-estimate?imageCount=${queryValue}&platformCount=${platformCount}`, {
+        silent: true,
+      })
       .then(payload => {
         if (cancelled) return;
         const estimate = payload?.estimate;
         if (
+          Number.isSafeInteger(Number(estimate?.maximumContentImageCount)) &&
+          Number.isSafeInteger(Number(estimate?.maximumCoverImageCount)) &&
           Number.isSafeInteger(Number(estimate?.maximumImageCount)) &&
           Number.isSafeInteger(Number(estimate?.estimatedUnitCredits)) &&
           Number.isSafeInteger(Number(estimate?.estimatedMaximumCredits))
         ) {
           setPaidMediaEstimateError('');
           setPaidMediaEstimate({
+            maximumContentImageCount: Number(estimate.maximumContentImageCount),
+            maximumCoverImageCount: Number(estimate.maximumCoverImageCount),
             maximumImageCount: Number(estimate.maximumImageCount),
             estimatedUnitCredits: Number(estimate.estimatedUnitCredits),
             estimatedMaximumCredits: Number(estimate.estimatedMaximumCredits),
@@ -803,12 +929,12 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
       .catch(() => {
         if (cancelled) return;
         setPaidMediaEstimate(null);
-        setPaidMediaEstimateError('暂时无法读取费用上限；不影响先创建并在工位5等待老板授权。');
+        setPaidMediaEstimateError('暂时无法读取费用上限；不影响先创建并在配图/封面工位等待老板授权。');
       });
     return () => {
       cancelled = true;
     };
-  }, [canConfigureApproval, createOpen, open, selectedImageCount]);
+  }, [canConfigureApproval, createOpen, open, selectedImageCount, selectedPlatforms]);
 
   useEffect(() => {
     if (!open || !queuedTransition || queuedTransition.phase !== 'polling') return;
@@ -934,7 +1060,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
   const imageModeOptions = useMemo(
     () =>
       IMAGE_MODE_OPTIONS.map(option =>
-        option.value === 'ai'
+        option.value !== 'real'
           ? option
           : {
               ...option,
@@ -949,6 +1075,32 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
   const currentStation = activePipeline
     ? stationRows.find(station => station.stationIdx === activePipeline.currentStation) || null
     : null;
+  const failedStation = activePipeline
+    ? stationRows.find(
+        station => station.stationIdx === activePipeline.currentStation && station.status === 'failed',
+      ) ||
+      stationRows.find(station => station.status === 'failed') ||
+      null
+    : null;
+  const failedMediaAuthorizationCode = String(failedStation?.failure?.code || activePipeline?.failure?.code || '');
+  const paidMediaAuthorization = activePipeline?.workflow?.paidMediaAuthorization;
+  const paidMediaAuthorizationNeedsUpgrade =
+    Boolean(paidMediaAuthorization) &&
+    String(paidMediaAuthorization?.schemaVersion || '') !== PAID_MEDIA_AUTHORIZATION_SCHEMA;
+  const failedStationNeedsPaidMediaReauthorization =
+    [5, 6].includes(Number(failedStation?.stationIdx)) &&
+    (paidMediaAuthorizationNeedsUpgrade || PAID_MEDIA_REAUTHORIZATION_FAILURE_CODES.has(failedMediaAuthorizationCode));
+  const canRetryFailedStation =
+    canManage &&
+    !queuedForActive &&
+    activePipeline?.status === 'failed' &&
+    stationManualRetryAllowed(failedStation) &&
+    !failedStationNeedsPaidMediaReauthorization;
+  const canReauthorizeFailedMedia =
+    canConfigureApproval &&
+    !queuedForActive &&
+    activePipeline?.status === 'failed' &&
+    failedStationNeedsPaidMediaReauthorization;
   const pendingStation = activePipeline
     ? stationRows.find(station => station.stationIdx === activePipeline.pendingStation) ||
       stationRows.find(station => station.status === 'awaiting_approval') ||
@@ -965,6 +1117,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
     for (const station of stationRows) {
       if (![5, 6].includes(station.stationIdx)) continue;
       for (const asset of station.providerAssets || []) {
+        if (!isDeliverableBitmapProviderAsset(asset)) continue;
         if (seen.has(asset.id)) continue;
         seen.add(asset.id);
         list.push({ asset, kindLabel: asset.sourceStationIdx === 6 ? '封面' : '配图' });
@@ -972,11 +1125,24 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
     }
     return list;
   }, [stationRows]);
+  const bossAssetSourceSummary = useMemo(
+    () => providerAssetSourceSummary(bossAssets.map(item => item.asset)),
+    [bossAssets],
+  );
   const deliveryPacks = useMemo(() => {
     const packs = activePipeline?.delivery?.packs;
     return Array.isArray(packs) ? packs.filter(pack => pack && typeof pack === 'object') : [];
   }, [activePipeline?.delivery?.packs]);
   const mediaFallbackNote = useMemo(() => {
+    const licensedMaterialToAi = stationRows.some(
+      station =>
+        station.stationIdx === 5 &&
+        station.status === 'completed' &&
+        specialRuntimeFallback(station)?.strategy === 'licensed_material_to_ai_image',
+    );
+    if (licensedMaterialToAi) {
+      return '已授权真实素材不足，剩余配图已由 GPT Image 2 补齐；AI 生成图片已单独标注。';
+    }
     if (bossAssets.length > 0) return '';
     const usedFallback = stationRows.some(
       station =>
@@ -984,7 +1150,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
         station.status === 'completed' &&
         specialRuntimeFallback(station)?.used === true,
     );
-    return usedFallback ? '本轮配图或封面走了版式回退，没有拿到真图；可在标准视图重试对应工位。' : '';
+    return usedFallback ? '本轮没有取得可交付图片；SVG、HTML 卡片和占位图不会展示或计入交付。' : '';
   }, [bossAssets.length, stationRows]);
   const finishedStationCount = stationRows.filter(station =>
     ['completed', 'skipped'].includes(String(station.status || '')),
@@ -1000,7 +1166,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
 
   const createPipeline = async () => {
     const values = await form.validateFields();
-    if (['real', 'mix'].includes(String(values.imageMode || '')) && !realMaterialProviderAvailable) {
+    if (String(values.imageMode || '') === 'real' && !realMaterialProviderAvailable) {
       message.error(REAL_MATERIAL_PROVIDER_UNAVAILABLE);
       return;
     }
@@ -1067,7 +1233,11 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
       if (contentPipelineQueuedReceipt(payload)) {
         beginQueuedTransition(pipelineId, 'authorize', pipeline || beforeAction);
       }
-      message.success(QUEUED_ACTION_COPY.authorize.message);
+      message.success(
+        contentPipelineQueuedReceipt(payload)
+          ? QUEUED_ACTION_COPY.authorize.message
+          : '老板已更新配图+封面付费上限，现在可重试失败工位。',
+      );
     } catch {
       // API客户端已经展示权限、费用或状态错误。
     } finally {
@@ -1283,7 +1453,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
         initialValues={{
           type: '日更选题',
           platforms: ['小红书'],
-          imageMode: 'ai',
+          imageMode: 'mix',
           imageCount: null,
           enableDeck: false,
           workflowMode: 'fullauto',
@@ -1342,7 +1512,13 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                   label="配图来源"
                   rules={[{ required: true }]}
                   extra={
-                    !realMaterialProviderAvailable ? REAL_MATERIAL_PROVIDER_UNAVAILABLE : '真实素材 provider 已验证可用'
+                    selectedImageMode === 'real'
+                      ? realMaterialProviderAvailable
+                        ? '严格模式只使用已核验授权素材；数量不足即停，不调用 AI 生图。'
+                        : REAL_MATERIAL_PROVIDER_UNAVAILABLE
+                      : selectedImageMode === 'ai'
+                        ? '仅使用 GPT Image 2 生成，不会标注为已授权真实素材。'
+                        : '素材优先模式会先检索已授权真实素材，缺口由 GPT Image 2 补齐。'
                   }
                 >
                   <Select options={imageModeOptions} />
@@ -1384,21 +1560,30 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                   <header>
                     <div>
                       <strong>付费媒体授权</strong>
-                      <small>只控制工位5的图片或素材服务，不会授权对外发布。</small>
+                      <small>只控制工位5的授权素材检索与 AI 生成服务，不会授权对外发布。</small>
                     </div>
                     <Tag color="gold">老板确认</Tag>
                   </header>
                   <Form.Item name="paidMediaAuthorized" valuePropName="checked">
                     <Checkbox>
-                      本次创建即授权付费配图；不勾选时先生产到工位4，工位5等待老板授权后才调用图片或素材服务
+                      {selectedImageMode === 'real'
+                        ? '本次创建即授权正文使用已核验素材，并为各平台生成封面'
+                        : selectedImageMode === 'ai'
+                          ? '本次创建即授权由 GPT Image 2 生成配图'
+                          : '本次创建即授权先检索已授权素材，数量不足时由 GPT Image 2 补齐'}
+                      ；不勾选时先生产到工位4，工位5等待老板授权，同一授权也覆盖工位6封面
                     </Checkbox>
                   </Form.Item>
                   {paidMediaEstimate ? (
                     <Alert
                       type="warning"
                       showIcon
-                      message={`最大费用上限 ${paidMediaEstimate.estimatedMaximumCredits} 积分`}
-                      description={`最多 ${paidMediaEstimate.maximumImageCount} 张，当前单张预估 ${paidMediaEstimate.estimatedUnitCredits} 积分；授权 ${paidMediaEstimate.authorizationValidHours} 小时内有效，按实际调用结算。`}
+                      message={`最大费用上限（配图+封面）${paidMediaEstimate.estimatedMaximumCredits} 积分`}
+                      description={
+                        selectedImageMode === 'real'
+                          ? `正文最多 ${paidMediaEstimate.maximumContentImageCount} 张已核验素材，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；授权 ${paidMediaEstimate.authorizationValidHours} 小时内有效。`
+                          : `正文配图最多 ${paidMediaEstimate.maximumContentImageCount} 张，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；当前单张预估 ${paidMediaEstimate.estimatedUnitCredits} 积分，按实际调用结算。`
+                      }
                     />
                   ) : (
                     <Alert
@@ -1508,14 +1693,19 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           >
             刷新
           </Button>
-          {canManage && !queuedForActive && activePipeline.status === 'failed' && (
+          {canRetryFailedStation && (
             <Button loading={mutation === 'retry'} onClick={() => void runLifecycleAction('retry')}>
               重试失败工位
             </Button>
           )}
           {canConfigureApproval && !queuedForActive && activePipeline.status === 'awaiting_media_authorization' && (
             <Button type="primary" loading={mutation === 'authorize'} onClick={() => void authorizePaidMedia()}>
-              授权付费配图并继续
+              授权付费配图+封面并继续
+            </Button>
+          )}
+          {canReauthorizeFailedMedia && (
+            <Button type="primary" loading={mutation === 'authorize'} onClick={() => void authorizePaidMedia()}>
+              重新授权配图+封面上限
             </Button>
           )}
           {canManage && !queuedForActive && activePipeline.status === 'running' && (
@@ -1765,12 +1955,16 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                 <strong>
                   <PictureOutlined /> 高清配图与封面
                 </strong>
-                <small>{bossAssets.length} 张真图 · 点开看原图，可直接下载</small>
+                <small>
+                  {bossAssets.length} 张可交付图片
+                  {bossAssetSourceSummary ? ` · ${bossAssetSourceSummary}` : ''} · 点开预览，可直接下载
+                </small>
               </header>
               <div className="cpw-boss-gallery-grid">
                 {bossAssets.map(({ asset, kindLabel }) => {
                   const previewUrl = providerAssetUrl(asset.previewUrl);
                   const downloadUrl = providerAssetUrl(asset.downloadUrl);
+                  const sourceMeta = providerAssetSourceMeta(asset);
                   return (
                     <figure key={`boss-asset-${asset.id}`}>
                       {previewUrl ? (
@@ -1784,6 +1978,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                         <span>
                           {kindLabel}
                           {asset.platform ? ` · ${asset.platform}` : ''}
+                          <Tag color={sourceMeta.color}>{sourceMeta.label}</Tag>
                         </span>
                         {downloadUrl && (
                           <Button size="small" type="text" icon={<DownloadOutlined />} href={downloadUrl}>
@@ -1855,7 +2050,9 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
             !queuedForActive && station.status === 'awaiting_approval' && contentPipelineCanReview(role, code);
           const hasOutput = station.output !== null && station.output !== undefined;
           const artifacts = Array.isArray(station.artifacts) ? station.artifacts : [];
-          const providerAssets = Array.isArray(station.providerAssets) ? station.providerAssets : [];
+          const providerAssets = Array.isArray(station.providerAssets)
+            ? station.providerAssets.filter(isDeliverableBitmapProviderAsset)
+            : [];
           const primaryArtifact = artifacts.find(artifact => artifact.primary) || artifacts[0] || null;
           const primaryArtifactBadge = artifactBadgeMeta(primaryArtifact);
           const previewUrl = artifactUrl(primaryArtifact?.previewUrl);
@@ -1878,6 +2075,26 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           const heldCredits = numericEvidence(billingEvidence?.heldCredits);
           const settledCredits = numericEvidence(billingEvidence?.settledCredits ?? billingEvidence?.chargedCredits);
           const costYuan = numericEvidence(billingEvidence?.costYuan ?? providerDelivery?.costYuan);
+          const retryRemainingText = stationRetryRemainingText(station);
+          const manualRetryAllowed = stationManualRetryAllowed(station);
+          const canRetryStation =
+            canManage &&
+            activePipeline.status === 'failed' &&
+            station.status === 'failed' &&
+            manualRetryAllowed &&
+            !failedStationNeedsPaidMediaReauthorization;
+          const stationRetryHint =
+            station.status !== 'failed'
+              ? ''
+              : failedStationNeedsPaidMediaReauthorization
+                ? '当前正文配图与封面预算授权需要更新，请先由老板重新确认总上限。'
+                : !canManage
+                  ? '当前账号没有失败工位重试权限'
+                  : !manualRetryAllowed
+                    ? `服务端未允许重试 · ${retryRemainingText}`
+                    : activePipeline.status !== 'failed'
+                      ? `流水线当前状态不可重试 · ${retryRemainingText}`
+                      : `${retryRemainingText}；每次都会重新校验授权与账务状态`;
           const packageLoadLabel =
             packageEvidence.allRequiredFieldsLoaded === true
               ? '11/11 已全量装载'
@@ -1921,7 +2138,13 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                         {Number(station.attempt || 0) > 0 && <span>尝试 {station.attempt} 次</span>}
                         {station.retry && (
                           <span>
-                            重试 {station.retry.used ?? 0} 次 · 剩余 {station.retry.remaining ?? 0} 次
+                            重试 {station.retry.used ?? 0} 次 · {stationRetryRemainingText(station)}
+                            {Number.isFinite(Number(station.retry.automaticRemaining)) && (
+                              <>
+                                {' '}
+                                · 自动恢复剩余 {Math.max(0, Math.floor(Number(station.retry.automaticRemaining)))} 次
+                              </>
+                            )}
                           </span>
                         )}
                         {station.startedAt && (
@@ -2102,7 +2325,97 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                         </details>
                       )}
                     {!queuedForActive && station.failureText && station.status !== 'awaiting_media_authorization' && (
-                      <Alert type="error" showIcon message={station.failureText} />
+                      <Alert
+                        type="error"
+                        showIcon
+                        message={station.failureText}
+                        description={stationRetryHint || undefined}
+                        action={
+                          canRetryStation ? (
+                            <Button
+                              size="small"
+                              danger
+                              icon={<ReloadOutlined />}
+                              loading={mutation === 'retry'}
+                              onClick={() => void runLifecycleAction('retry')}
+                            >
+                              重试本工位
+                            </Button>
+                          ) : undefined
+                        }
+                      />
+                    )}
+                    {providerAssets.length > 0 && (
+                      <section className="cpw-provider-assets" aria-label={`${station.employeeName}生成图片与交付素材`}>
+                        <header>
+                          <div>
+                            <strong>
+                              <PictureOutlined /> 真实图片产物（{providerAssets.length} 张）
+                            </strong>
+                            <small>
+                              {station.stationIdx === 8
+                                ? '来自多媒体工位，已投影到发布包；不会自动外发。'
+                                : '这里展示的是已固化到租户素材库的真实位图，可点开查看原图或直接下载。'}
+                            </small>
+                          </div>
+                          <Space size={6} wrap>
+                            <Tag color="green">可预览下载</Tag>
+                            {providerAssetSourceSummary(providerAssets) && (
+                              <Tag color="purple">{providerAssetSourceSummary(providerAssets)}</Tag>
+                            )}
+                          </Space>
+                        </header>
+                        <div className="cpw-provider-assets-grid">
+                          {providerAssets.map(asset => {
+                            const assetPreviewUrl = providerAssetUrl(asset.previewUrl);
+                            const assetDownloadUrl = providerAssetUrl(asset.downloadUrl);
+                            const assetBadge = artifactBadgeMeta(asset);
+                            const sourceMeta = providerAssetSourceMeta(asset);
+                            return (
+                              <article key={`${station.stationIdx}-${asset.id}`}>
+                                {assetPreviewUrl ? (
+                                  <a href={assetPreviewUrl} target="_blank" rel="noopener noreferrer">
+                                    <img
+                                      src={assetPreviewUrl}
+                                      alt={asset.filename || `素材 ${asset.id}`}
+                                      loading="lazy"
+                                    />
+                                  </a>
+                                ) : (
+                                  <div className="cpw-provider-asset-unavailable">图片地址未通过安全校验</div>
+                                )}
+                                <div className="cpw-provider-asset-meta">
+                                  <strong>{asset.filename || `素材 ${asset.id}`}</strong>
+                                  <small>
+                                    工位 {asset.sourceStationIdx} · {formatArtifactSize(asset.byteSize)}
+                                  </small>
+                                  <Space size={[4, 4]} wrap>
+                                    <Tag color={assetBadge.color}>{assetBadge.label}</Tag>
+                                    <Tag color={sourceMeta.color}>{sourceMeta.label}</Tag>
+                                  </Space>
+                                  <Space size={4} wrap>
+                                    {assetPreviewUrl && (
+                                      <Button
+                                        size="small"
+                                        href={assetPreviewUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                      >
+                                        查看原图
+                                      </Button>
+                                    )}
+                                    {assetDownloadUrl && (
+                                      <Button size="small" icon={<DownloadOutlined />} href={assetDownloadUrl}>
+                                        下载
+                                      </Button>
+                                    )}
+                                  </Space>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
                     )}
                     {hasOutput && (
                       <section className="cpw-output cpw-assistant-report" aria-label={stationReportTitle(station)}>
@@ -2145,67 +2458,6 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                             </Button>
                           )}
                         </Space>
-                      </section>
-                    )}
-                    {viewMode === 'pro' && providerAssets.length > 0 && (
-                      <section className="cpw-provider-assets" aria-label={`${station.employeeName}生成图片与交付素材`}>
-                        <header>
-                          <div>
-                            <strong>生成图片与交付素材</strong>
-                            <small>
-                              {station.stationIdx === 8
-                                ? '来自多媒体工位，已投影到发布包；不会自动外发。'
-                                : '图片字节已固化到租户内素材库，可核验、预览和下载。'}
-                            </small>
-                          </div>
-                          {station.stationIdx === 8 && <Tag color="blue">已投影到发布包</Tag>}
-                        </header>
-                        <div className="cpw-provider-assets-grid">
-                          {providerAssets.map(asset => {
-                            const assetPreviewUrl = providerAssetUrl(asset.previewUrl);
-                            const assetDownloadUrl = providerAssetUrl(asset.downloadUrl);
-                            const assetBadge = artifactBadgeMeta(asset);
-                            return (
-                              <article key={`${station.stationIdx}-${asset.id}`}>
-                                {assetPreviewUrl ? (
-                                  <a href={assetPreviewUrl} target="_blank" rel="noopener noreferrer">
-                                    <img
-                                      src={assetPreviewUrl}
-                                      alt={asset.filename || `素材 ${asset.id}`}
-                                      loading="lazy"
-                                    />
-                                  </a>
-                                ) : (
-                                  <div className="cpw-provider-asset-unavailable">图片地址未通过安全校验</div>
-                                )}
-                                <div className="cpw-provider-asset-meta">
-                                  <strong>{asset.filename || `素材 ${asset.id}`}</strong>
-                                  <small>
-                                    工位 {asset.sourceStationIdx} · {formatArtifactSize(asset.byteSize)}
-                                  </small>
-                                  <Tag color={assetBadge.color}>{assetBadge.label}</Tag>
-                                  <Space size={4} wrap>
-                                    {assetPreviewUrl && (
-                                      <Button
-                                        size="small"
-                                        href={assetPreviewUrl}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                      >
-                                        查看
-                                      </Button>
-                                    )}
-                                    {assetDownloadUrl && (
-                                      <Button size="small" icon={<DownloadOutlined />} href={assetDownloadUrl}>
-                                        下载
-                                      </Button>
-                                    )}
-                                  </Space>
-                                </div>
-                              </article>
-                            );
-                          })}
-                        </div>
                       </section>
                     )}
                     {station.status === 'awaiting_approval' && (

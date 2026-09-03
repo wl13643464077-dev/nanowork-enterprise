@@ -226,8 +226,11 @@ export default function ContentFactory() {
   const [searchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
   const pipelineIdFromQuery = Number(searchParams.get('pipelineId'));
+  const mediaJobIdFromQuery = Number(searchParams.get('mediaJobId'));
   const requestedPipelineId =
     Number.isSafeInteger(pipelineIdFromQuery) && pipelineIdFromQuery > 0 ? pipelineIdFromQuery : null;
+  const requestedMediaJobId =
+    Number.isSafeInteger(mediaJobIdFromQuery) && mediaJobIdFromQuery > 0 ? mediaJobIdFromQuery : null;
   const [summary, setSummary] = useState<any>({});
   const [tab, setTab] = useState(
     requestedTab && [...LIB_TABS, 'AI文案'].includes(requestedTab) ? requestedTab : 'AI文案',
@@ -252,7 +255,7 @@ export default function ContentFactory() {
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyPack, setDailyPack] = useState<any>(null);
   const [dailyOpen, setDailyOpen] = useState(false);
-  const [salesVideoOpen, setSalesVideoOpen] = useState(false);
+  const [salesVideoOpen, setSalesVideoOpen] = useState(Boolean(requestedMediaJobId));
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [pipelineFocusId, setPipelineFocusId] = useState<number | null>(requestedPipelineId);
   const [viewRec, setViewRec] = useState<any>(null);
@@ -1869,6 +1872,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
       <AiSalesVideoPanel
         open={salesVideoOpen}
         onOpenChange={setSalesVideoOpen}
+        initialJobId={requestedMediaJobId}
         refImgs={refImgs}
         setRefImgs={setRefImgs}
         onPickRef={onPickRef}

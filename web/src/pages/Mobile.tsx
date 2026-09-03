@@ -18,13 +18,17 @@ import {
   AppstoreOutlined,
   ToolOutlined,
   BarChartOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth, fmtMoney, notifyCredits } from '../api/client';
 import { stageColor, gradeColor } from '../components/Kit';
 import { Markdown } from '../components/Markdown';
 import { useQuery, QueryStatus } from '../hooks/useQuery';
+import RoleOnboarding from '../components/RoleOnboarding';
+import FeatureGuideCenter from '../components/FeatureGuideCenter';
 import type { DashboardSummary, DashboardBriefing, Lead, ContentItem } from '../api/types';
+import './Mobile.css';
 
 const TABS = [
   { key: 'home', label: '首页', icon: <HomeOutlined />, mod: 'dashboard' },
@@ -43,6 +47,8 @@ export default function Mobile() {
     CORE_WORKSPACES.some(item => mods.includes(item.mod) && item.roles.includes(String(user.role || '')));
   const tabs = TABS.filter(t => (t.key === 'home' ? hasHomeAccess : !t.mod || mods.includes(t.mod)));
   const [tab, setTab] = useState(tabs[0]?.key || 'me');
+  const [onboardingNonce, setOnboardingNonce] = useState(0);
+  const [featureGuideOpen, setFeatureGuideOpen] = useState(false);
 
   return (
     <div
@@ -57,6 +63,7 @@ export default function Mobile() {
     >
       {/* 顶栏 */}
       <div
+        data-onboarding="mobile-header"
         style={{
           background: 'var(--ui-surface)',
           color: 'var(--ui-text)',
@@ -71,10 +78,21 @@ export default function Mobile() {
         }}
       >
         <div style={{ fontWeight: 700, fontSize: 16 }}>纳米Work · {user.tenant?.name || '餐饮门店'}</div>
-        <span style={{ fontSize: 12, opacity: 0.9 }}>{user.name}</span>
+        <div className="mobile-header-actions">
+          <span className="mobile-header-user">{user.name}</span>
+          <button
+            type="button"
+            data-onboarding="help"
+            aria-label="打开功能使用指引"
+            onClick={() => setFeatureGuideOpen(true)}
+            className="mobile-help-button"
+          >
+            <QuestionCircleOutlined />
+          </button>
+        </div>
       </div>
 
-      <div style={{ padding: 12, paddingBottom: 76 }}>
+      <div data-onboarding="workspace" className="mobile-workspace">
         {tab === 'home' && <MHome nav={nav} user={user} mods={mods} />}
         {tab === 'customers' && <MCustomers />}
         {tab === 'content' && <MContent />}
@@ -83,6 +101,7 @@ export default function Mobile() {
 
       {/* 底部 TabBar（role=tablist + 键盘可达） */}
       <div
+        data-onboarding="navigation"
         role="tablist"
         aria-label="底部导航"
         style={{
@@ -128,6 +147,25 @@ export default function Mobile() {
           </div>
         ))}
       </div>
+      <RoleOnboarding
+        user={user}
+        modules={mods}
+        navigate={path => nav(path)}
+        manualOpenNonce={onboardingNonce}
+        suspended={featureGuideOpen}
+        compact
+      />
+      <FeatureGuideCenter
+        open={featureGuideOpen}
+        onClose={() => setFeatureGuideOpen(false)}
+        currentPath="/m"
+        modules={mods}
+        role={user.role}
+        navigate={path => nav(path)}
+        compact
+        contextKey={tab}
+        onOpenOnboarding={() => setOnboardingNonce(value => value + 1)}
+      />
     </div>
   );
 }
@@ -177,7 +215,7 @@ const CORE_WORKSPACES = [
   {
     key: 'execution',
     mod: 'execution',
-    roles: ['boss', 'ops_director', 'manager', 'sales', 'admin'],
+    roles: ['boss', 'ops_director', 'manager', 'sales', 'partner', 'admin'],
     title: '任务看板',
     description: '接收、完成并提交本人或团队任务',
     path: '/execution',
@@ -572,7 +610,14 @@ function MMe({ user, nav }: any) {
             <div style={{ fontSize: 16, fontWeight: 700 }}>{user.name}</div>
             <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
               {user.tenant?.name} ·{' '}
-              {{ boss: '老板', ops_director: '管理层', sales: '员工' }[user.role as string] || user.role}
+              {{
+                boss: '老板',
+                ops_director: '运营负责人',
+                manager: '管理层',
+                sales: '员工',
+                admin: '系统管理员',
+                partner: '合作伙伴',
+              }[user.role as string] || '员工'}
             </div>
           </div>
         </div>

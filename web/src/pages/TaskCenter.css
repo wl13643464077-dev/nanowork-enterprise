@@ -235,6 +235,13 @@
   margin: 0;
   color: var(--ui-muted);
 }
+.task-center-detail__recovery .ant-alert-description {
+  max-width: 430px;
+  line-height: 1.65;
+}
+.task-center-detail__recovery .ant-alert-action {
+  align-self: center;
+}
 .task-center-detail__facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -377,5 +384,12 @@
   }
   .task-center-drawer .ant-drawer-body {
     padding: 14px;
+  }
+  .task-center-detail__recovery .ant-alert-action {
+    width: 100%;
+    margin: 10px 0 0;
+  }
+  .task-center-detail__recovery .ant-alert-action .ant-btn {
+    width: 100%;
   }
 }

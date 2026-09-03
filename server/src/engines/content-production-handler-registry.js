@@ -218,7 +218,45 @@ function normalizedUsage(response) {
   };
 }
 
+const SAFE_PROVIDER_FAILURE_LABELS = Object.freeze({
+  provider_timeout: "供应商响应超时",
+  provider_auth_failed: "供应商鉴权失败",
+  provider_rate_limited: "供应商请求受限",
+  provider_upstream_error: "供应商服务暂时异常",
+  provider_request_failed: "供应商拒绝本次请求",
+  provider_unavailable: "供应商当前不可用",
+  provider_non_api: "供应商未返回真实API结果",
+  provider_empty_output: "供应商未返回业务正文",
+  provider_error: "供应商调用失败",
+});
+const SPECIAL_STATION_ZERO_USAGE_RETRYABLE_PROVIDER_FAILURES = new Set([
+  "provider_timeout",
+  "provider_rate_limited",
+  "provider_upstream_error",
+  "provider_error",
+]);
+
+function observedProviderFailure(response) {
+  const raw = isRecord(response?.providerFailure)
+    ? response.providerFailure
+    : null;
+  const code = boundedText(raw?.code, 80);
+  if (!code || !Object.hasOwn(SAFE_PROVIDER_FAILURE_LABELS, code)) return null;
+  const rawStatus = Number(raw.status);
+  return {
+    code,
+    status:
+      Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599
+        ? rawStatus
+        : null,
+    timedOut: raw.timedOut === true || code === "provider_timeout",
+    retryable: raw.retryable === true,
+    summary: SAFE_PROVIDER_FAILURE_LABELS[code],
+  };
+}
+
 function observedProviderDelivery(response, descriptor) {
+  const providerFailure = observedProviderFailure(response);
   return {
     schemaVersion: CONTENT_PRODUCTION_PROVIDER_DELIVERY_SCHEMA,
     kind: "text",
@@ -229,6 +267,7 @@ function observedProviderDelivery(response, descriptor) {
     handlerId: descriptor.handlerId,
     validated: false,
     outputFingerprint: null,
+    ...(providerFailure ? { providerFailure } : {}),
     credentialsIncluded: false,
   };
 }
@@ -624,8 +663,12 @@ function assertRealProviderResponse(response, descriptor) {
   const model = boundedText(response.model, 160);
   const usage = normalizedUsage(response);
   if (mode !== "api" || !model || BLOCKED_PROVIDER_MODEL.test(model)) {
+    const providerFailure = observedProviderFailure(response);
+    const failureDetail = providerFailure?.summary
+      ? `；原因：${providerFailure.summary}`
+      : "";
     fail(
-      `${descriptor.legacyHandler}未取得真实API模型产物；template/mock/fallback不能计为工位完成`,
+      `${descriptor.legacyHandler}未取得真实API模型产物；template/mock/fallback不能计为工位完成${failureDetail}`,
       "CONTENT_PRODUCTION_REAL_API_REQUIRED",
       422,
     );
@@ -1213,7 +1256,12 @@ async function fetchContentControlledSources(
   const batchSize = 8;
   const maxBatches = Math.max(
     1,
-    Math.min(8, Math.ceil((Array.isArray(candidates) ? candidates.length : 0) / batchSize)),
+    Math.min(
+      8,
+      Math.ceil(
+        (Array.isArray(candidates) ? candidates.length : 0) / batchSize,
+      ),
+    ),
   );
   for (let batch = 0; batch < maxBatches; batch += 1) {
     const slice = [];
@@ -1455,7 +1503,10 @@ const BENCHMARK_RESCUE_DIMENSIONS = Object.freeze([
 ]);
 
 function disclosureForAttributedField(path) {
-  if (/channel_scan\[\d+\]\.finding$/u.test(path) || /source_coverage\[\d+\]\.got$/u.test(path)) {
+  if (
+    /channel_scan\[\d+\]\.finding$/u.test(path) ||
+    /source_coverage\[\d+\]\.got$/u.test(path)
+  ) {
     return "无明显信号：检索快照未覆盖该条目。";
   }
   let text = `本项本次无可验证事实：检索快照未覆盖“${path}”，不得外推行业数字、热度或经营结论，待人工核验后补充。`;
@@ -1620,7 +1671,11 @@ function canonicalizeMediaImages(parsed) {
   return { images };
 }
 
-const COVER_STYLE_FALLBACKS = ["杂志留白高级风", "大字报冲击风", "高饱和活力风"];
+const COVER_STYLE_FALLBACKS = [
+  "杂志留白高级风",
+  "大字报冲击风",
+  "高饱和活力风",
+];
 const COVER_SLOT_FALLBACKS = [
   { platform: "公众号", size: "横版封面比例" },
   { platform: "小红书", size: "竖版封面比例" },
@@ -1631,7 +1686,10 @@ function uniquifyCoverStyles(covers) {
   const seen = new Set();
   return covers.map((item, index) => {
     if (!isRecord(item)) return item;
-    let style = String(item.style || "").trim() || COVER_STYLE_FALLBACKS[index] || `封面方案${index + 1}`;
+    let style =
+      String(item.style || "").trim() ||
+      COVER_STYLE_FALLBACKS[index] ||
+      `封面方案${index + 1}`;
     let key = normalizedMediaSlotKey(style);
     if (!key || seen.has(key)) {
       const candidates = [
@@ -1656,7 +1714,10 @@ function uniquifyCoverStyles(covers) {
 function canonicalizeCovers(parsed) {
   if (!isRecord(parsed) || !Array.isArray(parsed.covers)) return null;
   const usable = parsed.covers.filter(
-    (item) => isRecord(item) && typeof item.html === "string" && item.html.trim().length >= 300,
+    (item) =>
+      isRecord(item) &&
+      typeof item.html === "string" &&
+      item.html.trim().length >= 300,
   );
   if (!usable.length) return null;
   const needed = 3;
@@ -1703,7 +1764,11 @@ function rescueCoverContract({
   context,
   webRuntime,
 }) {
-  if (employeeIdx !== 6 || validation?.valid === true || !isRecord(validation?.parsed)) {
+  if (
+    employeeIdx !== 6 ||
+    validation?.valid === true ||
+    !isRecord(validation?.parsed)
+  ) {
     return { validation, providerText: null, rescued: false };
   }
   const canonical = canonicalizeCovers(validation.parsed);
@@ -1732,7 +1797,11 @@ function rescueMediaFactGrounding({
   context,
   webRuntime,
 }) {
-  if (employeeIdx !== 5 || validation?.valid === true || !isRecord(validation?.parsed)) {
+  if (
+    employeeIdx !== 5 ||
+    validation?.valid === true ||
+    !isRecord(validation?.parsed)
+  ) {
     return { validation, providerText: null, rescued: false };
   }
   const canonical = canonicalizeMediaImages(validation.parsed);
@@ -1789,9 +1858,7 @@ function hasSubmittedPublicationMetrics(value) {
   if (!isRecord(value)) return false;
   if (value.complete === true) return true;
   if (Array.isArray(value.entries) && value.entries.length > 0) return true;
-  return (
-    isRecord(value.metrics) && Object.keys(value.metrics).length > 0
-  );
+  return isRecord(value.metrics) && Object.keys(value.metrics).length > 0;
 }
 
 function rescueRetrospectiveFactGrounding({
@@ -1809,9 +1876,7 @@ function rescueRetrospectiveFactGrounding({
   }
   const factErrors = (
     Array.isArray(validation?.errors) ? validation.errors : []
-  ).some((error) =>
-    /复盘指标事实门禁|复盘定性事实门禁/u.test(String(error)),
-  );
+  ).some((error) => /复盘指标事实门禁|复盘定性事实门禁/u.test(String(error)));
   if (!factErrors) {
     return { validation, providerText: null, rescued: false };
   }
@@ -1853,8 +1918,8 @@ function mediaContractRetryPrompt(errors) {
 }
 
 function factGroundingRetryPrompt(errors) {
-  const publishTimeLocked = (Array.isArray(errors) ? errors : []).some((error) =>
-    /best_time|publish_plan|时间间隔/u.test(String(error)),
+  const publishTimeLocked = (Array.isArray(errors) ? errors : []).some(
+    (error) => /best_time|publish_plan|时间间隔/u.test(String(error)),
   );
   return [
     "",
@@ -1877,7 +1942,11 @@ function rescuePublishFactGrounding({
   context,
   webRuntime,
 }) {
-  if (employeeIdx !== 8 || validation?.valid === true || !isRecord(validation?.parsed)) {
+  if (
+    employeeIdx !== 8 ||
+    validation?.valid === true ||
+    !isRecord(validation?.parsed)
+  ) {
     return { validation, providerText: null, rescued: false };
   }
   const factErrors = (
@@ -1889,8 +1958,8 @@ function rescuePublishFactGrounding({
   const next = clone(validation.parsed);
   let changed = false;
   if (
-    factErrors.some((error) => /best_time/u.test(String(error)))
-    && Array.isArray(next.versions)
+    factErrors.some((error) => /best_time/u.test(String(error))) &&
+    Array.isArray(next.versions)
   ) {
     next.versions = next.versions.map((item) => {
       if (!isRecord(item)) return item;
@@ -1900,8 +1969,8 @@ function rescuePublishFactGrounding({
     });
   }
   if (
-    typeof next.publish_plan === "string"
-    && factErrors.some((error) => /publish_plan|时间间隔/u.test(String(error)))
+    typeof next.publish_plan === "string" &&
+    factErrors.some((error) => /publish_plan|时间间隔/u.test(String(error)))
   ) {
     next.publish_plan =
       "先由业务负责人统一核验各平台事实与待确认项，再按平台内容形态分别进入排期；发布顺序根据账号历史数据和审核结果决定，具体间隔与建议时段待核验后再定。";
@@ -1940,15 +2009,18 @@ function rescueCollapsedMarkdownOutput({
   webRuntime,
 }) {
   if (
-    ![3, 4, 8, 9].includes(employeeIdx)
-    || validation?.valid === true
-    || !isRecord(validation?.parsed)
+    ![3, 4, 8, 9].includes(employeeIdx) ||
+    validation?.valid === true ||
+    !isRecord(validation?.parsed)
   ) {
     return { validation, providerText: null, rescued: false };
   }
   const next = clone(validation.parsed);
   let changed = false;
-  if ((employeeIdx === 3 || employeeIdx === 4) && typeof next.body === "string") {
+  if (
+    (employeeIdx === 3 || employeeIdx === 4) &&
+    typeof next.body === "string"
+  ) {
     const restored = restoreCollapsedMarkdown(next.body);
     if (restored !== next.body) {
       next.body = restored;
@@ -2028,7 +2100,11 @@ function rescueAttributedResearchOutput({
   ).filter((error) =>
     /联网证据归因|必须逐项引用|检索快照未支持/u.test(String(error)),
   );
-  if (employeeIdx === 2 && attributionErrors.length && Array.isArray(next.benchmarks)) {
+  if (
+    employeeIdx === 2 &&
+    attributionErrors.length &&
+    Array.isArray(next.benchmarks)
+  ) {
     next.benchmarks = next.benchmarks.map((item, index) => {
       const rewritten = rewriteBenchmarkAttributedItem(
         item,
@@ -2039,10 +2115,14 @@ function rescueAttributedResearchOutput({
     });
     changed = true;
   }
-  for (const error of Array.isArray(validation.errors) ? validation.errors : []) {
+  for (const error of Array.isArray(validation.errors)
+    ? validation.errors
+    : []) {
     const path = String(error).match(/字段“([^”]+)”/u)?.[1];
     if (!path) continue;
-    if (setAttributedFieldString(next, path, disclosureForAttributedField(path))) {
+    if (
+      setAttributedFieldString(next, path, disclosureForAttributedField(path))
+    ) {
       changed = true;
     }
   }
@@ -2084,7 +2164,11 @@ function rescueAttributedResearchOutput({
       const path = String(error).match(/字段“([^”]+)”/u)?.[1];
       if (!path) continue;
       if (
-        setAttributedFieldString(second, path, disclosureForAttributedField(path))
+        setAttributedFieldString(
+          second,
+          path,
+          disclosureForAttributedField(path),
+        )
       ) {
         secondChanged = true;
       }
@@ -2688,6 +2772,14 @@ function specialBridgeRequest({
     userId: Number(context.actorId),
     runId: Number(context.jobId ?? context.workflow?.runId),
     employeeIdx: Number(context.canonicalProfile?.identity?.idx),
+    attemptOrdinal: context.workflow?.stationAttempt ?? 1,
+    ...([5, 6].includes(Number(descriptor?.employeeIdx))
+      ? {
+          paidMediaAuthorization: safeValue(
+            context.workflow?.paidMediaAuthorization,
+          ),
+        }
+      : {}),
     imageModel: imageModel || "inherit",
     request: {
       prompt: isCover
@@ -2769,6 +2861,23 @@ function publicSpecialRuntime(runtime, bridge, bridgeFailure, employeeIdx) {
       SPECIAL_STATIONS.has(employeeIdx),
     credentialsIncluded: false,
   };
+}
+
+function isLicensedMaterialToAiImageFallback(runtime) {
+  const fallback = runtime?.evidence?.fallback;
+  const artifacts = Array.isArray(runtime?.artifacts) ? runtime.artifacts : [];
+  return (
+    fallback?.used === true &&
+    fallback?.strategy === "licensed_material_to_ai_image" &&
+    artifacts.length > 0 &&
+    artifacts.every(
+      (artifact) =>
+        ["material", "image"].includes(String(artifact?.kind || "")) &&
+        /^image\/(?:png|jpe?g|webp|gif)$/iu.test(
+          String(artifact?.mimeType || ""),
+        ),
+    )
+  );
 }
 
 function realCoverManifestArtifact(descriptor, runtime, bridge) {
@@ -3053,7 +3162,9 @@ export function createContentProductionHandlerRegistry(options = {}) {
           .filter(Boolean)
           .join("\n\n"),
         research: context.knowledge?.text || "",
-        sensitive: Array.isArray(compiled.sensitive) ? [...compiled.sensitive] : [],
+        sensitive: Array.isArray(compiled.sensitive)
+          ? [...compiled.sensitive]
+          : [],
       };
     },
     invoke: async ({ employeeIdx, variables, prompt, context, runtime }) => {
@@ -3142,8 +3253,10 @@ export function createContentProductionHandlerRegistry(options = {}) {
         providerPolicy: "yunwu_only",
       };
       const providerAttempts = [];
+      let providerCallCount = 0;
       const invokeTextProvider = async (args, kind) => {
-        const providerCall = providerAttempts.length + 1;
+        providerCallCount += 1;
+        const providerCall = providerCallCount;
         await reportRuntimeProgress(runtime?.progress, {
           phase: "provider",
           state: "started",
@@ -3200,7 +3313,40 @@ export function createContentProductionHandlerRegistry(options = {}) {
         }
       };
 
-      const first = await invokeTextProvider(generationArgs, "initial");
+      let first;
+      try {
+        first = await invokeTextProvider(generationArgs, "initial");
+      } catch (error) {
+        const failedDelivery = trace.providerDelivery;
+        const failureCode = boundedText(
+          failedDelivery?.providerFailure?.code,
+          80,
+        );
+        const safeAutomaticRetry =
+          SPECIAL_STATIONS.has(employeeIdx) &&
+          error?.code === "CONTENT_PRODUCTION_REAL_API_REQUIRED" &&
+          Number(failedDelivery?.usage?.totalTokens || 0) === 0 &&
+          failedDelivery?.providerFailure?.retryable === true &&
+          SPECIAL_STATION_ZERO_USAGE_RETRYABLE_PROVIDER_FAILURES.has(
+            failureCode,
+          );
+        if (!safeAutomaticRetry) throw error;
+        await reportRuntimeProgress(runtime?.progress, {
+          phase: "provider",
+          state: "retrying",
+          detail: {
+            providerCalled: false,
+            providerCall: providerCallCount + 1,
+            providerKind: "zero_usage_transport_retry",
+            previousFailureCode: failureCode,
+            automaticRetry: true,
+          },
+        });
+        first = await invokeTextProvider(
+          generationArgs,
+          "zero_usage_transport_retry",
+        );
+      }
       let provider = first.provider;
       let observedDelivery = first.observed;
       await reportRuntimeProgress(runtime?.progress, {
@@ -3322,15 +3468,15 @@ export function createContentProductionHandlerRegistry(options = {}) {
       ).filter((error) => /事实门禁/u.test(String(error)));
       const mediaContractErrors =
         employeeIdx === 5 && validation?.valid !== true
-          ? (Array.isArray(validation?.errors) && validation.errors.length
-              ? validation.errors
-              : ["多媒体师输出未通过岗位JSON契约"])
+          ? Array.isArray(validation?.errors) && validation.errors.length
+            ? validation.errors
+            : ["多媒体师输出未通过岗位JSON契约"]
           : [];
       const coverContractErrors =
         employeeIdx === 6 && validation?.valid !== true
-          ? (Array.isArray(validation?.errors) && validation.errors.length
-              ? validation.errors
-              : ["封面师输出未通过岗位JSON契约"])
+          ? Array.isArray(validation?.errors) && validation.errors.length
+            ? validation.errors
+            : ["封面师输出未通过岗位JSON契约"]
           : [];
       if (
         mediaContractErrors.length > 0 ||
@@ -3643,7 +3789,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
             state: "started",
             detail: {
               providerCalled: true,
-              providerCall: providerAttempts.length + 1,
+              providerCall: providerCallCount + 1,
               providerKind: "special_runtime",
             },
           });
@@ -3672,9 +3818,9 @@ export function createContentProductionHandlerRegistry(options = {}) {
             );
           }
           if (
-            (employeeIdx === 5 ||
-              (employeeIdx !== 6 && Boolean(bridge))) &&
-            specialRuntime.evidence?.fallback?.used === true
+            (employeeIdx === 5 || (employeeIdx !== 6 && Boolean(bridge))) &&
+            specialRuntime.evidence?.fallback?.used === true &&
+            !isLicensedMaterialToAiImageFallback(specialRuntime)
           ) {
             fail(
               `${descriptor.legacyHandler}已配置真实图片provider但未取得真实图片，禁止用SVG/HTML回退冒充完整生产能力`,
@@ -3699,7 +3845,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
             state: "completed",
             detail: {
               providerCalled: true,
-              providerCall: providerAttempts.length + 1,
+              providerCall: providerCallCount + 1,
               providerKind: "special_runtime",
               artifactCount: specialRuntime.artifacts.length,
               evidenceFingerprint: fingerprint(specialRuntime.evidence || {}),
@@ -3717,7 +3863,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
             state: "failed",
             detail: {
               providerCalled: true,
-              providerCall: providerAttempts.length + 1,
+              providerCall: providerCallCount + 1,
               providerKind: "special_runtime",
               code: error?.code || "CONTENT_PRODUCTION_SPECIAL_RUNTIME_FAILED",
             },
@@ -3763,8 +3909,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
       traces.set(traceKey, trace);
 
       const usedHtmlCoverFallback =
-        employeeIdx === 6 &&
-        specialRuntime?.evidence?.fallback?.used === true;
+        employeeIdx === 6 && specialRuntime?.evidence?.fallback?.used === true;
       const stationArtifacts =
         employeeIdx === 6 && coverMode !== "html" && !usedHtmlCoverFallback
           ? [realCoverManifestArtifact(descriptor, specialRuntime, bridge)]

@@ -236,6 +236,16 @@ function relevance(material, weightedQueries) {
   return score;
 }
 
+function hasSubstantiveContentMatch(material, queries) {
+  const document = materialSearchText(material);
+  return queries.some(({ value }) => {
+    const { phrase, terms } = queryTerms(value);
+    if (!phrase) return false;
+    if (phrase.length <= 2 && document.includes(phrase)) return true;
+    return terms.some((term) => term.length >= 3 && document.includes(term));
+  });
+}
+
 function requestedPlan(input) {
   const runtime = isRecord(input.runtime) ? input.runtime : {};
   const request = isRecord(input.request) ? input.request : {};
@@ -306,9 +316,18 @@ function selectMaterials(materials, count, context) {
   ];
 
   for (let index = 0; index < count && remaining.size > 0; index += 1) {
+    const plannedSlot = context.plan[index] || null;
     const slot =
-      context.plan[index] ||
-      genericSlot(index, context.prompt, context.platforms);
+      plannedSlot || genericSlot(index, context.prompt, context.platforms);
+    const contentQueries = [
+      { value: context.prompt, weight: 8 },
+      ...(plannedSlot
+        ? [
+            { value: slot.slot, weight: 8 },
+            { value: slot.desc, weight: 12 },
+          ]
+        : []),
+    ];
     const queries = [
       ...globalQueries,
       { value: slot.slot, weight: 8 },
@@ -317,10 +336,19 @@ function selectMaterials(materials, count, context) {
     ];
     const candidate = materials
       .filter((material) => remaining.has(material.id))
-      .map((material) => ({ material, score: relevance(material, queries) }))
+      .map((material) => ({
+        material,
+        score: relevance(material, queries),
+        contentScore: relevance(material, contentQueries),
+      }))
+      .filter((item) =>
+        hasSubstantiveContentMatch(item.material, contentQueries),
+      )
       .sort(
         (left, right) =>
-          right.score - left.score || right.material.id - left.material.id,
+          right.score - left.score ||
+          right.contentScore - left.contentScore ||
+          right.material.id - left.material.id,
       )[0];
     if (!candidate) break;
     remaining.delete(candidate.material.id);
