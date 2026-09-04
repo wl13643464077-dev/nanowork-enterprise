@@ -243,6 +243,22 @@ export type EmployeeRuntimeTask = {
   failed?: boolean;
   nextAction?: string;
   requirement?: string;
+  presentationKey?: string;
+  // P0-1 未达标草稿（草稿待处理 / 草稿已接受）的老板可读信息；结构见 components/EmployeeDraftCard
+  draft?: {
+    state: 'pending' | 'accepted';
+    failReason?: string;
+    failReasonLabel?: string;
+    attempts?: number;
+    failedChecks?: { category?: string; label: string; count?: number; details?: string[] }[];
+    failedCheckCount?: number;
+    acceptable?: boolean;
+    canAccept?: boolean;
+    acceptBlockedReason?: string | null;
+    acceptedAt?: string | null;
+    acceptedByName?: string | null;
+    requiresReview?: boolean;
+  } | null;
   output_id?: number | null;
   output_body?: string | null;
   output_status?: string | null;
@@ -452,6 +468,38 @@ export type EmployeeRunPresentationKey =
   | 'historical';
 
 export type EmployeeWorkbenchRun = {
+  retrospective?: {
+    contentId: number;
+    verification: 'manual_unverified';
+    canAdopt: boolean;
+    changes: Array<{
+      index: number;
+      target: string;
+      change: string;
+      evidence: string;
+      noteId: number | null;
+      noteStatus: string | null;
+    }>;
+  };
+  xhsDraft?: {
+    versions: Array<{
+      versionId: string;
+      strategy: string;
+      framework_ref: string;
+      title: string;
+      cover_text: string;
+      body: string;
+      tags: string[];
+      comment_prompt: string;
+      facts_used: Array<{ factId: string; claim: string }>;
+      self_score: { hook: number; credibility: number; conversion: number; note: string };
+      recommended: boolean;
+    }>;
+    imagePlan: Array<{ slot: string; desc: string }>;
+    selectedVersionId: string | null;
+    canSelect: boolean;
+    contentId: number | null;
+  };
   id: number;
   runId: number;
   employeeIdx: number;

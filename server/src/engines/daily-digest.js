@@ -2,6 +2,7 @@ import { q, curTenant } from '../db.js';
 import { notify } from '../util.js';
 import { funnel } from './scoring.js';
 import { appBotReady, pushFeishuToManagers } from './feishu.js';
+import { storeClauseFor } from './store-scope.js';
 
 // 每日经营日报（规则版）：涨跌 → 归因 → 建议。
 // 原则：宁缺毋滥——完全没有经营数据时不生成，不用空话冒充洞察。
@@ -15,13 +16,14 @@ function shiftDate(date, days) {
 }
 
 // 某天营收：orders 有记录用 orders（真实订单口径），否则用 daily_ops 手填日报口径
-function revenueOf(date) {
+// storeScope：多门店「当前门店」过滤片段（无门店上下文为空串，口径与现状一致）
+function revenueOf(date, storeScope = { sql: '', params: [] }) {
   const T = curTenant();
   const fromOrders = q.get(`SELECT COALESCE(SUM(amount),0) a, COUNT(*) n FROM orders
-    WHERE tenant_id=? AND date(created_at)=?`, T, date);
+    WHERE tenant_id=? AND date(created_at)=?${storeScope.sql}`, T, date, ...storeScope.params);
   if (fromOrders?.n > 0) return { amount: fromOrders.a, orders: fromOrders.n, source: 'orders' };
   const fromOps = q.get(`SELECT deal_amount a, new_leads nl, orders n FROM daily_ops
-    WHERE tenant_id=? AND date=?`, T, date);
+    WHERE tenant_id=? AND date=?${storeScope.sql}`, T, date, ...storeScope.params);
   if (fromOps) return { amount: fromOps.a || 0, orders: fromOps.n || 0, newLeads: fromOps.nl || 0, source: 'daily_ops' };
   return null;
 }
@@ -39,12 +41,13 @@ const BOTTLENECK_ADVICE = {
   已成交: '成交后复购衔接偏弱：给近 30 天成交客户安排一次回访或会员权益触达，沉淀到会员增长的复购路径。',
 };
 
-// forDate = 被总结的那一天（通常是昨日）
-export function buildDailyDigest(forDate) {
-  const yesterday = revenueOf(forDate);
+// forDate = 被总结的那一天（通常是昨日）；options.user 传入时按其门店上下文过滤（驾驶舱头条），定时推送不传=全店
+export function buildDailyDigest(forDate, { user = null } = {}) {
+  const storeScope = user ? storeClauseFor(user, 'store_id') : { sql: '', params: [] };
+  const yesterday = revenueOf(forDate, storeScope);
   const history = [];
   for (let i = 1; i <= 7; i += 1) {
-    const row = revenueOf(shiftDate(forDate, -i));
+    const row = revenueOf(shiftDate(forDate, -i), storeScope);
     if (row) history.push(row.amount);
   }
   if (!yesterday && !history.length) return null; // 完全无数据，不硬生成

@@ -12,6 +12,11 @@ import {
   settleHold,
 } from '../engines/credits.js';
 import { executeHeldDelivery } from '../engines/two-phase-delivery.js';
+import { storeScopeClause } from '../engines/access.js';
+import { matchStoreByName, resolveWriteStoreId } from '../engines/store-scope.js';
+
+// 多门店：评价归属门店 = 录入的门店名/编码能匹配到的门店 → 当前门店上下文 → 录入人绑定店 → 默认店
+const reviewStoreId = (user, storeName) => matchStoreByName(storeName) ?? resolveWriteStoreId(user);
 
 // ===== 评价中心：好评差评台账 + AI 回复稿（真实计费）+ 差评预警 =====
 // 台账来源：手录单条 / 批量导入（前端解析 Excel 后提交 JSON）。
@@ -33,7 +38,7 @@ const CATEGORY_RULES = [
   { category: '口味出品', pattern: /难吃|咸|淡|辣|油腻|腥|不新鲜|变质|异物|头发|口味|味道|分量|量少/u },
 ];
 
-function autoCategory(rating, content) {
+export function autoCategory(rating, content) {
   if (rating > 3) return null;
   const text = String(content || '');
   for (const rule of CATEGORY_RULES) {
@@ -115,6 +120,11 @@ r.get('/', (req, res) => {
     conditions.push('category=?');
     params.push(category);
   }
+  const storeScope = storeScopeClause(req.user, 'store_id', { prefix: '' });
+  if (storeScope.sql) {
+    conditions.push(storeScope.sql.trim());
+    params.push(...storeScope.params);
+  }
   const where = `WHERE ${conditions.join(' AND ')}`;
   const total = q.get(`SELECT COUNT(*) n FROM store_reviews ${where}`, ...params)?.n || 0;
   const rows = q.all(
@@ -165,6 +175,7 @@ r.get('/insights', (req, res) => {
 });
 
 r.get('/summary', (req, res) => {
+  const storeScope = storeScopeClause(req.user);
   const row = q.get(
     `SELECT COUNT(*) total,
       SUM(CASE WHEN rating<=3 THEN 1 ELSE 0 END) bad,
@@ -172,8 +183,9 @@ r.get('/summary', (req, res) => {
       SUM(CASE WHEN status='待回复' AND rating<=3 THEN 1 ELSE 0 END) pendingBad,
       SUM(CASE WHEN ${OVERDUE_SQL} THEN 1 ELSE 0 END) slaOverdue,
       ROUND(AVG(rating),2) avgRating
-     FROM store_reviews WHERE tenant_id=?`,
+     FROM store_reviews WHERE tenant_id=?${storeScope.sql}`,
     curTenant(),
+    ...storeScope.params,
   ) || {};
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -197,8 +209,8 @@ r.post('/', (req, res) => {
     ? String(req.body.category)
     : autoCategory(normalized.rating, normalized.content);
   const created = q.run(
-    `INSERT INTO store_reviews(tenant_id,platform,rating,content,author,store_name,review_date,category,created_by)
-     VALUES(?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO store_reviews(tenant_id,platform,rating,content,author,store_name,review_date,category,created_by,store_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`,
     curTenant(),
     normalized.platform,
     normalized.rating,
@@ -208,6 +220,7 @@ r.post('/', (req, res) => {
     normalized.reviewDate,
     category,
     req.user.id,
+    reviewStoreId(req.user, normalized.storeName),
   );
   logOp(req.user, '评价中心', '录入评价', `${normalized.platform}·${normalized.rating}星${category ? `·${category}` : ''}`);
   res.json({ ok: true, id: Number(created.lastInsertRowid), category });
@@ -245,8 +258,8 @@ r.post('/import', (req, res) => {
       continue;
     }
     q.run(
-      `INSERT INTO store_reviews(tenant_id,platform,rating,content,author,store_name,review_date,category,created_by)
-       VALUES(?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO store_reviews(tenant_id,platform,rating,content,author,store_name,review_date,category,created_by,store_id)
+       VALUES(?,?,?,?,?,?,?,?,?,?)`,
       curTenant(),
       normalized.platform,
       normalized.rating,
@@ -256,6 +269,7 @@ r.post('/import', (req, res) => {
       normalized.reviewDate,
       autoCategory(normalized.rating, normalized.content),
       req.user.id,
+      reviewStoreId(req.user, normalized.storeName),
     );
     imported += 1;
   }

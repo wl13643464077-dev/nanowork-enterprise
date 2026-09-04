@@ -2,6 +2,17 @@ import { createHash } from 'node:crypto';
 
 import { q, runWithTenant } from '../db.js';
 import { kbSearch } from './ai.js';
+import {
+  BENCHMARK_CARD_KB_CATEGORY,
+  BENCHMARK_FEWSHOT_DEFAULT_LIMIT,
+  BENCHMARK_FEWSHOT_STATIONS,
+  benchmarkLearningRequested,
+  contentBenchmarkFewShotBlock,
+  listBenchmarkCards,
+} from './content-benchmark-cards.js';
+import { buildContentStoreFactPack } from './content-store-facts.js';
+import { resolveXhsSalesContext } from './content-xhs-playbook.js';
+import { activeEvolutionNotes, sanitizeEvolutionNotesForPrompt } from './employee-evolution.js';
 
 export const CONTENT_HANDLER_RUNTIME_CONTEXT_SCHEMA =
   'nanowork.content-handler-runtime-context/1';
@@ -162,11 +173,56 @@ function normalizeCompanyProfileOverlay(raw) {
   return normalizeRuntimeValue(raw, '$.companyProfileOverlay');
 }
 
-function normalizeCategories(value) {
-  const source = Array.isArray(value) && value.length ? value : DEFAULT_KNOWLEDGE_CATEGORIES;
+/**
+ * 撰稿人 / AI 带货员默认追加「爆款结构卡」分类：拆解师入库的结构卡能被知识库召回，
+ * 同时 runtime context 还会带结构化的 benchmarkCards few-shot（见 loadBenchmarkFewShot）。
+ */
+export function defaultKnowledgeCategoriesFor(employeeIdx) {
+  const idx = Number(employeeIdx);
+  return BENCHMARK_FEWSHOT_STATIONS.has(idx)
+    ? [...DEFAULT_KNOWLEDGE_CATEGORIES, BENCHMARK_CARD_KB_CATEGORY]
+    : [...DEFAULT_KNOWLEDGE_CATEGORIES];
+}
+
+function normalizeCategories(value, employeeIdx = null) {
+  const defaults = defaultKnowledgeCategoriesFor(employeeIdx);
+  const source = Array.isArray(value) && value.length ? value : defaults;
   const categories = [...new Set(source.map(item => redactText(item).trim()).filter(Boolean))];
-  if (!categories.length) return [...DEFAULT_KNOWLEDGE_CATEGORIES];
+  if (!categories.length) return defaults;
   return categories.slice(0, 30);
+}
+
+function benchmarkPlatformFor(task) {
+  const platforms = Array.isArray(task?.platforms) ? task.platforms : [];
+  const first = platforms.map(item => String(item || '').trim()).find(Boolean);
+  return first || (typeof task?.platform === 'string' && task.platform.trim() ? task.platform.trim() : null);
+}
+
+/**
+ * 爆款结构卡 few-shot（只借结构，不抄事实）。仅 idx 3 / 10 默认加载；读取失败不阻断，
+ * 返回空数组并标记 degraded。
+ */
+function loadBenchmarkFewShot(employeeIdx, tenantId, task, loadCards) {
+  if (!BENCHMARK_FEWSHOT_STATIONS.has(Number(employeeIdx))) {
+    return { cards: [], block: '', platform: null, degraded: false, applicable: false };
+  }
+  const platform = benchmarkPlatformFor(task);
+  try {
+    const cards = normalizeRuntimeValue(
+      loadCards(tenantId, { platform, verifiedOnly: true, limit: BENCHMARK_FEWSHOT_DEFAULT_LIMIT * 2 }) || [],
+      '$.benchmarkCards',
+    );
+    const list = Array.isArray(cards) ? cards : [];
+    return {
+      cards: list,
+      block: contentBenchmarkFewShotBlock(list, { platform, limit: BENCHMARK_FEWSHOT_DEFAULT_LIMIT }),
+      platform,
+      degraded: false,
+      applicable: true,
+    };
+  } catch {
+    return { cards: [], block: '', platform, degraded: true, applicable: true };
+  }
 }
 
 export function resolveContentHandlerRuntimeSettings(profile, effectiveConfig = {}) {
@@ -306,22 +362,30 @@ export async function buildContentHandlerRuntimeContext(input, dependencies = {}
   const tenantId = positiveInteger(input.tenantId, 'tenantId');
   const actorId = positiveInteger(input.actorId, 'actorId');
   const employeeIdx = Number(input.employeeIdx);
-  if (!Number.isInteger(employeeIdx) || employeeIdx < 0 || employeeIdx > 9) {
-    fail('employeeIdx必须是0-9之间的整数');
+  // 0-9 为派活 10 岗，10 为 NanoWork 原生 AI 带货员（读取爆款结构卡 few-shot）
+  if (!Number.isInteger(employeeIdx) || employeeIdx < 0 || employeeIdx > 10) {
+    fail('employeeIdx必须是0-10之间的整数');
   }
   const task = normalizeTask(input.task);
   const outputs = normalizeOutputs(mode, input.outputs);
   const settings = normalizeRuntimeValue(input.settings || {}, '$.settings');
   const persona = normalizePersona(input.persona);
   const companyProfileOverlay = normalizeCompanyProfileOverlay(input.companyProfile);
-  const categories = normalizeCategories(input.knowledgeCategories || settings.knowledgeCategories);
+  const categories = normalizeCategories(
+    input.knowledgeCategories || settings.knowledgeCategories,
+    employeeIdx,
+  );
   const query = buildKnowledgeQuery(task, outputs);
   const loadTenant = dependencies.loadTenant || defaultLoadTenant;
   const loadActor = dependencies.loadActor || defaultLoadActor;
   const searchKnowledge = dependencies.kbSearchFn || kbSearch;
+  const loadStoreFacts = dependencies.storeFactsFn || buildContentStoreFactPack;
+  const loadBenchmarkCards = dependencies.benchmarkCardsFn || listBenchmarkCards;
   if (typeof loadTenant !== 'function' || typeof loadActor !== 'function' || typeof searchKnowledge !== 'function') {
     fail('运行上下文依赖必须是函数');
   }
+  if (typeof loadStoreFacts !== 'function') fail('运行上下文依赖必须是函数');
+  if (typeof loadBenchmarkCards !== 'function') fail('运行上下文依赖必须是函数');
 
   return runWithTenant(tenantId, async () => {
     const [tenantRow, actorRow] = await Promise.all([
@@ -366,6 +430,28 @@ export async function buildContentHandlerRuntimeContext(input, dependencies = {}
     const account = accountContext(actorRow);
     const workflow = normalizeRuntimeValue(input.workflow || {}, '$.workflow');
     const today = String(input.today || new Date().toISOString().slice(0, 10));
+    // 门店事实包：门店/菜品/价格/评价聚合等真实台账，供 handler prompt 引用（缺事实不阻断）
+    let storeFacts;
+    try {
+      storeFacts = normalizeRuntimeValue(
+        loadStoreFacts(tenantId, {
+          storeId: input.storeId ?? null,
+          dishNames: Array.isArray(input.dishNames) ? input.dishNames : [],
+        }) || {},
+        '$.storeFacts',
+      );
+    } catch {
+      storeFacts = { tenantId, storeId: null, storeName: null, facts: [], missing: [], degraded: true };
+    }
+    // 爆款结构卡 few-shot：撰稿人 / AI 带货员读取 benchmarkCards（数组）与 benchmarkFewShot（文本块）
+    const benchmark = loadBenchmarkFewShot(employeeIdx, tenantId, task, loadBenchmarkCards);
+    let evolutionNotes = [];
+    let evolutionDegraded = false;
+    try {
+      evolutionNotes = normalizeRuntimeValue(sanitizeEvolutionNotesForPrompt(
+        activeEvolutionNotes({ domain: 'content', employeeIdx }, { tenantId }),
+      ));
+    } catch { evolutionDegraded = true; }
     const context = {
       schemaVersion: CONTENT_HANDLER_RUNTIME_CONTEXT_SCHEMA,
       executionMode: mode,
@@ -379,6 +465,13 @@ export async function buildContentHandlerRuntimeContext(input, dependencies = {}
         dataMode: companyProfile.dataMode,
       },
       companyProfile,
+      storeFacts,
+      evolutionNotes,
+      retroMetrics: employeeIdx === 9 ? normalizeRuntimeValue(input.retroMetrics || null) : null,
+      xhsSales: resolveXhsSalesContext(employeeIdx, { task, xhsSales: input.xhsSales }),
+      benchmarkCards: benchmark.cards,
+      benchmarkFewShot: benchmark.block,
+      structureCardsRequired: benchmarkLearningRequested(employeeIdx, task),
       knowledge: {
         trust: 'untrusted_business_data',
         instructionAuthority: false,
@@ -455,6 +548,28 @@ export async function buildContentHandlerRuntimeContext(input, dependencies = {}
       },
       upstream,
       knowledgeRecall: knowledgeEvidence,
+      storeFacts: {
+        storeId: storeFacts?.storeId ?? null,
+        storeName: storeFacts?.storeName ?? null,
+        factCount: Array.isArray(storeFacts?.facts) ? storeFacts.facts.length : 0,
+        factIds: Array.isArray(storeFacts?.facts) ? storeFacts.facts.map(fact => fact.id) : [],
+        missing: Array.isArray(storeFacts?.missing) ? [...storeFacts.missing] : [],
+        degraded: storeFacts?.degraded === true,
+        fingerprint: fingerprint(storeFacts),
+        rawFactsIncluded: false,
+      },
+      benchmarkCards: {
+        applicable: benchmark.applicable,
+        platform: benchmark.platform,
+        count: benchmark.cards.length,
+        cardIds: benchmark.cards.map(card => card?.id ?? null),
+        verifiedCount: benchmark.cards.filter(card => Number(card?.verified) === 1).length,
+        fewShotChars: benchmark.block.length,
+        degraded: benchmark.degraded,
+        fingerprint: fingerprint(benchmark.cards),
+        rawCardsIncluded: false,
+      },
+      evolutionNotes: { noteIds: evolutionNotes.map(note => note.id), count: evolutionNotes.length, degraded: evolutionDegraded, fingerprint: fingerprint(evolutionNotes), rawNotesIncluded: false },
       contextFingerprint: fingerprint(context),
       createdAt: new Date().toISOString(),
       credentialsIncluded: false,

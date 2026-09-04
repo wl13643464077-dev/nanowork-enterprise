@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { modulesFor, q, getTenant, runWithTenant } from './db.js';
 import { authMiddleware, csrfOriginGuard } from './util.js';
+import { storeScope } from './engines/store-scope.js';
 import adminRoutes from './routes/admin.js';
 import rechargeRoutes from './routes/recharge.js';
 import rechargeNotifyRoutes from './routes/recharge-notify.js';
@@ -16,6 +17,7 @@ import storeOpsRoutes from './routes/store-ops.js';
 import reviewsRoutes from './routes/reviews.js';
 import growthRoutes from './routes/growth.js';
 import contentRoutes from './routes/content.js';
+import contentSamplesRoutes from './routes/content-samples.js';
 import mediaReviewRoutes from './routes/media-review.js';
 import toolboxRoutes from './routes/toolbox.js';
 import imageHuntRoutes from './routes/imagehunt.js';
@@ -28,6 +30,7 @@ import activityRoutes from './routes/activities.js';
 import marshalRoutes from './routes/marshals.js';
 import employeeRoutes from './routes/employees.js';
 import employeeWorkbenchRoutes from './routes/employee-workbench.js';
+import employeeIntroRoutes from './routes/employee-intro.js';
 import contentEmployeeWorkbenchRoutes from './routes/content-employee-workbench.js';
 import contentProductionPipelineRoutes from './routes/content-production-pipeline.js';
 import contentPipelineScheduleRoutes from './routes/content-pipeline-schedules.js';
@@ -42,9 +45,13 @@ import agentRoutes from './routes/agents.js';
 import fileRoutes from './routes/files.js';
 import dataIntakeRoutes from './routes/dataintake.js';
 import metaRoutes from './routes/meta.js';
+import onboardingRoutes from './routes/onboarding.js';
 import businessFlowRoutes from './routes/business-flow.js';
+import eventsRoutes from './routes/events.js';
+import inboxRoutes from './routes/inbox.js';
 import { uploadAccessGuard } from './engines/upload-access.js';
 import { serveAvatarProviderAsset } from './engines/avatar-provider-assets.js';
+import { serveAiSalesVideoProviderAsset } from './engines/ai-sales-video-provider-assets.js';
 import { createAiGuard } from './ai-limits.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,8 +85,9 @@ export function moduleGuard(moduleId) {
 }
 
 // 租户数据作用域：把当前请求的 tenant_id 注入 AsyncLocalStorage，使所有写入自动带租户、读取可按租户过滤。
-export function tenantScope(req, _res, next) {
-  runWithTenant(req.user?.tenant_id || 1, () => next());
+// 多门店：租户上下文就位后再解析可选请求头 X-Store-Id（engines/store-scope.js），未传头=全店不过滤。
+export function tenantScope(req, res, next) {
+  runWithTenant(req.user?.tenant_id || 1, () => storeScope(req, res, next));
 }
 
 // 租户态守卫（SaaS）：企业账号须「已开通」才能用业务模块；平台超管豁免。
@@ -259,18 +267,28 @@ export function createApp({
   app.use(requestLifecycle);
 
   app.get('/api/avatar/provider-assets/:token', serveAvatarProviderAsset);
+  // AI带货员 TTS 音轨 / 9:16 首帧：签名限时令牌，供云雾/百炼拉取（与 avatar 同机制）
+  app.get('/api/ai-sales-video/provider-assets/:token', serveAiSalesVideoProviderAsset);
   mountPublicRoutes(app);
 
   app.use('/api/auth', authRoutes);
   app.use('/api/platform', authMiddleware, platformRoutes);
   app.use('/api/recharge', authMiddleware, tenantScope, rechargeRoutes);
   app.use('/api/meta', authMiddleware, tenantScope, metaRoutes);
+  // SSE 事件流与统一收件箱：登录即可，按租户/角色在路由内过滤；
+  // 不挂 moduleGuard 与 guardFor（长连接不是 AI 生成请求，不得占用 ai-limits 并发租约）。
+  app.use('/api/events', authMiddleware, tenantScope, tenantGate, eventsRoutes);
+  app.use('/api/inbox', authMiddleware, tenantScope, tenantGate, inboxRoutes);
+  // 开店向导：租户级初始配置（读取全员、写入仅 boss/admin，权限在路由内判定）
+  app.use('/api/onboarding', authMiddleware, tenantScope, tenantGate, onboardingRoutes);
   app.use('/api/business-flow', authMiddleware, tenantScope, tenantGate, businessFlowRoutes);
   app.use('/api/dashboard', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), dashboardRoutes);
   // 门店日常操作台与评价中心：店长/员工每日操作，挂 dashboard 模块（全员基础包）
   app.use('/api/store-ops', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), storeOpsRoutes);
   app.use('/api/reviews', authMiddleware, tenantScope, tenantGate, moduleGuard('dashboard'), reviewsRoutes);
   app.use('/api/growth', authMiddleware, tenantScope, tenantGate, moduleGuard('growth'), guardFor('growth'), growthRoutes);
+  // 样片库：登录即可读（销售现场演示用），不走 AI 限流；先于 /api/content 挂载以免被模块守卫拦截。
+  app.use('/api/content/samples', authMiddleware, tenantScope, tenantGate, contentSamplesRoutes);
   app.use(
     '/api/content',
     authMiddleware,
@@ -293,6 +311,8 @@ export function createApp({
   app.use('/api/employees', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), employeeRoutes);
   app.use('/api/employee-workbench/content', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), guardFor('contentWorkbench'), contentEmployeeWorkbenchRouter);
   app.use('/api/employee-workbench', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), guardFor('employeeWorkbench'), employeeWorkbenchRoutes);
+  // 数字员工自我介绍页：零积分的确定性读写与校验，不经 AI 守卫。
+  app.use('/api/employee-intro', authMiddleware, tenantScope, tenantGate, moduleGuard('marshals'), employeeIntroRoutes);
   app.use('/api/agents', authMiddleware, tenantScope, tenantGate, guardFor('agents'), agentRoutes);
   app.use('/api/files', authMiddleware, tenantScope, tenantGate, guardFor('files'), fileRoutes);
   app.use('/api/data-intake', authMiddleware, tenantScope, tenantGate, moduleGuard('system'), dataIntakeRoutes);
@@ -345,6 +365,17 @@ export function createApp({
     const status = requestedStatus >= 400 && requestedStatus < 600
       ? requestedStatus
       : 500;
+    // 月度 AI 预算拦截（engines/credits.js）：文案已是面向老板的可读信息，原样透出并带错误码，
+    // 前端 client.ts 按 code 统一提示，不需要各页面单独处理。
+    if (error?.code === 'BUDGET_EXCEEDED') {
+      return res.status(status).json({
+        error: String(error.message || '本月 AI 预算已用完'),
+        code: error.code,
+        retryable: false,
+        ...(error.budget ? { budget: error.budget } : {}),
+        requestId: req.requestId,
+      });
+    }
     res.status(status).json({
       error: status === 400
         ? '请求内容格式错误'

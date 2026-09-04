@@ -307,3 +307,143 @@
   color: var(--ui-muted);
   font-size: var(--font-1);
 }
+
+/* 高德 Web 服务卡：复用联网检索卡的版式；提示条用 warning 表面色承载错误码下一步 */
+.admin-amap-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-amap-hint {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--ui-warning-surface);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+}
+
+/* 企业模型路由面板（AdminModelRoutingPanel）：标签列 + 下拉 + 来源 Tag；与同页签下方平台配置留出面板间距 */
+.admin-routing-wrap,
+.admin-budget-stack {
+  margin-bottom: var(--panel-gap);
+}
+
+.admin-routing-summary {
+  margin-bottom: var(--space-3);
+}
+
+.admin-routing-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.admin-routing-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--ui-hairline);
+}
+
+.admin-routing-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-routing-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  font-weight: 600;
+}
+
+.admin-routing-hint {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  font-weight: 400;
+}
+
+.admin-routing-control {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.admin-routing-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-routing-source-tag {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .admin-routing-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 月度 AI 预算与用量报表（AdminCreditBudgetPanel） */
+.admin-budget-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+}
+
+.admin-budget-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.admin-budget-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.admin-budget-input {
+  width: 100%;
+}
+
+.admin-budget-progress {
+  margin-bottom: var(--space-3);
+}
+
+.admin-budget-progress-note {
+  margin-top: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.admin-budget-stats .ant-statistic-title {
+  font-size: var(--font-1);
+}
+
+.admin-budget-stats .ant-statistic-content {
+  font-size: var(--font-4);
+}
+
+.admin-budget-alert {
+  margin-top: var(--space-3);
+}
+
+.admin-budget-total {
+  margin-bottom: 0;
+}
+
+.admin-budget-chart-title {
+  margin-bottom: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}

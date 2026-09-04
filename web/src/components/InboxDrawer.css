@@ -1,0 +1,190 @@
+/* 统一"待我处理"收件箱：全部尺寸/颜色走 theme.css token（Quiet Command：右侧按需抽屉，卡片克制） */
+.inbox-trigger {
+  position: relative;
+}
+.inbox-trigger--live::after {
+  content: '';
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ui-primary);
+  box-shadow: 0 0 0 2px var(--ui-surface);
+}
+
+.inbox-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-3);
+  font-weight: 650;
+  color: var(--ui-text);
+}
+.inbox-total {
+  margin: 0;
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+  border: none;
+  font-size: var(--font-1);
+}
+.inbox-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inbox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.inbox-filter {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  border-radius: 999px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-1);
+  line-height: 1.6;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.inbox-filter:hover,
+.inbox-filter:focus-visible {
+  border-color: var(--ui-primary);
+  color: var(--ui-primary);
+  outline: none;
+}
+.inbox-filter--active {
+  background: var(--ui-primary-soft);
+  border-color: var(--ui-primary);
+  color: var(--ui-primary);
+  font-weight: 600;
+}
+.inbox-filter-count {
+  margin-left: var(--space-1);
+  color: var(--ui-muted);
+}
+.inbox-filter--active .inbox-filter-count {
+  color: var(--ui-primary);
+}
+
+.inbox-empty {
+  padding: var(--space-8) 0;
+  color: var(--ui-muted);
+}
+
+.inbox-group {
+  margin-bottom: var(--space-5);
+}
+.inbox-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.inbox-group-title {
+  font-size: var(--font-2);
+  font-weight: 650;
+  color: var(--ui-text);
+}
+.inbox-group-count {
+  margin: 0;
+  border: none;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.inbox-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-2);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-left: 3px solid var(--ui-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur-base) var(--ease-out);
+}
+.inbox-card:hover {
+  box-shadow: var(--shadow-2);
+}
+.inbox-card--high {
+  border-left-color: var(--ui-warning-text);
+}
+.inbox-card--medium {
+  border-left-color: var(--ui-primary);
+}
+.inbox-card--low {
+  border-left-color: var(--ui-border-strong);
+}
+.inbox-card-main {
+  min-width: 0;
+}
+.inbox-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.inbox-card-title {
+  font-size: var(--font-3);
+  font-weight: 600;
+  color: var(--ui-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-card-sub {
+  margin-top: var(--space-1);
+  font-size: var(--font-1);
+  line-height: 1.6;
+  color: var(--ui-text-2);
+}
+.inbox-card-meta {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+}
+.inbox-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.inbox-priority {
+  margin: 0;
+  border: none;
+  font-size: var(--font-1);
+  flex-shrink: 0;
+}
+.inbox-priority--high {
+  background: var(--ui-warning-surface);
+  color: var(--ui-warning-text);
+}
+.inbox-priority--medium {
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+.inbox-priority--low {
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-card,
+  .inbox-filter {
+    transition: none;
+  }
+}

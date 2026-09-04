@@ -7,6 +7,7 @@ import { after, test } from 'node:test';
 import {
   AI_SALES_VIDEO_TARGET_DURATION_SECONDS,
   assertAiSalesVideoComposerReady,
+  assertAiSalesVoicedComposerReady,
   composeAiSalesVideo,
 } from '../src/engines/video-composer.js';
 
@@ -51,6 +52,7 @@ function probeJson(duration, { output = false } = {}) {
 test('LaunchAgent最小PATH会安全发现Homebrew二进制，显式配置仍优先', async () => {
   const checked = [];
   const ready = await assertAiSalesVideoComposerReady({
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     isExecutable: async candidate => {
       checked.push(candidate);
@@ -65,6 +67,7 @@ test('LaunchAgent最小PATH会安全发现Homebrew二进制，显式配置仍优
   assert.equal(checked.every(candidate => path.isAbsolute(candidate)), true);
 
   const explicit = await assertAiSalesVideoComposerReady({
+    platform: 'darwin',
     env: {
       PATH: '/untrusted/minimal-path',
       FFMPEG_PATH: '/configured/tools/ffmpeg',
@@ -88,6 +91,34 @@ test('FFmpeg不存在时预检返回明确中文错误码', async () => {
       && error.binary === 'ffmpeg'
       && /缺少可执行的 ffmpeg/u.test(error.message),
   );
+});
+
+test('有声合成预检验证字幕/音量滤镜和编码器，能力缺失在收费前暴露', async () => {
+  const options = { env: { PATH: '/mock' }, platform: 'linux', isExecutable: async () => true };
+  const filters = 'ass V->V\nvolumedetect A->A\natempo A->A\napad A->A';
+  const runner = async (_cmd, args) => ({ stdout: args.includes('-filters') ? filters : 'libx264 encoder\naac encoder\nlibmp3lame encoder' });
+  const ready = await assertAiSalesVoicedComposerReady({ ...options, runner });
+  assert.equal(ready.ffmpegPath, '/mock/ffmpeg');
+  await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async () => ({ stdout: 'atempo A->A' }) }), /ass/u);
+  await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async (_cmd, args) => ({ stdout: args.includes('-filters') ? filters : 'libx264 encoder\naac encoder' }) }), /libmp3lame/u);
+});
+
+test('有声模式拒绝缺失音轨与未提供的字幕，不能用静音垫轨过关', async () => {
+  const root = await tempRoot('nw-voiced-composer-');
+  const clips = await localClips(root);
+  let encoded = false;
+  const runner = async (cmd, args) => {
+    if (cmd.includes('ffprobe')) {
+      const payload = JSON.parse(probeJson(15));
+      payload.streams = payload.streams.filter(s => s.codec_type !== 'audio');
+      return { stdout: JSON.stringify(payload) };
+    }
+    encoded = true;
+    await fsp.writeFile(args.at(-1), 'wrong');
+    return { code: 0 };
+  };
+  await assert.rejects(composeAiSalesVideo({ tenantId: 2, segments: clips, outputRoot: root, requireAudio: true, runner }), /音轨|字幕/u);
+  assert.equal(encoded, false);
 });
 
 test('预检后二进制被移除产生ENOENT时仍返回可操作错误', async () => {

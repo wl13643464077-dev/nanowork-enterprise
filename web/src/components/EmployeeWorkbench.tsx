@@ -77,20 +77,31 @@ import EmployeeExecutionTimeline from './EmployeeExecutionTimeline';
 import EmployeeResearchPlan from './EmployeeResearchPlan';
 import EmployeeAvatar from './EmployeeAvatar';
 import EmployeeEvolution from './EmployeeEvolution';
+import EmployeeSelfIntro from './EmployeeSelfIntro';
 import EmployeeVisualOverview from './EmployeeVisualOverview';
 import BusinessFlowTrace, { type BusinessFlowSourceType } from './BusinessFlowTrace';
+import EmployeeDraftCard from './EmployeeDraftCard';
 import ContentBrandPersonaEditor from './ContentBrandPersonaEditor';
 import { UnifiedFilePicker, type UploadedFileRef } from './UnifiedFilePicker';
 import { buildPaihuoContentBrief } from './contentBriefForm.js';
 import { restaurantOutputPresentation } from './restaurantOutputPresentation.js';
-import { buildRestaurantTaskPollWarning, RESTAURANT_TASK_POLL_INTERVAL_MS } from './restaurantTaskPolling.js';
+import {
+  buildRestaurantTaskPollWarning,
+  RESTAURANT_TASK_POLL_INTERVAL_MS,
+  RESTAURANT_TASK_REALTIME_POLL_INTERVAL_MS,
+} from './restaurantTaskPolling.js';
+import { REALTIME_EVENTS, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import './EmployeeWorkbench.css';
+import ContentBenchmarkLibrary from './ContentBenchmarkLibrary';
+import ContentXhsVersions from './ContentXhsVersions';
+import { ContentEvolutionNotes, ContentRetroChanges, ContentRetroSourceSelect } from './ContentRetrospectiveLearning';
 
 type Props = {
   open: boolean;
   domain: EmployeeWorkbenchDomain;
   idx: number | null;
   initialRunId?: number | null;
+  initialRetroContentId?: number | null;
   initialTaskId?: string | number | null;
   // 「一句话找人」等入口带来的派活预填：打开工作台时填进派活输入框，老板可改可删。
   initialDirective?: string | null;
@@ -193,7 +204,12 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   '失败需处理（执行异常）': 'red',
   '失败需返工（质检未通过）': 'red',
   '失败需返工（人工审阅未通过）': 'red',
+  '未达标草稿（待老板处理）': 'orange',
+  '已接受草稿（内部参考，未通过质量门）': 'orange',
 };
+
+const DRAFT_PENDING_LABEL = '未达标草稿（待老板处理）';
+const DRAFT_ACCEPTED_LABEL = '已接受草稿（内部参考，未通过质量门）';
 
 const DISPATCH_GUIDE_PREFERENCE_VERSION = 'v1';
 
@@ -230,6 +246,8 @@ function canonicalDisplayStatus(value: unknown, completedLabel = '已自动采�
     已通过: '已人工采纳（可用于业务）',
     已完成: completedLabel,
     已驳回: '失败需返工（人工审阅未通过）',
+    草稿待处理: DRAFT_PENDING_LABEL,
+    草稿已接受: DRAFT_ACCEPTED_LABEL,
     '生成失败（可重跑）': '失败需处理（执行异常）',
     '执行失败（可重跑）': '失败需处理（执行异常）',
     '质检失败（可重跑）': '失败需返工（质检未通过）',
@@ -1028,7 +1046,7 @@ function SourceDeliverables({
 export default function EmployeeWorkbench(props: Props) {
   const instanceKey =
     props.open && props.idx !== null
-      ? `${props.domain}-${props.idx}-${props.initialRunId || 'run'}-${props.initialTaskId || 'task'}-${props.initialDirective ? 'prefilled' : 'blank'}`
+      ? `${props.domain}-${props.idx}-${props.initialRunId || 'run'}-${props.initialTaskId || 'task'}-${props.initialDirective ? 'prefilled' : 'blank'}-${props.initialRetroContentId || 'no-retro'}`
       : 'closed';
   return <EmployeeWorkbenchInstance key={instanceKey} {...props} />;
 }
@@ -1038,6 +1056,7 @@ function EmployeeWorkbenchInstance({
   domain,
   idx,
   initialRunId,
+  initialRetroContentId,
   initialTaskId,
   initialDirective,
   identityHint,
@@ -1057,6 +1076,8 @@ function EmployeeWorkbenchInstance({
   // 餐饮域派活后的任务进度（content 域走 runs 列表，restaurant 域走 /marshals/tasks/:id/status）
   const [restaurantTask, setRestaurantTask] = useState<EmployeeRuntimeTask | null>(null);
   const [restaurantPollWarning, setRestaurantPollWarning] = useState<RestaurantTaskPollWarning | null>(null);
+  // 实时推送可用时餐饮任务轮询放宽到 20s 兜底；断连自动回到 5s
+  const { connected: realtimeConnected } = useRealtimeEvents();
   const [restaurantTaskLoading, setRestaurantTaskLoading] = useState('');
   const [restaurantTasksRefreshing, setRestaurantTasksRefreshing] = useState(false);
   const [restaurantTasksLoadingMore, setRestaurantTasksLoadingMore] = useState(false);
@@ -1074,6 +1095,8 @@ function EmployeeWorkbenchInstance({
   const [rejectOpinion, setRejectOpinion] = useState('');
   const [dispatchGuideOpen, setDispatchGuideOpen] = useState(false);
   const [contentProfileOpen, setContentProfileOpen] = useState(false);
+  // 「TA 的自我介绍」抽屉：四段介绍 + 老板叮嘱 + 周校验状态（餐饮域）
+  const [selfIntroOpen, setSelfIntroOpen] = useState(false);
   const [businessFlow, setBusinessFlow] = useState<{
     sourceType: BusinessFlowSourceType;
     sourceId: number;
@@ -1141,6 +1164,7 @@ function EmployeeWorkbenchInstance({
         const types = dispatchTypes(normalized.dispatch);
         dispatchForm.setFieldsValue({
           question: text(initialDirective) || '',
+          retroContentId: initialRetroContentId || null,
           title: '',
           requirement: '',
           industry: '',
@@ -1162,7 +1186,7 @@ function EmployeeWorkbenchInstance({
       }
       setProfile(normalized);
     },
-    [configForm, dispatchForm, domain, initialDirective],
+    [configForm, dispatchForm, domain, initialDirective, initialRetroContentId],
   );
 
   const loadRuns = useCallback(async () => {
@@ -1430,6 +1454,49 @@ function EmployeeWorkbenchInstance({
     };
   }, [domain, initialTaskId, loadRestaurantTask, open]);
 
+  // P0-1「带原要求重新派活」：把草稿任务的原标题/类型/材料填回派活框并滚到输入区，
+  // 老板可改可删；不自动提交，也不复制任何草稿正文。
+  const redispatchFromTask = useCallback(
+    (task: EmployeeRuntimeTask | null | undefined) => {
+      if (!task) return;
+      const types = profile ? dispatchTypes(profile.dispatch) : [];
+      const taskType = text(task.type);
+      dispatchForm.setFieldsValue({
+        question: text(task.title),
+        title: text(task.title),
+        requirement: text(task.requirement),
+        ...(taskType && (!types.length || types.some(item => item.value === taskType)) ? { type: taskType } : {}),
+      });
+      window.requestAnimationFrame(() => {
+        document.getElementById(dispatchFormId)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        const input = document.getElementById(dispatchFormId)?.querySelector('textarea, input');
+        if (input instanceof HTMLElement) input.focus();
+      });
+      message.info('已把原要求填回派活框，确认后再提交；这次会重新生成，不会复用草稿正文。');
+    },
+    [dispatchForm, dispatchFormId, profile],
+  );
+
+  // 任务中心「带原要求重新派活」跳转带 redispatch=1：目标任务加载完成后只预填一次。
+  const redispatchHandledRef = useRef<string>('');
+  useEffect(() => {
+    if (!open || domain !== 'restaurant' || !profile || !restaurantTask?.draft) return;
+    if (Number(restaurantTask.id) !== Number(initialTaskId)) return;
+    const key = `${initialTaskId}`;
+    if (redispatchHandledRef.current === key) return;
+    const wantsRedispatch = (() => {
+      try {
+        return new URLSearchParams(window.location.search).get('redispatch') === '1';
+      } catch {
+        return false;
+      }
+    })();
+    if (!wantsRedispatch) return;
+    redispatchHandledRef.current = key;
+    const timer = window.setTimeout(() => redispatchFromTask(restaurantTask), 200);
+    return () => window.clearTimeout(timer);
+  }, [domain, initialTaskId, open, profile, redispatchFromTask, restaurantTask]);
+
   const refreshRestaurantTasks = useCallback(async () => {
     if (!open || domain !== 'restaurant' || idx === null) return;
     setRestaurantTasksRefreshing(true);
@@ -1658,6 +1725,9 @@ function EmployeeWorkbenchInstance({
     const taskId = restaurantTask?.id;
     if (!taskId || !isTaskRunning(restaurantTask?.status)) return;
     const taskKey = String(taskId);
+    const pollIntervalMs = realtimeConnected
+      ? RESTAURANT_TASK_REALTIME_POLL_INTERVAL_MS
+      : RESTAURANT_TASK_POLL_INTERVAL_MS;
     let cancelled = false;
     let inFlight = false;
     let consecutiveFailures = 0;
@@ -1671,7 +1741,7 @@ function EmployeeWorkbenchInstance({
     const pull = async () => {
       if (cancelled || inFlight) return;
       if (document.visibilityState !== 'visible') {
-        schedulePoll(RESTAURANT_TASK_POLL_INTERVAL_MS);
+        schedulePoll(pollIntervalMs);
         return;
       }
       inFlight = true;
@@ -1681,7 +1751,7 @@ function EmployeeWorkbenchInstance({
         consecutiveFailures = 0;
         setRestaurantPollWarning(null);
         setRestaurantTask(current => (current && current.id === taskId ? { ...current, ...task } : current));
-        if (isTaskRunning(task.status)) schedulePoll(RESTAURANT_TASK_POLL_INTERVAL_MS);
+        if (isTaskRunning(task.status)) schedulePoll(pollIntervalMs);
         else void refreshProfileQuietly();
       } catch {
         if (cancelled) return;
@@ -1696,15 +1766,22 @@ function EmployeeWorkbenchInstance({
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && !inFlight) schedulePoll(0);
     };
+    // 本任务的 task.status_changed 推送到达即立即拉取权威 status，不等下一轮轮询
+    const handleRealtimeTaskStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ kind?: string; id?: number }>).detail;
+      if (detail?.kind === 'restaurant' && Number(detail.id) === Number(taskId) && !inFlight) schedulePoll(0);
+    };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    schedulePoll(RESTAURANT_TASK_POLL_INTERVAL_MS);
+    window.addEventListener(REALTIME_EVENTS.taskStatus, handleRealtimeTaskStatus);
+    schedulePoll(pollIntervalMs);
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener(REALTIME_EVENTS.taskStatus, handleRealtimeTaskStatus);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [open, domain, refreshProfileQuietly, restaurantTask?.id, restaurantTask?.status]);
+  }, [open, domain, realtimeConnected, refreshProfileQuietly, restaurantTask?.id, restaurantTask?.status]);
 
   useEffect(() => {
     const sourceType = domain === 'content' ? 'content_employee_run' : 'agent_task';
@@ -1751,6 +1828,8 @@ function EmployeeWorkbenchInstance({
               industry: values.industry,
               feedback: values.feedback,
               dueAt: values.dueAt,
+              ...(values.type === '小红书带货笔记' ? { xhsOptions: values.xhsOptions } : {}),
+              ...(idx === 9 && values.retroContentId ? { retroContentId: values.retroContentId } : {}),
               brief: buildPaihuoContentBrief({
                 ...values,
                 question: values.question || values.goal,
@@ -1940,6 +2019,9 @@ function EmployeeWorkbenchInstance({
       const dispatchPathStep =
         hasPendingReview || currentReviewFinished ? 2 : hasCurrentSelection || lastSnapshot ? 1 : 0;
       const restaurantContractInvalid = restaurantPublicStatus === '失败需返工（质检未通过）';
+      // P0-1 未达标草稿：状态接口带 draft 时走橙色草稿卡，不按失败/成功渲染
+      const restaurantDraft = restaurantTask?.draft || null;
+      const restaurantDraftPending = restaurantDraft?.state === 'pending';
       const selectedRunBillingStatus = billingStateLabel(selectedRun?.billing, selectedRun?.status);
       const selectedRunReviewReady = selectedRun?.canReview === true;
       const selectedRunDownloadReady =
@@ -1983,6 +2065,17 @@ function EmployeeWorkbenchInstance({
                   text(profile.identity.duty) ||
                   '直接告诉我你想完成什么，我会在后台自动调用岗位技能、工具和可用资料。'}
               </p>
+              {domain === 'restaurant' && (
+                <button
+                  type="button"
+                  className="ewb-step-link ewb-self-intro-link"
+                  aria-haspopup="dialog"
+                  aria-expanded={selfIntroOpen}
+                  onClick={() => setSelfIntroOpen(true)}
+                >
+                  TA 的自我介绍
+                </button>
+              )}
             </div>
           </div>
           <SectionHeading
@@ -2140,6 +2233,13 @@ function EmployeeWorkbenchInstance({
               )}
             </section>
           )}
+          {domain === 'content' && idx !== null && [2, 3, 10].includes(idx) && (
+            <ContentBenchmarkLibrary
+              canManage={canManageContentProfile}
+              runId={idx === 2 && selectedRun?.status === '已完成' ? Number(selectedRun.id) : undefined}
+            />
+          )}
+          {domain === 'content' && idx !== null && <ContentEvolutionNotes key={idx} employeeIdx={idx} />}
           {domain === 'content' && (
             <section id={taskCenterId} className="ewb-run-center" aria-label="内容员工任务列表">
               <SectionHeading
@@ -2254,6 +2354,20 @@ function EmployeeWorkbenchInstance({
                     loading={currentSourceDeliverablesLoading}
                     error={currentSourceDeliverablesError}
                     onRetry={retrySourceDeliverables}
+                  />
+                )}
+                {selectedRun.xhsDraft && (
+                  <ContentXhsVersions
+                    key={selectedRun.id}
+                    run={selectedRun}
+                    onSelected={() => loadRunDetail(selectedRun.id)}
+                  />
+                )}
+                {selectedRun.retrospective && (
+                  <ContentRetroChanges
+                    key={selectedRun.id}
+                    run={selectedRun}
+                    onChanged={() => loadRunDetail(selectedRun.id)}
                   />
                 )}
                 {selectedRunPublicStatus === '生成中' && (
@@ -2572,7 +2686,7 @@ function EmployeeWorkbenchInstance({
               type={
                 restaurantTask.failed
                   ? 'error'
-                  : restaurantContractInvalid
+                  : restaurantContractInvalid || restaurantDraft
                     ? 'warning'
                     : isBusinessUsableStatus(restaurantPublicStatus)
                       ? 'success'
@@ -2581,7 +2695,9 @@ function EmployeeWorkbenchInstance({
               message={
                 restaurantContractInvalid
                   ? '此结果未通过岗位契约，不能采纳'
-                  : `任务 #${restaurantTask.id} · ${restaurantPublicStatus}`
+                  : restaurantDraftPending
+                    ? `任务 #${restaurantTask.id} · 质量门未通过，已保留草稿待你处理`
+                    : `任务 #${restaurantTask.id} · ${restaurantPublicStatus}`
               }
               description={
                 <div className="ewb-task-progress">
@@ -2627,7 +2743,23 @@ function EmployeeWorkbenchInstance({
                     }))}
                   />
                   <div className="ewb-task-progress-note">
-                    {restaurantContractInvalid ? (
+                    {restaurantDraft ? (
+                      <>
+                        <span>
+                          {restaurantDraft.failReasonLabel ||
+                            (restaurantDraft.failReason === 'timeout'
+                              ? '执行超时，已保留最后一轮完整正文'
+                              : '质量门未通过，已保留最后一轮完整正文')}
+                          ；草稿不会自动进入业务可用状态。
+                        </span>
+                        <span>
+                          {restaurantDraftPending
+                            ? restaurantTask.nextAction ||
+                              '先看下方未通过的检查，再选择“带原要求重新派活”或“就用这份草稿”。'
+                            : '该稿只作内部参考；需要正式采用请重新派活生成合格版本。'}
+                        </span>
+                      </>
+                    ) : restaurantContractInvalid ? (
                       <span>本次未形成可验收产物，不会进入业务可用状态；请补充或调整材料后重新派活。</span>
                     ) : restaurantTask.failed ? (
                       `${restaurantTask.failure?.message || '生成失败'}。${restaurantTask.nextAction || '查看失败原因，补充或调整输入后重新派活'}。未形成业务产物；计费结果请以业务流中的积分账务节点为准。`
@@ -2709,13 +2841,34 @@ function EmployeeWorkbenchInstance({
             (!isTaskRunning(restaurantTask.status) || Boolean(restaurantOutputBody)) && (
               <section id={restaurantResultId} className="ewb-run-center" aria-label="当前选中的餐饮员工任务结果">
                 <SectionHeading
-                  title={restaurantOutputBody ? '岗位交付报告' : '任务结果与失败诊断'}
+                  title={
+                    restaurantDraft
+                      ? restaurantDraftPending
+                        ? '未达标草稿（待你处理）'
+                        : '已接受的未达标草稿（内部参考）'
+                      : restaurantOutputBody
+                        ? '岗位交付报告'
+                        : '任务结果与失败诊断'
+                  }
                   description={
-                    restaurantOutputBody
-                      ? '点击上方任意任务后，在这里直接查看完整产物，不再需要绕到其他页面。'
-                      : '本次没有生成业务产物；原因、账务结果和下一步都在这里。'
+                    restaurantDraft
+                      ? '这份结果没有通过质量门，但正文已原样保留；先看未通过的检查，再决定重新派活还是就用这份草稿。'
+                      : restaurantOutputBody
+                        ? '点击上方任意任务后，在这里直接查看完整产物，不再需要绕到其他页面。'
+                        : '本次没有生成业务产物；原因、账务结果和下一步都在这里。'
                   }
                 />
+                {restaurantDraft && (
+                  <EmployeeDraftCard
+                    taskId={restaurantTask.id}
+                    draft={restaurantDraft}
+                    onRedispatch={() => redispatchFromTask(restaurantTask)}
+                    onAccepted={() => {
+                      void loadRestaurantTask(restaurantTask.id);
+                      void refreshRestaurantTasks();
+                    }}
+                  />
+                )}
                 <article className="ewb-run-detail">
                   <div className="ewb-run-detail-head">
                     <div>
@@ -2732,7 +2885,7 @@ function EmployeeWorkbenchInstance({
                       </span>
                     </div>
                     <Space size={6} wrap>
-                      {restaurantOutputBody && (
+                      {restaurantOutputBody && !restaurantDraft && (
                         <ArtifactActions
                           title={restaurantTask.title || `任务 #${restaurantTask.id}`}
                           content={localizeOperationalStatus(restaurantOutputReport)}
@@ -2960,6 +3113,15 @@ function EmployeeWorkbenchInstance({
             )}
           <div id={dispatchFormId} className="ewb-chat-composer ewb-dispatch-form-anchor">
             <Form form={dispatchForm} requiredMark={false} onFinish={submitDispatch}>
+              {domain === 'content' && idx === 9 && (
+                <Form.Item
+                  name="retroContentId"
+                  label="复盘哪篇已发布内容"
+                  extra="选择后自动读取对应回填记录；发送才会发起模型任务并按现有规则计费。"
+                >
+                  <ContentRetroSourceSelect />
+                </Form.Item>
+              )}
               <div className="ewb-chat-composer-row">
                 <Form.Item
                   name="question"
@@ -3028,9 +3190,42 @@ function EmployeeWorkbenchInstance({
               <Form.Item name="requirement" hidden>
                 <Input />
               </Form.Item>
-              <Form.Item name="type" hidden>
-                <Input />
-              </Form.Item>
+              {domain === 'content' && idx === 3 ? (
+                <>
+                  <Form.Item name="type" label="交付形式">
+                    <Select
+                      options={['文案初稿', '标题方案', '配图建议', '小红书带货笔记'].map(value => ({
+                        value,
+                        label: value,
+                      }))}
+                    />
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(before, after) => before.type !== after.type}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('type') === '小红书带货笔记' ? (
+                        <>
+                          <Form.Item name={['xhsOptions', 'versionCount']} label="策略版本数" initialValue={3}>
+                            <Select options={[2, 3, 4].map(value => ({ value, label: `${value}版不同策略` }))} />
+                          </Form.Item>
+                          <Form.Item name={['xhsOptions', 'audience']} label="目标客群">
+                            <Select
+                              allowClear
+                              options={['学生', '白领', '家庭', '约会', '其他'].map(value => ({ value, label: value }))}
+                            />
+                          </Form.Item>
+                          <Form.Item name={['xhsOptions', 'scene']} label="使用场景">
+                            <Input maxLength={120} placeholder="例如：工作日午餐" />
+                          </Form.Item>
+                        </>
+                      ) : null
+                    }
+                  </Form.Item>
+                </>
+              ) : (
+                <Form.Item name="type" hidden>
+                  <Input />
+                </Form.Item>
+              )}
               {domain === 'content' && (
                 <>
                   <Form.Item name="platforms" hidden>
@@ -3817,6 +4012,17 @@ function EmployeeWorkbenchInstance({
       </Modal>
       {canManageContentProfile && (
         <ContentBrandPersonaEditor open={contentProfileOpen} onClose={() => setContentProfileOpen(false)} />
+      )}
+      {domain === 'restaurant' && idx !== null && (
+        <Drawer
+          open={selfIntroOpen}
+          onClose={() => setSelfIntroOpen(false)}
+          width={720}
+          destroyOnClose
+          title={`${titleIdentity?.person || titleIdentity?.name || '数字员工'} 的自我介绍`}
+        >
+          <EmployeeSelfIntro domain={domain} idx={idx} showStandaloneLink />
+        </Drawer>
       )}
       <BusinessFlowTrace
         sourceType={businessFlow?.sourceType}

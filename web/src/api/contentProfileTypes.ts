@@ -18,6 +18,7 @@ export type PaihuoContentBrief = {
   enable_deck: boolean;
   xhs_style: ContentPlatformStyle | null;
   dy_style: ContentPlatformStyle | null;
+  xhsOptions?: { versionCount?: number; audience?: string; scene?: string; category?: string; city?: string };
 };
 
 export type ContentEmployeeDispatchFormValues = {
@@ -34,6 +35,8 @@ export type ContentEmployeeDispatchFormValues = {
   refLink?: string;
   xhsStyle?: Partial<ContentPlatformStyle> | null;
   dyStyle?: Partial<ContentPlatformStyle> | null;
+  xhsOptions?: { versionCount?: number; audience?: string; scene?: string; category?: string; city?: string };
+  retroContentId?: number | null;
 };
 
 export type ContentTenantProfileBrief = {

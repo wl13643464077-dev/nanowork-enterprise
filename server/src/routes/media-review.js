@@ -4,6 +4,7 @@ import { db, q, curTenant } from '../db.js';
 import { canAccessOwner } from '../engines/access.js';
 import { twoPhaseBillingSummary } from '../engines/two-phase-delivery.js';
 import { loadContentDeliveryState } from '../engines/delivery-state.js';
+import { publicVoicedSalesProgress, voicedSalesDeliveryVerified, voicedSalesRecoveryAvailable } from '../engines/ai-sales-video-presentation.js';
 
 const r = Router();
 
@@ -90,6 +91,8 @@ export function projectMediaJob(job, user) {
   }
   if (job.content !== undefined) projected.content = projectLinkedContent(job.content);
   if (job.billing !== undefined) projected.billing = job.billing;
+  const salesVideo = publicVoicedSalesProgress(safeJson(job.snapshot_json, {}), job.tenant_id ?? curTenant());
+  if (salesVideo) projected.salesVideo = salesVideo;
   if (canViewInternalProfile(user)) {
     projected.profile_version = job.profile_version || null;
     projected.prompt_hash = job.prompt_hash || null;
@@ -106,6 +109,12 @@ function safeJson(value, fallback = null) {
 
 function aiSalesVideoRecoveryPresentation(job, billing) {
   const snapshot = safeJson(job?.snapshot_json, {}) || {};
+  if (snapshot.voiceMode === 'voiced') {
+    const available = voicedSalesRecoveryAvailable(job, snapshot, billing);
+    return { available, mode: available ? 'reuse_voiced_sales' : null, providerSubmissions: 0, reusedTaskCount: available ? 2 : 0,
+      requiresBillingConfirmation: false, estimatedCredits: Number(billing?.heldCredits || billing?.estimatedCredits || 0),
+      note: available ? '只复用原音轨、视频任务与账本；不重新生成，不新建占扣。' : null };
+  }
   const planned = Array.isArray(snapshot?.segments) ? snapshot.segments : [];
   const providerSegments = Array.isArray(snapshot?.providerExecution?.segments)
     ? snapshot.providerExecution.segments
@@ -115,6 +124,7 @@ function aiSalesVideoRecoveryPresentation(job, billing) {
     .filter(taskId => /^[\p{L}\p{N}_.:+-]+$/u.test(taskId) && taskId.length <= 240);
   const available =
     snapshot?.workflow === 'ai_sales_video'
+    && snapshot?.voiceMode !== 'voiced'
     && ['失败', '阻塞'].includes(String(job?.status || ''))
     && !String(job?.url || '').trim()
     && [2, 3].includes(planned.length)
@@ -185,6 +195,11 @@ export function validateMediaDelivery(job) {
     return { ready: false, reason: '只有图片或视频任务可以进入人工验收' };
   }
   if (!url) return { ready: false, reason: '供应商未返回可用媒体地址，不能进入业务验收' };
+  const snapshot = safeJson(job.snapshot_json, {});
+  if (snapshot?.voiceMode === 'voiced' && snapshot?.workflow === 'ai_sales_video'
+    && (snapshot?.result?.url !== url || !voicedSalesDeliveryVerified(snapshot.result, job.tenant_id ?? curTenant()))) {
+    return { ready: false, reason: '有声视频缺少30秒音轨和字幕验证证据，不能进入业务验收' };
+  }
   if (/^(javascript|vbscript|file):/i.test(url) || /[\u0000-\u001f]/.test(url)) {
     return { ready: false, reason: '媒体地址协议不安全，不能进入业务验收' };
   }

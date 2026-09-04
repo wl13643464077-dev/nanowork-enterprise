@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Select,
+  Switch,
   DatePicker,
   Space,
   Popconfirm,
@@ -25,10 +26,14 @@ import {
   PayCircleOutlined,
   DeleteOutlined,
   EditOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { api, fmtMoney } from '../api/client';
+import { api, fmtMoney, getUser } from '../api/client';
+import { useStoreVersion } from '../api/store-context';
 import { Panel } from '../components/Kit';
+import StoreCompare from '../components/StoreCompare';
+import './StoreData.css';
 
 const BIZ_TYPES = ['快餐', '正餐', '茶饮', '火锅', '其他'];
 const STORE_STATUSES = ['营业中', '筹备中', '已关店'];
@@ -68,7 +73,18 @@ function LoadState({ error, onRetry, emptyText }: { error: boolean; onRetry: () 
   );
 }
 
+const ROLE_LABEL: Record<string, string> = {
+  boss: '老板',
+  admin: '管理员',
+  ops_director: '门店运营',
+  manager: '店长',
+  sales: '员工',
+};
+
 export default function StoreData() {
+  // 多门店：顶栏切换门店后（store-changed）三张表按新门店上下文重拉
+  const storeVersion = useStoreVersion();
+  const canCompare = ['boss', 'admin', 'ops_director'].includes(String(getUser()?.role || ''));
   // ===== 门店 =====
   const [activeTab, setActiveTab] = useState('stores');
   const [stores, setStores] = useState<any[]>([]);
@@ -76,6 +92,7 @@ export default function StoreData() {
   const [storesError, setStoresError] = useState(false);
   const [storeModal, setStoreModal] = useState<{ open: boolean; editing: any }>({ open: false, editing: null });
   const [storeForm] = Form.useForm();
+  const [staff, setStaff] = useState<any[]>([]);
 
   // ===== 菜品 =====
   const [dishes, setDishes] = useState<any[]>([]);
@@ -131,17 +148,27 @@ export default function StoreData() {
   useEffect(() => {
     const frame = requestAnimationFrame(loadStores);
     return () => cancelAnimationFrame(frame);
-  }, [loadStores]);
+  }, [loadStores, storeVersion]);
   useEffect(() => {
     const frame = requestAnimationFrame(loadDishes);
     return () => cancelAnimationFrame(frame);
-  }, [loadDishes]);
+  }, [loadDishes, storeVersion]);
   useEffect(() => {
     const frame = requestAnimationFrame(loadCosts);
     return () => cancelAnimationFrame(frame);
-  }, [loadCosts]);
+  }, [loadCosts, storeVersion]);
+  useEffect(() => {
+    api
+      .get('/store-data/staff', { silent: true })
+      .then(d => setStaff(d.rows || []))
+      .catch(() => setStaff([]));
+  }, []);
 
   const storeOptions = stores.map(s => ({ value: s.id, label: s.name }));
+  const staffOptions = staff.map(u => ({
+    value: u.id,
+    label: `${u.name}（${ROLE_LABEL[u.role] || u.role}）`,
+  }));
 
   // ===== 门店提交/删除 =====
   const openStoreModal = (editing: any = null) => {
@@ -151,13 +178,21 @@ export default function StoreData() {
         ? {
             ...editing,
             opened_at: editing.opened_at ? dayjs(editing.opened_at) : undefined,
+            is_default: Number(editing.is_default) === 1,
+            manager_user_id: editing.manager_user_id ?? undefined,
           }
-        : { biz_type: '快餐', status: '营业中' },
+        : { biz_type: '快餐', status: '营业中', is_default: stores.length === 0 },
     );
   };
   const submitStore = async () => {
     const v = await storeForm.validateFields();
-    const payload = { ...v, opened_at: v.opened_at ? v.opened_at.format('YYYY-MM-DD') : undefined };
+    const payload = {
+      ...v,
+      opened_at: v.opened_at ? v.opened_at.format('YYYY-MM-DD') : undefined,
+      manager_user_id: v.manager_user_id ?? null,
+      // 默认店只能「设为默认」，不能直接取消（服务端同样拒绝）；未勾选则不传
+      is_default: v.is_default ? 1 : undefined,
+    };
     if (storeModal.editing) {
       await api.put(`/store-data/stores/${storeModal.editing.id}`, payload);
       message.success('门店已更新');
@@ -268,7 +303,12 @@ export default function StoreData() {
             title: '门店',
             dataIndex: 'name',
             ellipsis: true,
-            render: (v: string) => <span style={{ fontWeight: 600, color: 'var(--ui-text)' }}>{v}</span>,
+            render: (v: string, r: any) => (
+              <span className="sd-store-name">
+                {v}
+                {Number(r.is_default) === 1 && <Tag className="sd-default-tag">默认</Tag>}
+              </span>
+            ),
           },
           {
             title: '编码',
@@ -283,12 +323,26 @@ export default function StoreData() {
             render: (v: string) => <Tag style={{ margin: 0 }}>{v}</Tag>,
           },
           {
+            title: '区域',
+            dataIndex: 'region',
+            width: 90,
+            ellipsis: true,
+            render: (v: string) => v || <span className="sd-muted">-</span>,
+          },
+          {
             title: '城市/商圈',
-            key: 'region',
+            key: 'cityArea',
             width: 140,
             ellipsis: true,
             render: (_: any, r: any) =>
               [r.city, r.area].filter(Boolean).join(' · ') || <span style={{ color: 'var(--ui-muted)' }}>-</span>,
+          },
+          {
+            title: '负责人',
+            dataIndex: 'manager_name',
+            width: 90,
+            ellipsis: true,
+            render: (v: string) => v || <span className="sd-muted">-</span>,
           },
           {
             title: '状态',
@@ -640,6 +694,19 @@ export default function StoreData() {
           { key: 'stores', label: '门店', children: storesTab },
           { key: 'dishes', label: '菜品', children: dishesTab },
           { key: 'costs', label: '成本', children: costsTab },
+          ...(canCompare
+            ? [
+                {
+                  key: 'compare',
+                  label: (
+                    <span>
+                      <BarChartOutlined /> 门店对比
+                    </span>
+                  ),
+                  children: <StoreCompare storeCount={stores.length} />,
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -691,6 +758,29 @@ export default function StoreData() {
           <Form.Item name="address" label="详细地址">
             <Input placeholder="可选" />
           </Form.Item>
+          {/* 连锁字段：区域 / 门店负责人 / 默认门店（单店客户可全部留空，不影响使用） */}
+          <Space size={10} className="sd-form-row" align="start">
+            <Form.Item name="region" label="所属区域" className="sd-form-grow">
+              <Input placeholder="例如：华东区 / 成都" maxLength={40} />
+            </Form.Item>
+            <Form.Item name="manager_user_id" label="门店负责人" className="sd-form-grow">
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择本企业账号"
+                options={staffOptions}
+              />
+            </Form.Item>
+            <Form.Item
+              name="is_default"
+              label="默认门店"
+              valuePropName="checked"
+              tooltip="未选门店时的数据归属；每家企业只有一家默认店，第一家门店自动成为默认"
+            >
+              <Switch disabled={Number(storeModal.editing?.is_default) === 1} />
+            </Form.Item>
+          </Space>
         </Form>
       </Modal>
 

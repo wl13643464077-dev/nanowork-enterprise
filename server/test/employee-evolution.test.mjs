@@ -316,3 +316,15 @@ test("样本不足时拒绝生成提案（不硬编也不扣费）", async () =>
     delete process.env.YUNWU_BASE_URL;
   }
 });
+
+test('餐饮域列表与退役路由不能读取或停用相同编号的内容域心得', async () => {
+  const id = Number(db.prepare("INSERT INTO employee_evolution_notes(tenant_id,domain,specialist_id,note,status) VALUES(1,'content',?,'仅供内容域的心得','active')").run(specialistId).lastInsertRowid);
+  await withServer('boss', async base => {
+    const detail = await jsonCall(base, 'GET', `/employees/evolution/${specialistId}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.payload.notes.some(note => note.id === id), false);
+    const stopped = await jsonCall(base, 'PUT', `/employees/evolution/notes/${id}/retire`);
+    assert.equal(stopped.status, 404);
+    assert.equal(db.prepare('SELECT status FROM employee_evolution_notes WHERE id=?').get(id).status, 'active');
+  });
+});

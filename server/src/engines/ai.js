@@ -5,6 +5,10 @@ import * as yunwu from "./yunwu.js";
 import { skillByKey, skillFallbackFor } from "./skills.js";
 import { roleListAllows } from "./access.js";
 import { wrapUntrusted, UNTRUSTED_GUARD } from "./risk.js";
+import {
+  buildContentStoreFactPack,
+  storeFactPackPromptBlock,
+} from "./content-store-facts.js";
 import { employeeTemplateFallback } from "../employee-workbench.js";
 import {
   canonicalizeRestaurantEmployeeOutputCandidate,
@@ -19,7 +23,14 @@ import {
 } from "./restaurant-output-export.js";
 import { inspectInternalProfileLeakage } from "./internal-profile-leakage.js";
 import { refsBlock, webSearch } from "./websearch.js";
-import { collectLocationIntelligence } from "./location-intelligence.js";
+import {
+  collectLocationIntelligence,
+  extractTradeAreaAddress,
+  hasTradeAreaProvenanceSection,
+  renderTradeAreaProvenanceMarkdown,
+  resolveTradeAreaFacts,
+  tradeAreaFactsPromptSummary,
+} from "./location-intelligence.js";
 import {
   agenticWebResearch,
   agenticWebResearchReadiness,
@@ -38,6 +49,11 @@ import {
   REVIEW_DATASET_EMPLOYEE_IDX,
 } from "./review-dataset-import.js";
 import { compileEmployeePublicResearchPlan } from "./employee-public-research-plan.js";
+import {
+  classifyEmployeeDraftDisposition,
+  resolveContractTier,
+} from "./contract-tiers.js";
+import { recordKbHealthEvent, enqueueMissingVectorDocs } from "./rag.js";
 
 // ===== AI 编排服务（PRD V2 §15）：云雾API主通道（按角色分层路由模型）→ Claude备用 → 知识库模板引擎兜底 =====
 const MODEL = process.env.AI_MODEL || "claude-opus-4-8";
@@ -83,6 +99,42 @@ const ISOCHRONE_MODE_LABELS = Object.freeze({
   driving: "驾车",
   transit: "公共交通",
 });
+
+/**
+ * 触发“商圈结构化事实”（高德优先→OSM回落）的餐饮岗位：
+ * 101 餐饮市场机会研究、102 竞品与商圈画像、104 选址评分与租约测算。
+ * 与 canonical-employee-profile 的 location_intelligence 绑定保持一致；
+ * 可用 NANOWORK_TRADE_AREA_EMPLOYEE_IDX=101,102,104 覆盖。
+ */
+const DEFAULT_TRADE_AREA_EMPLOYEE_IDX = Object.freeze([101, 102, 104]);
+export const TRADE_AREA_EMPLOYEE_IDX = Object.freeze(
+  (() => {
+    const configured = String(process.env.NANOWORK_TRADE_AREA_EMPLOYEE_IDX || "")
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    return configured.length ? configured : [...DEFAULT_TRADE_AREA_EMPLOYEE_IDX];
+  })(),
+);
+
+export function isTradeAreaEmployee(employeeIdx) {
+  return TRADE_AREA_EMPLOYEE_IDX.includes(Number(employeeIdx));
+}
+
+export const TRADE_AREA_PROVENANCE_MISSING_WARNING =
+  "选址报告缺少「数据来源与时效」一节：模型未按交付规则附上商圈数据来源与抓取时间，请以执行快照中的 tradeAreaFacts 为准核对来源。";
+
+/** 从任务文本提取同品类关键词（菜系/业态），用于高德 Top10 同品类竞品筛选。 */
+const TRADE_AREA_CATEGORY_KEYWORDS = Object.freeze([
+  "火锅", "毛血旺", "川菜", "湘菜", "粤菜", "烧烤", "烤肉", "日料", "寿司", "西餐",
+  "咖啡", "奶茶", "茶饮", "烘焙", "面包", "甜品", "快餐", "小吃", "面馆", "米线",
+  "麻辣烫", "串串", "烤鱼", "海鲜", "东北菜", "本帮菜", "江浙菜", "云南菜", "新疆菜",
+  "披萨", "汉堡", "炸鸡", "早餐", "粥", "饺子", "包子", "鲁菜", "徽菜", "闽菜",
+]);
+export function tradeAreaCategoryKeyword(text) {
+  const value = String(text || "");
+  return TRADE_AREA_CATEGORY_KEYWORDS.find((keyword) => value.includes(keyword)) || null;
+}
 
 const DEFAULT_ISOCHRONE_REQUEST = Object.freeze({
   modes: Object.freeze(["walking", "cycling", "driving", "transit"]),
@@ -409,6 +461,11 @@ export async function kbSearch(
     console.warn(
       `[rag] 查询向量化失败或超时（tenant=${curTenant()}），已停止知识注入，避免使用未经相关性验证的资料`,
     );
+    // P0-2：静默降级必须留下可观测的健康事件，系统页据此亮红点。
+    recordKbHealthEvent("query_embed_failed", {
+      candidates: docs.length,
+      timeoutMs: options.embedTimeoutMs ?? null,
+    });
   }
   if (qvec) {
     // 分块召回：有块的文档按块打分（长文档后半段也能命中），无块的文档按整文向量打分，统一排序
@@ -447,6 +504,17 @@ export async function kbSearch(
         }
       }
       candidates.push({ doc: d, text: String(d.body || ""), sim, seq: null });
+    }
+    // P0-2 主动修复：候选里没有任何可用向量的文档，交给既有后台向量化队列
+    // （同一 hold 计费与租户配额），而不是每次检索都静默跳过。
+    const scoredDocIds = new Set(
+      candidates.filter((c) => c.sim >= 0).map((c) => c.doc?.id),
+    );
+    const zeroVectorDocIds = docs
+      .map((d) => d.id)
+      .filter((id) => !scoredDocIds.has(id));
+    if (zeroVectorDocIds.length) {
+      enqueueMissingVectorDocs(zeroVectorDocIds, { source: "kb_search" });
     }
     if (!candidates.some((c) => c.sim >= 0)) {
       // 库未向量化：不允许退回热度注入，防止无关企业资料污染岗位结果。
@@ -974,6 +1042,7 @@ function restaurantMaterialEvidencePrompt({
   webContext,
   attachmentContext,
   hasImage,
+  tradeAreaContext = "",
 }) {
   const sections = [];
   const knowledge = String(kb?.text || "").trim();
@@ -987,6 +1056,8 @@ function restaurantMaterialEvidencePrompt({
   }
   const verifiedWeb = String(webContext || "").trim();
   if (verifiedWeb) sections.push(verifiedWeb.slice(0, 8_000));
+  const tradeArea = String(tradeAreaContext || "").trim();
+  if (tradeArea) sections.push(tradeArea.slice(0, 8_000));
   const uploaded = String(attachmentContext || "").trim();
   if (uploaded) sections.push(uploaded.slice(0, 32_000));
   if (hasImage) {
@@ -1213,6 +1284,53 @@ function restaurantFinalRepairGate(
       : []),
     "事实安全总门禁：不得新增任务材料中没有的数字、来源、访谈/试卖结果或已执行状态；不得把gap或assumption升级为verified。只有已声明来源直接支持的既有事实才能保持verified；无法在事实边界内修复时必须保留安全失败，不得伪造通过。",
     "输出前再对照上述全部路径逐项自检；最终仍只输出一个完整JSON对象，不要输出修复说明。",
+  ].join("\n");
+}
+
+/**
+ * 派活 Markdown 模式的增量重试上下文（P0-1）：原任务书之后附上一轮完整产物
+ * （受修复上下文字符上限截断，优先保留被判不合格的章节所在位置）与机器校验报告，
+ * 并明确“只修改不合格部分，其余原样保留”。纯字符串拼接，不改事实。
+ */
+export function paihuoIncrementalRetryContext(
+  previousCandidate,
+  previousValidation,
+  limitChars = EMPLOYEE_REPAIR_CONTEXT_CHAR_LIMIT,
+) {
+  const previousText = String(previousCandidate?.text || "").trim();
+  if (!previousText) return "";
+  const failedRules = [
+    ...new Set(
+      (Array.isArray(previousValidation?.errors) ? previousValidation.errors : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const limit = Math.max(2_000, Number(limitChars) || EMPLOYEE_REPAIR_CONTEXT_CHAR_LIMIT);
+  let excerpt = previousText;
+  if (previousText.length > limit) {
+    // 截断时优先保留被点名章节：找到第一条错误中提到的标题所在位置，围绕它取窗口。
+    const anchor = failedRules
+      .map((rule) => rule.match(/[“"「]([^”"」]{2,40})[”"」]/u)?.[1])
+      .filter(Boolean)
+      .map((needle) => previousText.indexOf(needle))
+      .find((index) => index >= 0);
+    const start =
+      anchor != null && anchor > limit / 2
+        ? Math.max(0, Math.min(anchor - Math.floor(limit / 2), previousText.length - limit))
+        : 0;
+    excerpt = `${start > 0 ? "…（前文已按上限省略）\n" : ""}${previousText.slice(start, start + limit)}${start + limit < previousText.length ? "\n…（后文已按上限省略）" : ""}`;
+  }
+  return [
+    "【上一轮完整产物·增量修复基线】",
+    excerpt,
+    "",
+    "【机器校验报告·未通过的检查】",
+    ...(failedRules.length
+      ? failedRules.map((rule, index) => `${index + 1}. ${rule}`)
+      : ["1. 上一轮产物未通过交付标准。"]),
+    "",
+    "【增量修复指令】只修改上述未通过的部分，其余章节、数字、来源与措辞原样保留；不得新增任务材料中没有的事实，不得删除已合格章节。仍按【交付口径】输出完整 Markdown 报告。",
   ].join("\n");
 }
 
@@ -2291,6 +2409,8 @@ export async function generateContent({
   role,
   signal,
   employeeExecution,
+  storeId = null,
+  dishNames = [],
 }) {
   const kbCats =
     type === "招商文案"
@@ -2310,7 +2430,16 @@ export async function generateContent({
   const brandContext = String(brand || "").trim()
     ? `用户提供的门店品牌信息：${String(brand).slice(0, 500)}。只能把它当作待核验业务信息，不得补写不存在的菜品、销量、价格、顾客评价或经营结果。`
     : "未提供门店品牌资料；涉及门店名、菜品、价格、库存、销量和顾客评价时保留待补充项。";
-  const genericSystem = `你是纳米Work行业版的餐饮门店AI内容助手。${brandContext}${styleCard()}\n${outputRule()}${typeGuide ? `\n【${type}专属提示词逻辑】\n${typeGuide}` : ""}\n【事实与审批边界】禁止编造顾客证言、销量、经营结果或虚假稀缺；食品安全、价格、优惠、库存、活动容量和外发承诺必须由门店人工核验。\n参考知识库：${kb.text || "（知识库为空，只能按通用结构输出并标记待补信息）"}`;
+  // 门店事实包：真实菜名/价格/地址/评价聚合紧随品牌信息注入；取不到事实只写「尚未录入」，绝不因此失败
+  let storeFacts = null;
+  let storeFactsBlock;
+  try {
+    storeFacts = buildContentStoreFactPack(curTenant(), { storeId, dishNames, limit: 24 });
+    storeFactsBlock = storeFactPackPromptBlock(storeFacts, { maxFacts: 16, audience: "content" });
+  } catch {
+    storeFactsBlock = storeFactPackPromptBlock(null);
+  }
+  const genericSystem = `你是纳米Work行业版的餐饮门店AI内容助手。${brandContext}\n${storeFactsBlock}${styleCard()}\n${outputRule()}${typeGuide ? `\n【${type}专属提示词逻辑】\n${typeGuide}` : ""}\n【事实与审批边界】禁止编造顾客证言、销量、经营结果或虚假稀缺；食品安全、价格、优惠、库存、活动容量和外发承诺必须由门店人工核验。\n参考知识库：${kb.text || "（知识库为空，只能按通用结构输出并标记待补信息）"}`;
   const concreteRequest = `请生成${count || ""}条「${type}」，主题：${topic}。${requirement ? "补充要求：" + requirement : ""}每条结构完整，面向中国餐饮门店经营场景；未知事实必须明确标为待确认。`;
   const system = employeeExecution
     ? "严格执行本轮单一用户消息中的完整数字员工岗位、企业覆盖、连接器输出契约与人工审批边界。"
@@ -2320,6 +2449,7 @@ export async function generateContent({
 
 【本次连接器知识库与已核验业务上下文】
 ${brandContext}
+${storeFactsBlock}
 ${typeGuide ? `【${type}专属提示词逻辑】${typeGuide}` : ""}
 参考知识库：${kb.text || "（知识库为空，只能按通用结构输出并标记待补信息）"}
 
@@ -2367,6 +2497,15 @@ ${concreteRequest}`
   return {
     ...out,
     kb: { refs: kb.refs, degraded: kb.degraded, mode: kb.mode },
+    storeFacts: storeFacts
+      ? {
+          storeId: storeFacts.storeId ?? null,
+          storeName: storeFacts.storeName ?? null,
+          factCount: Array.isArray(storeFacts.facts) ? storeFacts.facts.length : 0,
+          factIds: Array.isArray(storeFacts.facts) ? storeFacts.facts.map((fact) => fact.id) : [],
+          missing: Array.isArray(storeFacts.missing) ? [...storeFacts.missing] : [],
+        }
+      : null,
   };
 }
 
@@ -2626,6 +2765,8 @@ export async function marshalWork(marshal, task, role, options = {}) {
         ? "当前岗位配置未启用联网检索"
         : "本次任务未触发联网检索",
   };
+  // 选址/商圈岗位的商圈结构化事实（含逐字段 provenance 与 missingCriticalFacts）。
+  let tradeAreaFacts = null;
   if (
     options.employeeExecution &&
     (webRequested || locationIntelligenceRequired)
@@ -2762,7 +2903,50 @@ export async function marshalWork(marshal, task, role, options = {}) {
         }),
       });
     }
+    // 商圈结构化事实（高德优先）：只对选址/商圈岗位且能从任务解析出地址时触发。
+    // 与既有 location_intelligence 并行；高德未配置/失败时复用同一在途 OSM 结果
+    // 回落，不额外发起地图请求，也绝不抛错中断派活。
+    let tradeAreaFactsPromise = null;
+    const tradeAreaTarget =
+      isTradeAreaEmployee(employeeIdx) && locationIntelligenceRequired
+        ? extractTradeAreaAddress(publicLocationQuery)
+        : null;
+    if (tradeAreaTarget) {
+      const locationCall = calls.find(
+        (call) => call.kind === "location_intelligence",
+      );
+      const resolveFacts = options.tradeAreaFactsFn || resolveTradeAreaFacts;
+      tradeAreaFactsPromise = Promise.resolve()
+        .then(() =>
+          resolveFacts({
+            addressText: tradeAreaTarget.addressText,
+            city: tradeAreaTarget.city,
+            categoryKeyword: tradeAreaCategoryKeyword(publicLocationQuery),
+            signal: options.signal,
+            ...(options.amapClient ? { amapClient: options.amapClient } : {}),
+            osmFallback: locationCall
+              ? () =>
+                  locationCall.promise
+                    .then((result) => result?.evidence || null)
+                    .catch(() => null)
+              : null,
+          }),
+        )
+        .catch((error) => ({
+          schemaVersion: "nanowork.trade-area-facts/1",
+          ok: false,
+          provider: null,
+          input: tradeAreaTarget,
+          amap: { configured: false, attempted: true, ok: false, blocked: false, error: { message: String(error?.message || error).slice(0, 200) } },
+          sources: [],
+          missingCriticalFacts: [
+            { field: "center", reason: `商圈事实解析异常：${String(error?.message || error).slice(0, 160)}` },
+          ],
+          fetchedAt: new Date().toISOString(),
+        }));
+    }
     const settled = await Promise.allSettled(calls.map((call) => call.promise));
+    tradeAreaFacts = tradeAreaFactsPromise ? await tradeAreaFactsPromise : null;
     const channels = settled.map((entry, index) => {
       const call = calls[index];
       if (entry.status === "rejected") {
@@ -3417,6 +3601,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
         acceptedCount: results.length,
       },
       skillResearchPlan: employeeResearchPlan,
+      ...(tradeAreaFacts ? { tradeAreaFacts } : {}),
     };
 
     // 联网/地图/等时圈往往先于长模型生成完成。立即把已验证研究证据交给
@@ -3573,6 +3758,20 @@ export async function marshalWork(marshal, task, role, options = {}) {
   const attachmentContext = [reviewDatasetContext, genericAttachmentContext]
     .filter(Boolean)
     .join("\n\n");
+  // 商圈结构化事实以隔离资料形式进入证据区；provider/抓取时间/未获取项随数据下发，
+  // 模型只能引用其中已获取的数字，未获取项必须原样写“未获取”。
+  const tradeAreaContext = tradeAreaFacts
+    ? [
+        UNTRUSTED_GUARD,
+        `【商圈结构化事实·provider=${tradeAreaFacts.provider || "none"}】每个字段自带 provenance（provider/endpoint/fetchedAt）；missingCriticalFacts 中列出的项目本次未获取。`,
+        wrapUntrusted(
+          "商圈结构化事实（高德/OSM）",
+          tradeAreaFactsPromptSummary(tradeAreaFacts),
+        ),
+        "【数据来源与时效·系统按本次真实调用生成，必须原样附在报告末尾（“下一步建议”之后），不得改动来源、抓取时间与“未获取”标注】",
+        renderTradeAreaProvenanceMarkdown(tradeAreaFacts),
+      ].join("\n")
+    : "";
   // 派活模式下员工执行档案的紧凑system原样下发，
   // 不再叠加聊天风格卡、契约输出规则和语义修复清单。
   const system = [
@@ -3583,7 +3782,10 @@ export async function marshalWork(marshal, task, role, options = {}) {
     options.employeeExecution
       ? "【老板极简派活规则·最高优先级】岗位手册中的“必要输入”“开始前准备”是系统后台的执行清单，不是让老板填写的表单。地址、坐标、交通、公开竞品、菜单、价格、营业状态、平台评价、周边业态等网上可查信息，必须使用本次地图、WebSearch和受控网页正文自行补齐；不得向老板索取，不得把“开始前必须补齐”“全部必备能力执行清单”“AI通道不可用”或“仅生成底稿”当作交付结果。企业私有交易、租金、合同等确实没有权威数据时，可以写明假设或具体证据缺口，但仍必须基于现有证据完成当前判断、竞品结论、行动方案和证伪条件；禁止把整份交付变成待补材料清单。"
       : "",
-    attachments.length ? UNTRUSTED_GUARD : "",
+    tradeAreaFacts
+      ? "【商圈数据引用规则】引用商圈数据（竞品数量、品类分布、人均、评分、周边配套、等时圈）时必须标注来源（高德/OSM/公开检索）与抓取时间；商圈结构化事实中 missingCriticalFacts 列出的项目以及任何未取得的数据必须明确写“未获取”，不得估算、脑补或用行业均值替代。报告末尾必须原样附上证据区提供的「## 数据来源与时效」段落（逐项列出本次实际使用的 provider 与抓取时间），不得改写其中任何来源、时间或“未获取”标注。"
+      : "",
+    attachments.length || tradeAreaFacts ? UNTRUSTED_GUARD : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -3601,6 +3803,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
     webContext,
     attachmentContext,
     hasImage: Boolean(image),
+    tradeAreaContext,
   });
   const userMsg = paihuoMarkdownMode
     ? [
@@ -3636,6 +3839,16 @@ export async function marshalWork(marshal, task, role, options = {}) {
   // 避免“预授权模型为空、供应商自行路由、结算模型不同”被权威账本判为待对账。
   const executionModel = configuredModel || yunwu.textModelFor(role);
   const employeeModelPlan = employeeTextModelFailoverPlan(executionModel);
+  // 契约档位按岗位快照锁定的首选模型与租户数据模式决定；传输故障切换到备用
+  // 模型不改变档位（提示词已按首选模型下发）。
+  const contractTier = options.employeeExecution
+    ? options.contractTier ||
+      resolveContractTier({
+        model: executionModel,
+        dataMode: deliveryDataMode,
+        employeeIdx,
+      })
+    : null;
   const maxTokens = employeeOutputTokenBudget(workConfig.outputLength);
   const runGenerate = options.generateFn || generate;
   const generationArgs = {
@@ -3724,6 +3937,8 @@ export async function marshalWork(marshal, task, role, options = {}) {
     // live 保持严格；schema、伪造来源、占位输出和越权声明始终硬阻断。
     qualityMode:
       options.employeeExecution && demoDeliveryMode ? "advisory" : "strict",
+    // 契约分级（P0-1）：strict / standard / lenient，由 severityFor 决定各规则硬门或警告。
+    ...(contractTier ? { contractTier } : {}),
   };
 
   if (!options.employeeExecution) {
@@ -3822,6 +4037,16 @@ export async function marshalWork(marshal, task, role, options = {}) {
       const repairErrors = repairing ? [...lastApiValidation.errors] : [];
       const repairSourceLabel =
         lastApiPhase === "repair" ? "待修复上一轮API输出" : "待修复首轮输出";
+      // 派活 Markdown 模式没有契约修复器，但重新完整生成时仍必须带上上一轮
+      // 完整产物与机器校验报告（P0-1 增量修复），避免模型从零重写、丢掉已合格章节。
+      const paihuoIncrementalContext =
+        !repairing && paihuoMarkdownMode && lastApiCandidate
+          ? paihuoIncrementalRetryContext(
+              lastApiCandidate,
+              lastApiValidation,
+              EMPLOYEE_REPAIR_CONTEXT_CHAR_LIMIT,
+            )
+          : "";
       const callArgs = !repairing
         ? {
             ...generationArgs,
@@ -3830,6 +4055,28 @@ export async function marshalWork(marshal, task, role, options = {}) {
               providerCallNumber === 1
                 ? generationArgs.kind
                 : `${marshal.code}-provider-retry-${providerCallNumber}`,
+            ...(paihuoIncrementalContext
+              ? {
+                  userMsg: `${generationArgs.userMsg}\n\n${paihuoIncrementalContext}`,
+                  messages: generationArgs.messages
+                    ? generationArgs.messages.map((message) =>
+                        message?.role === "user" && Array.isArray(message.content)
+                          ? {
+                              ...message,
+                              content: message.content.map((part) =>
+                                part?.type === "text"
+                                  ? {
+                                      ...part,
+                                      text: `${part.text}\n\n${paihuoIncrementalContext}`,
+                                    }
+                                  : part,
+                              ),
+                            }
+                          : message,
+                      )
+                    : undefined,
+                }
+              : {}),
           }
         : retryFullGeneration
           ? {
@@ -3845,6 +4092,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
                 system,
                 `【本轮身份】你是餐饮岗位契约定向修复器（第${phaseNumber === 1 ? "一" : "二"}次${candidateAttemptCount + 1 === EMPLOYEE_PROVIDER_CALL_BUDGET ? "且最后一次" : ""}修复）。只修复下方逐项列出的结构或语义错误，不扩展任务、不执行外部动作。`,
                 "【事实边界】只能使用原任务、本次材料证据和上一轮输出中已有事实。不得本地构造业务结果、不得新增数字；无证据的字段必须写成具体证据缺口和补证动作。",
+                "【增量修复】下方“待修复输出”是上一轮完整产物：只修改机器校验报告中判定不合格的字段与章节，其余字段、数值、来源与措辞必须原样保留，不得重写、精简或重排未被点名的内容。",
                 "【输出边界】最终响应必须从“{”开始并以匹配的“}”结束，只能输出一个符合 response_schema 的 JSON 对象；禁止代码围栏、解释、前言、结语、修复说明、第二段文字或第二个 JSON。",
               ].join("\n"),
               userMsg: [
@@ -4015,6 +4263,22 @@ export async function marshalWork(marshal, task, role, options = {}) {
         });
         const markdownErrors = [];
         const markdownText = String(candidate.text || "").trim();
+        // 契约JSON 已在上方转成报告；这里剩下的裸 JSON 是无法识别/伪造的契约骨架，
+        // 老板读不了，属“无可用产物”（与 JSON 模式的伪造契约身份同一处置，不落草稿）。
+        const bareJsonSkeleton = (() => {
+          if (exportReady.transformed || !/^[[{]/u.test(markdownText)) return false;
+          try {
+            const parsed = JSON.parse(markdownText);
+            return parsed !== null && typeof parsed === "object";
+          } catch {
+            return false;
+          }
+        })();
+        if (bareJsonSkeleton) {
+          markdownErrors.push(
+            "派活模式输出为JSON骨架而非可读岗位报告，无法识别为岗位契约，也不是Markdown报告。",
+          );
+        }
         if (markdownText.length < 200) {
           markdownErrors.push("产出正文不足200字，未形成可交付的岗位报告。");
         }
@@ -4049,7 +4313,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
         rawCandidateValidation = validateRestaurantEmployeeOutputContract(
           employeeIdx,
           candidate.text,
-          { ...validationTaskContext, qualityMode: "strict" },
+          { ...validationTaskContext, qualityMode: "strict", contractTier: "strict" },
         );
         candidateValidation = rawCandidateValidation;
         const safetyRewrite = rewriteUnsafeRestaurantPlatformActions(
@@ -4060,7 +4324,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
           candidateValidation = validateRestaurantEmployeeOutputContract(
             employeeIdx,
             candidate.text,
-            { ...validationTaskContext, qualityMode: "strict" },
+            { ...validationTaskContext, qualityMode: "strict", contractTier: "strict" },
           );
           candidateCanonicalization = {
             kind: "deterministic_platform_safety_rewrite",
@@ -4269,6 +4533,37 @@ export async function marshalWork(marshal, task, role, options = {}) {
             : 0,
           attemptNumber: providerCallNumber,
         });
+        // P0-1 失败不交白卷：把每一轮完整 API 候选交给调用方留底。任务墙钟
+        // 超时中断本函数时，路由层据此落“未达标草稿”，而不是空白。正文原样传递。
+        try {
+          options.onCandidateObserved?.({
+            text: String(candidate.text || ""),
+            model: attemptEffectiveModel,
+            requestedModel: executionModel,
+            usage: sumAttemptUsage(attemptLedger),
+            finishReason: candidate?.finishReason ?? null,
+            complete: !INCOMPLETE_EMPLOYEE_FINISH_REASONS.has(
+              employeeFinishReason(candidate?.finishReason),
+            ),
+            valid: candidateValidation?.valid === true,
+            contractErrors: Array.isArray(candidateValidation?.errors)
+              ? [...candidateValidation.errors]
+              : [],
+            warnings: Array.isArray(candidateValidation?.warnings)
+              ? [...candidateValidation.warnings]
+              : [],
+            hardDelivery: candidateHardDelivery,
+            deliveryStyle: candidateValidation?.deliveryStyle || null,
+            parsed: candidateValidation?.parsed || null,
+            contractTier,
+            phase,
+            attemptNumber: providerCallNumber,
+            candidateAttempts: candidateAttemptCount + 1,
+            transportFailures: transportFailureCount,
+          });
+        } catch {
+          // 留底回调是非权威观测，不得打断真实执行。
+        }
       }
 
       if (budgetClass === "candidate") {
@@ -4561,6 +4856,48 @@ export async function marshalWork(marshal, task, role, options = {}) {
         : paihuoDeliveryFailure
           ? "RESTAURANT_OUTPUT_QUALITY_FAILED"
           : "RESTAURANT_OUTPUT_CONTRACT_INVALID";
+      // P0-1 失败不交白卷：错误对象仍按原契约抛出（既有调用方语义不变），但附带
+      // 草稿处置。安全类失败（外发/付费/不可逆、内部档案、平台伪造）blockedBy=safety，
+      // 路由层继续走原失败释放路径；其余情况路由层可落“未达标草稿”并按真实用量结算。
+      const lastCandidateFinishReason = employeeFinishReason(
+        lastApiCandidate?.finishReason,
+      );
+      const draftDisposition = classifyEmployeeDraftDisposition({
+        contractErrors,
+        hardDeliveryErrors: finalHardDelivery?.errors || [],
+        internalProfileLeakage: finalInternalProfileLeakage,
+        text: lastApiCandidate.text,
+        mode: lastApiCandidate.mode,
+        usage: aggregateUsage,
+        complete: !INCOMPLETE_EMPLOYEE_FINISH_REASONS.has(
+          lastCandidateFinishReason,
+        ),
+        failReason:
+          stoppedReason === "wall_clock_exhausted" ? "timeout" : "contract",
+      });
+      const draft = draftDisposition.eligible
+        ? {
+            text: String(lastApiCandidate.text || ""),
+            model: lastApiCandidate.model || effectiveExecutionModel,
+            requestedModel: executionModel,
+            effectiveModel: effectiveExecutionModel,
+            modelFailover: executionModelFailover,
+            usage: aggregateUsage,
+            finishReason: lastApiCandidate?.finishReason ?? null,
+            contractErrors,
+            warnings: Array.isArray(lastApiValidation?.warnings)
+              ? [...lastApiValidation.warnings]
+              : [],
+            deliveryStyle: lastApiValidation?.deliveryStyle || null,
+            parsed: lastApiValidation?.parsed || null,
+            hardDelivery: finalHardDelivery,
+            contractTier,
+            attempts: candidateAttemptCount,
+            transportFailures: transportFailureCount,
+            stoppedReason,
+            disposition: draftDisposition,
+          }
+        : null;
       throw Object.assign(
         new Error(
           finalInternalProfileLeakage.detected
@@ -4588,6 +4925,9 @@ export async function marshalWork(marshal, task, role, options = {}) {
           web,
           reviewDatasetImport,
           kb: { refs: kb.refs, degraded: kb.degraded, mode: kb.mode },
+          contractTier,
+          draft,
+          draftBlockedBy: draftDisposition.blockedBy,
         },
       );
     } else {
@@ -4627,6 +4967,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
         : options.employeeExecution.outputContract.primaryArtifact,
       parsed: validation.parsed,
       qualityMode: validation.qualityMode || "strict",
+      contractTier,
       ...(validation.deliveryStyle
         ? { deliveryStyle: validation.deliveryStyle }
         : {}),
@@ -4650,12 +4991,37 @@ export async function marshalWork(marshal, task, role, options = {}) {
           requireWebSources: Boolean(webRequested),
           allowResearchWarning: validationTaskContext.allowResearchWarning,
           qualityMode: validationTaskContext.qualityMode,
+          ...(validationTaskContext.contractTier
+            ? { contractTier: validationTaskContext.contractTier }
+            : {}),
         });
+    // G1 止损：选址/商圈岗位的报告必须有“数据来源与时效”一节。正文必须与供应商
+    // 响应逐字节一致（providerResponseSha256 反造假链），因此系统不改写正文；
+    // 章节由提示词要求模型原样附上，这里只记录是否到位并附带系统渲染版供前端/导出展示。
+    if (tradeAreaFacts) {
+      const present = hasTradeAreaProvenanceSection(employeeOutputText);
+      employeeContract.tradeAreaProvenance = {
+        provider: tradeAreaFacts.provider || null,
+        amapConfigured: tradeAreaFacts.amap?.configured === true,
+        sectionPresent: present,
+        missingCriticalFacts: Array.isArray(tradeAreaFacts.missingCriticalFacts)
+          ? tradeAreaFacts.missingCriticalFacts.length
+          : 0,
+        markdown: renderTradeAreaProvenanceMarkdown(tradeAreaFacts),
+      };
+      if (!present) {
+        employeeContract.warnings = [
+          ...(Array.isArray(employeeContract.warnings) ? employeeContract.warnings : []),
+          TRADE_AREA_PROVENANCE_MISSING_WARNING,
+        ];
+      }
+    }
     reportExecutionStage("validate", { status: "done" });
   } else if (options.employeeExecution) {
     employeeContract = {
       valid: false,
       skipped: "template_mode",
+      contractTier,
       requestedModel: executionModel,
       effectiveModel: effectiveExecutionModel,
       modelFailover: executionModelFailover,

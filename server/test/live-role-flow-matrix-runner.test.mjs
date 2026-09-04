@@ -8,6 +8,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { assertPrivateArtifact, protectPrivateArtifact } from "../src/engines/private-artifact.js";
 
 import {
   LIVE_ROLE_FLOW_CHECKPOINT_SCHEMA,
@@ -40,6 +41,7 @@ import {
   roleMatchesLiveLane,
   summarizeFullTenantSnapshot,
   summarizeRunChecks,
+  syncArtifactPublication,
   validateBoundFlowEvidence,
   validateCheckpoint,
   validateFinalFlowEvidence,
@@ -428,7 +430,7 @@ test("证据路径拒绝主库、sidecar、硬链接和已有文件，新文件�
   temporaryPaths.push(output);
   reserveExclusiveArtifactPath({ databasePath: currentDbPath, artifactPath: output });
   writeJsonExclusive0600(output, { ok: true });
-  assert.equal(fs.statSync(output).mode & 0o077, 0);
+  assertPrivateArtifact(output);
   assert.throws(
     () => reserveExclusiveArtifactPath({ databasePath: currentDbPath, artifactPath: output }),
     /拒绝覆盖/u,
@@ -470,7 +472,9 @@ test("CLI在读取凭据或执行云调用前拒绝out与checkpoint同文件及s
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "live-role-alias-"));
   temporaryPaths.push(root);
   const aliasRoot = `${root}-link`;
-  fs.symlinkSync(root, aliasRoot, "dir");
+  fs.symlinkSync(root, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+  assert.equal(fs.lstatSync(aliasRoot).isSymbolicLink(), true);
+  assert.equal(fs.realpathSync(aliasRoot), fs.realpathSync(root));
   temporaryPaths.push(aliasRoot);
   for (const [output, checkpoint] of [
     [path.join(root, "same.json"), path.join(root, "same.json")],
@@ -681,7 +685,8 @@ test("403持久化边界能发现schema、自增序列、空目录与权限元�
     /measured local persistent boundary/u,
   );
   const beforeMode = afterDirectory;
-  fs.chmodSync(tracked, 0o644);
+  if (process.platform === "win32") protectPrivateArtifact(tracked);
+  else fs.chmodSync(tracked, 0o644);
   const afterMode = capturePersistentSideEffectBoundary({
     db,
     databasePath: currentDbPath,
@@ -1662,6 +1667,7 @@ test("resume预守卫二次失败仍保留原三角色身份，替换同租户�
   const codeFiles = [
     runnerPath,
     path.join(projectRoot, "scripts/lib/live-role-flow-matrix.mjs"),
+    path.join(projectRoot, "server/src/engines/windows-private-artifact.ps1"),
     path.join(projectRoot, "scripts/lib/real-employee-matrix.mjs"),
     path.join(projectRoot, "scripts/lib/employee-output-quality-audit.mjs"),
     ...recursivelyListCodeDependencyFiles(path.join(projectRoot, "server/src")),
@@ -1753,7 +1759,8 @@ test("resume预守卫二次失败仍保留原三角色身份，替换同租户�
   );
 });
 
-test("SIGINT实际中断子进程返回130并写安全checkpoint，resume不产生任何业务POST", async () => {
+for (const transport of process.platform === "win32" ? ["ipc"] : ["signal", "ipc"]) {
+test(`${transport === "ipc" ? "父进程IPC取消" : "SIGINT"}实际中断子进程返回130并写安全checkpoint，resume不产生任何业务POST`, async () => {
   let resolveHealthHit = null;
   let businessPosts = 0;
   const server = http.createServer((request) => {
@@ -1796,7 +1803,8 @@ test("SIGINT实际中断子进程返回130并写安全checkpoint，resume不产�
     ];
     const child = spawn(process.execPath, args, {
       cwd: projectRoot,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: transport === "ipc" ? ["pipe", "pipe", "pipe", "ipc"] : ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     child.stdin.end(JSON.stringify(credentials));
     const exit = once(child, "exit");
@@ -1822,7 +1830,11 @@ test("SIGINT实际中断子进程返回130并写安全checkpoint，resume不产�
     } finally {
       clearTimeout(timeout);
     }
-    child.kill("SIGINT");
+    if (transport === "ipc") {
+      child.send({ type: "nanowork.live-role-flow.cancel.v1" });
+    } else {
+      child.kill("SIGINT");
+    }
     const [code, signal] = await exit;
     assert.equal(code, 130);
     assert.equal(signal, null);
@@ -1841,6 +1853,29 @@ test("SIGINT实际中断子进程返回130并写安全checkpoint，resume不产�
   } finally {
     server.close();
     await once(server, "close");
+  }
+});
+}
+
+test("证据发布flush使用平台句柄且任何fsync失败均向上传递并关闭句柄", () => {
+  for (const platform of ["win32", "linux"]) {
+    for (const shouldFail of [false, true]) {
+      const operations = [];
+      const failure = Object.assign(new Error("injected IO failure"), { code: "EIO" });
+      const target = path.resolve("flush-fixture", "evidence.json");
+      const fileSystem = {
+        openSync: (name, flags) => { operations.push(["open", name, flags]); return 7; },
+        fsyncSync: (fd) => { operations.push(["flush", fd]); if (shouldFail) throw failure; },
+        closeSync: (fd) => { operations.push(["close", fd]); },
+      };
+      const run = () => syncArtifactPublication(target, { platform, fileSystem });
+      if (shouldFail) assert.throws(run, (error) => error === failure);
+      else assert.equal(run(), platform === "win32" ? "published_file_flushed" : "parent_directory_flushed");
+      assert.deepEqual(operations, [
+        ["open", platform === "win32" ? target : path.dirname(target), platform === "win32" ? "r+" : "r"],
+        ["flush", 7], ["close", 7],
+      ]);
+    }
   }
 });
 

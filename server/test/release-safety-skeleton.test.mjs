@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
+import { removeTempDbSafely } from './helpers/temp-db.mjs';
 
 const nativeFetch = globalThis.fetch;
 const DBP = path.join(os.tmpdir(), `nanowork-release-safety-${process.pid}.db`);
@@ -285,8 +286,8 @@ test('外部检索失败不会把 Canary 写入日志或返回说明', async () 
   }
 });
 
-after(() => {
+after(async () => {
   delete process.env.ENABLE_SCHEDULER;
   process.env.YUNWU_API_KEY = '';
-  for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
+  await removeTempDbSafely(DBP);
 });

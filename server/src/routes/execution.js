@@ -12,8 +12,10 @@ import {
   canAccessOwner,
   canReviewManualTask,
   isManagerRole,
+  storeScopeClause,
   userScopeClause,
 } from "../engines/access.js";
+import { resolveWriteStoreId } from "../engines/store-scope.js";
 import {
   archiveAndDelete,
   deleteList,
@@ -28,12 +30,27 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { ALLOWED_EXTS } from "../engines/extract.js";
 import { decodeBase64File } from "../engines/filehub.js";
+import { publish } from "../engines/event-bus.js";
 
 const r = Router();
+
+// 人工任务状态翻转后的实时推送（待执行/进行中/待审核/已完成）；发布失败不影响业务结果。
+function publishManualTaskStatus(taskId, status, { assigneeId = null, title = "", actorId = null } = {}) {
+  try {
+    publish({
+      userIds: [assigneeId, actorId].filter(Boolean),
+      roles: status === "待审核" ? ["ops_director", "manager"] : [],
+      type: "task.status_changed",
+      payload: { kind: "manual", id: Number(taskId), status, title: String(title || ""), employeeIdx: null },
+    });
+  } catch (error) {
+    console.error(`[execution] 任务#${taskId}实时事件发布失败:`, error?.message || error);
+  }
+}
 const isManager = (u) => isManagerRole(u);
 const canTouchTask = (task, user) => canAccessOwner(user, task?.assignee_id);
 const PUBLIC_TASK_FIELDS = `t.id, t.title, t.detail, t.type, t.status, t.priority, t.assignee_id, t.due_at,
-  t.source, t.parent_task_id, t.source_ref_type, t.source_ref_id, t.assigned_by,
+  t.source, t.parent_task_id, t.source_ref_type, t.source_ref_id, t.assigned_by, t.store_id,
   t.activity_id, t.activity_plan_item, t.feishu_notified, t.risk, t.created_at, t.done_at, t.tenant_id,
   (SELECT s.result FROM task_submissions s
     WHERE s.tenant_id=t.tenant_id AND s.task_id=t.id ORDER BY s.id DESC LIMIT 1) last_submission_result,
@@ -641,6 +658,10 @@ r.get("/tasks", (req, res) => {
   const scope = userScopeClause(req.user, "t.assignee_id");
   where += scope.sql;
   params.push(...scope.params);
+  // 多门店：当前门店生效时只列本店任务（未传头=全部，结果与现状一致）
+  const storeScope = storeScopeClause(req.user, "t.store_id");
+  where += storeScope.sql;
+  params.push(...storeScope.params);
   if (assignee) {
     where += " AND t.assignee_id = ?";
     params.push(assignee);
@@ -715,10 +736,17 @@ r.post("/tasks", (req, res) => {
         });
     }
   }
+  // 任务门店归属：入参 storeId → 执行人绑定店 → X-Store-Id → 派活人绑定店 → 租户默认店
+  const assignee = assigneeId
+    ? q.get("SELECT id, store_id FROM users WHERE tenant_id = ? AND id = ?", curTenant(), assigneeId)
+    : null;
+  const taskStoreId = resolveWriteStoreId(req.user, b.storeId ?? b.store_id, { preferUser: assignee });
+  if ((b.storeId ?? b.store_id) && !taskStoreId)
+    return res.status(400).json({ error: "任务所属门店不存在或不属于当前企业" });
   const result = q.run(
     `INSERT INTO tasks(
-    title,detail,type,priority,assignee_id,assigned_by,parent_task_id,due_at,source,risk
-  ) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    title,detail,type,priority,assignee_id,assigned_by,parent_task_id,due_at,source,risk,store_id
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
     b.title,
     b.detail || "",
     b.type || "其他",
@@ -729,9 +757,15 @@ r.post("/tasks", (req, res) => {
     b.due_at || null,
     parentTask ? "任务拆解" : b.source || "手动",
     b.risk ? 1 : 0,
+    taskStoreId,
   );
   if (assigneeId && assigneeId !== Number(req.user.id))
     notify(assigneeId, "task", "新任务派发", b.title);
+  publishManualTaskStatus(result.lastInsertRowid, "待执行", {
+    assigneeId,
+    title: b.title,
+    actorId: req.user.id,
+  });
   logOp(
     req.user,
     "经营执行",
@@ -805,11 +839,13 @@ r.put("/tasks/:id", (req, res) => {
       req.params.id,
     );
   if (status && status !== task.status) {
-    q.run(
+    const started = q.run(
       `UPDATE tasks SET status='进行中',done_at=NULL WHERE tenant_id=? AND id=? AND status='待执行'`,
       curTenant(),
       req.params.id,
     );
+    if (started.changes)
+      publishManualTaskStatus(task.id, "进行中", { assigneeId: task.assignee_id, actorId: req.user.id });
   }
   res.json(
     q.get(
@@ -976,6 +1012,7 @@ r.post("/tasks/:id/submit", async (req, res) => {
     db.exec("COMMIT");
     transactionOpen = false;
     persisted = true;
+    publishManualTaskStatus(task.id, "待审核", { assigneeId: task.assignee_id, actorId: req.user.id });
     res.json({ ok: true, attachments: saved.files, aiOutputRef: sourceRef });
   } catch (e) {
     if (transactionOpen) {
@@ -1099,6 +1136,10 @@ r.post("/tasks/:id/review", (req, res) => {
     }
     throw error;
   }
+  publishManualTaskStatus(task.id, pass ? "已完成" : "进行中", {
+    assigneeId: task.assignee_id,
+    actorId: req.user.id,
+  });
   logOp(
     req.user,
     "经营执行",
@@ -1146,6 +1187,11 @@ r.post("/tasks/:id/reopen", (req, res) => {
   );
   if (!changed.changes)
     return res.status(409).json({ error: "任务状态已变化，请刷新后重试" });
+  publishManualTaskStatus(task.id, "进行中", {
+    assigneeId: task.assignee_id,
+    title: task.title,
+    actorId: req.user.id,
+  });
   logOp(req.user, "经营执行", "重开任务", `task#${task.id}:${reason}`);
   if (task.assignee_id && Number(task.assignee_id) !== Number(req.user.id)) {
     notify(

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createPrivateArtifact, windowsAclFingerprints } from "../../server/src/engines/private-artifact.js";
 
 export const LIVE_ROLE_FLOW_MATRIX_SCHEMA = "nanowork.live-role-flow-matrix.v2";
 export const LIVE_ROLE_FLOW_ISOLATION_MARKER =
@@ -918,28 +919,51 @@ export function reserveExclusiveArtifactPath({
   return candidate;
 }
 
+export function syncArtifactPublication(outputPath, {
+  platform = process.platform,
+  fileSystem = fs,
+} = {}) {
+  // Windows FlushFileBuffers requires a writable file handle; a read-only
+  // directory descriptor is not the POSIX directory-fsync facility. Reopen the
+  // published file and flush it explicitly. This guarantees a file flush, not a
+  // portable power-loss guarantee for the containing directory's link metadata.
+  const windows = platform === "win32";
+  const descriptor = fileSystem.openSync(
+    windows ? outputPath : path.dirname(outputPath), windows ? "r+" : "r",
+  );
+  try {
+    fileSystem.fsyncSync(descriptor);
+  } finally {
+    fileSystem.closeSync(descriptor);
+  }
+  return windows ? "published_file_flushed" : "parent_directory_flushed";
+}
+
 export function writeJsonExclusive0600(outputPath, value) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const temporary = `${outputPath}.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`;
   let descriptor;
+  let created = false;
   try {
-    descriptor = fs.openSync(temporary, "wx", 0o600);
+    if (process.platform === "win32") {
+      createPrivateArtifact(temporary);
+      created = true;
+      descriptor = fs.openSync(temporary, "r+");
+    } else {
+      descriptor = fs.openSync(temporary, "wx", 0o600);
+      created = true;
+    }
     fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
     fs.linkSync(temporary, outputPath);
     fs.chmodSync(outputPath, 0o600);
-    const parent = fs.openSync(path.dirname(outputPath), "r");
-    try {
-      fs.fsyncSync(parent);
-    } finally {
-      fs.closeSync(parent);
-    }
+    syncArtifactPublication(outputPath);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
     try {
-      fs.unlinkSync(temporary);
+      if (created) fs.unlinkSync(temporary);
     } catch {
       // A pre-existing destination is intentionally preserved.
     }
@@ -1527,6 +1551,13 @@ function captureFileTree(rootPath, ignoredAbsolutePaths = []) {
     }
   };
   visit(root);
+  if (process.platform === "win32") {
+    // stat.mode cannot detect DACL-only changes on Windows. Inspect real
+    // non-reparse entries in one batch; no permissions are changed here.
+    const keys = Object.keys(files).filter(key => ["directory", "file"].includes(files[key].kind));
+    const fingerprints = windowsAclFingerprints(keys.map(key => path.resolve(root, key)));
+    keys.forEach((key, index) => { files[key].aclSha256 = fingerprints[index]; });
+  }
   return files;
 }
 
@@ -2447,18 +2478,27 @@ export function writeJsonAtomic0600(outputPath, value) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const temporary = `${outputPath}.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`;
   let descriptor;
+  let created = false;
   try {
-    descriptor = fs.openSync(temporary, "wx", 0o600);
+    if (process.platform === "win32") {
+      createPrivateArtifact(temporary);
+      created = true;
+      descriptor = fs.openSync(temporary, "r+");
+    } else {
+      descriptor = fs.openSync(temporary, "wx", 0o600);
+      created = true;
+    }
     fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
     fs.renameSync(temporary, outputPath);
     fs.chmodSync(outputPath, 0o600);
+    syncArtifactPublication(outputPath);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
     try {
-      fs.unlinkSync(temporary);
+      if (created) fs.unlinkSync(temporary);
     } catch {
       // Rename already consumed the temporary file on success.
     }

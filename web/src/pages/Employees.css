@@ -510,6 +510,38 @@
   color: var(--ui-primary);
 }
 
+/* 自我介绍周校验角标：与 .employee-status 同一套圆点+小字口径，橙色提示老板确认 */
+.employee-intro-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  margin-top: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: var(--ui-warning-surface);
+  color: var(--ui-warning-text);
+  font-size: var(--font-1);
+  line-height: 1.6;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.employee-intro-flag i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.employee-intro-flag:hover,
+.employee-intro-flag:focus-visible {
+  color: var(--ui-warning-text);
+  border-color: var(--warn);
+  text-decoration: underline;
+}
+
 .employee-duty {
   display: -webkit-box;
   min-height: 46px;

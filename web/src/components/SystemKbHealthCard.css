@@ -1,0 +1,32 @@
+/* 知识库健康小卡（P0-2） */
+.kb-health-card {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.kb-health-card__icon.is-warn {
+  color: var(--warn);
+}
+
+.kb-health-card__icon.is-ok {
+  color: var(--ok);
+}
+
+.kb-health-card__tag {
+  margin-left: var(--space-2);
+}
+
+.kb-health-card__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+
+.kb-health-card__stat.is-warn .ant-statistic-content {
+  color: var(--warn);
+}
+
+.kb-health-card__meta {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}

@@ -54,5 +54,8 @@ export function buildPaihuoContentBrief(values) {
     enable_deck: source.enableDeck === true,
     xhs_style: normalizeStyle(source.xhsStyle, platforms.includes('小红书')),
     dy_style: normalizeStyle(source.dyStyle, platforms.includes('抖音')),
+    ...(source.xhsOptions && cleanText(source.type || source.template) === '小红书带货笔记'
+      ? { xhsOptions: source.xhsOptions }
+      : {}),
   };
 }

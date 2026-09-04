@@ -1,0 +1,12 @@
+/* 自我介绍独立页：复用员工目录页头，内容区限宽便于阅读 */
+.employee-intro-page .esi {
+  max-width: 880px;
+}
+
+.employee-intro-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-self: flex-start;
+}

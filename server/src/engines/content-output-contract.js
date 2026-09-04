@@ -1,7 +1,19 @@
 import { createHash } from 'node:crypto';
 
+import {
+  BENCHMARK_CARD_FIELDS,
+  BENCHMARK_CARD_SOURCE_TYPES,
+  BENCHMARK_HOOK_TYPES,
+} from './content-benchmark-cards.js';
 import { buildContentEmployeeWorkbenchProfile } from './content-employee-workbench.js';
+import {
+  STORE_FACT_INTERNAL_EVIDENCE,
+  validateFactsUsed,
+} from './content-store-facts.js';
 import { resolveWriterTitleCountRequirement } from './content-title-count.js';
+import { resolveXhsSalesContext } from './content-xhs-playbook.js';
+import { xhsSalesOutputSchema, validateXhsSalesOutput, renderXhsSalesMarkdown } from './content-xhs-output.js';
+import { selectedXhsPipelineVersion } from './content-xhs-pipeline.js';
 
 const ARTIFACT_EXTENSIONS = Object.freeze({
   json: 'json',
@@ -491,6 +503,45 @@ const CONTENT_EMPLOYEE_OUTPUT_SCHEMAS = Object.freeze([
   }),
 ]);
 
+// ===== 拆解师运行期字段：爆款结构卡 structure_cards（不改 catalog outputSchema.keys，指纹不变）=====
+export const STRUCTURE_CARDS_KEY = 'structure_cards';
+export const STRUCTURE_CARDS_STATION = 2;
+const STRUCTURE_CARD_MIN_STEPS = 2;
+const STRUCTURE_CARD_MAX_ITEMS = 8;
+
+function structureCardsResponseSchema() {
+  return schemaArray(schemaObject({
+    platform: schemaString({ minLength: MINIMUM_TEXT.label, description: '样本所在平台，如 小红书 / 抖音 / 公众号。' }),
+    hook_type: schemaString({ enum: [...BENCHMARK_HOOK_TYPES], description: '开头钩子类型，只能五选一。' }),
+    opening_3s: schemaString({ minLength: MINIMUM_TEXT.label, description: '前3秒 / 首屏具体怎么开场（描述手法，不抄原句事实）。' }),
+    structure: schemaArray(schemaString({ minLength: MINIMUM_TEXT.label }), {
+      minItems: STRUCTURE_CARD_MIN_STEPS,
+      maxItems: 10,
+    }),
+    emotion_trigger: schemaString({ minLength: MINIMUM_TEXT.label }),
+    selling_point_presentation: schemaString({ minLength: MINIMUM_TEXT.label }),
+    cta_type: schemaString({ minLength: MINIMUM_TEXT.label }),
+    hashtags: schemaArray(schemaTagString(), { minItems: 0, maxItems: 12 }),
+    duration_or_length: schemaString({ minLength: MINIMUM_TEXT.label }),
+    pacing_notes: schemaString({ minLength: MINIMUM_TEXT.label }),
+    reusable_pattern: schemaString({ minLength: MINIMUM_TEXT.detail, description: '可复用的结构模式，只写结构与手法，不写样本事实。' }),
+    risk_flags: schemaArray(schemaString({ minLength: MINIMUM_TEXT.label }), { minItems: 0, maxItems: 8 }),
+    source: schemaObject({
+      url: { type: ['string', 'null'], description: '必须回指本次已验证快照中的URL；截图/手工样本填 null。' },
+      type: schemaString({ enum: [...BENCHMARK_CARD_SOURCE_TYPES] }),
+      fetchedAt: { type: ['string', 'null'] },
+    }),
+  }, { description: '按样本拆出的可借鉴结构卡；只借结构，不抄事实。' }), {
+    minItems: 1,
+    maxItems: STRUCTURE_CARD_MAX_ITEMS,
+  });
+}
+
+/**
+ * 拆解师在「爆款学习」模式（链接 / 截图 / 公开检索样本）下追加到用户消息的说明块。
+ */
+export { structureCardsPromptBlock } from './content-benchmark-cards.js';
+
 function parseRequirementObject(requirement) {
   if (isPlainObject(requirement)) return requirement;
   if (typeof requirement !== 'string' || !requirement.trim().startsWith('{')) return null;
@@ -554,6 +605,12 @@ export function getContentEmployeeOutputResponseSchema(idx, context = {}) {
     throw new Error(`内容员工${profile.identity.idx}响应Schema与岗位输出字段不一致`);
   }
   const responseSchema = structuredClone(schema);
+  const xhsSales = resolveXhsSalesContext(profile.identity.idx, context);
+  if (xhsSales.salesMode) return { name: 'content_employee_3_xhs_sales_output', schema: xhsSalesOutputSchema(xhsSales) };
+  if (profile.identity.idx === 4 && context.executionMode === 'pipeline' && selectedXhsPipelineVersion(context.outputs)) {
+    responseSchema.properties.body.minLength = 120;
+    responseSchema.properties.body.maxLength = 1000;
+  }
   const requestedPlatforms = requestedPublishPlatforms(context);
   if (profile.identity.idx === 8 && requestedPlatforms) {
     const versions = responseSchema.properties.versions;
@@ -562,6 +619,34 @@ export function getContentEmployeeOutputResponseSchema(idx, context = {}) {
     versions.description = '只为任务书请求的平台生成发布包；每个请求平台至少一个主发布包，同平台后续项可作为可选变体，不能补造未请求平台。';
     versions.items.properties.platform.enum = [...requestedPlatforms];
     versions.items.properties.platform.description = '必须严格匹配任务书 requested platforms 中的平台名称。';
+  }
+  // 拆解师爆款学习模式：运行期追加 structure_cards（默认契约仍与 catalog keys 一致）
+  if (profile.identity.idx === STRUCTURE_CARDS_STATION
+    && (context?.structureCards === true || context?.structureCardsRequired === true)) {
+    responseSchema.properties[STRUCTURE_CARDS_KEY] = structureCardsResponseSchema();
+    responseSchema.required = [...responseSchema.required, STRUCTURE_CARDS_KEY];
+  }
+  // 复盘官带真实效果数据模式：运行期追加 next_draft_changes（有版本策略时再加 winning_strategy）
+  if (profile.identity.idx === 9) {
+    const mode = retrospectiveMaterialMode(context);
+    if (mode.hasMetrics) {
+      responseSchema.properties.next_draft_changes = schemaArray(schemaObject({
+        target: schemaString({
+          enum: [...RETROSPECTIVE_CHANGE_TARGETS],
+          description: '下一稿要改的位置。',
+        }),
+        change: schemaString({ minLength: RETROSPECTIVE_CHANGE_TEXT_MIN, description: '下一稿具体怎么改（原则+做法）。' }),
+        evidence: schemaString({ minLength: RETROSPECTIVE_CHANGE_TEXT_MIN, description: '必须引用任务材料真实效果数据中的具体数字或事实。' }),
+      }), { minItems: RETROSPECTIVE_CHANGE_MIN_ITEMS, maxItems: RETROSPECTIVE_CHANGE_MAX_ITEMS });
+      responseSchema.required = [...responseSchema.required, 'next_draft_changes'];
+    }
+    if (mode.hasVersions) {
+      responseSchema.properties.winning_strategy = schemaObject({
+        strategy: schemaString({ minLength: MINIMUM_TEXT.label, description: '已发布版本中胜出（或未胜出）的策略名。' }),
+        reason: schemaString({ minLength: MINIMUM_TEXT.detail, description: '用真实效果数据说明理由。' }),
+      });
+      responseSchema.required = [...responseSchema.required, 'winning_strategy'];
+    }
   }
   return {
     name: `content_employee_${profile.identity.idx}_output`,
@@ -705,6 +790,90 @@ function validateUniqueEvidenceUrlIdentities(value, path, errors) {
   });
 }
 
+function validateEnumString(allowed, label) {
+  return (value, path, errors) => {
+    if (!validateNonEmptyString(value, path, errors)) return;
+    if (!allowed.includes(value.trim())) {
+      errors.push(`字段“${path}”${label}只能是：${allowed.join('、')}。`);
+    }
+  };
+}
+
+function validateNullableString(value, path, errors) {
+  if (value === null) return;
+  if (typeof value !== 'string') errors.push(`字段“${path}”必须是字符串或 null。`);
+}
+
+function validateStructureCardSource(value, path, errors) {
+  validateObject(value, path, errors, {
+    url: (url, urlPath, targetErrors) => {
+      if (url === null) return;
+      validateHttpUrl(url, urlPath, targetErrors);
+    },
+    type: validateEnumString([...BENCHMARK_CARD_SOURCE_TYPES], '来源类型'),
+    fetchedAt: validateNullableString,
+  });
+  if (!isPlainObject(value)) return;
+  if (value.type === 'screenshot' && value.url) {
+    errors.push(`字段“${path}.url”：截图样本没有可核验 URL，必须填 null。`);
+  }
+  if ((value.type === 'live' || value.type === 'link') && !value.url) {
+    errors.push(`字段“${path}.url”：${value.type} 来源必须回指本次已验证快照中的 URL。`);
+  }
+}
+
+/**
+ * 拆解师爆款结构卡：≥1 张，每字段必填；字段集合与 BENCHMARK_CARD_FIELDS 严格一致。
+ * source.url 与已验证快照的回指校验在 validateWebEvidenceAttribution 中完成。
+ */
+export function validateStructureCards(value, errors, path = STRUCTURE_CARDS_KEY) {
+  const fields = {
+    platform: minimumTextField(MINIMUM_TEXT.label),
+    hook_type: validateEnumString([...BENCHMARK_HOOK_TYPES], '钩子类型'),
+    opening_3s: minimumTextField(MINIMUM_TEXT.label),
+    structure: (steps, stepsPath, targetErrors) => {
+      validateStringArray(steps, stepsPath, targetErrors, {
+        min: STRUCTURE_CARD_MIN_STEPS,
+        max: 10,
+        itemMin: MINIMUM_TEXT.label,
+      });
+      validateUniqueStrings(steps, stepsPath, targetErrors);
+    },
+    emotion_trigger: minimumTextField(MINIMUM_TEXT.label),
+    selling_point_presentation: minimumTextField(MINIMUM_TEXT.label),
+    cta_type: minimumTextField(MINIMUM_TEXT.label),
+    hashtags: (tags, tagsPath, targetErrors) => {
+      if (!Array.isArray(tags)) {
+        targetErrors.push(`字段“${tagsPath}”必须是数组。`);
+        return;
+      }
+      if (tags.length > 12) targetErrors.push(`字段“${tagsPath}”最多12项。`);
+      tags.forEach((tag, index) => {
+        validateMinimumText(tag, `${tagsPath}[${index}]`, targetErrors, 1);
+        if (typeof tag === 'string' && /[#＃]/u.test(tag)) {
+          targetErrors.push(`字段“${tagsPath}[${index}]”是纯文本标签，不得包含 # 或＃。`);
+        }
+      });
+    },
+    duration_or_length: minimumTextField(MINIMUM_TEXT.label),
+    pacing_notes: minimumTextField(MINIMUM_TEXT.label),
+    reusable_pattern: minimumTextField(MINIMUM_TEXT.detail),
+    risk_flags: (flags, flagsPath, targetErrors) => {
+      if (!Array.isArray(flags)) {
+        targetErrors.push(`字段“${flagsPath}”必须是数组。`);
+        return;
+      }
+      if (flags.length > 8) targetErrors.push(`字段“${flagsPath}”最多8项。`);
+      flags.forEach((flag, index) => validateMinimumText(flag, `${flagsPath}[${index}]`, targetErrors, MINIMUM_TEXT.label));
+    },
+    source: validateStructureCardSource,
+  };
+  if (JSON.stringify(Object.keys(fields)) !== JSON.stringify([...BENCHMARK_CARD_FIELDS])) {
+    throw new Error('结构卡契约字段与 BENCHMARK_CARD_FIELDS 登记不一致');
+  }
+  validateObjectArray(value, path, errors, fields, { min: 1, max: STRUCTURE_CARD_MAX_ITEMS });
+}
+
 const OUTPUT_VALIDATORS = Object.freeze([
   (value, errors) => {
     validateMinimumText(value.briefing, 'briefing', errors, MINIMUM_TEXT.trendBriefing);
@@ -800,8 +969,9 @@ const OUTPUT_VALIDATORS = Object.freeze([
     }, { min: 2, max: 4 });
     validateUniqueObjectField(value.image_plan, 'image_plan', errors, 'slot');
   },
-  (value, errors) => {
-    validateMinimumText(value.body, 'body', errors, MINIMUM_TEXT.article);
+  (value, errors, context = {}) => {
+    const selected = context.executionMode === 'pipeline' && selectedXhsPipelineVersion(context.outputs, { required: false });
+    validateMinimumText(value.body, 'body', errors, selected ? 120 : MINIMUM_TEXT.article);
     validateSegmentedMarkdown(value.body, 'body', errors);
     validateStringArray(value.title_candidates, 'title_candidates', errors, {
       exact: 3,
@@ -1119,6 +1289,18 @@ function appendGroundingStrings(value, target, depth = 0) {
   if (Object.hasOwn(value, 'results')) appendGroundingStrings(value.results, target, depth + 1);
 }
 
+// 门店事实包里可对外引用的事实原句（内部证据不算已核验对外事实）。
+// 只取 claim 文本，不取「未获取」清单——否则会把 missing 项误判成任务书明确缺失。
+function storeFactClaimStrings(context) {
+  const pack = context?.storeFacts;
+  if (!isPlainObject(pack) || !Array.isArray(pack.facts)) return [];
+  return pack.facts
+    .filter(fact => isPlainObject(fact) && fact.usage !== STORE_FACT_INTERNAL_EVIDENCE)
+    .map(fact => String(fact.claim || '').trim())
+    .filter(Boolean)
+    .slice(0, 64);
+}
+
 function factContextText(context) {
   if (!isPlainObject(context)) return '';
   const parts = [];
@@ -1133,9 +1315,11 @@ function factContextText(context) {
     context.trustedEvidence,
     context.trustedWebEvidence,
     context.publicationMetrics,
+    context.retroMetrics?.evidenceText,
   ]) appendGroundingStrings(value, parts);
   if (context.web?.verified === true) appendGroundingStrings(context.web.results, parts);
   if (context.webEvidence?.verified === true) appendGroundingStrings(context.webEvidence.results, parts);
+  parts.push(...storeFactClaimStrings(context));
   return parts.join('\n').trim();
 }
 
@@ -1418,6 +1602,7 @@ function writerVerifiedFactText(context) {
   if (normalized.webEvidence?.verified === true) {
     appendGroundingStrings(normalized.webEvidence.results, parts);
   }
+  parts.push(...storeFactClaimStrings(normalized));
   return parts.join('\n').trim();
 }
 
@@ -1496,6 +1681,7 @@ function validateRequiredStationInputs(idx, context, errors) {
     context.title,
     context.requirement,
     context.feedback,
+    context.retroMetrics?.evidenceText,
     ...(Array.isArray(context.attachments)
       ? context.attachments.map(item => `${item?.name || ''}\n${item?.content || ''}`)
       : []),
@@ -1515,8 +1701,12 @@ function validateRequiredStationInputs(idx, context, errors) {
     }
   }
   if (idx === 9) {
-    const hasPublishedContent = /(?:发布记录|已发布内容|发布批次|内容ID|content[_ -]?id|工位9·分发官产出)/iu.test(text);
-    const hasRealMetric = /(?:播放|阅读|曝光|完播|互动|收藏|转发|点赞|评论|点击|打开|停留|跳出|转化|咨询|线索|到店|成交)(?:率|量|数)?[^，,。！？!?;；\n]{0,12}(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万亿]+)/u.test(text);
+    const frozen = context.retroMetrics?.schema === 'nanowork.content-retrospective-evidence/1' ? context.retroMetrics : null;
+    const hasPublishedContent = frozen ? Number.isSafeInteger(frozen.content?.id) && frozen.content.id > 0
+      : /(?:发布记录|已发布内容|发布批次|内容ID|content[_ -]?id|工位9·分发官产出)/iu.test(text);
+    const hasRealMetric = frozen ? frozen.metrics.some(row => ['views', 'likes', 'saves', 'comments', 'orders']
+      .some(key => typeof row[key] === 'number' && Number.isFinite(row[key]) && row[key] >= 0))
+      : /(?:浏览|订单|播放|阅读|曝光|完播|互动|收藏|转发|点赞|评论|点击|打开|停留|跳出|转化|咨询|线索|到店|成交)(?:率|量|数)?[^，,。！？!?;；\n]{0,12}(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万亿]+)/u.test(text);
     if (!hasPublishedContent || !hasRealMetric) {
       errors.push('工位必需输入门禁：复盘官缺少真实发布记录和至少一项发布后效果指标；本轮只能形成数据采集计划，不能作为已完成复盘被采纳。');
     }
@@ -1789,6 +1979,25 @@ function validateWebEvidenceAttribution(idx, parsed, context, errors) {
       { account: item?.account },
     );
   });
+  validateStructureCardSourceAttribution(parsed, sources, errors);
+}
+
+/**
+ * 结构卡 source.url 若非空，必须回指本次已验证快照（同一篇文章身份，忽略追踪参数）。
+ * 允许的快照 = context.web/webEvidence.results（公开检索 + 链接样本受控快照均并入其中）。
+ */
+function validateStructureCardSourceAttribution(parsed, sources, errors) {
+  const cards = parsed?.[STRUCTURE_CARDS_KEY];
+  if (!Array.isArray(cards)) return;
+  const verified = new Set(sources.map(source => normalizedEvidenceUrlIdentity(source.url)).filter(Boolean));
+  cards.forEach((card, index) => {
+    const url = card?.source?.url;
+    if (!url) return;
+    const identity = normalizedEvidenceUrlIdentity(url);
+    if (!identity || !verified.has(identity)) {
+      errors.push(`联网证据归因：字段“${STRUCTURE_CARDS_KEY}[${index}].source.url”不是本次已验证快照中的来源，禁止补造样本链接。`);
+    }
+  });
 }
 
 function matcherFor(pattern) {
@@ -2006,7 +2215,7 @@ function retrospectiveQualitativeClaims(parsed) {
         // 仅豁免同一逗号分句内明确“不写/不提供/禁止/未形成”的边界陈述。
         // 同一句中的“待验证+不作为结论”仍可限定前置分句；但禁止性陈述
         // 不会豁免后续另一分句的肯定断言。“不低于”也不在禁止动词白名单内。
-        if (RETROSPECTIVE_PROHIBITION_RE.test(raw)) continue;
+        if (RETROSPECTIVE_PROHIBITION_RE.test(raw) || /不把[^，,。！？!?;；]{1,32}当(?:成|作)/u.test(raw)) continue;
         if (qualifiedRetrospectiveHypothesis(qualificationWindow)) continue;
         claims.push({
           path: entry.path,
@@ -2040,6 +2249,145 @@ function validateRetrospectiveMetricGrounding(parsed, contextText, errors) {
     errors.push(`复盘指标事实门禁：字段“${claim.path}”给出了未在任务书、已提供资料或已核验联网证据中出现的${claim.metric}具体值“${claim.raw}”；请删除该数值，改为“待补历史基线”或“由负责人设定”。`);
     if (errors.length >= 24) break;
   }
+}
+
+// ===== 复盘官（idx 9）运行期字段：next_draft_changes / winning_strategy =====
+// 出厂契约 keys 来自 catalog（不可改）；这两个字段是运行期追加：派活材料中带有发布回填
+// 的真实效果数据（下方 marker）时必填，否则可缺省；出现时按同样规则校验形状与事实来源。
+export const RETROSPECTIVE_METRICS_MATERIAL_MARKER = '【真实效果数据（来自发布回填，可直接引用）】';
+export const RETROSPECTIVE_VERSIONS_MATERIAL_MARKER = '【已发布版本的策略与框架（来自撰稿人产出）】';
+export const RETROSPECTIVE_RUNTIME_KEYS = Object.freeze(['next_draft_changes', 'winning_strategy']);
+export const RETROSPECTIVE_CHANGE_TARGETS = Object.freeze([
+  'title',
+  'hook',
+  'structure',
+  'cta',
+  'tags',
+  'video_hook',
+  'cover',
+]);
+export const RETROSPECTIVE_CHANGE_MIN_ITEMS = 2;
+export const RETROSPECTIVE_CHANGE_MAX_ITEMS = 8;
+const RETROSPECTIVE_CHANGE_TEXT_MIN = 8;
+const RETROSPECTIVE_CHANGE_TEXT_MAX = 200;
+const RETROSPECTIVE_STRATEGY_MAX = 80;
+const RETROSPECTIVE_EVIDENCE_NUMBER_RE = /\d+(?:\.\d+)?/gu;
+
+export function retrospectiveMaterialMode(context = {}) {
+  const contextText = factContextText(context);
+  const explicit = isPlainObject(context?.retroMetrics) ? context.retroMetrics : null;
+  if (explicit?.schema === 'nanowork.content-retrospective-evidence/1') {
+    return { hasMetrics: Array.isArray(explicit.metrics) && explicit.metrics.length > 0, hasVersions: explicit.canCompare === true };
+  }
+  const hasMetrics = contextText.includes(RETROSPECTIVE_METRICS_MATERIAL_MARKER) || Boolean(explicit);
+  const hasVersions = hasMetrics && (
+    contextText.includes(RETROSPECTIVE_VERSIONS_MATERIAL_MARKER)
+    || Boolean(explicit?.content?.strategy)
+    || Boolean(explicit?.strategy)
+  );
+  return { hasMetrics, hasVersions };
+}
+
+function normalizedEvidenceNumbers(text) {
+  const numbers = new Set();
+  for (const match of String(text || '').matchAll(RETROSPECTIVE_EVIDENCE_NUMBER_RE)) {
+    const normalized = normalizedMetricNumber(match[0]);
+    if (normalized) numbers.add(normalized);
+  }
+  return numbers;
+}
+
+function validateRetrospectiveChangeEvidence(evidence, path, contextNumbers, errors) {
+  const claimed = normalizedEvidenceNumbers(evidence);
+  if (!claimed.size) {
+    errors.push(`字段“${path}”必须引用任务材料中的具体数字（如“收藏率 4.33%”“评论 9 条”），当前没有任何数字，不能作为改法依据。`);
+    return;
+  }
+  const grounded = [...claimed].every(number => contextNumbers.has(number));
+  if (!grounded) {
+    errors.push(`字段“${path}”包含未获效果数据支持的数字；所有数字都必须有依据，不能混入虚构结果。`);
+  }
+}
+
+function validateRetrospectiveRuntimeFields(parsed, context, errors) {
+  const mode = retrospectiveMaterialMode(context);
+  const frozenEvidence = context.retroMetrics?.schema === 'nanowork.content-retrospective-evidence/1' ? context.retroMetrics : null;
+  const contextNumbers = frozenEvidence ? new Set([
+    ...frozenEvidence.metrics.flatMap(row => [row.views, row.likes, row.saves, row.comments, row.orders, ...Object.values(row.rates || {})]),
+    ...frozenEvidence.comparisonStats.flatMap(row => [row.contents, row.avgSaveRate, row.rateSampleCounts?.saves]),
+  ].filter(value => typeof value === 'number' && Number.isFinite(value)).map(String)) : normalizedEvidenceNumbers(factContextText(context));
+  const hasChanges = Object.hasOwn(parsed, 'next_draft_changes');
+  if (!hasChanges && mode.hasMetrics) {
+    errors.push(`缺少必需字段：next_draft_changes。任务材料已提供真实效果数据，复盘官必须给出至少${RETROSPECTIVE_CHANGE_MIN_ITEMS}条下一稿改法。`);
+  }
+  if (hasChanges) {
+    validateObjectArray(parsed.next_draft_changes, 'next_draft_changes', errors, {
+      target: (value, path, targetErrors) => {
+        if (!RETROSPECTIVE_CHANGE_TARGETS.includes(value)) {
+          targetErrors.push(`字段“${path}”只能是 ${RETROSPECTIVE_CHANGE_TARGETS.join('/')} 之一。`);
+        }
+      },
+      change: textRangeField(RETROSPECTIVE_CHANGE_TEXT_MIN, RETROSPECTIVE_CHANGE_TEXT_MAX),
+      evidence: (value, path, targetErrors) => {
+        if (!validateMinimumText(value, path, targetErrors, RETROSPECTIVE_CHANGE_TEXT_MIN)) return;
+        validateMaximumText(value, path, targetErrors, RETROSPECTIVE_CHANGE_TEXT_MAX);
+        validateRetrospectiveChangeEvidence(value, path, contextNumbers, targetErrors);
+      },
+    }, { min: RETROSPECTIVE_CHANGE_MIN_ITEMS, max: RETROSPECTIVE_CHANGE_MAX_ITEMS });
+    if (Array.isArray(parsed.next_draft_changes)) {
+      validateUniqueObjectField(parsed.next_draft_changes, 'next_draft_changes', errors, 'change');
+    }
+  }
+  const hasStrategy = Object.hasOwn(parsed, 'winning_strategy');
+  if (!hasStrategy && mode.hasVersions) {
+    errors.push('缺少必需字段：winning_strategy。任务材料已给出已发布版本的策略信息，复盘官必须判定胜出策略并说明理由。');
+  }
+  if (hasStrategy) {
+    validateObject(parsed.winning_strategy, 'winning_strategy', errors, {
+      strategy: textRangeField(MINIMUM_TEXT.label, RETROSPECTIVE_STRATEGY_MAX),
+      reason: textRangeField(MINIMUM_TEXT.detail, RETROSPECTIVE_CHANGE_TEXT_MAX),
+    });
+    if (frozenEvidence && (!mode.hasVersions || !frozenEvidence.comparisonStats.some(row => row.strategy === parsed.winning_strategy?.strategy))) {
+      errors.push('winning_strategy缺少同渠道足量对照样本，或策略不在服务端对照数据中；不得判定胜出。');
+    }
+  }
+}
+
+// 派活 overlay 用：告诉复盘官在有真实效果数据时如何输出运行期字段
+export function retrospectiveRuntimeFieldPromptLines({ hasVersions = false } = {}) {
+  return [
+    '【复盘官运行期附加字段·任务材料带有真实效果数据时必填】',
+    `next_draft_changes：数组，${RETROSPECTIVE_CHANGE_MIN_ITEMS}-${RETROSPECTIVE_CHANGE_MAX_ITEMS} 条，每条 {"target","change","evidence"}；target 只能是 ${RETROSPECTIVE_CHANGE_TARGETS.join('/')}；change 写下一稿具体怎么改（原则+做法，${RETROSPECTIVE_CHANGE_TEXT_MIN}-${RETROSPECTIVE_CHANGE_TEXT_MAX}字）；evidence 必须引用上方真实效果数据中的具体数字或事实（如“收藏率 4.33%”“评论 9 条”），不得引用材料之外的数字。`,
+    hasVersions
+      ? 'winning_strategy：对象 {"strategy","reason"}；strategy 填已发布版本的策略名（见“已发布版本的策略与框架”），reason 用真实数据说明该策略为何胜出或未胜出。'
+      : 'winning_strategy：材料没有版本策略信息时不要输出该字段。',
+    '这些字段与出厂字段同级、放在同一个 JSON 对象里；材料没有真实效果数据时不要输出 next_draft_changes。',
+  ];
+}
+
+function renderRetrospectiveRuntimeSections(parsed) {
+  const sections = [];
+  const changes = Array.isArray(parsed?.next_draft_changes) ? parsed.next_draft_changes : [];
+  if (changes.length) {
+    sections.push(
+      '## 下一稿改法（可采纳为员工心得）',
+      '',
+      ...changes.map((item, index) => [
+        `${index + 1}. **[${String(item?.target || '').trim()}]** ${String(item?.change || '').trim()}`,
+        `   依据：${String(item?.evidence || '').trim()}`,
+      ].join('\n')),
+      '',
+    );
+  }
+  if (isPlainObject(parsed?.winning_strategy)) {
+    sections.push(
+      '## 胜出策略',
+      '',
+      `**${String(parsed.winning_strategy.strategy || '').trim()}**：${String(parsed.winning_strategy.reason || '').trim()}`,
+      '',
+    );
+  }
+  return sections;
 }
 
 function hasEvidencePayload(value) {
@@ -2337,7 +2685,7 @@ function supportedTimeQuantities(contextText) {
 function validateFactGrounding(idx, parsed, context, errors) {
   const contextText = factContextText(context);
   validateWebEvidenceAttribution(idx, parsed, context, errors);
-  if (idx === 9) validateRetrospectiveMetricGrounding(parsed, contextText, errors);
+  if (idx === 9) validateRetrospectiveMetricGrounding(parsed, context.retroMetrics?.schema === 'nanowork.content-retrospective-evidence/1' ? context.retroMetrics.evidenceText : contextText, errors);
   if (idx >= 3 && idx <= 8) {
     validateMarketingQualitativeFactGrounding(idx, parsed, context, errors);
   }
@@ -2397,6 +2745,7 @@ function markdownNumberedList(values) {
 }
 
 function renderWriterMarkdown(parsed) {
+  if (Array.isArray(parsed.versions)) return renderXhsSalesMarkdown(parsed);
   const imagePlan = parsed.image_plan.map((item, index) => [
     `${index + 1}. **${item.slot.trim()}**`,
     `   ${item.desc.trim()}`,
@@ -2462,6 +2811,7 @@ function renderRetrospectiveMarkdown(parsed) {
     '## 可回写岗位经验',
     '',
     profileUpdates,
+    ...(parsed.next_draft_changes || parsed.winning_strategy ? ['', ...renderRetrospectiveRuntimeSections(parsed)] : []),
   ].join('\n');
 }
 
@@ -2539,7 +2889,8 @@ function buildArtifact(profile, parsed) {
     content,
     employeeIdx: profile.identity.idx,
     employeeKey: profile.identity.key,
-    sourceKeys: [...profile.jobProfile.outputSchema.keys],
+    sourceKeys: profile.identity.idx === 3 && Array.isArray(parsed.versions)
+      ? ['versions', 'image_plan'] : [...profile.jobProfile.outputSchema.keys],
   };
 }
 
@@ -2585,6 +2936,7 @@ const REPORT_FIELD_LABELS = Object.freeze({
   profile_updates: '人设与策略更新',
   topics: '选题机会',
   benchmarks: '竞品样本',
+  structure_cards: '爆款结构卡',
   sources: '核验来源',
   versions: '平台发布版本',
   images: '图片产物',
@@ -2760,6 +3112,134 @@ function buildPreviewMarkdown(profile, parsed, artifact, context = {}) {
   return renderContentEmployeeReportMarkdown(profile, parsed, artifact, context);
 }
 
+// ===== 门店事实闭环（advisory）=====
+// facts_used: [{ claim, factId }] 是撰稿人(3)/AI带货员(10)登记「正文引用了哪些门店事实」的字段。
+// 本轮只做建议性告警、不阻断；M3/M4 会把 facts_used 升为正式字段并按 tier 决定是否硬门。
+export const STORE_FACT_CLOSURE_STATIONS = Object.freeze(new Set([3, 10]));
+export const STORE_FACTS_USED_KEY = 'facts_used';
+export const CONTENT_STORE_FACT_UNREGISTERED = 'CONTENT_STORE_FACT_UNREGISTERED';
+export const CONTENT_STORE_FACT_UNKNOWN_ID = 'CONTENT_STORE_FACT_UNKNOWN_ID';
+export const CONTENT_STORE_FACT_INTERNAL_QUOTE = 'CONTENT_STORE_FACT_INTERNAL_QUOTE';
+
+function normalizedClosureText(value) {
+  return String(value ?? '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+}
+
+// 事实在正文中的「锚点」：正文只要出现锚点，就视为引用了该事实
+function storeFactAnchors(fact) {
+  const anchors = [];
+  const claim = String(fact?.claim || '');
+  const quoted = claim.match(/「([^」]{2,60})」/u)?.[1];
+  switch (fact?.kind) {
+    case 'store_name':
+    case 'dish_name': {
+      if (typeof fact.value === 'string' && fact.value.length >= 2) anchors.push(fact.value);
+      break;
+    }
+    case 'signature_dish':
+    case 'dish_price': {
+      if (quoted) anchors.push(quoted);
+      break;
+    }
+    case 'address':
+    case 'hours':
+    case 'area': {
+      const value = typeof fact.value === 'string' ? fact.value : '';
+      if (value.length >= 4) anchors.push(value);
+      break;
+    }
+    case 'avg_ticket': {
+      const amount = String(fact.value || '').match(/^cny:(\d+(?:\.\d+)?)$/u)?.[1];
+      if (amount) {
+        const numeric = Number(amount);
+        anchors.push(`人均${numeric}`, `人均¥${numeric}`, `人均${numeric.toFixed(2)}`, `人均¥${numeric.toFixed(2)}`);
+      }
+      break;
+    }
+    case 'rating_summary': {
+      const summary = isPlainObject(fact.value) ? fact.value : null;
+      if (summary?.count) anchors.push(`${summary.count}条评价`);
+      if (Number.isFinite(Number(summary?.avgRating))) {
+        anchors.push(`${Number(summary.avgRating).toFixed(1)}分`);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return anchors.map(normalizedClosureText).filter(anchor => anchor.length >= 2);
+}
+
+function closureBodyText(parsed) {
+  const entries = collectStringEntries(parsed)
+    .filter(entry => !entry.path.startsWith(STORE_FACTS_USED_KEY));
+  return normalizedClosureText(entries.map(entry => entry.text).join('\n'));
+}
+
+/**
+ * 门店事实闭环校验（advisory）：
+ * - facts_used 每条 factId 必须存在于事实包（否则 CONTENT_STORE_FACT_UNKNOWN_ID）；
+ * - 正文引用了事实包里的菜名/地址/人均/评价聚合却未在 facts_used 登记 → CONTENT_STORE_FACT_UNREGISTERED；
+ * - 内部证据（顾客评价原句）被登记或被原句写进正文 → CONTENT_STORE_FACT_INTERNAL_QUOTE；
+ * - min：facts_used 条数下限，不足时 CONTENT_STORE_FACT_UNREGISTERED。
+ */
+export function validateStoreFactClosure(parsed, pack, { min = 0, requireUsage = false } = {}) {
+  const warnings = [];
+  const facts = isPlainObject(pack) && Array.isArray(pack.facts) ? pack.facts.filter(isPlainObject) : [];
+  const factsUsedRaw = isPlainObject(parsed) && Object.hasOwn(parsed, STORE_FACTS_USED_KEY)
+    ? parsed[STORE_FACTS_USED_KEY]
+    : null;
+  const registration = validateFactsUsed(factsUsedRaw, pack, { min });
+  for (const message of registration.errors) {
+    const code = /内部证据/u.test(message)
+      ? CONTENT_STORE_FACT_INTERNAL_QUOTE
+      : /至少需登记/u.test(message)
+        ? CONTENT_STORE_FACT_UNREGISTERED
+        : CONTENT_STORE_FACT_UNKNOWN_ID;
+    warnings.push({ code, message });
+  }
+  const registered = new Set(registration.used.map(entry => entry.factId));
+  const unregistered = [];
+  const body = isPlainObject(parsed) ? closureBodyText(parsed) : '';
+  if (body) {
+    for (const fact of facts) {
+      if (!fact.id) continue;
+      if (fact.usage === STORE_FACT_INTERNAL_EVIDENCE) {
+        const quote = normalizedClosureText(fact.value || '');
+        if (quote.length >= 8 && body.includes(quote)) {
+          warnings.push({
+            code: CONTENT_STORE_FACT_INTERNAL_QUOTE,
+            message: `正文原句引用了内部证据 [${fact.id}]（${fact.kind}）；顾客评价原句不得对外发布，只能改写为聚合口径。`,
+          });
+        }
+        continue;
+      }
+      if (registered.has(fact.id)) {
+        const anchors = storeFactAnchors(fact);
+        if (requireUsage && anchors.length && !anchors.some(anchor => body.includes(anchor))) {
+          warnings.push({ code: CONTENT_STORE_FACT_UNREGISTERED,
+            message: `facts_used 登记了事实 [${fact.id}]，但对外内容未引用该事实，不能只登记编号凑数。` });
+        }
+        continue;
+      }
+      if (storeFactAnchors(fact).some(anchor => body.includes(anchor))) {
+        unregistered.push(fact.id);
+        warnings.push({
+          code: CONTENT_STORE_FACT_UNREGISTERED,
+          message: `正文引用了门店事实 [${fact.id}]「${String(fact.claim || '').slice(0, 60)}」，但未在 facts_used 中登记。`,
+        });
+      }
+    }
+  }
+  return {
+    ok: warnings.length === 0,
+    warnings,
+    used: registration.used,
+    unregistered,
+    factsUsedPresent: factsUsedRaw != null,
+  };
+}
+
 /**
  * 校验内容生产仓单工位的模型输出。
  *
@@ -2768,9 +3248,13 @@ function buildPreviewMarkdown(profile, parsed, artifact, context = {}) {
  */
 export function validateContentEmployeeOutputContract(idx, rawOutput, context = {}) {
   const profile = buildContentEmployeeWorkbenchProfile(idx);
-  const requiredKeys = profile.jobProfile.outputSchema.keys;
+  const xhsSales = resolveXhsSalesContext(profile.identity.idx, context);
+  const requiredKeys = xhsSales.salesMode ? ['versions', 'image_plan'] : profile.jobProfile.outputSchema.keys;
   const { parsed, parseError, rawPreview } = parseOutput(rawOutput);
   const errors = [];
+  const storeFactClosureEnabled = STORE_FACT_CLOSURE_STATIONS.has(profile.identity.idx)
+    && isPlainObject(context?.storeFacts);
+  let storeFactClosure = null;
 
   if (parseError) {
     errors.push(parseError);
@@ -2781,11 +3265,58 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
     if (missingKeys.length) {
       errors.push(`缺少必需字段：${missingKeys.join('、')}。`);
     }
-    const unknownKeys = Object.keys(parsed).filter(key => !requiredKeys.includes(key));
+    // facts_used 在撰稿人/AI带货员工位是 advisory 字段：出现不算未知字段，缺失也不报错；
+    // structure_cards 是拆解师运行期字段：出现即严格校验，爆款学习模式下必填。
+    const structureCardsAllowed = profile.identity.idx === STRUCTURE_CARDS_STATION;
+    const unknownKeys = Object.keys(parsed).filter(key => !requiredKeys.includes(key)
+      && !(STORE_FACT_CLOSURE_STATIONS.has(profile.identity.idx) && key === STORE_FACTS_USED_KEY)
+      && !(structureCardsAllowed && key === STRUCTURE_CARDS_KEY)
+      && !(profile.identity.idx === 9 && RETROSPECTIVE_RUNTIME_KEYS.includes(key)));
     if (unknownKeys.length) {
       errors.push(`输出包含未知字段：${unknownKeys.join('、')}。`);
     }
-    OUTPUT_VALIDATORS[profile.identity.idx](parsed, errors, context);
+    if (structureCardsAllowed) {
+      if (Object.hasOwn(parsed, STRUCTURE_CARDS_KEY)) {
+        validateStructureCards(parsed[STRUCTURE_CARDS_KEY], errors);
+      } else if (context?.structureCardsRequired === true) {
+        errors.push(`缺少必需字段：${STRUCTURE_CARDS_KEY}（爆款学习模式必须拆出至少1张结构卡）。`);
+      }
+    }
+    if (storeFactClosureEnabled && !xhsSales.salesMode) {
+      storeFactClosure = validateStoreFactClosure(parsed, context.storeFacts, {
+        min: Number(context?.storeFactMin) || 0,
+      });
+    }
+    if (profile.identity.idx === 9) validateRetrospectiveRuntimeFields(parsed, context, errors);
+    if (xhsSales.salesMode) {
+      validateXhsSalesOutput(parsed, xhsSales, context.storeFacts, errors);
+      for (const [index, version] of (Array.isArray(parsed.versions) ? parsed.versions : []).entries()) {
+        if (!isPlainObject(version)) continue;
+        const closure = validateStoreFactClosure({ ...version, image_plan: parsed.image_plan }, context.storeFacts, { requireUsage: true });
+        errors.push(...closure.warnings.map(item => `versions[${index}] ${item.message}`));
+        const versionErrors = [];
+        validateFactGrounding(3, { title_candidates: [version.title, version.cover_text, version.comment_prompt, ...(Array.isArray(version.tags) ? version.tags : [])], body: version.body, image_plan: parsed.image_plan }, context, versionErrors);
+        errors.push(...versionErrors.map(error => `versions[${index}] ${error}`));
+      }
+    } else OUTPUT_VALIDATORS[profile.identity.idx](parsed, errors, context);
+    if (context.executionMode === 'pipeline' && profile.identity.idx >= 4) {
+      let selected;
+      try { selected = selectedXhsPipelineVersion(context.outputs); }
+      catch (error) { errors.push(error.message); }
+      if (selected && profile.identity.idx === 4) {
+        const finalVersion = { ...selected.original, body: parsed.body, title: parsed.title_candidates?.[0] };
+        validateXhsSalesOutput({ versions: [finalVersion], image_plan: selected.imagePlan }, { versionCount: 1 }, context.storeFacts, errors);
+        const closure = validateStoreFactClosure({ ...finalVersion, image_plan: selected.imagePlan }, context.storeFacts, { requireUsage: true });
+        errors.push(...closure.warnings.map(item => `小红书定稿 ${item.message}`));
+      }
+      if (selected && profile.identity.idx === 8) {
+        const packages = Array.isArray(parsed.versions) ? parsed.versions.filter(item => item?.platform === '小红书') : [];
+        if (requestedPublishPlatforms(context)?.includes('小红书') && packages.length !== 1) errors.push('已选小红书定稿必须且只能输出一个发布包，不能提供替换变体');
+        for (const item of packages) for (const field of ['title', 'body', 'tags']) {
+          if (JSON.stringify(item[field]) !== JSON.stringify(selected.version[field])) errors.push(`小红书 ${field} 必须逐字保留已选定稿，不得改写或换版`);
+        }
+      }
+    }
     validateRequiredStationInputs(profile.identity.idx, {
       ...context,
       outputForCompletionGate: parsed,
@@ -2820,8 +3351,11 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
         );
       }
     }
-    validateFactGrounding(profile.identity.idx, parsed, context, errors);
+    if (!xhsSales.salesMode) validateFactGrounding(profile.identity.idx, parsed, context, errors);
   }
+
+  const warnings = storeFactClosure ? storeFactClosure.warnings.map(item => ({ ...item })) : [];
+  const advisory = storeFactClosure ? { storeFactClosure, warnings } : { warnings };
 
   if (errors.length) {
     return {
@@ -2830,10 +3364,12 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
       errors,
       previewMarkdown: rawPreview,
       artifacts: [],
+      ...advisory,
     };
   }
 
   const artifact = buildArtifact(profile, parsed);
+  const liveResearch = liveResearchAnnotation(profile.identity.idx, parsed, context);
   return {
     valid: true,
     parsed,
@@ -2841,6 +3377,42 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
     errors: [],
     previewMarkdown: buildPreviewMarkdown(profile, parsed, artifact, context),
     artifacts: [artifact],
+    ...(liveResearch ? { liveResearch } : {}),
+    ...advisory,
+  };
+}
+
+export const CONTENT_FRESHNESS_SECTION_MISSING_WARNING =
+  '正文末尾缺少「信息时效」一节：模型未按证据区要求原样附上系统渲染的时效说明；请以 liveResearch.freshnessSection 的系统版为准核对抓取时间与过期标注。';
+
+/**
+ * 趋势官 / 情报员 / 拆解师的运行期附加字段（不进入 parsed JSON、不改写正文）：
+ * sources[]（title/url/fetchedAt/publishedAt/stale）、freshness 摘要，以及
+ * “信息时效”一节是否已由模型原样附在 briefing / summary 末尾。
+ */
+export function liveResearchAnnotation(idx, parsed, context = {}) {
+  if (idx < 0 || idx > 2 || !webAttributionContextPresent(context)) return null;
+  const evidence = isPlainObject(context.web) ? context.web : context.webEvidence;
+  if (!isPlainObject(evidence) || !Array.isArray(evidence.results)) return null;
+  const sources = evidence.results.map((item, index) => ({
+    sourceId: String(item?.sourceId || `来源${index + 1}`),
+    title: String(item?.title || '').trim(),
+    url: String(item?.url || '').trim(),
+    fetchedAt: item?.fetchedAt || null,
+    publishedAt: item?.publishedAt || null,
+    stale: item?.stale === true ? true : item?.stale === false ? false : null,
+  }));
+  const narrative = idx === 0 ? parsed?.briefing : idx === 1 ? parsed?.summary : null;
+  const sectionRequired = idx <= 1;
+  const sectionPresent = sectionRequired ? /信息时效/u.test(String(narrative || '')) : null;
+  return {
+    schemaVersion: 'nanowork.content-live-research-annotation/1',
+    sources,
+    freshness: isPlainObject(evidence.freshness) ? structuredClone(evidence.freshness) : null,
+    freshnessSection: typeof evidence.freshnessSection === 'string' ? evidence.freshnessSection : null,
+    freshnessSectionRequired: sectionRequired,
+    freshnessSectionPresent: sectionPresent,
+    warnings: sectionRequired && !sectionPresent ? [CONTENT_FRESHNESS_SECTION_MISSING_WARNING] : [],
   };
 }
 

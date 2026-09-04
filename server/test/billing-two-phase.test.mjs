@@ -60,12 +60,17 @@ async function withServer(user, fn) {
 }
 
 test('BE-C1：估算按实际内容增长，大上下文不再被固定 4000in/2000out 口径低估', () => {
-  const fixed = credits.estimateMaxCredits('text', 'gpt-5.5'); // 老口径：36 分
+  const fixed = credits.estimateMaxCredits('text', 'gpt-5.5'); // 老口径：固定 4000in/2000out
   const small = credits.estimateCallCredits({ model: 'gpt-5.5', texts: ['你好'] });
   const big = credits.estimateCallCredits({ model: 'gpt-5.5', texts: ['字'.repeat(30000)] }); // 3万字大上下文
   assert.ok(small >= 1, '空内容也有系统提示词/知识库固定余量');
   assert.ok(big > small, '估算必须随实际内容增长');
-  assert.ok(big >= fixed * 5, `3万字上下文估算(${big})应远超固定口径(${fixed})，否则大上下文仍会坏账`);
+  // 期望值按价目表公式算（6000 固定余量 + 3 万字输入，4000 输出）：价目表随中转站实价核验变动时不写死倍数
+  const b = credits.billing();
+  const p = b.text['gpt-5.5'];
+  const expectedBig = Math.max(1, Math.ceil((((6000 + 30000) * p.in + 4000 * p.out) / 1e6) * b.marginMultiplier / b.creditYuan));
+  assert.equal(big, expectedBig, '大上下文估算必须等于按实际字数代入价目表的结果');
+  assert.ok(big > fixed * 2, `3万字上下文估算(${big})应远超固定口径(${fixed})，否则大上下文仍会坏账`);
 });
 
 test('占扣→结算多退少补：一条流水、余额精确、恒等成立，且结算/释放幂等', () => {
@@ -76,20 +81,24 @@ test('占扣→结算多退少补：一条流水、余额精确、恒等成立�
   assert.equal(bal(), before - 100, '占扣立即从租户池扣减');
   assert.equal(heldCount(), 1);
   assertLedger('占扣期间恒等也必须成立');
-  // 真实用量 1000in/1000out → 2 分（与既有计费公式一致），冲正退回 98 分
+  // 真实用量 1000in/1000out → 按价目表公式实扣（与既有计费公式一致），差额冲正退回
+  const b = credits.billing();
+  const p = b.text['deepseek-v4-flash'];
+  const actual = Math.ceil(((1000 * p.in + 1000 * p.out) / 1e6) * b.marginMultiplier / b.creditYuan);
+  assert.ok(actual >= 1 && actual < 100, '实扣应落在占扣额度之内');
   const bill = credits.settleHold(hold, { usage: { inputTokens: 1000, outputTokens: 1000 }, model: 'deepseek-v4-flash', aiMode: 'api' });
-  assert.equal(bill.credits, 2);
-  assert.equal(bal(), before - 2, '多退少补后余额只少实扣的 2 分');
+  assert.equal(bill.credits, actual);
+  assert.equal(bal(), before - actual, `多退少补后余额只少实扣的 ${actual} 分`);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=?').get(T).n, logsBefore + 1, '占扣与结算复用同一条流水，不重复计入消耗');
   const log = db.prepare(`SELECT credits,input_tokens,output_tokens,ai_mode FROM credit_logs WHERE id=?`).get(hold.logId);
-  assert.equal(log.credits, 2);
+  assert.equal(log.credits, actual);
   assert.equal(log.input_tokens, 1000);
   assert.equal(log.ai_mode, 'api');
   assertLedger();
   // 幂等：重复结算/释放不动账（防止"结算后再释放"造成双重退款）
   assert.equal(credits.settleHold(hold, { usage: { inputTokens: 9999, outputTokens: 9999 } }), null);
   assert.equal(credits.releaseHold(hold), null);
-  assert.equal(bal(), before - 2, '重复结算与释放均不改变余额');
+  assert.equal(bal(), before - actual, '重复结算与释放均不改变余额');
 });
 
 test('结算超过占扣时失败关闭：不追加扣款、不伪造实扣并保留 held 待对账', () => {
@@ -100,7 +109,7 @@ test('结算超过占扣时失败关闭：不追加扣款、不伪造实扣并�
     FROM credit_holds WHERE id=?`).get(hold.holdId);
   const logBefore = db.prepare(`SELECT credits,input_tokens,output_tokens,cost_yuan,ai_mode,balance_after,note
     FROM credit_logs WHERE id=?`).get(hold.logId);
-  // 100000in/100000out → (100000×5+100000×5)/1e6=1元 ×1.5/0.01 = 150 分 > 占扣 5 分
+  // 100000in/100000out → (100000×in+100000×out)/1e6 元 × 毛利系数 ÷ 0.01，按 deepseek-v4-flash 价目远大于占扣 5 分
   assert.throws(
     () => credits.settleHold(hold, {
       usage: { inputTokens: 100000, outputTokens: 100000 },
@@ -252,8 +261,11 @@ test('并发占扣不超卖：Promise.all 多路同时占扣，只放行余额�
 });
 
 test('并发实扣不超卖：既有 charge 条件更新在 Promise.all 下恒等成立', async () => {
-  setBalance(100);
-  // 每笔 20000in/20000out → 0.2元 ×1.5/0.01 ≈ 30～31 分（向上取整），5 路并发只够放行 3 笔
+  // 每笔 20000in/20000out 按价目表算实扣；余额只够 3 笔（第 4 笔差 1 分），5 路并发只能放行 3 笔
+  const b = credits.billing();
+  const p = b.text['deepseek-v4-flash'];
+  const perCharge = Math.ceil(((20000 * p.in + 20000 * p.out) / 1e6) * b.marginMultiplier / b.creditYuan);
+  setBalance(perCharge * 4 - 1);
   const results = await Promise.allSettled(Array.from({ length: 5 }, () => (async () => {
     await new Promise(resolve => setImmediate(resolve));
     return credits.charge({ userId: U, feature: '并发实扣', kind: 'text', model: 'deepseek-v4-flash', usage: { inputTokens: 20000, outputTokens: 20000 }, aiMode: 'api' });
@@ -262,7 +274,7 @@ test('并发实扣不超卖：既有 charge 条件更新在 Promise.all 下恒�
   assert.equal(ok.length, 3);
   assert.equal(results.filter(r => r.status === 'rejected' && r.reason.status === 402).length, 2);
   const spent = ok.reduce((n, r) => n + r.value.credits, 0);
-  assert.equal(bal(), 100 - spent, '余额精确 = 100 − Σ放行实扣，绝不为负');
+  assert.equal(bal(), perCharge * 4 - 1 - spent, '余额精确 = 初始 − Σ放行实扣，绝不为负');
   assert.ok(bal() >= 0, '并发下积分池绝不为负');
   assertLedger();
 });
@@ -354,28 +366,36 @@ test('BE-H2/SSE 无真实AI时：先占扣再明确失败，不交付模板正�
   assertLedger();
 });
 
+// /generate-video 提交时的报价：happyhorse floor 8 元 × 毛利系数 ÷ 0.01（系数 1.5 时 1200 分，2.0 时 1600 分），
+// 期望值按价目表公式算，不写死倍数
+const videoQuote = () => {
+  const b = credits.billing();
+  return Math.ceil((b.video['happyhorse-1.0-t2v:floor'] * b.marginMultiplier) / b.creditYuan);
+};
+
 test('BE-H1：视频任务提交占扣，异步上游 Fail 时全额退分并冲正流水', () => {
+  const quote = videoQuote();
+  assert.equal(credits.estimateMaxCredits('video', 'happyhorse-1.0-t2v:floor'), quote);
   setBalance(2000);
   runWithTenant(T, () => {
     const jobId = q.run(`INSERT INTO media_jobs(user_id,kind,model,prompt,status,task_id,credits) VALUES(?,?,?,?,?,?,?)`,
-      U, 'video', 'happyhorse-1.0-t2v:floor', '测试失败退分', '处理中', 'task-fail-1', 1200).lastInsertRowid;
-    // 模拟 /generate-video 提交时的占扣（happyhorse floor：8元 ×1.5/0.01 = 1200 分）
+      U, 'video', 'happyhorse-1.0-t2v:floor', '测试失败退分', '处理中', 'task-fail-1', quote).lastInsertRowid;
     const held = credits.holdCredits({
       userId: U, feature: 'AI视频生成', kind: 'video', model: 'happyhorse-1.0-t2v:floor',
       credits: credits.estimateMaxCredits('video', 'happyhorse-1.0-t2v:floor'),
       refType: 'media_job', refId: jobId,
     });
-    assert.equal(held.credits, 1200);
-    assert.equal(bal(), 800);
+    assert.equal(held.credits, quote);
+    assert.equal(bal(), 2000 - quote);
     assertLedger('视频占扣期间恒等成立');
     // 模拟轮询发现上游 Fail（refreshProcessingVideoJobs 的失败分支）
     const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', T, jobId);
     contentModule.refundVideoJobFailure(job);
-    assert.equal(bal(), 2000, '客户不为失败产出付费：1200 分全额退回');
+    assert.equal(bal(), 2000, `客户不为失败产出付费：${quote} 分全额退回`);
     const after = q.get('SELECT status,credits,error FROM media_jobs WHERE tenant_id=? AND id=?', T, jobId);
     assert.equal(after.status, '失败');
     assert.equal(after.credits, 0, '任务上不再显示已消耗积分');
-    assert.match(after.error, /已退回1200积分/);
+    assert.match(after.error, new RegExp(`已退回${quote}积分`));
     assert.equal(db.prepare('SELECT credits FROM credit_logs WHERE id=?').get(held.logId).credits, 0, '流水冲正为 0 分并保留审计');
     assert.equal(heldCount(), 0);
     assertLedger();
@@ -387,10 +407,11 @@ test('BE-H1：视频任务提交占扣，异步上游 Fail 时全额退分并冲
 });
 
 test('BE-H1：视频任务异步成功回填时确认实扣（余额保持扣减，流水记实扣）', () => {
+  const quote = videoQuote();
   setBalance(2000);
   runWithTenant(T, () => {
     const jobId = q.run(`INSERT INTO media_jobs(user_id,kind,model,prompt,status,task_id,credits) VALUES(?,?,?,?,?,?,?)`,
-      U, 'video', 'happyhorse-1.0-t2v:floor', '测试成功实扣', '处理中', 'task-ok-1', 1200).lastInsertRowid;
+      U, 'video', 'happyhorse-1.0-t2v:floor', '测试成功实扣', '处理中', 'task-ok-1', quote).lastInsertRowid;
     const held = credits.holdCredits({
       userId: U, feature: 'AI视频生成', kind: 'video', model: 'happyhorse-1.0-t2v:floor',
       credits: credits.estimateMaxCredits('video', 'happyhorse-1.0-t2v:floor'),
@@ -398,13 +419,13 @@ test('BE-H1：视频任务异步成功回填时确认实扣（余额保持扣减
     });
     const job = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', T, jobId);
     contentModule.settleVideoJobSuccess(job, 'https://cdn.example.com/v1.mp4');
-    assert.equal(bal(), 800, '成功回填后实扣 1200 分');
+    assert.equal(bal(), 2000 - quote, `成功回填后实扣 ${quote} 分`);
     const after = q.get('SELECT status,url,credits FROM media_jobs WHERE tenant_id=? AND id=?', T, jobId);
     assert.equal(after.status, '成功');
     assert.equal(after.url, 'https://cdn.example.com/v1.mp4');
-    assert.equal(after.credits, 1200);
+    assert.equal(after.credits, quote);
     const log = db.prepare('SELECT credits,ai_mode FROM credit_logs WHERE id=?').get(held.logId);
-    assert.equal(log.credits, 1200, '流水按提交时报价确认实扣');
+    assert.equal(log.credits, quote, '流水按提交时报价确认实扣');
     assert.equal(log.ai_mode, 'api');
     assert.equal(heldCount(), 0);
     assertLedger();

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { writePrivateArtifactAsync } from "./private-artifact.js";
 
 import * as fontkit from "fontkit";
 
@@ -1341,7 +1342,7 @@ async function renderTextOverlayPng({ title, subtitle, destination, signal }) {
         "TEXT_VIDEO_LOCAL_PATH_INVALID",
       );
     }
-    await fsp.writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+    await writePrivateArtifactAsync(destination, bytes);
   }
   return bytes;
 }

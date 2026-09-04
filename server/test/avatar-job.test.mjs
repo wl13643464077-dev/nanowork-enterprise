@@ -26,9 +26,16 @@ const {
   createAvatarProviderAssetUrl,
   serveAvatarProviderAsset,
 } = await import("../src/engines/avatar-provider-assets.js");
+const { billing } = await import("../src/engines/credits.js");
 
 initSchema();
 migrateV2();
+
+// 供应商成本证据 ¥12 → 积分 = ceil(12 × 毛利系数 ÷ creditYuan)；按价目表公式算（系数 1.5 时 1800 分，2.0 时 2400 分）
+const creditsForCostYuan = (yuan) => {
+  const b = billing();
+  return Math.max(1, Math.ceil((yuan * b.marginMultiplier) / b.creditYuan));
+};
 
 q.run("UPDATE tenants SET name='甲企业',status='已开通',credits=20000 WHERE id=1");
 q.run(
@@ -166,7 +173,7 @@ test("真实基础版闭环只在成片落库且账务结算后可用", async ()
   assert.match(done.resultSha256, /^[a-f0-9]{64}$/u);
   assert.equal(done.usage.networkRequests, 6);
   assert.equal(done.cost.amount, 12);
-  assert.equal(before - q.get("SELECT credits FROM tenants WHERE id=1").credits, 1800);
+  assert.equal(before - q.get("SELECT credits FROM tenants WHERE id=1").credits, creditsForCostYuan(12));
   const output = q.get(
     "SELECT purpose,size,file_path FROM uploaded_files WHERE tenant_id=1 AND id=?",
     q.get("SELECT output_file_id FROM avatar_jobs WHERE tenant_id=1 AND id=?", created.id).output_file_id,
@@ -470,7 +477,7 @@ test("显式 HeyGen 工单可把系统音色口播稿先转成真实音频并记
   assert.equal(stored.audio_file_id, null);
   assert.equal(stored.engine_requested, "heygen");
   assert.equal(stored.billing_model, "heygen-avatar-30");
-  assert.equal(before - q.get("SELECT credits FROM tenants WHERE id=1").credits, 1800);
+  assert.equal(before - q.get("SELECT credits FROM tenants WHERE id=1").credits, creditsForCostYuan(12));
 });
 
 test("脚本音色和显式引擎不可用都会在建单占扣前失败关闭", async () => {

@@ -98,6 +98,17 @@ test("解析失败的中文错误文案可操作", () => {
   assert.match(missingMediaBinaryMessage("ffmpeg"), /FFMPEG_PATH/u);
 });
 
+test('Windows PATH支持exe且不选择cmd或bat，Unix路径语义独立验证', () => {
+  const checked = [];
+  const result = resolveFfmpeg({
+    env: { PATH: 'C:\\Tools;C:\\FFmpeg\\bin' }, platform: 'win32',
+    isExecutable: candidate => { checked.push(candidate); return candidate === 'C:\\FFmpeg\\bin\\ffmpeg.exe'; },
+  });
+  assert.equal(result, 'C:\\FFmpeg\\bin\\ffmpeg.exe');
+  assert.ok(checked.every(p => !/\.(?:cmd|bat)$/iu.test(p)));
+  assert.equal(resolveFfprobe({ env: { PATH: '/custom/bin:/usr/bin' }, platform: 'linux', isExecutable: candidate => candidate === '/custom/bin/ffprobe' }), '/custom/bin/ffprobe');
+});
+
 test("探测结果做进程内缓存：重设环境变量后需要显式重置缓存", async () => {
   const root = await tempRoot("nanowork-media-binaries-cache-");
   const custom = path.join(root, "ffprobe");

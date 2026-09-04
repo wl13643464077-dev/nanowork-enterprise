@@ -104,6 +104,15 @@
   background: var(--ui-primary-soft);
   color: var(--ui-primary-strong);
 }
+/* 年度套餐到期提示（仅 expiring/expired 显示，跟随积分显示一起在窄屏隐藏） */
+.os-plan-tag {
+  margin-inline-end: 0;
+  font-size: var(--font-1);
+  white-space: nowrap;
+}
+.os-plan-tag[role='button'] {
+  cursor: pointer;
+}
 .os-ask-brain {
   cursor: pointer;
   height: 34px;
@@ -522,6 +531,11 @@
   color: var(--ui-muted);
   padding: 4px 0;
 }
+.os-todo-inbox-link {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-size: var(--font-1);
+}
 .os-suggest-txt {
   font-size: var(--font-2);
   color: var(--ui-text-2);
@@ -760,6 +774,7 @@
 @media (max-width: 640px) {
   .os-brand-name span,
   .os-credit,
+  .os-plan-tag,
   .os-status {
     display: none;
   }

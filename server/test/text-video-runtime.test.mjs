@@ -6,6 +6,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
+import { assertPrivateArtifact } from "../src/engines/private-artifact.js";
 
 const dbPath = path.join(
   os.tmpdir(),
@@ -325,7 +326,7 @@ test("无云渲染会真实生成中文PNG图层并通过FFmpeg overlay合成", 
       );
       assert.equal(png.readUInt32BE(16), 1080);
       assert.equal(png.readUInt32BE(20), 1920);
-      assert.equal((await fsp.stat(overlayPath)).mode & 0o777, 0o600);
+      assertPrivateArtifact(overlayPath);
       overlayHashes.add(crypto.createHash("sha256").update(png).digest("hex"));
     }
     await fsp.writeFile(args.at(-1), mp4Bytes("raster-overlay-render"));

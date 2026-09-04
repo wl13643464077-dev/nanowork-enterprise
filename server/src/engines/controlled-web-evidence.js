@@ -186,6 +186,34 @@ function decodeEntity(value) {
     .replace(/&#x([0-9a-f]+);/giu, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)));
 }
 
+const PUBLISHED_AT_META_PATTERNS = [
+  /<meta[^>]+(?:property|name)=["'](?:article:published_time|og:article:published_time|article:modified_time|og:updated_time|pubdate|publishdate|publish_date|publication_date|dc\.date(?:\.issued)?|datePublished|date|weibo:article:create_at|og:release_date)["'][^>]+content=["']([^"']+)["']/iu,
+  /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:article:published_time|og:article:published_time|pubdate|publishdate|publish_date|publication_date|datePublished)["']/iu,
+  /"datePublished"\s*:\s*"([^"]+)"/iu,
+  /<time[^>]+datetime=["']([^"']+)["']/iu,
+];
+
+/**
+ * 从公开网页元数据中提取发布时间；只接受可解析且不晚于当前时间+1天的
+ * 时间戳，解析失败一律返回 null，绝不用抓取时间冒充发布时间。
+ */
+export function extractPublishedAt(rawHtml) {
+  const html = String(rawHtml || '');
+  for (const pattern of PUBLISHED_AT_META_PATTERNS) {
+    const match = html.match(pattern);
+    if (!match) continue;
+    const candidate = decodeEntity(match[1]).trim();
+    const normalized = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$/u.test(candidate)
+      ? candidate.replace(/[/.]/gu, '-').replace(' ', 'T')
+      : candidate;
+    const parsed = Date.parse(normalized);
+    if (!Number.isFinite(parsed)) continue;
+    if (parsed > Date.now() + 24 * 60 * 60 * 1000 || parsed < Date.parse('1995-01-01T00:00:00Z')) continue;
+    return new Date(parsed).toISOString();
+  }
+  return null;
+}
+
 function pageEvidence(buffer, contentType, finalUrl) {
   const charset = String(contentType || '').match(/charset\s*=\s*["']?([^;"'\s]+)/iu)?.[1] || 'utf-8';
   let raw;
@@ -195,6 +223,7 @@ function pageEvidence(buffer, contentType, finalUrl) {
       || raw.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/iu)?.[1]
       || '',
   ).replace(/\s+/gu, ' ').trim().slice(0, 220);
+  const publishedAt = extractPublishedAt(raw);
   const text = decodeEntity(raw
     .replace(/<(?:script|style|noscript|template|svg|canvas)\b[^>]*>[\s\S]*?<\/(?:script|style|noscript|template|svg|canvas)\s*>/giu, ' ')
     .replace(/<\/(?:p|div|article|section|li|h[1-6]|tr|br)\s*>/giu, '\n')
@@ -212,6 +241,8 @@ function pageEvidence(buffer, contentType, finalUrl) {
     url: finalUrl,
     snippet: text.slice(0, 1200),
     body: text,
+    publishedAt,
+    fetchedAt: new Date().toISOString(),
   };
 }
 

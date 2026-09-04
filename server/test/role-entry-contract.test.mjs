@@ -18,7 +18,8 @@ test("平台超管前端只保留平台控制台入口，不进入企业后台�
   assert.match(app, /function EnterpriseOnly/);
   assert.match(app, /role === 'platform_super'.*Navigate to="\/platform"/s);
   assert.match(app, /path="\/admin".*roles=\{\['boss', 'admin'\]\}/s);
-  assert.match(app, /path="\/m".*EnterpriseOnly/s);
+  // 批次 B 起移动端为 /m/* 子路径驱动 Tab，但仍必须整体包在 EnterpriseOnly 内
+  assert.match(app, /path="\/m\/\*"\s*element=\{\s*<EnterpriseOnly>\s*<Mobile \/>\s*<\/EnterpriseOnly>/s);
   assert.match(app, /<EnterpriseOnly>\s*<MainLayout \/>\s*<\/EnterpriseOnly>/);
   assert.doesNotMatch(recharge, /role !== 'boss' && role !== 'platform_super'/);
 });
@@ -36,23 +37,30 @@ test("管理后台账号停用值与服务端状态契约一致", () => {
 });
 
 test("移动端核心工作台按模块和角色过滤，销售不发起管理层简报请求", () => {
-  const mobile = read("web/src/pages/Mobile.tsx");
+  // 批次 B 把 Mobile.tsx 拆成 components/mobile/*：核心工作台与简报在 MobileHome，内容交付门禁在 MobileContent
+  const mobileHome = read("web/src/components/mobile/MobileHome.tsx");
+  const mobileContent = read("web/src/components/mobile/MobileContent.tsx");
   const dashboard = read("web/src/pages/Dashboard.tsx");
 
+  assert.match(mobileHome, /const role = String\(user\.role \|\| ''\)/);
   assert.match(
-    mobile,
-    /CORE_WORKSPACES\.filter\(item => mods\.includes\(item\.mod\) && item\.roles\.includes\(user\.role\)\)/,
+    mobileHome,
+    /CORE_WORKSPACES\.filter\(item => mods\.includes\(item\.mod\) && item\.roles\.includes\(role\)\)/,
   );
   assert.match(
-    mobile,
+    mobileHome,
+    /const canViewManagementBriefing =\s*hasDashboard && \['boss', 'ops_director', 'manager', 'admin'\]\.includes\(role\)/,
+  );
+  assert.match(
+    mobileHome,
     /useQuery<DashboardBriefing>\('\/dashboard\/briefing'.*enabled: canViewManagementBriefing/s,
   );
   assert.match(
     dashboard,
     /if \(canViewManagementBriefing\).*\/dashboard\/daily-digest/s,
   );
-  assert.match(mobile, /\.filter\(item => item\.delivery\?\.canUse === true\)/);
-  assert.match(mobile, /disabled=\{r\.delivery\?\.canUse !== true\}/);
+  assert.match(mobileContent, /\.filter\(item => item\.delivery\?\.canUse === true\)/);
+  assert.match(mobileContent, /disabled=\{r\.delivery\?\.canUse !== true\}/);
 });
 
 test("内容提交审核后立即清除过期可用态并刷新权威列表", () => {
@@ -235,35 +243,43 @@ test("命令面板以当前角色真实可见导航为最终搜索和快捷动�
 });
 
 test("移动端无驾驶舱权限也能进入已授权工作台，客户详情失败可重试", () => {
+  // 批次 B：外壳 Mobile.tsx 只做 Tab 过滤；首页访问门禁 hasMobileHomeAccess 与工作台清单在 MobileHome，客户详情在 MobileCustomers
   const mobile = read("web/src/pages/Mobile.tsx");
+  const mobileHome = read("web/src/components/mobile/MobileHome.tsx");
+  const mobileCustomers = read("web/src/components/mobile/MobileCustomers.tsx");
 
   assert.match(
-    mobile,
-    /const hasHomeAccess =[\s\S]*mods\.includes\('dashboard'\)[\s\S]*CORE_WORKSPACES\.some/,
+    mobileHome,
+    /export function hasMobileHomeAccess\(mods: string\[\], role: string\)[\s\S]*mods\.includes\('dashboard'\) \|\| CORE_WORKSPACES\.some\(item => mods\.includes\(item\.mod\) && item\.roles\.includes\(role\)\)/,
   );
   assert.match(
     mobile,
-    /t\.key === 'home' \? hasHomeAccess : !t\.mod \|\| mods\.includes\(t\.mod\)/,
+    /if \(tab\.key === 'home'\) return hasMobileHomeAccess\(mods, role\);/,
   );
+  assert.match(mobile, /if \(tab\.key === 'dispatch'\) return mods\.includes\('marshals'\);/);
   assert.match(
     mobile,
+    /if \(tab\.key === 'tasks'\) return mods\.includes\('execution'\) \|\| mods\.includes\('marshals'\);/,
+  );
+  assert.match(
+    mobileHome,
     /key: 'employees'[\s\S]*roles: \['boss', 'ops_director', 'manager', 'sales'\]/,
   );
-  assert.match(mobile, /key: 'execution'[\s\S]*path: '\/execution'/);
+  assert.match(mobileHome, /key: 'execution'[\s\S]*path: '\/execution'/);
   assert.match(
-    mobile,
+    mobileHome,
     /useQuery<DashboardSummary>\('\/dashboard\/summary', \[\], \{ enabled: hasDashboard \}\)/,
   );
   assert.match(
-    mobile,
+    mobileCustomers,
     /const \[detailError, setDetailError\] = useState\(''\)/,
   );
   assert.match(
-    mobile,
+    mobileCustomers,
     /\.get\(`\/growth\/leads\/\$\{lead\.id\}`, \{ silent: true \}\)/,
   );
-  assert.match(mobile, /description=\{detailError\}[\s\S]*重新加载/);
-  assert.match(mobile, /客户详情证据未返回/);
+  assert.match(mobileCustomers, /description=\{detailError\}[\s\S]*重新加载/);
+  assert.match(mobileCustomers, /客户详情证据未返回/);
 });
 
 test("活动日历和工作分配仅对管理角色显示，日历失败不会永久转圈", () => {
@@ -554,52 +570,42 @@ test("系统页仅老板、管理员和平台超管请求并展示提示词中�
   );
 });
 
-test("企业审批规则由平台超管配置，老板、管理员和管理层只读且员工不请求", () => {
-  const system = [
-    read("web/src/pages/System.tsx"),
-    read("web/src/components/SystemApprovalRuleEditor.tsx"),
-  ].join("\n");
+test("企业审批规则下放老板：编辑权由服务端 canEdit 决定，管理层只读，员工不请求，三条底线只读展示", () => {
+  // B9：审批策略由企业老板/系统管理员自定义（platform_super 仍可写），System.tsx 只挂独立面板引用。
+  const system = read("web/src/pages/System.tsx");
+  const panel = read("web/src/components/ApprovalPolicyPanel.tsx");
 
   assert.match(
     system,
     /const canViewApprovalPolicy = \['boss', 'ops_director', 'manager', 'admin', 'platform_super'\]\.includes\(user\.role\)/,
   );
-  assert.match(
-    system,
-    /const canEditApprovalPolicy = \['platform_super'\]\.includes\(user\.role\)/,
-  );
-  assert.match(
-    system,
-    /if \(!canViewApprovalPolicy\) return Promise\.resolve\(\);[\s\S]*\.get\('\/sys\/approval-policy', \{ silent: true \}\)/,
-  );
-  assert.match(
-    system,
-    /if \(!canEditApprovalPolicy \|\| !approvalPolicyServerCanEdit \|\| !approvalPolicyDraft\) return;/,
-  );
-  assert.match(
-    system,
-    /\.put\('\/sys\/approval-policy', \{ policy: approvalPolicyPayload\(approvalPolicyDraft\) \}, \{ silent: true \}\)/,
-  );
-  for (const routeKey of [
-    "employeeOutput",
-    "activityPlan",
-    "activityChecklist",
-  ]) {
-    assert.match(system, new RegExp(`${routeKey}: \\{`));
-  }
-  assert.match(system, /value: 'risk_based'/);
-  assert.match(system, /value: 'amount_threshold'/);
-  assert.match(system, /ownerAmountThreshold/);
-  assert.match(system, /reviewerUserId/);
-  assert.match(system, /规则仅对保存后的新提交生效/);
-  assert.match(system, /在途的审批会继续使用提交时锁定的不可变规则快照/);
-  assert.match(system, /不可关闭的交付安全底线/);
-  assert.match(system, /<Switch size="small" checked disabled/);
-  assert.match(
-    system,
-    /r\.assignedReviewerName \|\|[\s\S]*r\.assigned_reviewer/,
-  );
+  assert.doesNotMatch(system, /canEditApprovalPolicy/, "前端不再硬编码可编辑角色，交由服务端 canEdit");
+  assert.match(system, /canViewApprovalPolicy \? <ApprovalPolicyPanel \/> : null/);
   assert.match(system, /\{approvalPolicySection\}/);
+  assert.match(system, /r\.assignedReviewerName \|\|[\s\S]*r\.assigned_reviewer/);
+
+  assert.match(panel, /\.get\('\/sys\/approval-policy', \{ silent: true \}\)/);
+  assert.match(panel, /setCanEdit\(payload\?\.canEdit === true\)/);
+  assert.match(panel, /if \(!canEdit\) return;/);
+  assert.match(panel, /if \(!canEdit \|\| !draft\) return;/);
+  assert.match(panel, /\.put\('\/sys\/approval-policy', \{ policy: toPayload\(draft\) \}, \{ silent: true \}\)/);
+  // 大白话预览走服务端同一份渲染函数，300ms 防抖，前端不复制文案
+  assert.match(panel, /\.post\('\/sys\/approval-policy\/preview'/);
+  assert.match(panel, /window\.setTimeout\([\s\S]*300\)/);
+  assert.match(panel, /用大白话说就是/);
+  for (const routeKey of ["employeeOutput", "activityPlan", "activityChecklist"]) {
+    assert.match(panel, new RegExp(`${routeKey}: \\{`));
+  }
+  assert.match(panel, /value: 'risk_based'/);
+  assert.match(panel, /value: 'amount_threshold'/);
+  assert.match(panel, /ownerAmountThreshold/);
+  assert.match(panel, /reviewerUserId/);
+  assert.match(panel, /exceptions/);
+  assert.match(panel, /scope: 'department'/);
+  assert.match(panel, /scope: 'employee'/);
+  assert.match(panel, /在途任务继续用发起时锁定的规则/);
+  assert.match(panel, /三条底线（不可关闭）/);
+  assert.doesNotMatch(panel, /safeguards[^\n]*onChange/, "三条底线不得出现可编辑控件");
 });
 
 test("审批中心按接口门禁分别控制通过与驳回，待对账不进入人工审核", () => {

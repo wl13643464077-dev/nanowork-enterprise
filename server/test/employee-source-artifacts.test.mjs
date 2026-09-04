@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DOCX_RENDER_VERSION } from "../src/engines/docx-report-renderer.js";
 import { PDF_RENDER_VERSION, XLSX_RENDER_VERSION } from "../src/engines/skillrun.js";
+import { removeTempDirSafely } from "./helpers/temp-db.mjs";
 
 const ROOT = fs.mkdtempSync(
   path.join(os.tmpdir(), "nanowork-source-artifacts-"),
@@ -796,6 +797,6 @@ test("交付文件保持来源 owner 管理链和租户隔离，空正文不会�
   );
 });
 
-after(() => {
-  fs.rmSync(ROOT, { recursive: true, force: true });
+after(async () => {
+  await removeTempDirSafely(ROOT, { dbPath: DBP });
 });

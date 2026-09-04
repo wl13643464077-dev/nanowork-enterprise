@@ -16,6 +16,7 @@ import {
   message,
 } from 'antd';
 import {
+  CameraOutlined,
   CheckCircleOutlined,
   CloudUploadOutlined,
   DatabaseOutlined,
@@ -28,17 +29,24 @@ import {
   InboxOutlined,
   UndoOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { loadXlsx } from '../utils/xlsx';
 import { Panel } from '../components/Kit';
 import { UnifiedFilePicker, type UploadedFileRef } from '../components/UnifiedFilePicker';
+import { DataIntakeTemplates, StoreIssuesBar } from '../components/DataIntakeTemplates';
+import { DataIntakeVisionImport } from '../components/DataIntakeVisionImport';
 
 interface RawSheet {
   name: string;
   rows: any[][];
   target?: string;
+  rowMeta?: any[];
+  source?: any;
 }
+type StoreOverrides = Record<string, number | 'default'>;
+// 模板工作簿自带的说明页与隐藏下拉源，读取时直接跳过（服务端也会再过滤一次）
+const TEMPLATE_HELPER_SHEETS = new Set(['填写说明', '门店列表']);
 const MAX_WORKBOOK_SHEETS = 10;
 const MAX_WORKBOOK_ROWS = 5000;
 const LONG_EDIT_FIELDS = new Set(['body', 'detail', 'week_problem', 'next_action']);
@@ -152,9 +160,12 @@ async function downloadStarterWorkbook() {
 
 export default function DataIntake() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [schemas, setSchemas] = useState<any[]>([]);
   const [rawSheets, setRawSheets] = useState<RawSheet[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
+  const [storeOverrides, setStoreOverrides] = useState<StoreOverrides>({});
+  const [storeBusy, setStoreBusy] = useState(false);
   const [files, setFiles] = useState<UploadedFileRef[]>([]);
   const [archivingFileId, setArchivingFileId] = useState<number | null>(null);
   const [archivedFileIds, setArchivedFileIds] = useState<Set<number>>(() => new Set());
@@ -219,15 +230,73 @@ export default function DataIntake() {
     }
   };
 
-  const preview = async (sheets: RawSheet[]) => {
+  const preview = async (sheets: RawSheet[], overrides: StoreOverrides = storeOverrides) => {
     if (!sheets.length) return;
     setParsing(true);
     try {
-      const out = await api.post('/data-intake/preview', { sheets });
+      const out = await api.post('/data-intake/preview', { sheets, storeOverrides: overrides });
       setBatches(out.batches || []);
       setResult(null);
     } finally {
       setParsing(false);
+    }
+  };
+
+  // 开店向导解析出的菜单草稿（location.state.importBatches）：进页面直接进入预览确认，不自动落库
+  useEffect(() => {
+    const draft = (location.state as any)?.importBatches;
+    if (!Array.isArray(draft) || !draft.length) return;
+    const sheets: RawSheet[] = draft.map((batch: any) => ({
+      name: batch.sheet,
+      target: batch.target,
+      source: batch.source,
+      rowMeta: (batch.rows || []).map((row: any) => ({
+        fieldConfidence: row.fieldConfidence || {},
+        lowConfidenceFields: row.lowConfidenceFields || [],
+        unreadableFields: row.unreadableFields || [],
+      })),
+      rows: [
+        batch.headers,
+        ...(batch.rows || []).map((row: any) =>
+          (batch.headers || []).map((_: string, index: number) => {
+            const field = batch.mapping?.[index];
+            const value = field ? row.data?.[field] : '';
+            return value === null || value === undefined ? '' : value;
+          }),
+        ),
+      ],
+    }));
+    navigate(location.pathname + location.search, { replace: true, state: null });
+    window.setTimeout(() => {
+      setRawSheets(sheets);
+      setImportKey(newImportKey());
+      void preview(sheets).then(() => message.info(`向导识别到的菜单已进入预览，确认无误后再写入菜品表`));
+    }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
+  // 预览里「新建门店」：建完重新预览即可匹配
+  const createStoresFromPreview = async (names: string[]) => {
+    setStoreBusy(true);
+    try {
+      await api.post('/data-intake/stores', { names });
+      message.success(`已新建门店：${names.join('、')}`);
+      await preview(rawSheets);
+    } finally {
+      setStoreBusy(false);
+    }
+  };
+
+  // 预览里「改为默认店」：记录覆盖并重新预览；提交时同样带上，不会静默落默认店
+  const useDefaultStoreFromPreview = async (names: string[]) => {
+    const next = { ...storeOverrides };
+    for (const name of names) next[name] = 'default';
+    setStoreOverrides(next);
+    setStoreBusy(true);
+    try {
+      await preview(rawSheets, next);
+    } finally {
+      setStoreBusy(false);
     }
   };
 
@@ -241,7 +310,13 @@ export default function DataIntake() {
       for (const file of selected) {
         const buf = await file.arrayBuffer();
         const workbook = XLSX.read(buf, { type: 'array', cellDates: false });
+        const hiddenSheets = new Set(
+          (workbook.Workbook?.Sheets || [])
+            .filter(meta => Number(meta.Hidden || 0) > 0)
+            .map(meta => String(meta.name || '')),
+        );
         for (const sheetName of workbook.SheetNames) {
+          if (TEMPLATE_HELPER_SHEETS.has(sheetName) || hiddenSheets.has(sheetName)) continue;
           // Preserve Excel date serials so the server can normalize dates without
           // depending on the workbook's locale-specific display format.
           const rows: any[][] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
@@ -260,9 +335,11 @@ export default function DataIntake() {
           }
         }
       }
+      if (!next.length) throw new Error('文件里没有可导入的数据表（说明页和隐藏页会被跳过）');
       setRawSheets(next);
+      setStoreOverrides({});
       setImportKey(newImportKey());
-      await preview(next);
+      await preview(next, {});
       message.success(`已读取 ${next.length} 个工作表，系统已自动判断写入位置`);
     } catch (error: any) {
       message.error(error?.message || '表格读取失败，请检查文件是否损坏或加密');
@@ -300,12 +377,26 @@ export default function DataIntake() {
     await preview(next);
   };
 
+  const unmatchedStoreCount = useMemo(
+    () =>
+      batches.reduce(
+        (sum, b) => sum + (b.stores?.unmatched || []).reduce((n: number, item: any) => n + Number(item.rows || 0), 0),
+        0,
+      ),
+    [batches],
+  );
+
   const commit = async () => {
     const valid = batches.reduce((sum, b) => sum + Number(b.validRows || 0), 0);
     if (!valid) return message.warning('没有通过校验的有效数据');
+    if (unmatchedStoreCount) {
+      return message.warning(
+        `还有 ${unmatchedStoreCount} 行门店未匹配：请先选择「新建门店」或「改为默认店」，系统不会悄悄归到别的店`,
+      );
+    }
     setImporting(true);
     try {
-      const out = await api.post('/data-intake/commit', { batches, idempotencyKey: importKey });
+      const out = await api.post('/data-intake/commit', { batches, idempotencyKey: importKey, storeOverrides });
       setResult(out);
       window.dispatchEvent(new CustomEvent('nanowork-data-updated', { detail: out.sync || {} }));
       await loadHistory();
@@ -433,6 +524,26 @@ export default function DataIntake() {
         </div>
       </details>
 
+      <Panel
+        title={
+          <>
+            <FileExcelOutlined /> 连锁多门店批量导入模板
+          </>
+        }
+      >
+        <DataIntakeTemplates />
+      </Panel>
+
+      <Panel
+        title={
+          <>
+            <CameraOutlined /> 拍照 / 截图导入（日结单、外卖后台、菜单、票据）
+          </>
+        }
+      >
+        <DataIntakeVisionImport onCommitted={() => void loadHistory()} />
+      </Panel>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.45fr) minmax(280px,.75fr)', gap: 12 }}>
         <Panel
           title={
@@ -530,6 +641,12 @@ export default function DataIntake() {
                         />
                       </Space>
                     </div>
+                    <StoreIssuesBar
+                      issues={batch.stores}
+                      busy={storeBusy || parsing}
+                      onCreateStores={createStoresFromPreview}
+                      onUseDefault={useDefaultStoreFromPreview}
+                    />
                     <Table
                       size="small"
                       rowKey="rowNumber"
@@ -545,6 +662,22 @@ export default function DataIntake() {
                             ellipsis: true,
                             render: (_: any, r: any) => String(r.data?.[field] ?? ''),
                           })),
+                          ...(batch.stores
+                            ? [
+                                {
+                                  title: '门店',
+                                  width: 110,
+                                  render: (_: any, r: any) =>
+                                    r.store?.unresolved ? (
+                                      <Tag color="red">未匹配</Tag>
+                                    ) : (
+                                      <Tag color={r.store?.defaulted ? 'orange' : 'green'}>
+                                        {r.store?.name || '默认店'}
+                                      </Tag>
+                                    ),
+                                },
+                              ]
+                            : []),
                           {
                             title: '校验',
                             width: 180,
@@ -552,7 +685,9 @@ export default function DataIntake() {
                               r.valid ? (
                                 <Tag color="green">可导入</Tag>
                               ) : (
-                                <Tag color="orange">{r.error || `缺少${r.missing?.join('、')}`}</Tag>
+                                <Tag color={r.store?.unresolved ? 'red' : 'orange'}>
+                                  {r.error || `缺少${r.missing?.join('、')}`}
+                                </Tag>
                               ),
                           },
                         ] as any

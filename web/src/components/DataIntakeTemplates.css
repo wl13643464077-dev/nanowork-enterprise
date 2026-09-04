@@ -1,0 +1,361 @@
+/* 数据录入中枢 · 多门店批量导入模板与拍照识别（连锁过渡方案） */
+.di-templates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.di-templates-intro {
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.7;
+}
+
+.di-templates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.di-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+}
+
+.di-template-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 650;
+}
+
+.di-template-desc {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.65;
+  flex: 1;
+}
+
+.di-template-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.di-template-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.di-template-actions .ant-btn {
+  min-height: 44px;
+}
+
+/* 门店未匹配处理条 */
+.di-store-issues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--ui-warning-surface);
+  color: var(--ui-warning-text);
+  font-size: var(--font-2);
+}
+
+.di-store-issue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.di-store-issue-name {
+  font-weight: 650;
+  color: var(--ui-text);
+}
+
+.di-store-issue-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.di-store-issue-actions .ant-btn {
+  min-height: 36px;
+}
+
+.di-store-defaulted {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+/* 拍照/截图导入 */
+.di-vision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.di-vision-hint {
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.7;
+}
+
+.di-vision-hint strong {
+  color: var(--ui-text);
+}
+
+.di-vision-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.di-vision-toolbar .ant-btn,
+.di-vision-toolbar .ant-select {
+  min-height: 44px;
+}
+
+.di-vision-toolbar .ant-select .ant-select-selector {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.di-vision-kind {
+  min-width: 200px;
+  flex: 1 1 200px;
+}
+
+.di-vision-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.di-vision-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+}
+
+.di-vision-thumb {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface-2);
+}
+
+.di-vision-thumb--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-muted);
+  font-size: var(--font-5);
+}
+
+.di-vision-file-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.di-vision-file-name {
+  font-weight: 600;
+  color: var(--ui-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-2);
+}
+
+.di-vision-file-status {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.di-vision-file .ant-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.di-vision-estimate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-primary-soft);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+}
+
+.di-vision-estimate strong {
+  font-size: var(--font-4);
+}
+
+.di-vision-batch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.di-vision-batch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.di-vision-batch-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 650;
+  color: var(--ui-text);
+}
+
+.di-vision-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.di-vision-legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  vertical-align: -2px;
+  margin-right: var(--space-1);
+}
+
+.di-vision-legend-swatch--low {
+  background: var(--ui-warning-surface);
+  border: 1px solid var(--warn);
+}
+
+.di-vision-legend-swatch--missing {
+  background: color-mix(in srgb, var(--danger) 12%, var(--ui-surface));
+  border: 1px solid var(--danger);
+}
+
+/* 逐行可编辑表格 */
+.di-vision-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--font-2);
+}
+
+.di-vision-table-wrap {
+  overflow-x: auto;
+}
+
+.di-vision-table th,
+.di-vision-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--ui-border);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.di-vision-table th {
+  color: var(--ui-text-2);
+  font-weight: 600;
+  background: var(--ui-surface-2);
+  position: sticky;
+  top: 0;
+}
+
+.di-vision-table .ant-input {
+  min-width: 96px;
+  min-height: 36px;
+}
+
+.di-vision-cell--low .ant-input {
+  background: var(--ui-warning-surface);
+  border-color: var(--warn);
+}
+
+.di-vision-cell--missing .ant-input {
+  background: color-mix(in srgb, var(--danger) 10%, var(--ui-surface));
+  border-color: var(--danger);
+}
+
+.di-vision-cell-confidence {
+  display: block;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.2;
+}
+
+.di-vision-row-actions .ant-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.di-vision-row-error {
+  color: var(--danger);
+  font-size: var(--font-1);
+  white-space: normal;
+  max-width: 220px;
+}
+
+.di-vision-submit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.di-vision-submit .ant-btn {
+  min-height: 44px;
+}
+
+@media (max-width: 640px) {
+  .di-templates-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .di-vision-kind {
+    flex-basis: 100%;
+  }
+
+  .di-vision-batch-head,
+  .di-store-issue-row {
+    align-items: flex-start;
+  }
+}

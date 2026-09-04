@@ -1104,6 +1104,7 @@
 }
 
 .lp-login-panel {
+  box-sizing: border-box;
   position: fixed;
   top: 0;
   right: 0;
@@ -1225,6 +1226,10 @@
 /* 图片加载失败时整体隐藏（fallback 层自动露出） */
 .lp-img-hidden {
   display: none;
+}
+
+.lp-login-error {
+  margin-bottom: 16px;
 }
 
 .lp-hero-visual img:not(.lp-img-hidden) + .lp-hero-fallback {

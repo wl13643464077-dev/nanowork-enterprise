@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
+import { removeTempDbSafely } from './helpers/temp-db.mjs';
 
 const DBP = path.join(os.tmpdir(), `shanmei-data-intake-corrections-${process.pid}.db`);
 for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
@@ -124,6 +125,6 @@ test('数据录入支持逐行修改、撤回、删除、恢复及关联保护',
   });
 });
 
-after(() => {
-  for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
+after(async () => {
+  await removeTempDbSafely(DBP);
 });

@@ -312,7 +312,18 @@ export function contentEmployeeIdxFromPrompt(prompt) {
 
 export function validContentEmployeeOutputForPrompt(prompt) {
   const idx = contentEmployeeIdxFromPrompt(prompt);
-  return idx === null ? null : validContentEmployeeOutput(idx);
+  const output = idx === null ? null : validContentEmployeeOutput(idx);
+  if (idx === 2 && String(prompt).includes('【爆款结构卡·必须输出 structure_cards】')) {
+    output.structure_cards = [{
+      platform: '小红书', hook_type: '悬念', opening_3s: '用一个具体问题吸引读者继续看',
+      structure: ['提出问题', '对照过程', '行动建议'], emotion_trigger: '减轻选择时的焦虑',
+      selling_point_presentation: '用可核实的信息对照选择方法', cta_type: '邀请讨论实际需求',
+      hashtags: ['方法拆解'], duration_or_length: '三百字左右', pacing_notes: '先问题后拆解方法',
+      reusable_pattern: '先交代场景中的问题，再列出对照条件，最后邀请读者补充自己的条件。',
+      risk_flags: ['测试手工材料，未核验平台热度'], source: { type: 'manual', url: null, fetchedAt: null },
+    }];
+  }
+  return output;
 }
 
 function numbered(values) {

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { fetchProviderMediaBytes, parseProviderMediaUrl } from './provider-media-download.js';
 
 const DEFAULT_MAX_BYTES = 180 * 1024 * 1024;
 
@@ -9,16 +10,7 @@ function downloadError(message, status = 502, code = 'VIDEO_PROVIDER_DOWNLOAD_FA
 }
 
 function safeHttpsUrl(value) {
-  let parsed;
-  try {
-    parsed = new URL(String(value || ''));
-  } catch {
-    throw downloadError('视频供应商返回的下载地址无效');
-  }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
-    throw downloadError('视频供应商下载地址必须是无凭据的HTTPS地址');
-  }
-  return parsed;
+  return parseProviderMediaUrl(value);
 }
 
 /**
@@ -30,12 +22,11 @@ export async function downloadProviderVideoClip({
   url,
   outputDir,
   index = 1,
-  fetchImpl = globalThis.fetch,
+  fetchImpl,
   signal = null,
   maxBytes = DEFAULT_MAX_BYTES,
 } = {}) {
   const parsed = safeHttpsUrl(url);
-  if (typeof fetchImpl !== 'function') throw downloadError('视频下载器未配置');
   if (typeof outputDir !== 'string' || !path.isAbsolute(outputDir) || outputDir.includes('\0')) {
     throw downloadError('视频临时目录无效', 500, 'VIDEO_DOWNLOAD_DIRECTORY_INVALID');
   }
@@ -46,28 +37,8 @@ export async function downloadProviderVideoClip({
   await fsp.mkdir(outputDir, { recursive: true });
   const fileName = `segment-${Number(index) || 1}-${crypto.randomBytes(10).toString('hex')}.mp4`;
   const filePath = path.join(outputDir, fileName);
-  let response;
   try {
-    response = await fetchImpl(parsed, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: signal || undefined,
-      headers: { Accept: 'video/*,application/octet-stream;q=0.8' },
-    });
-    if (!response?.ok) throw downloadError(`视频片段下载失败（HTTP ${Number(response?.status || 0) || '未知'}）`);
-    const contentLength = Number(response.headers?.get?.('content-length') || 0);
-    if (Number.isFinite(contentLength) && contentLength > limit) {
-      throw downloadError('视频片段超过安全大小上限', 413, 'VIDEO_PROVIDER_DOWNLOAD_TOO_LARGE');
-    }
-    const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
-    if (contentType && !contentType.startsWith('video/') && !contentType.includes('octet-stream')) {
-      throw downloadError('视频供应商返回的文件类型不是视频');
-    }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (!bytes.length) throw downloadError('视频供应商返回了空文件');
-    if (bytes.length > limit) {
-      throw downloadError('视频片段超过安全大小上限', 413, 'VIDEO_PROVIDER_DOWNLOAD_TOO_LARGE');
-    }
+    const { bytes, contentType } = await fetchProviderMediaBytes(parsed, { kind: 'video', maxBytes: limit, fetchImpl, signal });
     await fsp.writeFile(filePath, bytes, { flag: 'wx', mode: 0o600 });
     return {
       path: filePath,
@@ -79,9 +50,10 @@ export async function downloadProviderVideoClip({
   } catch (error) {
     await fsp.rm(filePath, { force: true }).catch(() => {});
     if (error?.code?.startsWith('VIDEO_')) throw error;
+    if (error?.code === 'PROVIDER_MEDIA_TOO_LARGE') throw downloadError('视频片段超过安全大小上限', 413, 'VIDEO_PROVIDER_DOWNLOAD_TOO_LARGE');
     throw downloadError(error?.name === 'AbortError'
       ? '视频片段下载超时或已取消'
-      : `视频片段下载失败：${String(error?.message || error).slice(0, 180)}`);
+      : '视频片段下载失败（地址、网络、类型或大小校验未通过）');
   }
 }
 

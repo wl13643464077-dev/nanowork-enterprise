@@ -9,8 +9,14 @@ process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
 process.env.YUNWU_API_KEY = '';
 
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
-const { holdCredits, releaseHold } = await import('../src/engines/credits.js');
-const { buildAiSalesVideoPlan } = await import('../src/engines/ai-sales-video.js');
+const { holdCredits, releaseHold, billing } = await import('../src/engines/credits.js');
+const { buildAiSalesVideoPlan, AI_SALES_VIDEO_SEGMENT_COUNT } = await import('../src/engines/ai-sales-video.js');
+
+// Hailuo 2.3 30 秒成片预授权 = 单段成本 × 3 段 × 毛利系数 ÷ 0.01；按价目表公式算（系数 1.5 时 1710 分，2.0 时 2280 分）
+const hailuoPlanCredits = () => {
+  const b = billing();
+  return Math.ceil((b.video['MiniMax-Hailuo-2.3'] * AI_SALES_VIDEO_SEGMENT_COUNT * b.marginMultiplier) / b.creditYuan);
+};
 const { augmentMediaJob } = await import('../src/routes/media-review.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
 
@@ -224,7 +230,7 @@ test('injected provider completes exactly three 10-second segments, settles the 
     );
     assert.ok(hold, '任务必须有唯一的权威预授权记录');
     assert.equal(hold.status, 'settled');
-    assert.equal(Number(hold.held_credits), 1710, 'Hailuo 2.3应按¥3.80/10秒×3段×1.5毛利系数预授权');
+    assert.equal(Number(hold.held_credits), hailuoPlanCredits(), 'Hailuo 2.3应按¥3.80/10秒×3段×毛利系数预授权');
     assert.ok(Number(hold.settled_credits) > 0);
     assert.equal(Number(hold.settled_credits), Number(row.credits));
     const ledger = q.get(`SELECT * FROM credit_logs WHERE tenant_id=? AND id=?`, 1, hold.log_id);
@@ -428,7 +434,7 @@ test('refunded historical job can recover existing provider tasks with zero new 
     feature: '历史带货视频恢复测试',
     kind: 'video',
     model: plan.model,
-    credits: 1710,
+    credits: hailuoPlanCredits(),
     refType: 'media_job',
     refId: jobId,
   });
@@ -474,7 +480,7 @@ test('refunded historical job can recover existing provider tasks with zero new 
     const quote = await quoteResponse.json();
     assert.equal(quoteResponse.status, 409);
     assert.equal(quote.code, 'AI_SALES_VIDEO_RECOVERY_BILLING_CONFIRMATION_REQUIRED');
-    assert.equal(quote.billing.estimatedCredits, 1710);
+    assert.equal(quote.billing.estimatedCredits, hailuoPlanCredits());
     assert.equal(quote.billing.providerSubmissions, 0);
     assert.equal(queryCalls.length, 0);
 
@@ -500,8 +506,8 @@ test('refunded historical job can recover existing provider tasks with zero new 
       jobId,
     );
     assert.equal(latestHold.status, 'settled');
-    assert.equal(Number(latestHold.settled_credits), 1710);
-    assert.equal(Number(q.get('SELECT credits FROM tenants WHERE id=?', 1).credits), balanceBefore - 1710);
+    assert.equal(Number(latestHold.settled_credits), hailuoPlanCredits());
+    assert.equal(Number(q.get('SELECT credits FROM tenants WHERE id=?', 1).credits), balanceBefore - hailuoPlanCredits());
   } finally {
     await new Promise(resolve => local.server.close(resolve));
   }

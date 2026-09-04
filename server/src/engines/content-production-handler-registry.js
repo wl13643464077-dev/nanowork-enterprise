@@ -5,16 +5,27 @@ import {
   createContentHandlerAdapterRegistry,
 } from "./content-handler-adapters.js";
 import { compileContentEmployeeSoloPrompt } from "./content-employee-workbench.js";
+import { xhsPipelinePromptLines } from './content-xhs-pipeline.js';
+import { createPrivateOutputSnapshot } from './content-production-private-output-snapshot.js';
 import {
   getContentEmployeeOutputResponseSchema,
   validateContentEmployeeOutputContract,
   contentEmployeeContractGenerationGuidance,
   retrospectiveNoDataFallbackOutput,
+  structureCardsPromptBlock,
 } from "./content-output-contract.js";
 import { executeContentSpecialHandlerRuntime } from "./content-special-handler-runtime.js";
 import { agenticWebResearch } from "./agentic-web-research.js";
 import { fetchControlledWebEvidence } from "./controlled-web-evidence.js";
 import { sanitizePublicSources } from "./public-source-quality.js";
+import {
+  annotateContentSourceFreshness,
+  contentFreshnessPromptBlock,
+  contentLiveResearchReadiness,
+  contentResearchKindFor,
+  hasContentFreshnessSection,
+  renderContentFreshnessSection,
+} from "./content-live-research.js";
 import {
   CANONICAL_EMPLOYEE_PROFILE_FIELDS,
   validateCanonicalEmployeeProfile,
@@ -603,11 +614,19 @@ function promptBusinessContext(context, variables, descriptor) {
         account: context.profile?.account || {},
         persona: context.profile?.persona || {},
         knowledge: context.knowledge || {},
+        benchmarkCards: context.benchmarkCards || [],
+        xhsSales: context.xhsSales || null,
+        evolutionNotes: context.evolutionNotes || [],
+        retroMetrics: context.retroMetrics || null,
+        storeFacts: context.storeFacts || null,
         workflow: publicWorkflow,
       }),
       null,
       2,
     ),
+    context.benchmarkFewShot || '',
+    context.structureCardsRequired ? structureCardsPromptBlock({ platform: context.brief?.platforms?.[0] }) : '',
+    ...xhsPipelinePromptLines(context, descriptor.employeeIdx),
   ].join("\n");
 }
 
@@ -693,6 +712,12 @@ function assertRealProviderResponse(response, descriptor) {
 
 function outputValidationContext(context, webRuntime = null) {
   return {
+    executionMode: context.executionMode,
+    outputs: context.outputs,
+    structureCardsRequired: context.structureCardsRequired === true,
+    xhsSales: context.xhsSales,
+    retroMetrics: context.retroMetrics,
+    storeFacts: context.storeFacts,
     title: context.brief?.direction || context.task?.direction || "",
     requirement: JSON.stringify(
       safeValue({
@@ -710,6 +735,8 @@ function outputValidationContext(context, webRuntime = null) {
           web: {
             verified: webRuntime.evidence?.verified === true,
             results: clone(webRuntime.results || []),
+            freshness: clone(webRuntime.freshness || null),
+            freshnessSection: webRuntime.freshnessSection || null,
           },
         }
       : {}),
@@ -1141,6 +1168,9 @@ function publicWebEvidenceResult(item) {
     snippetSha256: item.snippet ? fingerprint(item.snippet) : null,
     bodySha256: item.bodySha256 || (item.body ? fingerprint(item.body) : null),
     bodyChars: String(item.body || "").length,
+    fetchedAt: item.fetchedAt || null,
+    publishedAt: item.publishedAt || null,
+    stale: item.stale === true ? true : item.stale === false ? false : null,
     rawSnippetIncluded: false,
     rawBodyIncluded: false,
   };
@@ -1154,7 +1184,20 @@ function webSnapshotAgeBucket(ageMs) {
 }
 
 function reusedWebRuntime(snapshot, identity, ageMs) {
-  const results = clone(snapshot.results);
+  // 复用快照时抓取时间=快照核验时间；快照不保存发布时间，publishedAt 保持 null。
+  const researchKind = contentResearchKindFor(snapshot.stationIdx);
+  const annotated = annotateContentSourceFreshness(
+    clone(snapshot.results).map((item) => ({
+      ...item,
+      fetchedAt: snapshot.verifiedAt,
+      publishedAt: null,
+    })),
+    { kind: researchKind || "intel", fetchedAt: snapshot.verifiedAt },
+  );
+  const results = annotated.items.map(
+    ({ qualityScore: _qualityScore, ...item }) => item,
+  );
+  const freshness = annotated.freshness;
   const evidence = {
     required: true,
     attempted: true,
@@ -1181,6 +1224,7 @@ function reusedWebRuntime(snapshot, identity, ageMs) {
       queryTextIncluded: false,
     },
     providers: [],
+    freshness,
     resultCount: results.length,
     results: results.map(publicWebEvidenceResult),
     calls: [],
@@ -1195,10 +1239,31 @@ function reusedWebRuntime(snapshot, identity, ageMs) {
     },
     credentialsIncluded: false,
   };
+  const stationIdx = Number(snapshot.stationIdx);
   return {
     evidence,
     results,
-    promptBlock: webReferencesPrompt(results),
+    freshness,
+    freshnessSection:
+      stationIdx <= 1
+        ? renderContentFreshnessSection({
+            freshness,
+            lane: null,
+            provider: null,
+            kind: researchKind || "intel",
+          })
+        : null,
+    promptBlock:
+      webReferencesPrompt(results) +
+      (stationIdx <= 1
+        ? contentFreshnessPromptBlock({
+            items: results,
+            freshness,
+            lane: null,
+            provider: null,
+            kind: researchKind || "intel",
+          })
+        : ""),
     privateSnapshot: snapshot,
   };
 }
@@ -1225,10 +1290,14 @@ function mergeContentResearchCandidates(...groups) {
     const title = boundedText(item?.title, 300);
     if (!url || !title || seen.has(url)) continue;
     seen.add(url);
+    const publishedAt = Number.isFinite(Date.parse(String(item?.publishedAt || "")))
+      ? new Date(Date.parse(String(item.publishedAt))).toISOString()
+      : null;
     merged.push({
       title,
       url,
       snippet: boundedText(item?.snippet, 1_600),
+      ...(publishedAt ? { publishedAt } : {}),
     });
   }
   return merged.slice(0, 60);
@@ -1317,6 +1386,9 @@ async function fetchContentControlledSources(
         snippet: boundedText(source.snippet || body, 500),
         body,
         bodySha256: fingerprint(body),
+        // 网页元数据明确给出的发布时间；缺失即 null，由时效标注层统一处理。
+        publishedAt: source.publishedAt || null,
+        fetchedAt: source.fetchedAt || null,
       });
     }
   }
@@ -2546,9 +2618,16 @@ async function executeRequiredWebSearch({
   }
   const controlledLimit =
     descriptor.employeeIdx === 2 ? 5 : Math.max(minimumResults, 4);
-  const results = controlled.accepted
-    .slice(0, controlledLimit)
-    .map((item, index) => ({
+  // 候选阶段（TinyFish / Claude WebSearch）可能自带发布时间；受控抓取阶段再从
+  // 网页元数据补一次。两处都没有则保持 null，绝不用抓取时间冒充发布时间。
+  const candidatePublishedAt = new Map(
+    sanitizedCandidates.accepted
+      .map((item) => [canonicalContentEvidenceUrl(item?.url), item?.publishedAt || null])
+      .filter(([url, publishedAt]) => url && publishedAt),
+  );
+  const researchKind = contentResearchKindFor(descriptor.employeeIdx);
+  const annotated = annotateContentSourceFreshness(
+    controlled.accepted.slice(0, controlledLimit).map((item, index) => ({
       sourceId: `来源${index + 1}`,
       channel: "受控网页正文",
       title: item.title,
@@ -2556,7 +2635,16 @@ async function executeRequiredWebSearch({
       snippet: item.snippet,
       body: item.body,
       bodySha256: item.bodySha256,
-    }));
+      publishedAt: item.publishedAt || candidatePublishedAt.get(item.url) || null,
+      fetchedAt: item.fetchedAt || new Date(checkedAtMs).toISOString(),
+    })),
+    {
+      kind: researchKind || "intel",
+      fetchedAt: new Date(checkedAtMs).toISOString(),
+    },
+  );
+  const results = annotated.items.map(({ qualityScore: _qualityScore, ...item }) => item);
+  const freshness = annotated.freshness;
   await reportRuntimeProgress(progress, {
     phase: "controlled_fetch",
     state: "completed",
@@ -2654,6 +2742,8 @@ async function executeRequiredWebSearch({
         ].filter(Boolean),
       ),
     ],
+    // 时效摘要（抓取时间 / 可确认发布时间 / 超窗口计数）随证据持久化，供产物与前端标注。
+    freshness,
     resultCount: results.length,
     relevance: {
       required: descriptor.employeeIdx === 1 || descriptor.employeeIdx === 2,
@@ -2732,10 +2822,37 @@ async function executeRequiredWebSearch({
     sourceAttempt: verifiedPrivateSnapshot.sourceAttempt,
     rawSnapshotIncluded: false,
   };
+  const lane = /tinyfish/iu.test(String(agentic?.provider || ""))
+    ? "tinyfish"
+    : /claude/iu.test(String(agentic?.provider || ""))
+      ? "claude_websearch"
+      : null;
   return {
     evidence,
     results,
-    promptBlock: webReferencesPrompt(results),
+    freshness,
+    // 趋势官 / 情报员的主叙述字段末尾必须原样附上系统渲染的“信息时效”一节；
+    // 系统不改写正文，只在证据区提供并在验证后记录 sectionPresent。
+    freshnessSection:
+      descriptor.employeeIdx <= 1
+        ? renderContentFreshnessSection({
+            freshness,
+            lane,
+            provider: agentic?.provider || null,
+            kind: researchKind || "intel",
+          })
+        : null,
+    promptBlock:
+      webReferencesPrompt(results) +
+      (descriptor.employeeIdx <= 1
+        ? contentFreshnessPromptBlock({
+            items: results,
+            freshness,
+            lane,
+            provider: agentic?.provider || null,
+            kind: researchKind || "intel",
+          })
+        : ""),
     privateSnapshot: verifiedPrivateSnapshot,
   };
 }
@@ -3035,6 +3152,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
     specialRuntimeFn = executeContentSpecialHandlerRuntime,
     specialProviderBridgeFactory,
     compileSoloPromptFn = compileContentEmployeeSoloPrompt,
+    liveResearchReadinessFn = contentLiveResearchReadiness,
     validateOutputFn = validateContentEmployeeOutputContract,
     responseSchemaFn = getContentEmployeeOutputResponseSchema,
     role,
@@ -3070,7 +3188,8 @@ export function createContentProductionHandlerRegistry(options = {}) {
   if (
     typeof compileSoloPromptFn !== "function" ||
     typeof validateOutputFn !== "function" ||
-    typeof responseSchemaFn !== "function"
+    typeof responseSchemaFn !== "function" ||
+    typeof liveResearchReadinessFn !== "function"
   ) {
     throw new TypeError(
       "content production handler registry的编译/契约依赖必须是函数",
@@ -3117,7 +3236,15 @@ export function createContentProductionHandlerRegistry(options = {}) {
       const compiled = compileSoloPromptFn(
         employeeIdx,
         compilationTask(context),
-        { executionMode: "pipeline" },
+        {
+          executionMode: "pipeline",
+          xhsSales: context.xhsSales,
+          // 联网真实状态：研究工位由 registry 的 agentic/controlled adapter 提供快照，
+          // 非研究工位没有联网；只把不含凭据的可用性摘要交给编译器。
+          liveResearch: descriptor.execution.webRequired
+            ? liveResearchReadinessFn()
+            : { configured: false, summary: "本工位不联网，只使用数据库已持久化的上游产物" },
+        },
       );
       if (
         !isRecord(compiled) ||
@@ -3637,10 +3764,15 @@ export function createContentProductionHandlerRegistry(options = {}) {
         );
       }
       const parsed = validation.parsed;
+      // Runtime contracts may add structure cards or replace the writer with native XHS versions.
+      // Keep factory descriptors/fingerprints immutable; enforce the same schema sent to the provider.
+      const requiredOutputKeys = responseSchema?.schema?.required || descriptor.outputKeys;
+      const allowedOutputKeys = responseSchema?.schema?.properties
+        ? Object.keys(responseSchema.schema.properties) : descriptor.outputKeys;
       if (
         !isRecord(parsed) ||
-        !descriptor.outputKeys.every((key) => Object.hasOwn(parsed, key)) ||
-        Object.keys(parsed).some((key) => !descriptor.outputKeys.includes(key))
+        !requiredOutputKeys.every((key) => Object.hasOwn(parsed, key)) ||
+        Object.keys(parsed).some((key) => !allowedOutputKeys.includes(key))
       ) {
         await reportRuntimeProgress(runtime?.progress, {
           phase: "validate",
@@ -3671,6 +3803,17 @@ export function createContentProductionHandlerRegistry(options = {}) {
         validated: true,
         outputFingerprint: fingerprint(parsed),
       };
+      const privateOutputSnapshot = createPrivateOutputSnapshot({
+        context,
+        validationContext: outputValidationContext(context, webRuntime),
+        employeeIdx,
+        handlerId: descriptor.handlerId,
+        output: parsed,
+      });
+      if (privateOutputSnapshot) {
+        privateWebStates.get(traceKey).outputSnapshot = privateOutputSnapshot;
+        providerDelivery.validationSnapshotFingerprint = privateOutputSnapshot.snapshotFingerprint;
+      }
       trace.providerDelivery = clone(providerDelivery);
       traces.set(traceKey, trace);
       await reportRuntimeProgress(runtime?.progress, {
@@ -3906,6 +4049,46 @@ export function createContentProductionHandlerRegistry(options = {}) {
         bridgeFailure,
         employeeIdx,
       );
+      // 时效标注是运行期附加字段：sources[] 与 freshness 随证据持久化；
+      // “信息时效”一节由系统渲染放进证据区要求模型原样附上，漏写只记 warning，
+      // 不在这里改写正文（正文与供应商响应哈希一致的反造假链）。
+      const liveResearch =
+        webRuntime && employeeIdx <= 2
+          ? (() => {
+              const narrative =
+                employeeIdx === 0
+                  ? parsed?.briefing
+                  : employeeIdx === 1
+                    ? parsed?.summary
+                    : null;
+              const sectionRequired = employeeIdx <= 1;
+              const sectionPresent = sectionRequired
+                ? hasContentFreshnessSection(narrative)
+                : null;
+              return {
+                schemaVersion: "nanowork.content-live-research-annotation/1",
+                sources: (webRuntime.results || []).map((item) => ({
+                  sourceId: item.sourceId,
+                  title: item.title,
+                  url: item.url,
+                  fetchedAt: item.fetchedAt || null,
+                  publishedAt: item.publishedAt || null,
+                  stale: item.stale === true ? true : item.stale === false ? false : null,
+                })),
+                freshness: clone(webRuntime.freshness || null),
+                freshnessSection: webRuntime.freshnessSection || null,
+                freshnessSectionRequired: sectionRequired,
+                freshnessSectionPresent: sectionPresent,
+                warnings:
+                  sectionRequired && !sectionPresent
+                    ? [
+                        `${descriptor.legacyHandler}正文末尾缺少「${"信息时效"}」一节：模型未按证据区要求原样附上；请以 freshnessSection 字段的系统渲染版为准核对抓取时间与过期标注。`,
+                      ]
+                    : [],
+              };
+            })()
+          : null;
+      trace.liveResearch = liveResearch ? safeValue(liveResearch) : null;
       traces.set(traceKey, trace);
 
       const usedHtmlCoverFallback =
@@ -3928,6 +4111,7 @@ export function createContentProductionHandlerRegistry(options = {}) {
         model: provider.model,
         usage: clone(provider.usage),
         providerDelivery,
+        liveResearch,
         specialRuntime: specialRuntime
           ? {
               schemaVersion: specialRuntime.schemaVersion,
@@ -3997,6 +4181,12 @@ export function createContentProductionHandlerRegistry(options = {}) {
       };
       const currentPrivateSnapshot =
         privateWebStates.get(invocationId)?.current;
+      const privateOutputSnapshot = privateWebStates.get(invocationId)?.outputSnapshot;
+      if (privateOutputSnapshot) {
+        Object.defineProperty(response, 'privateOutputSnapshot', {
+          value: deepFreeze(clone(privateOutputSnapshot)), enumerable: false,
+        });
+      }
       if (currentPrivateSnapshot) {
         Object.defineProperty(response, "privateWebSnapshot", {
           value: deepFreeze(clone(currentPrivateSnapshot)),

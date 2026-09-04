@@ -13,6 +13,7 @@ import {
 import { textModelFor } from '../engines/yunwu.js';
 import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { accessibleUserExists, canAccessOwner, userScopeClause } from '../engines/access.js';
+import { resolveWriteStoreId } from '../engines/store-scope.js';
 import { archiveAndDelete, deleteList, deletionDenied, isBossLike, isManagerLike, tableRows } from '../engines/deletion.js';
 import {
   aiFailurePayload,
@@ -576,14 +577,15 @@ r.post('/leads/:id/advance', (req, res) => {
            last_interact_at=?, updated_at=datetime('now','localtime') WHERE id=?`,
       stage, amount ?? null, deal_reason ?? null, today(), lead.id);
     if (stage === '已成交') {
-      q.run('INSERT INTO orders(lead_id,product,amount,type,region,channel) VALUES(?,?,?,?,?,?)',
-        lead.id, orderProduct, amount, orderType, lead.region, normalizeLeadSource(lead.source));
+      // 多门店：成交订单落到当前门店（X-Store-Id → 操作人绑定店 → 租户默认店）
+      q.run('INSERT INTO orders(lead_id,product,amount,type,region,channel,store_id) VALUES(?,?,?,?,?,?,?)',
+        lead.id, orderProduct, amount, orderType, lead.region, normalizeLeadSource(lead.source), resolveWriteStoreId(req.user));
       q.run(`INSERT INTO daily_ops(date,deals,deal_amount) VALUES(?,1,?) ON CONFLICT(tenant_id,date) DO UPDATE SET deals=deals+1, deal_amount=deal_amount+excluded.deal_amount`, today(), amount);
     }
     // 复购=同一客户第2笔及以后订单回写（P0-2修复：打通复购数据闭环，复购率不再恒0）
     if (stage === '复购') {
-      q.run('INSERT INTO orders(lead_id,product,amount,type,region,channel) VALUES(?,?,?,?,?,?)',
-        lead.id, orderProduct, amount, orderType, lead.region, normalizeLeadSource(lead.source));
+      q.run('INSERT INTO orders(lead_id,product,amount,type,region,channel,store_id) VALUES(?,?,?,?,?,?,?)',
+        lead.id, orderProduct, amount, orderType, lead.region, normalizeLeadSource(lead.source), resolveWriteStoreId(req.user));
       q.run(`INSERT INTO daily_ops(date,repurchase_amount,orders) VALUES(?,?,1) ON CONFLICT(tenant_id,date) DO UPDATE SET repurchase_amount=repurchase_amount+excluded.repurchase_amount, orders=orders+1`, today(), amount);
     }
   }

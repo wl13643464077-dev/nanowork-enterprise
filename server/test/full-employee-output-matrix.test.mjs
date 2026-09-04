@@ -71,7 +71,7 @@ const { createContentSpecialProviderBridge } =
   await import("../src/engines/content-special-provider-bridge.js");
 const { buildRestaurantOutputDeliverableFixture } =
   await import("../src/engines/restaurant-output-contract.js");
-const { contentEmployeeIdxFromPrompt, contentOutputFixture } =
+const { contentEmployeeIdxFromPrompt, validContentEmployeeOutputForPrompt } =
   await import("./helpers/content-output-fixtures.mjs");
 const { buildContentDispatch } =
   await import("../../scripts/lib/real-employee-matrix.mjs");
@@ -521,7 +521,7 @@ async function deterministicContentGenerate(args) {
       .update(String(args.userMsg || ""))
       .digest("hex"),
   });
-  const output = contentOutputFixture(idx);
+  const output = validContentEmployeeOutputForPrompt(args.userMsg);
   if (idx === 0) {
     output.briefing += " [来源1]";
     output.channel_scan.forEach((item) => {

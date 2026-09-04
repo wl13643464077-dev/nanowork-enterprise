@@ -1,4 +1,5 @@
 import { message } from 'antd';
+import { bindStoreContextTenant, storeHeaders } from './store-context';
 
 // 新项目只使用自有 HttpOnly Cookie，不从 localStorage 读取或迁移其他项目会话。
 let currentUser: any = null;
@@ -6,18 +7,22 @@ let currentUser: any = null;
 export const getToken = () => (currentUser ? 'cookie-session' : null);
 export const setAuth = (_token: string, user: any) => {
   currentUser = user;
+  bindStoreContextTenant(user?.tenant?.id);
 };
 export const clearAuth = () => {
   currentUser = null;
+  bindStoreContextTenant(null);
   void fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
 };
 export const bootstrapSession = async () => {
   const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
   if (!response.ok) {
     currentUser = null;
+    bindStoreContextTenant(null);
     return null;
   }
   currentUser = await response.json();
+  bindStoreContextTenant(currentUser?.tenant?.id);
   return currentUser;
 };
 export const ensureSessionCookie = bootstrapSession;
@@ -56,6 +61,23 @@ function requestError(
   return Object.assign(new Error(messageText), { name: 'ApiRequestError', ...meta });
 }
 
+// 月度 AI 预算拦截（服务端 code=BUDGET_EXCEEDED，文案已是老板可读信息）：
+// 所有 AI 入口（派活/参谋/内容生产等）统一在这里提示并刷新顶栏预算 Tag，不需要各页面单独处理。
+// 一次操作可能并发多个请求，同一错误 5 秒内只提示一次。
+export const BUDGET_EXCEEDED_CODE = 'BUDGET_EXCEEDED';
+let lastBudgetNoticeAt = 0;
+export function handleBudgetExceeded(data: any): boolean {
+  if (!data || data.code !== BUDGET_EXCEEDED_CODE) return false;
+  const now = Date.now();
+  if (now - lastBudgetNoticeAt > 5000) {
+    lastBudgetNoticeAt = now;
+    message.warning(String(data.error || '本月 AI 预算已用完，请老板在后台调整预算'), 6);
+  }
+  const budget = data.budget && typeof data.budget === 'object' ? data.budget : {};
+  window.dispatchEvent(new CustomEvent('budget-updated', { detail: { state: 'exceeded', ...budget } }));
+  return true;
+}
+
 async function request(method: string, url: string, body?: any, options: RequestOptions = {}) {
   let res: Response;
   const external = options.signal;
@@ -81,6 +103,8 @@ async function request(method: string, url: string, body?: any, options: Request
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
+        // 多门店：选中门店时附带 X-Store-Id；未选/单店客户不带头，服务端不过滤
+        ...storeHeaders(),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -107,14 +131,16 @@ async function request(method: string, url: string, body?: any, options: Request
     window.clearTimeout(timeout);
     external?.removeEventListener('abort', onExternalAbort);
   }
-  if (res.status === 401) {
+  // 登录被拒绝是表单错误，不是已有会话过期；保留服务端原因交给登录页显示。
+  if (res.status === 401 && !(method === 'POST' && url === '/auth/login')) {
     clearAuth();
     if (location.pathname !== '/login') location.href = '/login';
     throw new Error('登录已过期');
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (!options.silent) message.error(data.error || `请求失败 (${res.status})`);
+    const budgetHandled = handleBudgetExceeded(data);
+    if (!options.silent && !budgetHandled) message.error(data.error || `请求失败 (${res.status})`);
     throw requestError(data.error || `HTTP ${res.status}`, {
       status: res.status,
       code: typeof data.code === 'string' ? data.code : undefined,
@@ -145,7 +171,7 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
       method: 'POST',
       credentials: 'same-origin',
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...storeHeaders() },
       body: JSON.stringify(body),
     });
   } catch (e) {
@@ -164,8 +190,11 @@ async function streamRequest(url: string, body: any, onEvent: (e: any) => void):
   if (!res.ok || !ctype.includes('text/event-stream') || !res.body) {
     window.clearTimeout(hardCap);
     const data = await res.json().catch(() => ({}));
-    message.error(data.error || `请求失败 (${res.status})`);
-    throw new Error(data.error || `HTTP ${res.status}`);
+    if (!handleBudgetExceeded(data)) message.error(data.error || `请求失败 (${res.status})`);
+    throw requestError(data.error || `HTTP ${res.status}`, {
+      status: res.status,
+      code: typeof data.code === 'string' ? data.code : undefined,
+    });
   }
   try {
     const reader = res.body.getReader();

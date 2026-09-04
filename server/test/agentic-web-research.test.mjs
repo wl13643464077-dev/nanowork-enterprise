@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeTempDirSafely } from "./helpers/temp-db.mjs";
 
 const testRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), `nanowork-agentic-research-test-${process.pid}-`),
 );
 const dbPath = path.join(testRoot, "research.db");
-const fakeCliPath = path.join(testRoot, "fake-claude.mjs");
+const fakeCliPath = path.join(testRoot, "fake claude & isolated.mjs");
 const originalEnv = {
   NANOWORK_DB: process.env.NANOWORK_DB,
   NANOWORK_TEST_TEMPLATE_AI: process.env.NANOWORK_TEST_TEMPLATE_AI,
@@ -399,8 +400,10 @@ test("agentic web research only runs isolated Claude WebSearch and preserves evi
   assert.equal(capture.env.CLAUDE_CODE_OAUTH_TOKEN, null);
   assert.equal(capture.env.AWS_PROFILE, null);
   assert.notEqual(capture.env.HOME, process.env.HOME);
-  assert.match(capture.env.HOME, /nanowork-research-[^/]+\/home/u);
-  assert.match(capture.env.CLAUDE_CONFIG_DIR, /nanowork-research-[^/]+\/home\/claude/u);
+  const runtimeRoot = path.dirname(capture.cwd);
+  assert.match(path.basename(runtimeRoot), /^nanowork-research-[^\\/]+$/u);
+  assert.equal(capture.env.HOME, path.join(runtimeRoot, "home"));
+  assert.equal(capture.env.CLAUDE_CONFIG_DIR, path.join(runtimeRoot, "home", "claude"));
   assert.equal(fs.existsSync(capture.cwd), false, "research workdir must be removed");
 });
 
@@ -688,7 +691,8 @@ test("agentic web research fails closed when credential is unavailable", { concu
   process.env.YUNWU_API_KEY = savedKey;
 });
 
-after(() => {
+after(async () => {
+  // 先清理再还原环境：helper 依据 NANOWORK_DB 判断是否需要关闭共享库连接
+  await removeTempDirSafely(testRoot, { dbPath });
   restoreEnv();
-  fs.rmSync(testRoot, { recursive: true, force: true });
 });

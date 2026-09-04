@@ -24,6 +24,8 @@ outputs/
 /.tmp/
 /tmp/
 /artifacts/
+# 本机交接记录含路径、进程、账号元数据，不发布到公开仓库
+/docs/team/*2026-09-04.md
 
 # 本机生成的宣传片/PPT交付物（公开源码仓库不承载业务素材与大文件）
 docs/marketing/

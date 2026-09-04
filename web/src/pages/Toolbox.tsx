@@ -334,14 +334,15 @@ const TOOLS: ToolDefinition[] = [
     key: 'shot',
     title: '产品图文',
     short: '真实产品主图',
-    description: '围绕一道菜或一款套餐调用真实图片模型生成产品主图，并形成多渠道可核验文案。',
+    description:
+      '围绕一道菜或一款套餐调用真实图片模型生成产品主图，菜名/价格/门店名由系统矢量叠字保证逐字准确，并形成多渠道可核验文案。',
     icon: <CameraOutlined />,
     accent: '#2784c7',
     employee: '章文案',
     employeeIdx: 140,
-    cost: '真实调用按量计费',
-    inputs: ['产品信息', '真实卖点', '使用渠道'],
-    output: '可预览产品主图 + 多平台文案 + 发布核验表',
+    cost: '真实调用按量计费（叠字不计费）',
+    inputs: ['产品信息', '真实卖点', '使用渠道', '海报文字（可选）'],
+    output: '可预览产品主图（含精确叠字） + 多平台文案 + 发布核验表',
   },
   {
     key: 'menu-copy',
@@ -882,6 +883,31 @@ export default function Toolbox() {
               mode="multiple"
               options={['外卖平台', '朋友圈', '小红书', '门店桌卡'].map(value => ({ value, label: value }))}
             />
+          </Form.Item>
+          <Form.Item
+            name="overlayTitle"
+            label="海报菜名（精确叠字，可选）"
+            tooltip="填写后由系统以矢量文字叠加到主图上，逐字与输入一致，不经图像模型，不额外计费"
+            normalize={value => (typeof value === 'string' && !value.trim() ? undefined : value)}
+            rules={[{ max: 60, message: '最多60字' }]}
+          >
+            <Input placeholder="例：招牌酸汤鱼双人套餐" />
+          </Form.Item>
+          <Form.Item
+            name="overlayPrice"
+            label="海报价格（精确叠字，可选）"
+            normalize={value => (typeof value === 'string' && !value.trim() ? undefined : value)}
+            rules={[{ max: 30, message: '最多30字' }]}
+          >
+            <Input placeholder="例：¥168 / 双人" />
+          </Form.Item>
+          <Form.Item
+            name="overlayStore"
+            label="海报门店名（精确叠字，可选）"
+            normalize={value => (typeof value === 'string' && !value.trim() ? undefined : value)}
+            rules={[{ max: 60, message: '最多60字' }]}
+          >
+            <Input placeholder="例：老王家酸汤鱼·朝阳大悦城店" />
           </Form.Item>
         </>
       );

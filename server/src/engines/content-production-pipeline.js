@@ -6,8 +6,12 @@ import {
 } from "./content-handler-adapters.js";
 import { assertContentHandlerApprovalBoundary } from "./content-handler-approval-boundary.js";
 import { buildContentHandlerRuntimeContext } from "./content-handler-runtime-context.js";
-import { validateContentEmployeeOutputContract } from "./content-output-contract.js";
+import { getContentEmployeeOutputResponseSchema, validateContentEmployeeOutputContract } from "./content-output-contract.js";
+import { validatePrivateOutputSnapshot } from './content-production-private-output-snapshot.js';
 import { assembleContentPipelineDelivery } from "./content-pipeline-delivery.js";
+import { resolveXhsSalesContext } from './content-xhs-playbook.js';
+import { xhsVersionId } from './content-xhs-output.js';
+import { isXhsPipelineDraft } from './content-xhs-pipeline.js';
 import {
   CANONICAL_EMPLOYEE_PROFILE_FIELDS,
   canonicalContentEmployeeProfileFor,
@@ -467,6 +471,9 @@ function generationOwnedOutput(stationIdx, value) {
   if (stationIdx === 0) {
     delete output.selection;
     delete output.selected;
+  } else if (stationIdx === 3 && isXhsPipelineDraft(output)) {
+    delete output.selection;
+    delete output.xhsSelection;
   } else if (stationIdx === 5) {
     delete output.selection;
     delete output.selected_image;
@@ -536,7 +543,7 @@ function researchSourcesMatchPersistedEvidence(output, webEvidence) {
   );
 }
 
-function evaluateArtifactBackfill({ job, station, upstreamOutputs }) {
+function evaluateArtifactBackfill({ job, station, upstreamOutputs, privateOutputSnapshot }) {
   const reject = (reasonCode, message, evidence = {}) => ({
     ok: false,
     reasonCode,
@@ -551,10 +558,35 @@ function evaluateArtifactBackfill({ job, station, upstreamOutputs }) {
     );
   }
   const descriptor = descriptorAt(station.stationIdx);
-  const expectedKeys = descriptor.outputKeys || [];
+  let frozenContext = null;
+  if (station.stationIdx >= 3 && (resolveXhsSalesContext(3, { task: job.task }).salesMode
+    || isXhsPipelineDraft(station.stationIdx === 3 ? output : upstreamOutputs?.[3]))) {
+    if (!privateOutputSnapshot) return reject('CONTENT_PIPELINE_ARTIFACT_BACKFILL_XHS_FACT_SNAPSHOT_REQUIRED',
+      '小红书旧产物缺失时必须按原生成事实快照复核；当前记录未保存该快照，不能用现门店资料补猜，请人工核对后重新生成');
+    const verified = validatePrivateOutputSnapshot(privateOutputSnapshot, {
+      tenantId: job.tenantId, pipelineId: job.id, stationIdx: station.stationIdx,
+      stationAttempt: station.attempt, handlerId: station.handlerId,
+      providerDelivery: station.handlerEvidence?.providerDelivery,
+      outputFingerprint: fingerprint(output), task: job.task, upstreamOutputs,
+    });
+    if (!verified) return reject('CONTENT_PIPELINE_ARTIFACT_BACKFILL_XHS_FACT_SNAPSHOT_INVALID',
+      '原生成事实快照与企业、任务、工位代次、输出或上游不一致，未恢复产物');
+    frozenContext = verified.validationContext;
+    // A text contract cannot recreate a missing paid image/deck runtime manifest.
+    if ([5, 6, 7].includes(station.stationIdx)) return reject('CONTENT_PIPELINE_ARTIFACT_BACKFILL_SPECIAL_RUNTIME_REQUIRED',
+      '图像与演绎工位还需原始媒体运行产物，不能用文本计划冒充已生成媒体');
+  }
+  let responseSchema;
+  try {
+    responseSchema = frozenContext ? getContentEmployeeOutputResponseSchema(station.stationIdx, frozenContext)?.schema : null;
+  } catch {
+    return reject('CONTENT_PIPELINE_ARTIFACT_BACKFILL_CONTRACT_FAILED', '原生成上下文无法通过岗位契约预检');
+  }
+  const expectedKeys = responseSchema?.required || descriptor.outputKeys || [];
+  const allowedKeys = responseSchema?.properties ? Object.keys(responseSchema.properties) : expectedKeys;
   if (
     !expectedKeys.every((key) => Object.hasOwn(output, key)) ||
-    Object.keys(output).some((key) => !expectedKeys.includes(key))
+    Object.keys(output).some((key) => !allowedKeys.includes(key))
   ) {
     return reject(
       "CONTENT_PIPELINE_ARTIFACT_BACKFILL_OUTPUT_KEYS_MISMATCH",
@@ -605,7 +637,7 @@ function evaluateArtifactBackfill({ job, station, upstreamOutputs }) {
   const validation = validateContentEmployeeOutputContract(
     station.stationIdx,
     output,
-    {
+    frozenContext || {
       title: job.task?.direction || job.title || "",
       requirement: JSON.stringify(
         safeValue({
@@ -658,6 +690,7 @@ function evaluateArtifactBackfill({ job, station, upstreamOutputs }) {
       outputFingerprint: currentFingerprint,
       contractValid: true,
       persistedWebEvidenceReused: persistedWeb.required,
+      originalFactSnapshotReused: Boolean(frozenContext),
       artifactCount: artifacts.length,
     },
   };
@@ -990,6 +1023,23 @@ function workflowMode(value) {
 export function validatePaihuoContentBrief(value) {
   if (!isObject(value)) fail("Paihuo Brief必须是对象", undefined, 400);
   const source = safeValue(value);
+  let xhsOptions;
+  if (source.xhsOptions !== undefined) {
+    const options = source.xhsOptions;
+    if (!resolveXhsSalesContext(3, { task: source }).salesMode || !isObject(options)
+      || Object.keys(options).some(key => !['versionCount','audience','scene','category','city'].includes(key))) {
+      fail('Paihuo Brief.xhsOptions仅供明确的小红书带货任务，且必须是合法选项对象', undefined, 400);
+    }
+    const count = options.versionCount ?? 3;
+    if (!Number.isInteger(count) || count < 2 || count > 4) fail('小红书版本数必须是2..4的整数', undefined, 400);
+    for (const field of ['audience','scene','category','city']) {
+      if (options[field] !== undefined && (typeof options[field] !== 'string' || options[field].length > 120)) {
+        fail(`xhsOptions.${field}必须是不超过120字的字符串`, undefined, 400);
+      }
+    }
+    xhsOptions = { versionCount: count, ...Object.fromEntries(['audience','scene','category','city']
+      .filter(key => options[key] !== undefined).map(key => [key, options[key].trim()])) };
+  }
   const text = (field, limit, required = false) => {
     if (
       source[field] !== undefined &&
@@ -1087,6 +1137,7 @@ export function validatePaihuoContentBrief(value) {
     enable_deck: enableDeck,
     xhs_style: styles.xhs_style,
     dy_style: styles.dy_style,
+    ...(xhsOptions ? { xhsOptions } : {}),
   };
 }
 
@@ -1408,8 +1459,8 @@ function expectedOutputKeys(stationIdx) {
   return employee?.outputKeys || descriptor.outputKeys || [];
 }
 
-function extractOutput(invocation, stationIdx) {
-  const keys = expectedOutputKeys(stationIdx);
+function extractOutput(invocation, stationIdx, context = {}) {
+  const keys = resolveXhsSalesContext(stationIdx, context).salesMode ? ['versions', 'image_plan'] : expectedOutputKeys(stationIdx);
   const result = invocation?.result;
   const candidates = [
     result?.data,
@@ -1427,10 +1478,14 @@ function extractOutput(invocation, stationIdx) {
       422,
     );
   }
-  return safeValue(output);
+  return stationIdx === 3 && isXhsPipelineDraft(output)
+    ? generationOwnedOutput(stationIdx, output) : safeValue(output);
 }
 
 function candidateList(stationIdx, output) {
+  if (stationIdx === 3 && Array.isArray(output?.versions)) {
+    return output.versions.map(version => ({ ...version, candidateId: xhsVersionId(version) }));
+  }
   const key =
     stationIdx === 0
       ? "topics"
@@ -1448,6 +1503,11 @@ function applySelection(stationIdx, output, decision) {
   const next = { ...safeValue(output), selection: selected };
   if (stationIdx === 0 && Number.isInteger(selected.candidateIndex)) {
     next.selected = selected.candidateIndex;
+  } else if (stationIdx === 3 && isXhsPipelineDraft(output) && Number.isInteger(selected.candidateIndex)) {
+    const version = output.versions[selected.candidateIndex];
+    if (!version) fail('所选小红书版本不存在', 'CONTENT_PIPELINE_XHS_SELECTION_INVALID', 409);
+    next.xhsSelection = { versionId: xhsVersionId(version), strategy: version.strategy,
+      selectedBy: decision.auditRecord?.actor?.actorId, selectedAt: decision.auditRecord?.decidedAt };
   } else if (stationIdx === 5 && Number.isInteger(selected.candidateIndex)) {
     next.selected_image = selected.candidateIndex;
   } else if (stationIdx === 6 && Number.isInteger(selected.candidateIndex)) {
@@ -2308,6 +2368,10 @@ export function createSqliteContentProductionPipelineRepository({
           job,
           station,
           upstreamOutputs,
+          privateOutputSnapshot: parseJson(db.prepare(`SELECT snapshot_json
+            FROM content_production_pipeline_private_output_snapshots
+            WHERE tenant_id=? AND pipeline_id=? AND station_idx=? AND station_attempt=?`)
+            .get(tenantId, pipelineId, stationIdx, stationAttempt)?.snapshot_json, null),
         });
         const checkedAt = timestamp();
         if (result.ok) {
@@ -2472,6 +2536,16 @@ export function createSqliteContentProductionPipelineRepository({
           ON content_production_pipeline_private_web_snapshots(
             tenant_id,pipeline_id,station_idx,station_attempt
           );
+        CREATE TABLE IF NOT EXISTS content_production_pipeline_private_output_snapshots (
+          tenant_id INTEGER NOT NULL,
+          pipeline_id INTEGER NOT NULL,
+          station_idx INTEGER NOT NULL CHECK(station_idx BETWEEN 3 AND 9),
+          station_attempt INTEGER NOT NULL CHECK(station_attempt > 0),
+          snapshot_fingerprint TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(tenant_id,pipeline_id,station_idx,station_attempt)
+        );
       `);
       migrateLifecycleStatusChecks();
       if (knowledgeSinkTablesAvailable()) {
@@ -2915,6 +2989,7 @@ export function createSqliteContentProductionPipelineRepository({
       artifacts,
       awaitingApproval,
       privateWebSnapshot = null,
+      privateOutputSnapshot = null,
     }) {
       return transaction(() => {
         const station = getStation(tenantId, pipelineId, stationIdx);
@@ -2932,6 +3007,17 @@ export function createSqliteContentProductionPipelineRepository({
           artifacts,
           stationIdx,
         );
+        let validatedOutputSnapshot = null;
+        if (privateOutputSnapshot || handlerEvidence?.providerDelivery?.validationSnapshotFingerprint) {
+          validatedOutputSnapshot = validatePrivateOutputSnapshot(privateOutputSnapshot, {
+            tenantId, pipelineId, stationIdx, stationAttempt: expectedAttempt,
+            handlerId: station.handlerId, providerDelivery: handlerEvidence?.providerDelivery,
+            outputFingerprint: fingerprint(generationOwnedOutput(stationIdx, output)),
+            task: getJob(tenantId, pipelineId)?.task,
+          });
+          if (!validatedOutputSnapshot) fail('私有事实快照与当前工位交付不一致，未提交产物',
+            'CONTENT_PIPELINE_PRIVATE_OUTPUT_SNAPSHOT_INVALID', 422);
+        }
         const completedAt = timestamp();
         const nextStation = stationIdx + 1;
         const stationStatus = awaitingApproval
@@ -2980,6 +3066,10 @@ export function createSqliteContentProductionPipelineRepository({
           privateWebSnapshot,
           persistedAt: completedAt,
         });
+        if (validatedOutputSnapshot) db.prepare(`INSERT INTO content_production_pipeline_private_output_snapshots(
+          tenant_id,pipeline_id,station_idx,station_attempt,snapshot_fingerprint,snapshot_json,created_at
+        ) VALUES(?,?,?,?,?,?,?)`).run(tenantId, pipelineId, stationIdx, expectedAttempt,
+          validatedOutputSnapshot.snapshotFingerprint, JSON.stringify(validatedOutputSnapshot), completedAt);
         insertArtifacts({
           tenantId,
           pipelineId,
@@ -4860,6 +4950,7 @@ export function createContentProductionPipeline({
         let contextSnapshot = null;
         let generatedPayload = null;
         let currentPrivateWebSnapshot = null;
+        let currentPrivateOutputSnapshot = null;
         let stationPersistCompleted = false;
         let activePhase = "context";
         let activePhaseState = "started";
@@ -5114,6 +5205,7 @@ export function createContentProductionPipeline({
               });
               currentPrivateWebSnapshot =
                 invocation?.privateWebSnapshot || null;
+              currentPrivateOutputSnapshot = invocation?.privateOutputSnapshot || null;
               if (
                 invocation?.employeeIdx !== stationIdx ||
                 invocation?.handlerId !== descriptor.handlerId ||
@@ -5133,12 +5225,12 @@ export function createContentProductionPipeline({
                   "CONTENT_PIPELINE_HANDLER_EVIDENCE_MISMATCH",
                 );
               }
-              const output = extractOutput(invocation, stationIdx);
+              const output = extractOutput(invocation, stationIdx, built.context);
               const artifacts = normalizeStationArtifacts(
                 invocation?.result?.artifacts,
                 stationIdx,
               );
-              const boundary = safeValue(descriptor.approvalBoundary);
+              let boundary = safeValue(descriptor.approvalBoundary);
               if (
                 invocation?.approvalBoundary?.code !== boundary.code ||
                 invocation?.evidence?.approvalBoundary?.code !== boundary.code
@@ -5150,9 +5242,13 @@ export function createContentProductionPipeline({
               }
               const mode = workflowMode(job.workflow?.mode);
               const policy = approvalPolicy(job.workflow?.approvalPolicy);
+              const xhsSelectionRequired = stationIdx === 3 && resolveXhsSalesContext(3, { task: job.task }).salesMode;
+              if (xhsSelectionRequired) boundary = { ...boundary, factoryCode: boundary.code, code: 'pick',
+                reasonCode: 'CONTENT_PIPELINE_XHS_OWNER_SELECTION', ownerSelectionRequired: true,
+                description: '老板显式选择小红书版本；模型自评仅推荐，自动接力也不能代选', humanRequired: true, candidateSelectionRequired: true };
               let persistedOutput = output;
               let approvalAudit = null;
-              const awaitingApproval = stationNeedsReview(
+              const awaitingApproval = xhsSelectionRequired || stationNeedsReview(
                 boundary.code,
                 mode,
                 stationIdx,
@@ -5250,6 +5346,7 @@ export function createContentProductionPipeline({
                 expectedAttempt: claimed.attempt,
                 ...generatedPayload,
                 privateWebSnapshot: currentPrivateWebSnapshot,
+                privateOutputSnapshot: currentPrivateOutputSnapshot,
               });
               persistCompleted = true;
               stationPersistCompleted = true;
@@ -5783,6 +5880,9 @@ export function createContentProductionPipeline({
         action === "reject" ? "reject" : action === "approve" ? "adopt" : "";
       if (!normalizedAction)
         fail("action必须是approve或reject", undefined, 400);
+      if (station.approvalBoundary.ownerSelectionRequired && !OWNER_APPROVAL_POLICY_ROLES.has(actor?.role)) {
+        fail('小红书发布版本只能由老板或管理员选择', 'CONTENT_PIPELINE_XHS_OWNER_REQUIRED', 403);
+      }
       const decision = assertContentHandlerApprovalBoundary({
         boundary: station.approvalBoundary,
         action: normalizedAction,

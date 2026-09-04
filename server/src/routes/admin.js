@@ -7,6 +7,7 @@ import { loadRestaurantCatalog } from '../catalog/restaurant.js';
 import { dispatchPolicy, saveDispatchPolicy } from '../engines/employee-dispatch-policy.js';
 import { billing } from '../engines/credits.js';
 import { adjust, balanceOfTenant } from '../engines/credits.js';
+import { assertSeatAvailable } from '../engines/plan.js';
 import {
   routing,
   maskedKey,
@@ -24,13 +25,20 @@ import {
 import { fetchControlledWebEvidence } from '../engines/controlled-web-evidence.js';
 import { getRules } from '../engines/risk.js';
 import {
+  AMAP_VERIFIED_AT_CONFIG_KEY,
+  AMAP_VERIFIED_FINGERPRINT_CONFIG_KEY,
   buildRuntimeReadiness,
   recordRuntimeReadinessCheck,
+  runtimeReadinessConfigFingerprint,
 } from '../engines/runtime-readiness.js';
+import { verifyAmapConnection } from '../engines/amap.js';
+import adminModelBudgetRoutes from './admin-model-budget.js';
 
 // ===== 管理后台 API（仅 boss/admin；PRD V2 §20-21 管理后台）=====
 const r = Router();
 r.use(requireRole('boss', 'admin'));
+// 租户级模型路由 / 月度 AI 预算 / 用量报表 / 按人配额预留（独立文件，避免本文件继续膨胀）
+r.use(adminModelBudgetRoutes);
 
 const ALL_MODULES = [
   { key: 'dashboard', name: '总控台' }, { key: 'advisor', name: '老板参谋' },
@@ -371,7 +379,7 @@ r.get('/overview', (req, res) => {
       COALESCE(SUM(CASE WHEN kind='image' THEN 1 ELSE 0 END),0) images,
       COALESCE(SUM(CASE WHEN kind='video' THEN 1 ELSE 0 END),0) videos,
       COALESCE(SUM(input_tokens),0) input, COALESCE(SUM(output_tokens),0) output
-    FROM credit_logs WHERE tenant_id = ${T} AND ai_mode != 'recharge'`) || {};
+    FROM credit_logs WHERE tenant_id = ${T} AND ai_mode NOT IN ('recharge','bonus')`) || {};
   res.json({
     users: q.get(`SELECT COUNT(*) n FROM users WHERE tenant_id = ${T} AND role != 'platform_super'`)?.n || 0,
     activeToday: q.get(`SELECT COUNT(DISTINCT o.user_id) n FROM op_logs o LEFT JOIN users u ON u.id=o.user_id
@@ -380,7 +388,7 @@ r.get('/overview', (req, res) => {
     todayCredits: todayUse.c || 0,
     todaySpendYuan: Math.round((todayUse.c || 0) * cy * 100) / 100,   // 老板今日实际花费（人民币）
     todayCalls: todayUse.n || 0,
-    aiCalls: q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id = ${T} AND ai_mode != 'recharge'`)?.n || 0,
+    aiCalls: q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id = ${T} AND ai_mode NOT IN ('recharge','bonus')`)?.n || 0,
     pendingApprovals: q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id = ${T} AND status='待审核'`)?.n || 0,
     channel: yunwuAvailable() ? 'yunwu' : 'template',
     readiness: buildRuntimeReadiness({ tenantId: T }),
@@ -395,8 +403,17 @@ r.get('/runtime-readiness', (req, res) => {
 });
 
 // —— 用户与组织 ——
+// 多门店：所属门店入参 storeId（null/'' 清空=总部/全店；数字须是本企业门店）。返回 undefined=未传，NaN=非法
+function normalizedStoreId(body) {
+  if (body?.storeId === undefined) return undefined;
+  if (body.storeId === null || body.storeId === '') return null;
+  const id = Number(body.storeId);
+  if (!Number.isInteger(id) || id <= 0) return NaN;
+  return q.get('SELECT id FROM stores WHERE tenant_id = ? AND id = ?', curTenant(), id) ? id : NaN;
+}
 r.get('/users', (req, res) => {
-  const rows = q.all(`SELECT u.id,u.username,u.name,u.role,u.dept,u.phone,u.status,u.modules,u.last_login_at,u.created_at,
+  const rows = q.all(`SELECT u.id,u.username,u.name,u.role,u.dept,u.phone,u.status,u.modules,u.last_login_at,u.created_at,u.store_id,
+    (SELECT s.name FROM stores s WHERE s.tenant_id=u.tenant_id AND s.id=u.store_id) store_name,
     (SELECT COALESCE(SUM(l.credits),0) FROM credit_logs l WHERE l.tenant_id=u.tenant_id AND l.user_id=u.id
       AND l.credits>0 AND l.created_at>=date('now','start of month')) ai_spent_month
     FROM users u WHERE u.tenant_id = ${curTenant()} AND u.role != 'platform_super' ORDER BY u.id`);
@@ -404,6 +421,8 @@ r.get('/users', (req, res) => {
 });
 r.post('/users', (req, res) => {
   const { username, password, name, role, dept, phone, credits = 0 } = req.body || {};
+  const storeId = normalizedStoreId(req.body);
+  if (Number.isNaN(storeId)) return res.status(400).json({ error: '所属门店不存在或不属于当前企业' });
   if (!username || !password || !name) return res.status(400).json({ error: '用户名/密码/姓名必填' });
   const account = String(username).trim();
   if (!/^[a-zA-Z0-9_.@-]{3,64}$/.test(account)) return res.status(400).json({ error: '用户名须为3到64位字母、数字或 . _ @ -' });
@@ -416,15 +435,16 @@ r.post('/users', (req, res) => {
   if (!USER_ROLES.has(userRole)) return res.status(400).json({ error: '账号角色无效' });
   // 安全：必须显式落到本企业（users 非自动注入表，缺 tenant_id 会落到总部租户1 → 跨租户建号/接管）
   const tid = curTenant();
-  const seat = q.get('SELECT seat_limit FROM tenants WHERE id = ?', tid)?.seat_limit ?? 5;
-  const used = q.get('SELECT COUNT(*) n FROM users WHERE tenant_id = ?', tid)?.n || 0;
-  if (used >= seat) return res.status(400).json({ error: `账号数已达企业上限（${seat}个），如需扩容请联系平台` });
+  // 席位校验：只统计启用中的用户端账号（停用不占席位；平台超管不计），超限 409 + 可读提示
+  try { assertSeatAvailable(tid); } catch (error) {
+    return res.status(error.status || 409).json({ error: error.message, code: error.code, seatLimit: error.seatLimit, seatsUsed: error.seatsUsed });
+  }
   let transactionOpen = false;
   try {
     db.exec('BEGIN IMMEDIATE');
     transactionOpen = true;
-    const result = q.run('INSERT INTO users(username,password_hash,name,role,dept,phone,credits,tenant_id) VALUES(?,?,?,?,?,?,0,?)',
-      account, hashPassword(password), displayName, userRole, String(dept || '').trim().slice(0, 80), String(phone || '').trim().slice(0, 40), tid);
+    const result = q.run('INSERT INTO users(username,password_hash,name,role,dept,phone,credits,tenant_id,store_id) VALUES(?,?,?,?,?,?,0,?,?)',
+      account, hashPassword(password), displayName, userRole, String(dept || '').trim().slice(0, 80), String(phone || '').trim().slice(0, 40), tid, storeId ?? null);
     if (initialCredits > 0) adjust({ userId: result.lastInsertRowid, delta: initialCredits, operatorId: req.user.id, note: '新增账号时增发企业共享积分', manageTransaction: false });
     db.exec('COMMIT');
     transactionOpen = false;
@@ -440,6 +460,8 @@ r.put('/users/:id', (req, res) => {
   // 租户归属守卫：管理后台只能改本企业用户，杜绝按裸 id 改到别家账号的密码/角色（越权提权/接管）
   if (!q.get(`SELECT id FROM users WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id)) return res.status(404).json({ error: '用户不存在' });
   const { name, role, dept, status, password, modules } = req.body || {};
+  const storeId = normalizedStoreId(req.body);
+  if (Number.isNaN(storeId)) return res.status(400).json({ error: '所属门店不存在或不属于当前企业' });
   if (password !== undefined && password && String(password).length < 8) return res.status(400).json({ error: '重置密码至少8位' });
   if (password && String(password).length > 128) return res.status(400).json({ error: '重置密码最长128位' });
   if (role !== undefined && !USER_ROLES.has(role)) return res.status(400).json({ error: '账号角色无效' });
@@ -455,6 +477,7 @@ r.put('/users/:id', (req, res) => {
   if (role !== undefined) add('role', role);
   if (dept !== undefined) add('dept', String(dept || '').trim().slice(0, 80));
   if (status !== undefined) add('status', status);
+  if (storeId !== undefined) add('store_id', storeId);
   if (password) {
     add('password_hash', hashPassword(password));
     updates.push('auth_version=COALESCE(auth_version,0)+1');
@@ -777,6 +800,75 @@ r.post('/web-search/test', requirePlatformConfigOwner, async (req, res) => {
       error: safe.message,
       readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'web_search'),
     });
+  }
+});
+
+// 高德 Web 服务显式验收：固定用一个公开地标做一次最小地理编码，不接受任意地址，
+// 避免变成地理编码代理。成功才记录 passed 并持久化 sys_config.amap_verified_at；
+// 密钥/配额类错误（10001/10003/10044…）记录 blocked，就绪矩阵翻成 blocked。
+r.post('/api-config/amap/test', requirePlatformConfigOwner, async (req, res) => {
+  const tenantId = curTenant();
+  const amapChannel = () => buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'amap');
+  try {
+    const result = await verifyAmapConnection();
+    if (!result.configured) {
+      return res.json({
+        ok: false,
+        configured: false,
+        error: result.error,
+        readiness: amapChannel(),
+      });
+    }
+    const fingerprint = runtimeReadinessConfigFingerprint('amap', { tenantId });
+    recordRuntimeReadinessCheck('amap', {
+      tenantId,
+      outcome: result.ok ? 'passed' : 'failed',
+      configFingerprint: fingerprint,
+      checkedBy: req.user.id,
+      evidence: {
+        provider: 'amap',
+        endpoint: result.endpoint || '/v3/geocode/geo',
+        adcode: result.adcode || null,
+        blocked: result.blocked === true,
+        quotaExceeded: result.quotaExceeded === true,
+        infocode: result.infocode || null,
+        baseUrl: result.baseUrl || null,
+      },
+      error: result.ok ? '' : result.error,
+    });
+    if (result.ok) {
+      setConfig(AMAP_VERIFIED_AT_CONFIG_KEY, result.fetchedAt || new Date().toISOString());
+      setConfig(AMAP_VERIFIED_FINGERPRINT_CONFIG_KEY, fingerprint);
+    } else if (result.blocked) {
+      // 凭证/配额受阻时旧的持久化验证不再可信，立即作废。
+      setConfig(AMAP_VERIFIED_AT_CONFIG_KEY, '');
+      setConfig(AMAP_VERIFIED_FINGERPRINT_CONFIG_KEY, '');
+    }
+    logOp(
+      req.user,
+      '管理后台',
+      '测试高德地图连接',
+      result.ok ? `成功，adcode=${result.adcode || '-'}` : `失败${result.blocked ? '（凭证/配额受阻）' : ''}：${result.error}`,
+    );
+    return res.json({
+      ok: result.ok,
+      configured: true,
+      blocked: result.blocked === true,
+      quotaExceeded: result.quotaExceeded === true,
+      infocode: result.infocode || null,
+      endpoint: result.endpoint || '/v3/geocode/geo',
+      ...(result.ok ? { adcode: result.adcode, formattedAddress: result.formattedAddress, fetchedAt: result.fetchedAt } : { error: result.error }),
+      readiness: amapChannel(),
+    });
+  } catch (error) {
+    const safe = sanitizeProviderError(error, { service: '高德地图 Web 服务' });
+    recordRuntimeReadinessCheck('amap', {
+      tenantId,
+      outcome: 'failed',
+      checkedBy: req.user.id,
+      error: safe.message,
+    });
+    return res.json({ ok: false, error: safe.message, readiness: amapChannel() });
   }
 });
 

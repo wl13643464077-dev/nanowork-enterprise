@@ -31,6 +31,21 @@ const TARGETS = Object.freeze({
 const MAX_AMOUNT = 1_000_000_000_000;
 const SELF_AUTHORIZING_ROLES = new Set(['boss', 'platform_super']);
 
+// 按分部/岗位例外（最小版）：只作用于数字员工产出，员工级优先于分部级，
+// 未命中时回落到 employeeOutput.mode。例外不能触碰三条底线。
+export const APPROVAL_EXCEPTION_SCOPES = Object.freeze(['department', 'employee']);
+export const APPROVAL_EXCEPTION_MODES = Object.freeze(['auto', 'risk_based', 'manager', 'boss']);
+const EXCEPTION_SCOPE_SET = new Set(APPROVAL_EXCEPTION_SCOPES);
+const EXCEPTION_MODE_SET = new Set(APPROVAL_EXCEPTION_MODES);
+const MAX_EXCEPTIONS = 40;
+const DEPARTMENT_CODE_RE = /^M-\d{2}$/u;
+const SAFEGUARD_KEYS = Object.freeze([
+  'internalOutputReviewControlledByPolicy',
+  'externalActionOwnerAuthorization',
+  'paidActionOwnerAuthorization',
+  'irreversibleActionOwnerAuthorization',
+]);
+
 export const DEFAULT_APPROVAL_ROUTING_POLICY = Object.freeze({
   schemaVersion: APPROVAL_ROUTING_SCHEMA,
   employeeOutput: Object.freeze({
@@ -76,6 +91,72 @@ function normalizedAmount(value) {
   return Number.isFinite(amount) && amount >= 0 ? Math.min(MAX_AMOUNT, amount) : 0;
 }
 
+function normalizeExceptionId(scope, value, label) {
+  if (scope === 'department') {
+    const code = String(value ?? '').trim().toUpperCase();
+    if (!DEPARTMENT_CODE_RE.test(code)) throw policyError(`${label}分部编号不正确：${code || '（空）'}`);
+    return code;
+  }
+  const idx = Number(value);
+  if (!Number.isSafeInteger(idx) || idx <= 0) throw policyError(`${label}员工编号不正确：${String(value ?? '')}`);
+  return idx;
+}
+
+function normalizeExceptions(value, schemaVersion) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw policyError('employeeOutput.exceptions必须是数组');
+  if (!value.length) return [];
+  if (schemaVersion === APPROVAL_ROUTING_SCHEMA_V1) {
+    throw policyError('v1 审批规则不支持按分部/岗位例外');
+  }
+  if (value.length > MAX_EXCEPTIONS) {
+    throw policyError(`employeeOutput.exceptions最多${MAX_EXCEPTIONS}条`);
+  }
+  const seen = new Set();
+  return value.map((item, index) => {
+    const label = `employeeOutput.exceptions[${index}]`;
+    if (!record(item)) throw policyError(`${label}必须是对象`);
+    const scope = String(item.scope || '').trim();
+    if (!EXCEPTION_SCOPE_SET.has(scope)) throw policyError(`${label}.scope不支持：${scope || '（空）'}`);
+    const id = normalizeExceptionId(scope, item.id, `${label}.`);
+    const mode = String(item.mode || '').trim();
+    if (!EXCEPTION_MODE_SET.has(mode)) throw policyError(`${label}.mode不支持：${mode || '（空）'}`);
+    const key = `${scope}:${id}`;
+    if (seen.has(key)) throw policyError(`${label}与前面的例外重复：${key}`);
+    seen.add(key);
+    return { scope, id, mode };
+  });
+}
+
+// 派活时写入快照的解析结果；只做形状校验，不重新计算，保证在途任务可原样重建。
+function normalizeResolution(value) {
+  if (!record(value)) return null;
+  const mode = String(value.mode || '').trim();
+  const baseMode = String(value.baseMode || '').trim();
+  if (!TARGETS.content.modes.has(mode) || !TARGETS.content.modes.has(baseMode)) return null;
+  let matched = null;
+  if (record(value.matched)) {
+    try {
+      const scope = String(value.matched.scope || '').trim();
+      if (!EXCEPTION_SCOPE_SET.has(scope)) return null;
+      const matchedMode = String(value.matched.mode || '').trim();
+      if (!EXCEPTION_MODE_SET.has(matchedMode)) return null;
+      matched = { scope, id: normalizeExceptionId(scope, value.matched.id, ''), mode: matchedMode };
+    } catch {
+      return null;
+    }
+  }
+  const departmentCode = value.departmentCode == null ? null : String(value.departmentCode).trim().toUpperCase();
+  const employeeIdx = Number(value.employeeIdx);
+  return {
+    mode,
+    baseMode,
+    matched,
+    departmentCode: departmentCode && DEPARTMENT_CODE_RE.test(departmentCode) ? departmentCode : null,
+    employeeIdx: Number.isSafeInteger(employeeIdx) && employeeIdx > 0 ? employeeIdx : null,
+  };
+}
+
 function normalizeRoute(value, target, schemaVersion) {
   const definition = TARGETS[target];
   const source = record(value) ? value : {};
@@ -93,6 +174,13 @@ function normalizeRoute(value, target, schemaVersion) {
     mode,
     reviewerUserId: optionalUserId(source.reviewerUserId, definition.key),
   };
+  if (target === 'content') {
+    // 为兼容既有快照与断言，exceptions/resolved 只在非空时出现。
+    const exceptions = normalizeExceptions(source.exceptions, schemaVersion);
+    if (exceptions.length) output.exceptions = exceptions;
+    const resolved = normalizeResolution(source.resolved);
+    if (resolved) output.resolved = resolved;
+  }
   if (target === 'activity_plan') {
     const threshold = source.ownerAmountThreshold ?? DEFAULT_APPROVAL_ROUTING_POLICY.activityPlan.ownerAmountThreshold;
     const amount = Number(threshold);
@@ -141,6 +229,179 @@ export function loadApprovalRoutingPolicy(tenantId = curTenant()) {
   return normalizeApprovalRoutingPolicy(
     getTenantConfig(APPROVAL_ROUTING_POLICY_KEY, DEFAULT_APPROVAL_ROUTING_POLICY, tenantId),
   );
+}
+
+/**
+ * 写入口专用：normalize 会静默把底线拨回 true 以兼容旧数据，但客户端若显式
+ * 试图关闭任何一条底线，必须以 400 拒绝而不是悄悄纠正——老板要知道这条改不了。
+ */
+export function assertApprovalSafeguardsNotDisabled(value) {
+  if (!record(value) || value.safeguards === undefined || value.safeguards === null) return;
+  if (!record(value.safeguards)) {
+    throw policyError('safeguards必须是对象', 'APPROVAL_SAFEGUARD_LOCKED');
+  }
+  const disabled = SAFEGUARD_KEYS.filter(key => key in value.safeguards && value.safeguards[key] !== true);
+  if (disabled.length) {
+    throw policyError(
+      `外发、真实付费与不可逆动作的老板执行授权是不可关闭底线：${disabled.join('、')}`,
+      'APPROVAL_SAFEGUARD_LOCKED',
+    );
+  }
+}
+
+/**
+ * 解析数字员工产出的最终审批模式。解析顺序：员工例外 > 分部例外 > 企业默认。
+ * 返回一份新的策略对象：employeeOutput.mode 已替换为最终模式，并附 resolved 说明，
+ * 派活时把它整份写入快照，下游 resolveApprovalRoute 无需感知例外规则。
+ */
+export function resolveEmployeeOutputPolicy(policy, { departmentCode = null, employeeIdx = null } = {}) {
+  const normalized = normalizeApprovalRoutingPolicy(policy || DEFAULT_APPROVAL_ROUTING_POLICY);
+  const route = normalized.employeeOutput;
+  const exceptions = route.exceptions || [];
+  const code = departmentCode == null ? null : String(departmentCode).trim().toUpperCase();
+  const idx = Number(employeeIdx);
+  const employeeMatch = Number.isSafeInteger(idx) && idx > 0
+    ? exceptions.find(item => item.scope === 'employee' && item.id === idx)
+    : null;
+  const departmentMatch = code
+    ? exceptions.find(item => item.scope === 'department' && item.id === code)
+    : null;
+  const matched = employeeMatch || departmentMatch || null;
+  return {
+    ...normalized,
+    employeeOutput: {
+      ...route,
+      mode: matched ? matched.mode : route.mode,
+      resolved: {
+        mode: matched ? matched.mode : route.mode,
+        baseMode: route.mode,
+        matched: matched ? { ...matched } : null,
+        departmentCode: code && DEPARTMENT_CODE_RE.test(code) ? code : null,
+        employeeIdx: Number.isSafeInteger(idx) && idx > 0 ? idx : null,
+      },
+    },
+  };
+}
+
+/**
+ * 把餐饮员工目录整理成例外校验与文案渲染所需的索引。目录是权威来源，
+ * 分部编号沿用 routes 里 `M-01..M-08` 的顺序约定。
+ */
+export function approvalPolicyCatalogIndex(catalog) {
+  const departments = new Map();
+  const employees = new Map();
+  const groups = Array.isArray(catalog?.groups) ? catalog.groups : [];
+  groups.forEach((group, index) => {
+    const code = `M-${String(index + 1).padStart(2, '0')}`;
+    departments.set(code, { code, name: String(group?.name || code) });
+    for (const idx of Array.isArray(group?.members) ? group.members : []) {
+      employees.set(Number(idx), { idx: Number(idx), name: `员工#${idx}`, departmentCode: code });
+    }
+  });
+  for (const employee of Array.isArray(catalog?.employees) ? catalog.employees : []) {
+    const entry = employees.get(Number(employee?.idx));
+    if (!entry) continue;
+    const person = String(employee.person || '').trim();
+    const name = String(employee.name || '').trim();
+    entry.name = person && name ? `${person}·${name}` : (person || name || entry.name);
+  }
+  return { departments, employees };
+}
+
+export function assertApprovalPolicyExceptionsInCatalog(policy, catalogIndex) {
+  const exceptions = policy?.employeeOutput?.exceptions || [];
+  for (const item of exceptions) {
+    if (item.scope === 'department' && !catalogIndex.departments.has(item.id)) {
+      throw policyError(`例外引用了不存在的分部：${item.id}`, 'APPROVAL_EXCEPTION_TARGET_INVALID');
+    }
+    if (item.scope === 'employee' && !catalogIndex.employees.has(item.id)) {
+      throw policyError(`例外引用了不存在的数字员工编号：${item.id}`, 'APPROVAL_EXCEPTION_TARGET_INVALID');
+    }
+  }
+}
+
+function amountText(value) {
+  const amount = Number(value) || 0;
+  if (amount >= 10_000 && amount % 1_000 === 0) {
+    const wan = amount / 10_000;
+    return `${Number.isInteger(wan) ? wan : wan.toFixed(1)} 万元`;
+  }
+  return `${amount.toLocaleString('zh-CN')} 元`;
+}
+
+function reviewerText(reviewerUserId, reviewerNames) {
+  if (!reviewerUserId) return '店长（负责人）';
+  const name = reviewerNames?.get?.(Number(reviewerUserId)) || reviewerNames?.[reviewerUserId];
+  return name ? `你指定的 ${name}` : '你指定的负责人';
+}
+
+const EMPLOYEE_MODE_PHRASE = {
+  auto: '自动采用，不用你审',
+  risk_based: '按风险分流——低风险自动采用，中风险由店长审，高风险由你亲自审',
+  manager: '先由店长审过才算数',
+  boss: '每一份都要你亲自审',
+  employee_setting: '沿用各岗位自己的审批设置（历史规则）',
+};
+const EXCEPTION_MODE_PHRASE = {
+  auto: '自动采用，不用你审',
+  risk_based: '按风险分流（低风险自动采用，高风险由你审）',
+  manager: '一律先由店长审',
+  boss: '一律由你亲自审',
+};
+
+/**
+ * 把策略渲染成老板能读懂的大白话。纯函数：前后端共用同一份口径，
+ * 前端不得自行复制一版文案。
+ */
+export function renderApprovalPolicyPlainText(policy, { catalogIndex = null, reviewerNames = null } = {}) {
+  const normalized = normalizeApprovalRoutingPolicy(policy || DEFAULT_APPROVAL_ROUTING_POLICY);
+  const lines = [];
+  const output = normalized.employeeOutput;
+
+  const employeePhrase = EMPLOYEE_MODE_PHRASE[output.mode] || output.mode;
+  const employeeReviewer = output.mode === 'manager' && output.reviewerUserId
+    ? `（审批人：${reviewerText(output.reviewerUserId, reviewerNames)}）`
+    : '';
+  lines.push({ key: 'employeeOutput', text: `数字员工的日常产出：${employeePhrase}${employeeReviewer}。` });
+
+  for (const item of output.exceptions || []) {
+    const target = item.scope === 'department'
+      ? `${catalogIndex?.departments?.get(item.id)?.name || item.id}的产出`
+      : `${catalogIndex?.employees?.get(item.id)?.name || `员工#${item.id}`}（编号 ${item.id}）的产出`;
+    lines.push({
+      key: `exception:${item.scope}:${item.id}`,
+      text: `例外：${target}${EXCEPTION_MODE_PHRASE[item.mode]}。`,
+    });
+  }
+
+  lines.push({
+    key: 'safeguards',
+    text: '涉及对外发布、花钱、不可撤销的动作：一律先经你授权。这三条是底线，改不了。',
+  });
+
+  const plan = normalized.activityPlan;
+  const planReviewer = reviewerText(plan.reviewerUserId, reviewerNames);
+  const planText = plan.mode === 'two_step'
+    ? `营销活动方案：先由${planReviewer}初审，再由你终审。`
+    : plan.mode === 'manager'
+      ? `营销活动方案：${planReviewer}审过即可，不用你签字。`
+      : plan.mode === 'boss'
+        ? '营销活动方案：每一份都要你签字。'
+        : `营销活动方案：金额达到 ${amountText(plan.ownerAmountThreshold)}需要你签字，否则${planReviewer}可批。`;
+  lines.push({ key: 'activityPlan', text: planText });
+
+  const checklist = normalized.activityChecklist;
+  const checklistReviewer = reviewerText(checklist.reviewerUserId, reviewerNames);
+  const checklistText = checklist.mode === 'two_step'
+    ? `活动执行清单（物料、食安、人员分工）：先由${checklistReviewer}确认，再由你终审。`
+    : checklist.mode === 'manager'
+      ? `活动执行清单（物料、食安、人员分工）：${checklistReviewer}确认即可。`
+      : '活动执行清单（物料、食安、人员分工）：每一项都要你确认。';
+  lines.push({ key: 'activityChecklist', text: checklistText });
+
+  lines.push({ key: 'selfAuthorized', text: '你自己发起的任务视同已授权，系统不会再给你派一张“请你审你自己”的待办。' });
+
+  return { lines, text: lines.map(line => line.text).join('\n') };
 }
 
 function normalizedRiskLevel(value) {
@@ -354,6 +615,7 @@ export function resolveApprovalRoute({
     configuredBy: normalizedPolicy.configuredBy,
     configuredAt: normalizedPolicy.updatedAt,
     safeguards: normalizedPolicy.safeguards,
+    ...(targetType === 'content' && route.resolved ? { policyResolution: route.resolved } : {}),
   };
   return {
     targetType,

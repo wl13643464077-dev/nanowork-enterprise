@@ -2,6 +2,10 @@ import crypto from 'node:crypto';
 
 import { getConfig, getTenantConfig } from '../db.js';
 import { agenticWebResearchReadiness } from './agentic-web-research.js';
+import {
+  amapConfigurationFacts,
+  amapRuntimeState,
+} from './amap.js';
 import { CONTENT_CONNECTOR_REGISTRY } from './content-connectors.js';
 import {
   appBotReady,
@@ -181,6 +185,7 @@ export function runtimeReadinessConfigFingerprint(channelKey, { tenantId = 0 } =
   else if (channelKey === 'payment_wechat' || channelKey === 'payment_alipay') {
     facts = paymentConfigurationFacts(channelKey);
   } else if (channelKey === 'feishu') facts = feishuConfigurationFacts(tenantId);
+  else if (channelKey === 'amap') facts = amapConfigurationFacts();
   else facts = { channelKey, tenantId: Number(tenantId) || 0 };
   return stableFingerprint(facts);
 }
@@ -690,6 +695,117 @@ function feishuReadiness({ tenantId, now }) {
   });
 }
 
+export const AMAP_VERIFIED_AT_CONFIG_KEY = 'amap_verified_at';
+export const AMAP_VERIFIED_FINGERPRINT_CONFIG_KEY = 'amap_verified_fingerprint';
+const AMAP_PERSISTED_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 高德 Web 服务通道（第 9 通道）。
+ * - 未配置 → disabled：选址岗位使用 OSM 与公开检索，报告会如实标注。
+ * - 已配置未验证 → configured_unverified（D-028：已配置 ≠ 已验证连接）。
+ * - 管理员 POST /api/admin/api-config/amap/test 成功 → 进程内检查 + sys_config.amap_verified_at → connected；
+ *   持久化验证只在密钥/BaseURL 指纹不变且 24h 内有效。
+ * - 最近一次显式测试或运行时调用命中密钥/配额类错误（10001/10003/10044…）→ blocked。
+ */
+function amapReadiness({ tenantId, now }) {
+  const facts = amapConfigurationFacts();
+  const configured = present(facts.key);
+  const fingerprint = runtimeReadinessConfigFingerprint('amap', { tenantId });
+  const check = verificationFor('amap', {
+    tenantId,
+    fingerprint,
+    now,
+    applicable: configured,
+  });
+  const runtime = amapRuntimeState();
+  const persistedVerifiedAt = configured ? String(getConfig(AMAP_VERIFIED_AT_CONFIG_KEY, '') || '') : '';
+  const persistedFingerprint = configured ? String(getConfig(AMAP_VERIFIED_FINGERPRINT_CONFIG_KEY, '') || '') : '';
+  const persistedAtMs = Date.parse(persistedVerifiedAt);
+  const persistedValid = configured
+    && Number.isFinite(persistedAtMs)
+    && persistedFingerprint === fingerprint
+    && nowMs(now) - persistedAtMs <= AMAP_PERSISTED_VERIFICATION_TTL_MS
+    && nowMs(now) >= persistedAtMs;
+  const lastCheckBlocked = check.verification === 'failed'
+    && check.lastCheck?.evidence?.blocked === true;
+  const runtimeBlocked = runtime.blocked === true
+    && (!check.verified || Date.parse(runtime.lastBlocked?.at || '') > Date.parse(check.lastCheck?.checkedAt || ''));
+  const blocked = configured && (lastCheckBlocked || runtimeBlocked);
+  const verified = !blocked && (check.verified || persistedValid);
+  const effective = !configured
+    ? 'disabled'
+    : blocked
+      ? 'blocked'
+      : verified
+        ? 'connected'
+        : 'configured_unverified';
+  const blockedReason = lastCheckBlocked
+    ? check.lastCheck?.error || '高德凭证或配额受阻'
+    : runtimeBlocked
+      ? runtime.lastBlocked?.message || '高德凭证或配额受阻'
+      : null;
+  return readinessItem({
+    key: 'amap',
+    label: '高德地图 Web 服务',
+    description: !configured
+      ? '高德地图未配置，选址岗位使用 OSM 与公开检索。'
+      : blocked
+        ? `高德通道受阻：${blockedReason}。选址岗位自动回落 OSM 与公开检索，报告如实标注。`
+        : verified
+          ? '高德 Web 服务已配置且最近一次显式连接测试通过；选址岗位优先取高德周边POI并逐字段标注来源。'
+          : '高德 Web 服务已配置但尚未显式验证连接；只有管理员“测试连接”通过后才视为已连接。',
+    configuration: configured ? 'ready' : 'missing',
+    activation: configured ? 'enabled' : 'disabled',
+    effective,
+    verification: check.verification,
+    verified,
+    lastCheck: check.lastCheck,
+    canExecute: configured && !blocked,
+    canGenerateLocalDraft: false,
+    canDeliverForHumanReview: false,
+    canPerformExternalAction: false,
+    capabilitySummary: !configured
+      ? '未配置；选址报告标注“未接入高德实时数据”，商圈数字只用 OSM 与公开检索'
+      : blocked
+        ? '密钥/配额受阻；本轮自动回落 OSM 与公开检索，不冒充高德数据'
+        : verified
+          ? '高德地理编码与周边POI可用；每条商圈数字带 provider 与抓取时间'
+          : '已配置但未验证；运行时会尝试调用，失败自动回落并如实标注',
+    missing: configured ? [] : ['AMAP_WEB_KEY（高德开放平台 Web服务 类型 Key）'],
+    conditions: [
+      '密钥只从服务端环境变量 AMAP_WEB_KEY 读取，不进入数据库或前端',
+      '显式连接测试通过后写入 sys_config.amap_verified_at；密钥或 BaseURL 变化立即失效',
+      '日配额（以高德控制台为准）用尽返回 10003 时通道转为 blocked，选址岗位回落 OSM',
+      '周边POI结果按坐标/半径/类型缓存 24 小时，避免演示重复消耗配额',
+    ],
+    nextAction: !configured
+      ? '在高德开放平台申请 Web服务 类型 Key，配置 AMAP_WEB_KEY 后重启服务，再由管理员点击“测试连接”。'
+      : blocked
+        ? '检查高德控制台的 Key 状态与当日配额；恢复后重新点击“测试连接”。'
+        : verified
+          ? '最近连接测试有效；配额或密钥变更后重新测试。'
+          : '由平台管理员点击“测试连接”（POST /api/admin/api-config/amap/test），成功后才标记为已连接。',
+    details: {
+      provider: 'amap',
+      baseUrl: publicBaseUrl(facts.baseUrl),
+      configFingerprint: fingerprint,
+      persistedVerifiedAt: persistedValid ? persistedVerifiedAt : null,
+      persistedVerificationStale: Boolean(persistedVerifiedAt) && !persistedValid,
+      blockedReason,
+      runtime: {
+        lastSuccessAt: runtime.lastSuccessAt,
+        lastBlocked: runtime.lastBlocked
+          ? { at: runtime.lastBlocked.at, infocode: runtime.lastBlocked.infocode }
+          : null,
+        callCount: runtime.callCount,
+        cacheHits: runtime.cacheHits,
+      },
+      fallback: 'osm_and_public_web_search',
+      cacheTable: 'geo_poi_cache',
+    },
+  });
+}
+
 function externalPublishReadiness() {
   return readinessItem({
     key: 'external_publish',
@@ -795,6 +911,8 @@ export function buildRuntimeReadiness({
     externalPublishReadiness(),
   ];
   channels.push(contentConnectorsReadiness(ai, search));
+  // 第 9 通道：高德 Web 服务（选址/商圈岗位的实时POI来源；未配置时回落 OSM）。
+  channels.push(amapReadiness({ tenantId, now: generatedAt }));
   const summary = {
     total: channels.length,
     connected: channels.filter(item => item.effective === 'connected').length,

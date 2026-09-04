@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const dbPath = path.join(
   os.tmpdir(),
@@ -247,7 +248,6 @@ test("显式tenantId查询严格隔离租户素材", async () => {
   );
 });
 
-after(() => {
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
+after(async () => {
+  await removeTempDbSafely(dbPath);
 });

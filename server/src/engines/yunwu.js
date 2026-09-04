@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getConfig } from "../db.js";
+import { getConfig, q, curTenant } from "../db.js";
+import { parseProviderMediaUrl } from './provider-media-download.js';
 import {
   providerResponseError,
   sanitizeProviderError,
@@ -65,6 +66,7 @@ export const maskedKey = () => {
 export const yunwuKeySource = () =>
   environmentKey() ? "environment" : legacyStoredKey() ? "legacy_db" : "none";
 export const yunwuApiKey = () => KEY();
+export const yunwuMediaBaseUrl = () => ywRoot();
 
 // H3 直连 MiniMax 官方，不复用 YUNWU/OpenLux 的 key 或 base URL。
 // 这两个凭证函数只在服务端内部传递；对路由仅导出不含密钥的可用性摘要。
@@ -337,22 +339,28 @@ const VIDEO_MODEL_CATALOG = {
     note: "已接入云雾统一视频任务接口",
   },
   "wan2.6-i2v": {
-    displayName: "通义万相 2.6 图生视频",
+    displayName: "通义万相 2.6 图生视频（原生有声）",
     shortName: "WAN-2.6",
     provider: "通义万相",
-    adapter: "planned",
-    supported: false,
+    adapter: "alibailian-video",
+    supported: true,
     requiresImage: true,
-    note: "当前账号 /video/generations 与 /videos 均返回 404；说明模型可见但视频任务通道未开放，先从员工端隐藏",
+    nativeAudio: true,
+    audioInput: true,
+    durationRange: [2, 15],
+    note: "走云雾百炼专用提交/查询端点，由网关处理异步；文档支持 input.audio_url 自定义音轨，AI带货员使用 TTS 音轨，实际声音与口型仍需成片验收",
   },
   "wan2.5-i2v-preview": {
-    displayName: "通义万相 2.5 预览",
+    displayName: "通义万相 2.5 预览（原生有声）",
     shortName: "WAN-2.5P",
     provider: "通义万相",
-    adapter: "planned",
-    supported: false,
+    adapter: "alibailian-video",
+    supported: true,
     requiresImage: true,
-    note: "当前账号尚未验证到可用视频任务端点，先作为待接入模型保留给管理员查看",
+    nativeAudio: true,
+    audioInput: true,
+    durationRange: [5, 10],
+    note: "AI带货员的备选有声模型；同样走百炼专用端点，支持 input.audio_url",
   },
   "happyhorse-1.0-t2v:floor": {
     displayName: "HappyHorse 首帧视频 低价",
@@ -542,26 +550,206 @@ export function videoModelInfo(id = "") {
 export function videoTaskSupported(id = "") {
   return videoModelInfo(id).supported === true;
 }
-export function routing() {
+// ===== 模型白名单（租户级路由只能在此清单内选择；路由层/管理接口不得重复写模型名）=====
+// text/vision 为已在云雾通道核验可用的文本与多模态模型；image 为生图模型；
+// video 直接复用上方 DEFAULT_ROUTING.video + allowedVideoModel 门禁，不另起一份清单。
+// tier/note 供后台下拉展示"定位说明"，价目由 credits.js 价目表按 id 关联。
+const TEXT_MODEL_CATALOG = Object.freeze([
+  Object.freeze({
+    id: "gpt-5.5",
+    label: "GPT-5.5",
+    tier: "旗舰",
+    note: "老板/管理层默认：复杂决策、长文分析、深度思考",
+  }),
+  Object.freeze({
+    id: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    tier: "经济",
+    note: "员工默认：日常问答与文案，响应快、成本低",
+  }),
+  Object.freeze({
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash Lite",
+    tier: "轻量",
+    note: "轻量多模态，适合识图与简单整理",
+  }),
+]);
+const IMAGE_MODEL_CATALOG = Object.freeze([
+  Object.freeze({
+    id: "gpt-image-2",
+    label: "GPT Image 2",
+    tier: "标准",
+    note: "海报/菜品图生成与编辑",
+  }),
+]);
+const VISION_MODEL_CATALOG = Object.freeze([
+  Object.freeze({
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash Lite",
+    tier: "轻量",
+    note: "员工对话发图时的识图默认模型",
+  }),
+  Object.freeze({
+    id: "gpt-5.5",
+    label: "GPT-5.5",
+    tier: "旗舰",
+    note: "复杂图表/票据识别，成本较高",
+  }),
+]);
+export const TEXT_ROUTING_ROLES = Object.freeze(Object.keys(DEFAULT_ROUTING.text));
+
+// 白名单快照：video 按当前 H3 门禁动态计算（与 routing().video 同源）。
+export function allowedModelCatalog() {
+  const gatedVideo = miniMaxH3Enabled() ? [MINIMAX_H3_MODEL] : [];
+  const video = [...new Set([...DEFAULT_ROUTING.video, ...gatedVideo])]
+    .filter(allowedVideoModel)
+    .map((id) => {
+      const info = videoModelInfo(id);
+      return {
+        id,
+        label: info.displayName || id,
+        tier: info.supported ? "可用" : "待接入",
+        note: info.note || "",
+        supported: info.supported === true,
+      };
+    });
+  return {
+    text: TEXT_MODEL_CATALOG.map((item) => ({ ...item })),
+    image: IMAGE_MODEL_CATALOG.map((item) => ({ ...item })),
+    vision: VISION_MODEL_CATALOG.map((item) => ({ ...item })),
+    video,
+  };
+}
+export function isAllowedModel(kind, id) {
+  const value = String(id || "").trim();
+  if (!value) return false;
+  if (kind === "video") return allowedVideoModel(value);
+  const catalog = allowedModelCatalog()[kind];
+  return Array.isArray(catalog) && catalog.some((item) => item.id === value);
+}
+
+function isMissingTenantRoutingTable(error) {
+  return (
+    error?.code === "ERR_SQLITE_ERROR" &&
+    /no such table:\s*(?:main\.)?tenant_model_routing$/iu.test(
+      String(error?.message || "").trim(),
+    )
+  );
+}
+// 租户覆盖层原样读取（未经白名单过滤；过滤在 routing() 里统一做）。
+// 首次启动/隔离 worker 可能在 migrateV2 之前 import 本模块：表不存在 = 没有覆盖，其他错误必须上抛。
+export function tenantRoutingOverride(tenantId = curTenant()) {
+  const tid = Number(tenantId);
+  if (!Number.isInteger(tid) || tid <= 0) return null;
+  let row;
+  try {
+    row = q.get(
+      "SELECT routing_json, updated_by, updated_at FROM tenant_model_routing WHERE tenant_id = ?",
+      tid,
+    );
+  } catch (error) {
+    if (isMissingTenantRoutingTable(error)) return null;
+    throw error;
+  }
+  if (!row) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(row.routing_json);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  return {
+    routing: parsed,
+    updatedBy: row.updated_by ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+// 解析优先级：租户覆盖 > sys_config.model_routing（平台全局覆盖）> DEFAULT_ROUTING。
+// 无租户覆盖时结果与历史行为完全一致（由 test/tenant-model-routing.test.mjs 锁定）。
+// 租户层的值再过一次白名单：库里若残留已下线模型，回落到上一层，不把无效模型送到供应商。
+export function routing(tenantId = curTenant()) {
   const cfg = getConfig("model_routing", {}) || {};
+  const tenantLayer = tenantRoutingOverride(tenantId)?.routing || {};
+  const tenantText = Object.fromEntries(
+    Object.entries(tenantLayer.text || {}).filter(
+      ([role, model]) =>
+        TEXT_ROUTING_ROLES.includes(role) && isAllowedModel("text", model),
+    ),
+  );
   const out = {
     ...DEFAULT_ROUTING,
     ...cfg,
-    text: { ...DEFAULT_ROUTING.text, ...(cfg.text || {}) },
+    text: { ...DEFAULT_ROUTING.text, ...(cfg.text || {}), ...tenantText },
   };
+  if (isAllowedModel("image", tenantLayer.image)) out.image = tenantLayer.image;
+  if (isAllowedModel("vision", tenantLayer.vision))
+    out.vision = tenantLayer.vision;
   const configuredVideo = Array.isArray(cfg.video) ? cfg.video : [];
+  const tenantVideo = Array.isArray(tenantLayer.video) ? tenantLayer.video : [];
   const gatedVideo = miniMaxH3Enabled() ? [MINIMAX_H3_MODEL] : [];
   out.video = [
-    ...new Set([...configuredVideo, ...DEFAULT_ROUTING.video, ...gatedVideo]),
+    ...new Set([
+      ...tenantVideo,
+      ...configuredVideo,
+      ...DEFAULT_ROUTING.video,
+      ...gatedVideo,
+    ]),
   ].filter(allowedVideoModel);
+  if (
+    typeof tenantLayer.videoDefault === "string" &&
+    out.video.includes(tenantLayer.videoDefault) &&
+    videoTaskSupported(tenantLayer.videoDefault)
+  ) {
+    out.videoDefault = tenantLayer.videoDefault;
+  }
   out.videoDefault =
     out.video.includes(out.videoDefault) && videoTaskSupported(out.videoDefault)
       ? out.videoDefault
       : DEFAULT_ROUTING.videoDefault;
   return out;
 }
-export function textModelFor(role) {
-  const r = routing();
+// 分层来源说明（后台"当前生效来源"用）：逐字段标注 tenant / global / default。
+export function routingSources(tenantId = curTenant()) {
+  const cfg = getConfig("model_routing", {}) || {};
+  const tenantLayer = tenantRoutingOverride(tenantId)?.routing || {};
+  const effective = routing(tenantId);
+  const pick = (tenantValue, globalValue, effectiveValue) => {
+    if (tenantValue !== undefined && tenantValue === effectiveValue)
+      return "tenant";
+    if (globalValue !== undefined && globalValue === effectiveValue)
+      return "global";
+    return "default";
+  };
+  const text = Object.fromEntries(
+    TEXT_ROUTING_ROLES.map((role) => [
+      role,
+      pick(tenantLayer.text?.[role], cfg.text?.[role], effective.text[role]),
+    ]),
+  );
+  return {
+    text,
+    image: pick(tenantLayer.image, cfg.image, effective.image),
+    vision: pick(tenantLayer.vision, cfg.vision, effective.vision),
+    videoDefault: pick(
+      tenantLayer.videoDefault,
+      cfg.videoDefault,
+      effective.videoDefault,
+    ),
+    hasTenantOverride: Object.keys(tenantLayer).length > 0,
+  };
+}
+export function defaultRouting() {
+  return {
+    ...DEFAULT_ROUTING,
+    text: { ...DEFAULT_ROUTING.text },
+    video: [...DEFAULT_ROUTING.video],
+  };
+}
+export function textModelFor(role, tenantId = curTenant()) {
+  const r = routing(tenantId);
   return r.text[role] || r.text.sales;
 }
 
@@ -1165,10 +1353,16 @@ export async function editImage({
 
 // —— MiniMax 海螺视频：专属异步任务接口（提交→轮询查询→取片，最终为可直链访问的 OSS mp4）——
 const ywRoot = () => BASE().replace(/\/v1\/?$/, ""); // https://yunwu.ai
-async function ywJson(url, opts = {}, timeoutMs = 60000, externalSignal) {
+async function ywJson(
+  url,
+  opts = {},
+  timeoutMs = 60000,
+  externalSignal,
+  fetchImpl = globalThis.fetch,
+) {
   const timed = timedSignal(timeoutMs, externalSignal);
   try {
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       ...opts,
       headers: { Authorization: `Bearer ${KEY()}`, ...(opts.headers || {}) },
       signal: timed.signal,
@@ -1289,7 +1483,7 @@ function normalizeVideoTask(data = {}, model, fallbackTaskId = "") {
         : "视频任务处理中",
   };
 }
-function videoDefaultsFor(model, images = []) {
+function videoDefaultsFor(model, images = [], { audioUrl = null } = {}) {
   const image = images[0];
   const size = /^wan/i.test(model) ? "1080P" : "1280x720";
   const metadata = {
@@ -1337,67 +1531,172 @@ function videoDefaultsFor(model, images = []) {
     body.images = images;
     body.input_reference = image;
   }
+  // 音轨透传（有声模型驱动口型）：统一接口以 audio_url 命名；无音轨时不带该字段
+  if (audioUrl) {
+    body.audio_url = audioUrl;
+    metadata.audio_url = audioUrl;
+  }
   return body;
 }
-async function submitAliBailianVideoTask({
+
+export const ALIBAILIAN_VIDEO_SYNTHESIS_PATH =
+  "/alibailian/api/v1/services/aigc/video-generation/video-synthesis";
+// Yunwu public API 359507346 (2026-09-04): retain /api/v1 when polling.
+export const ALIBAILIAN_VIDEO_TASK_PATH = "/alibailian/api/v1/tasks";
+const WAN_I2V_RE = /^wan[\d.]*-i2v/i;
+const HAPPYHORSE_I2V_RE = /^happyhorse-[\d.]+-i2v$/i;
+
+/**
+ * 百炼（阿里云 DashScope 兼容）视频任务请求体（纯函数，可测试）。
+ * - Wan 2.5/2.6 i2v：input.img_url 首帧 + input.audio_url（可选，wav/mp3 3–30s 驱动口型）；
+ *   parameters.duration（2.6 为 2–15 整数）、resolution、prompt_extend。
+ *   普通2.6不发送仅flash定义的audio开关；音轨仍必须由下载/合成器实测。
+ * - HappyHorse i2v：官方要求 input.media:[{type:'first_frame',url}]（不是 img_url）。
+ * - HappyHorse t2v（:floor/:nitro/:stable）：保持原 input.img_url 首帧写法不动。
+ */
+export function buildAliBailianVideoRequestBody({
   prompt,
   model,
   images = [],
+  audioUrl = null,
+  duration,
+  resolution,
+  promptExtend = true,
+} = {}) {
+  const info = videoModelInfo(model);
+  const image = images[0] || null;
+  const upstreamModel =
+    info.upstreamModel || String(model || "").replace(/:(floor|nitro|stable)$/i, "");
+  const input = { prompt: String(prompt || "") };
+  const parameters = {};
+  if (WAN_I2V_RE.test(String(model || ""))) {
+    if (!image) {
+      const err = new Error(
+        `视频模型「${info.displayName}（${info.shortName}）」需要首帧参考图后再生成。`,
+      );
+      err.status = 400;
+      throw err;
+    }
+    const [minDuration, maxDuration] = Array.isArray(info.durationRange)
+      ? info.durationRange
+      : [2, 15];
+    // Missing duration defaults to10. Never silently change an explicit duration:
+    // it is also a billing input. The native voiced workflow requests15 twice.
+    const requested = duration == null ? 10 : Number(duration);
+    const wan25 = String(model) === 'wan2.5-i2v-preview';
+    if (!Number.isInteger(requested) || requested < minDuration || requested > maxDuration
+      || wan25 && ![5, 10].includes(requested)) {
+      throw Object.assign(new Error(wan25 ? 'Wan2.5时长只支持5或10秒' : 'Wan2.6时长必须是2–15秒整数'), { status: 400 });
+    }
+    const requestedResolution = resolution || '720P';
+    if (!(wan25 ? ['480P', '720P', '1080P'] : ['720P', '1080P']).includes(requestedResolution)) {
+      throw Object.assign(new Error('Wan视频分辨率不在支持范围内'), { status: 400 });
+    }
+    if ([...input.prompt].length > 1500) throw Object.assign(new Error('Wan视频提示词不能超过1500字'), { status: 400 });
+    input.img_url = image;
+    if (audioUrl) input.audio_url = parseProviderMediaUrl(audioUrl).toString();
+    parameters.duration = requested;
+    parameters.resolution = requestedResolution;
+    parameters.prompt_extend = promptExtend !== false;
+  } else if (HAPPYHORSE_I2V_RE.test(String(model || ""))) {
+    if (!image) {
+      const err = new Error(
+        `视频模型「${info.displayName}（${info.shortName}）」需要上传首帧参考图后再生成。`,
+      );
+      err.status = 400;
+      throw err;
+    }
+    input.media = [{ type: "first_frame", url: image }];
+    parameters.duration = Number.isFinite(Number(duration)) ? Math.round(Number(duration)) : 6;
+    parameters.resolution = resolution || "720P";
+  } else {
+    if (!image) {
+      const err = new Error(
+        `视频模型「${info.displayName}（${info.shortName}）」需要上传首帧参考图后再生成。`,
+      );
+      err.status = 400;
+      throw err;
+    }
+    input.img_url = image;
+    parameters.duration = Number.isFinite(Number(duration)) ? Math.round(Number(duration)) : 6;
+    parameters.resolution = resolution || "720P";
+    parameters.size = "1280*720";
+  }
+  return { model: upstreamModel, input, parameters };
+}
+
+/**
+ * 提交百炼视频任务（Wan 2.5/2.6 有声 i2v、HappyHorse）。fetchImpl 可注入以便零外网测试。
+ * 返回结构带 hasAudioClaimed（Wan 有声模型 / 带 audio_url 时为 true），下游仍必须 ffprobe 实测有声。
+ */
+export async function submitAliBailianVideoSegment({
+  prompt,
+  model,
+  images = [],
+  audioUrl = null,
+  duration,
+  resolution,
+  promptExtend,
   signal,
+  fetchImpl,
 }) {
   const info = videoModelInfo(model);
-  const image = images[0];
-  if (!image) {
-    const err = new Error(
-      `视频模型「${info.displayName}（${info.shortName}）」需要上传首帧参考图后再生成。`,
-    );
-    err.status = 400;
-    throw err;
-  }
-  const input = { prompt };
-  if (image) input.img_url = image;
-  const body = {
-    model: info.upstreamModel || model.replace(/:(floor|nitro|stable)$/i, ""),
-    input,
-    parameters: {
-      duration: 6,
-      resolution: "720P",
-      size: "1280*720",
-    },
-  };
+  const body = buildAliBailianVideoRequestBody({
+    prompt,
+    model,
+    images,
+    audioUrl,
+    duration,
+    resolution,
+    promptExtend,
+  });
   const data = await ywJson(
-    `${ywRoot()}/alibailian/api/v1/services/aigc/video-generation/video-synthesis`,
+    `${ywRoot()}${ALIBAILIAN_VIDEO_SYNTHESIS_PATH}`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-DashScope-Async": "enable",
+        // Yunwu API 359496147 explicitly leaves async handling to the gateway.
+        // Do not copy the native DashScope X-DashScope-Async header here.
       },
       body: JSON.stringify(body),
     },
     60000,
     signal,
+    fetchImpl,
   );
   const task = normalizeVideoTask(data, model);
   if (!task.taskId)
     throw providerResponseError(502, data, { service: "云雾视频服务" });
+  usage.videos++;
   return {
     ...task,
     status: task.status || "queued",
+    hasAudioClaimed: Boolean(info.nativeAudio || audioUrl),
+    requestedDuration: body.parameters.duration,
+    requestedResolution: body.parameters.resolution,
     raw: task.ready
       ? task.raw
       : "任务已提交，视频生成需数分钟，请在列表刷新查看",
   };
 }
-async function queryAliBailianVideoTask({ taskId, model }) {
+async function submitAliBailianVideoTask({ prompt, model, images = [], audioUrl = null, signal }) {
+  return submitAliBailianVideoSegment({ prompt, model, images, audioUrl, signal });
+}
+export async function queryAliBailianVideoSegment({ taskId, model, signal, fetchImpl }) {
   const data = await ywJson(
-    `${ywRoot()}/alibailian/tasks/${encodeURIComponent(taskId)}`,
+    `${ywRoot()}${ALIBAILIAN_VIDEO_TASK_PATH}/${encodeURIComponent(taskId)}`,
     {},
     30000,
+    signal,
+    fetchImpl,
   );
   return normalizeVideoTask(data, model, taskId);
 }
-async function submitUnifiedVideoTask({ prompt, model, images = [], signal }) {
+async function queryAliBailianVideoTask({ taskId, model }) {
+  return queryAliBailianVideoSegment({ taskId, model });
+}
+async function submitUnifiedVideoTask({ prompt, model, images = [], audioUrl = null, signal }) {
   const info = videoModelInfo(model);
   const image = images[0];
   if (info.requiresImage && !image) {
@@ -1407,7 +1706,7 @@ async function submitUnifiedVideoTask({ prompt, model, images = [], signal }) {
     err.status = 400;
     throw err;
   }
-  const body = { ...videoDefaultsFor(model, images), prompt };
+  const body = { ...videoDefaultsFor(model, images, { audioUrl }), prompt };
   let lastErr;
   for (const endpoint of ["/video/generations", "/videos"]) {
     try {
@@ -1536,6 +1835,7 @@ export async function generateVideo({
   model,
   images = [],
   image,
+  audioUrl = null,
   signal,
 }) {
   const m = model || routing().videoDefault;
@@ -1564,6 +1864,7 @@ export async function generateVideo({
       prompt: effectivePrompt,
       model: m,
       images: references,
+      audioUrl,
       signal,
     });
   else if (info.adapter === "unified" && info.supported)
@@ -1571,6 +1872,7 @@ export async function generateVideo({
       prompt: effectivePrompt,
       model: m,
       images: references,
+      audioUrl,
       signal,
     });
   if (out)

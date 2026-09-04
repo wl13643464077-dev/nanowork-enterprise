@@ -12,12 +12,18 @@ import {
   settleHold,
 } from '../engines/credits.js';
 import { executeHeldDelivery } from '../engines/two-phase-delivery.js';
+import { storeScopeClause } from '../engines/access.js';
+import { resolveWriteStoreId } from '../engines/store-scope.js';
 
 // ===== 门店日常操作台：日清检查 / 沽清板 / 排班考勤 / AI 晨会 =====
 // 定位：店长和员工每天开门要用的操作性功能（勾选留痕、真实台账），
 // 与数字员工的「咨询建议」互补。全部数据按租户隔离。
+// 多门店：读取带「当前门店」过滤（X-Store-Id / 员工绑定店，未传=全店不过滤）；
+// 写入默认落到 X-Store-Id → 用户绑定店 → 租户默认店，单店客户零感知。
 
 const r = Router();
+const storeFilter = (user, column = 'store_id') => storeScopeClause(user, column);
+const writeStoreId = (user, explicit = null) => resolveWriteStoreId(user, explicit);
 
 // —— 日清清单模板（行业标准 SOP，v1 为固定模板）——
 export const CHECKLIST_TEMPLATES = Object.freeze([
@@ -92,11 +98,13 @@ const CHECKLIST_BY_KEY = new Map(CHECKLIST_TEMPLATES.map(item => [item.key, item
 
 r.get('/checklists/today', (req, res) => {
   const date = today();
+  const sf = storeFilter(req.user);
   const marks = q.all(
     `SELECT checklist_key, item_key, done_by_name, created_at
-     FROM store_checklist_marks WHERE tenant_id=? AND date=?`,
+     FROM store_checklist_marks WHERE tenant_id=? AND date=?${sf.sql}`,
     curTenant(),
     date,
+    ...sf.params,
   );
   const markMap = new Map(marks.map(mark => [`${mark.checklist_key}:${mark.item_key}`, mark]));
   const checklists = CHECKLIST_TEMPLATES.map(template => {
@@ -126,12 +134,14 @@ r.post('/checklists/:key/toggle', (req, res) => {
     return res.status(400).json({ error: '检查项不存在' });
   }
   const date = today();
+  const storeId = writeStoreId(req.user);
   const existing = q.get(
-    `SELECT id, done_by_name FROM store_checklist_marks WHERE tenant_id=? AND date=? AND checklist_key=? AND item_key=?`,
+    `SELECT id, done_by_name FROM store_checklist_marks WHERE tenant_id=? AND date=? AND checklist_key=? AND item_key=? AND store_id IS ?`,
     curTenant(),
     date,
     template.key,
     itemKey,
+    storeId,
   );
   // 多端同用（前厅平板+店长手机）时盲翻会互相打架：前端带目标态 done 则幂等落地，
   // 目标态与现状一致直接 no-op；不带 done 保留老的取反行为（兼容旧客户端）。
@@ -144,26 +154,29 @@ r.post('/checklists/:key/toggle', (req, res) => {
     return res.json({ ok: true, done: false });
   }
   q.run(
-    `INSERT INTO store_checklist_marks(tenant_id,date,checklist_key,item_key,done_by,done_by_name)
-     VALUES(?,?,?,?,?,?)`,
+    `INSERT INTO store_checklist_marks(tenant_id,date,checklist_key,item_key,done_by,done_by_name,store_id)
+     VALUES(?,?,?,?,?,?,?)`,
     curTenant(),
     date,
     template.key,
     itemKey,
     req.user.id,
     req.user.name,
+    storeId,
   );
-  res.json({ ok: true, done: true, doneBy: req.user.name });
+  res.json({ ok: true, done: true, doneBy: req.user.name, storeId });
 });
 
 // 近 7 天完成率（驾驶舱/店长视图用）；daysAgo(6)+今天 = 恰好 7 个自然日
 r.get('/checklists/summary', (req, res) => {
   const totalItems = CHECKLIST_TEMPLATES.reduce((sum, template) => sum + template.items.length, 0);
+  const sf = storeFilter(req.user);
   const rows = q.all(
     `SELECT date, COUNT(*) done FROM store_checklist_marks
-     WHERE tenant_id=? AND date >= ? GROUP BY date ORDER BY date DESC`,
+     WHERE tenant_id=? AND date >= ?${sf.sql} GROUP BY date ORDER BY date DESC`,
     curTenant(),
     daysAgo(6),
+    ...sf.params,
   );
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -175,6 +188,7 @@ r.get('/checklists/summary', (req, res) => {
 // —— 今日沽清板 ——
 r.get('/soldout/today', (req, res) => {
   const date = today();
+  const sf = storeFilter(req.user, 'd.store_id');
   const dishes = q.all(
     `SELECT d.id, d.name, d.category, d.price,
       (SELECT m.soldout FROM dish_soldout_marks m
@@ -183,13 +197,14 @@ r.get('/soldout/today', (req, res) => {
       (SELECT m.marked_by_name FROM dish_soldout_marks m
        WHERE m.tenant_id=? AND m.date=? AND m.dish_id=d.id
        ORDER BY m.id DESC LIMIT 1) markedBy
-     FROM dishes d WHERE d.tenant_id=? AND (d.status IS NULL OR d.status != '下架')
+     FROM dishes d WHERE d.tenant_id=? AND (d.status IS NULL OR d.status != '下架')${sf.sql}
      ORDER BY d.category, d.name`,
     curTenant(),
     date,
     curTenant(),
     date,
     curTenant(),
+    ...sf.params,
   );
   // 备货预警（行业 SOP：高频沽清 SKU 要进行动清单）：近 7 天收盘态为沽清 ≥3 天的菜品。
   // 标记表是 append-only，必须取「每菜每天最后一条」判定当日状态，
@@ -201,11 +216,12 @@ r.get('/soldout/today', (req, res) => {
      ) lastm
      JOIN dish_soldout_marks m ON m.id = lastm.mid AND m.soldout = 1
      JOIN dishes d ON d.id = lastm.dish_id
-     WHERE d.status IS NULL OR d.status != '下架'
+     WHERE (d.status IS NULL OR d.status != '下架')${sf.sql}
      GROUP BY lastm.dish_id HAVING days >= 3
      ORDER BY days DESC LIMIT 6`,
     curTenant(),
     daysAgo(6),
+    ...sf.params,
   );
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -218,7 +234,7 @@ r.get('/soldout/today', (req, res) => {
 
 r.post('/soldout/:dishId/toggle', (req, res) => {
   const dishId = Number(req.params.dishId);
-  const dish = q.get('SELECT id, name, status FROM dishes WHERE tenant_id=? AND id=?', curTenant(), dishId);
+  const dish = q.get('SELECT id, name, status, store_id FROM dishes WHERE tenant_id=? AND id=?', curTenant(), dishId);
   if (!dish) return res.status(404).json({ error: '菜品不存在' });
   if (dish.status === '下架') return res.status(400).json({ error: '菜品已下架，无需标记沽清' });
   const date = today();
@@ -236,14 +252,15 @@ r.post('/soldout/:dishId/toggle', (req, res) => {
     return res.json({ ok: true, soldout: next === 1, unchanged: true });
   }
   q.run(
-    `INSERT INTO dish_soldout_marks(tenant_id,date,dish_id,soldout,marked_by,marked_by_name)
-     VALUES(?,?,?,?,?,?)`,
+    `INSERT INTO dish_soldout_marks(tenant_id,date,dish_id,soldout,marked_by,marked_by_name,store_id)
+     VALUES(?,?,?,?,?,?,?)`,
     curTenant(),
     date,
     dishId,
     next,
     req.user.id,
     req.user.name,
+    dish.store_id ?? writeStoreId(req.user),
   );
   logOp(req.user, '门店日常', next ? '标记沽清' : '恢复供应', dish.name);
   res.json({ ok: true, soldout: next === 1 });
@@ -275,25 +292,31 @@ function weekDates(startDate) {
 
 r.get('/shifts/week', (req, res) => {
   const dates = weekDates(req.query.start);
+  // 多门店：当前门店生效时只排本店员工（含未绑定门店的总部人员，便于跨店支援）
+  const sf = storeFilter(req.user);
+  const staffStoreSql = sf.sql ? ' AND (store_id = ? OR store_id IS NULL)' : '';
   const staff = q.all(
-    `SELECT id, name, role, dept FROM users
-     WHERE tenant_id=? AND status='启用' AND role IN ('sales','manager','ops_director')
+    `SELECT id, name, role, dept, store_id FROM users
+     WHERE tenant_id=? AND status='启用' AND role IN ('sales','manager','ops_director')${staffStoreSql}
      ORDER BY CASE role WHEN 'ops_director' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, id`,
     curTenant(),
+    ...sf.params,
   );
   const assignments = q.all(
-    `SELECT user_id, date, shift_key FROM shift_assignments
-     WHERE tenant_id=? AND date BETWEEN ? AND ?`,
+    `SELECT user_id, date, shift_key, store_id FROM shift_assignments
+     WHERE tenant_id=? AND date BETWEEN ? AND ?${sf.sql}`,
     curTenant(),
     dates[0],
     dates[6],
+    ...sf.params,
   );
   const attendance = q.all(
     `SELECT user_id, date, clock_in, clock_out FROM attendance_records
-     WHERE tenant_id=? AND date BETWEEN ? AND ?`,
+     WHERE tenant_id=? AND date BETWEEN ? AND ?${sf.sql}`,
     curTenant(),
     dates[0],
     dates[6],
+    ...sf.params,
   );
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -314,24 +337,27 @@ r.put('/shifts/assign', (req, res) => {
   if (!Number.isSafeInteger(userId) || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
     return res.status(400).json({ error: '排班参数不正确' });
   }
-  const staff = q.get("SELECT id, name FROM users WHERE tenant_id=? AND id=? AND status='启用'", curTenant(), userId);
+  const staff = q.get("SELECT id, name, store_id FROM users WHERE tenant_id=? AND id=? AND status='启用'", curTenant(), userId);
   if (!staff) return res.status(404).json({ error: '员工不存在或已停用' });
   if (shiftKey === '') {
     q.run('DELETE FROM shift_assignments WHERE tenant_id=? AND user_id=? AND date=?', curTenant(), userId, date);
     return res.json({ ok: true, cleared: true });
   }
   if (!SHIFT_KEYS.has(shiftKey)) return res.status(400).json({ error: '班次不存在' });
+  // 排班归属：被排员工的绑定店 → 当前门店上下文 → 排班人的绑定店 → 默认店
+  const shiftStoreId = resolveWriteStoreId(req.user, null, { preferUser: staff });
   q.run(
-    `INSERT INTO shift_assignments(tenant_id,user_id,date,shift_key,assigned_by)
-     VALUES(?,?,?,?,?)
-     ON CONFLICT(tenant_id,user_id,date) DO UPDATE SET shift_key=excluded.shift_key, assigned_by=excluded.assigned_by`,
+    `INSERT INTO shift_assignments(tenant_id,user_id,date,shift_key,assigned_by,store_id)
+     VALUES(?,?,?,?,?,?)
+     ON CONFLICT(tenant_id,user_id,date) DO UPDATE SET shift_key=excluded.shift_key, assigned_by=excluded.assigned_by, store_id=excluded.store_id`,
     curTenant(),
     userId,
     date,
     shiftKey,
     req.user.id,
+    shiftStoreId,
   );
-  res.json({ ok: true });
+  res.json({ ok: true, storeId: shiftStoreId });
 });
 
 // —— 考勤：一键上下班打卡 ——
@@ -349,12 +375,13 @@ r.post('/attendance/clock', (req, res) => {
   if (direction === 'in') {
     if (existing?.clock_in) return res.status(409).json({ error: `今天 ${existing.clock_in} 已打过上班卡` });
     q.run(
-      `INSERT INTO attendance_records(tenant_id,user_id,date,clock_in) VALUES(?,?,?,?)
-       ON CONFLICT(tenant_id,user_id,date) DO UPDATE SET clock_in=excluded.clock_in`,
+      `INSERT INTO attendance_records(tenant_id,user_id,date,clock_in,store_id) VALUES(?,?,?,?,?)
+       ON CONFLICT(tenant_id,user_id,date) DO UPDATE SET clock_in=excluded.clock_in, store_id=COALESCE(attendance_records.store_id, excluded.store_id)`,
       curTenant(),
       req.user.id,
       date,
       now,
+      writeStoreId(req.user),
     );
   } else {
     if (!existing?.clock_in) return res.status(409).json({ error: '还没打上班卡' });
@@ -387,10 +414,12 @@ r.get('/attendance/mine', (req, res) => {
 
 // —— 库存台账：当前量/安全线/变动留痕/订货建议 ——
 r.get('/inventory', (req, res) => {
+  const sf = storeFilter(req.user);
   const items = q.all(
-    `SELECT * FROM inventory_items WHERE tenant_id=? ORDER BY
+    `SELECT * FROM inventory_items WHERE tenant_id=?${sf.sql} ORDER BY
       CASE WHEN quantity < safe_line THEN 0 ELSE 1 END, category, name`,
     curTenant(),
+    ...sf.params,
   );
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -406,11 +435,18 @@ r.post('/inventory', (req, res) => {
   const category = String(req.body?.category || '').slice(0, 30) || null;
   const quantity = Math.max(0, Number(req.body?.quantity) || 0);
   const safeLine = Math.max(0, Number(req.body?.safeLine) || 0);
-  const exists = q.get('SELECT id FROM inventory_items WHERE tenant_id=? AND name=?', curTenant(), name);
+  const storeId = writeStoreId(req.user, req.body?.storeId);
+  // 同名判重按门店：连锁各店可各有一份「大米」台账；历史无门店行（store_id NULL）仍全租户判重
+  const exists = q.get(
+    'SELECT id FROM inventory_items WHERE tenant_id=? AND name=? AND (store_id IS ? OR store_id IS NULL)',
+    curTenant(),
+    name,
+    storeId,
+  );
   if (exists) return res.status(409).json({ error: '同名物料已存在，请直接调整数量' });
   const created = q.run(
-    `INSERT INTO inventory_items(tenant_id,name,category,unit,quantity,safe_line,updated_by_name)
-     VALUES(?,?,?,?,?,?,?)`,
+    `INSERT INTO inventory_items(tenant_id,name,category,unit,quantity,safe_line,updated_by_name,store_id)
+     VALUES(?,?,?,?,?,?,?,?)`,
     curTenant(),
     name,
     category,
@@ -418,17 +454,19 @@ r.post('/inventory', (req, res) => {
     quantity,
     safeLine,
     req.user.name,
+    storeId,
   );
   if (quantity > 0) {
     q.run(
-      `INSERT INTO inventory_moves(tenant_id,item_id,delta,reason,moved_by,moved_by_name)
-       VALUES(?,?,?,?,?,?)`,
+      `INSERT INTO inventory_moves(tenant_id,item_id,delta,reason,moved_by,moved_by_name,store_id)
+       VALUES(?,?,?,?,?,?,?)`,
       curTenant(),
       Number(created.lastInsertRowid),
       quantity,
       '入库',
       req.user.id,
       req.user.name,
+      storeId,
     );
   }
   logOp(req.user, '门店日常', '新建库存物料', name);
@@ -463,8 +501,8 @@ r.post('/inventory/:id/move', (req, res) => {
     item.id,
   );
   q.run(
-    `INSERT INTO inventory_moves(tenant_id,item_id,delta,reason,note,moved_by,moved_by_name)
-     VALUES(?,?,?,?,?,?,?)`,
+    `INSERT INTO inventory_moves(tenant_id,item_id,delta,reason,note,moved_by,moved_by_name,store_id)
+     VALUES(?,?,?,?,?,?,?,?)`,
     curTenant(),
     item.id,
     delta,
@@ -472,6 +510,7 @@ r.post('/inventory/:id/move', (req, res) => {
     String(req.body?.note || '').slice(0, 100) || null,
     req.user.id,
     req.user.name,
+    item.store_id ?? null,
   );
   logOp(req.user, '门店日常', `库存${reason}`, `${item.name} ${delta > 0 ? '+' : ''}${delta}${item.unit}`);
   res.json({ ok: true, quantity: nextQuantity });
@@ -489,10 +528,12 @@ r.delete('/inventory/:id', requireRole('boss', 'admin', 'ops_director', 'manager
 
 // 订货建议：低于安全线的物料按缺口生成清单（纯事实计算，不调用 AI）
 r.get('/inventory/reorder', (req, res) => {
+  const sf = storeFilter(req.user);
   const items = q.all(
     `SELECT name, category, unit, quantity, safe_line FROM inventory_items
-     WHERE tenant_id=? AND quantity < safe_line ORDER BY category, name`,
+     WHERE tenant_id=? AND quantity < safe_line${sf.sql} ORDER BY category, name`,
     curTenant(),
+    ...sf.params,
   );
   res.set('Cache-Control', 'private, no-store');
   res.json({
@@ -523,10 +564,13 @@ r.post('/delivery-daily', (req, res) => {
       ? Math.max(0, Number(req.body.avgPrepMinutes))
       : null;
   const badReviews = Math.max(0, Math.trunc(Number(req.body?.badReviews) || 0));
+  const storeId = writeStoreId(req.user, req.body?.storeId);
+  if (!storeId) return res.status(400).json({ error: '所属门店不存在或不属于当前企业' });
+  // 唯一键已是「租户+门店+日期+平台」：连锁各店同日同平台各记一条
   q.run(
-    `INSERT INTO delivery_daily(tenant_id,date,platform,orders,revenue,rating,avg_prep_minutes,bad_reviews,recorded_by)
-     VALUES(?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(tenant_id,date,platform) DO UPDATE SET
+    `INSERT INTO delivery_daily(tenant_id,date,platform,orders,revenue,rating,avg_prep_minutes,bad_reviews,recorded_by,store_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(tenant_id,store_id,date,platform) DO UPDATE SET
        orders=excluded.orders, revenue=excluded.revenue, rating=excluded.rating,
        avg_prep_minutes=excluded.avg_prep_minutes, bad_reviews=excluded.bad_reviews,
        recorded_by=excluded.recorded_by, updated_at=datetime('now','localtime')`,
@@ -539,16 +583,19 @@ r.post('/delivery-daily', (req, res) => {
     avgPrepMinutes,
     badReviews,
     req.user.id,
+    storeId,
   );
   logOp(req.user, '门店日常', '外卖日报', `${date} ${platform} ${orders}单/¥${revenue}`);
-  res.json({ ok: true, date, platform });
+  res.json({ ok: true, date, platform, storeId });
 });
 
 r.get('/delivery-daily', (req, res) => {
+  const sf = storeFilter(req.user);
   const rows = q.all(
-    `SELECT * FROM delivery_daily WHERE tenant_id=? AND date >= ? ORDER BY date DESC, platform`,
+    `SELECT * FROM delivery_daily WHERE tenant_id=? AND date >= ?${sf.sql} ORDER BY date DESC, platform`,
     curTenant(),
     daysAgo(30),
+    ...sf.params,
   );
   const last7 = rows.filter(row => row.date >= daysAgo(6)); // 含今天恰好 7 个自然日
   const sum = list => ({
@@ -576,16 +623,22 @@ r.get('/delivery-daily', (req, res) => {
 r.post('/morning-brief', async (req, res) => {
   if (!yunwuAvailable()) return res.status(503).json({ error: '真实 AI 通道未配置，无法生成晨会要点' });
   const yesterday = daysAgo(1);
-  const ops = q.get('SELECT * FROM daily_ops WHERE tenant_id=? AND date=?', curTenant(), yesterday) || {};
+  // 多门店：当前门店生效时晨会只读本店事实（未传头=全店，与现状一致）
+  const sf = storeFilter(req.user);
+  const sfDish = storeFilter(req.user, 'd.store_id');
+  const sfShift = storeFilter(req.user, 's.store_id');
+  const ops = q.get(`SELECT * FROM daily_ops WHERE tenant_id=? AND date=?${sf.sql}`, curTenant(), yesterday, ...sf.params) || {};
   const orderStats = q.get(
     `SELECT COUNT(*) n, COALESCE(SUM(amount),0) amount FROM orders
-     WHERE tenant_id=? AND date(created_at)=?`,
+     WHERE tenant_id=? AND date(created_at)=?${sf.sql}`,
     curTenant(),
     yesterday,
+    ...sf.params,
   ) || { n: 0, amount: 0 };
   const badReviews = q.get(
-    `SELECT COUNT(*) n FROM store_reviews WHERE tenant_id=? AND rating <= 3 AND status='待回复'`,
+    `SELECT COUNT(*) n FROM store_reviews WHERE tenant_id=? AND rating <= 3 AND status='待回复'${sf.sql}`,
     curTenant(),
+    ...sf.params,
   )?.n || 0;
   // 以「昨日最后一条标记」为准：中途恢复供应的菜不算沽清（与看板口径一致）
   const soldoutYesterday = q.all(
@@ -594,22 +647,25 @@ r.post('/morning-brief', async (req, res) => {
        WHERE tenant_id=? AND date=? GROUP BY dish_id
      ) lastm
      JOIN dish_soldout_marks m ON m.id = lastm.mid AND m.soldout = 1
-     JOIN dishes d ON d.id = lastm.dish_id LIMIT 10`,
+     JOIN dishes d ON d.id = lastm.dish_id WHERE 1=1${sfDish.sql} LIMIT 10`,
     curTenant(),
     yesterday,
+    ...sfDish.params,
   ).map(row => row.name);
   const todayShifts = q.all(
     `SELECT u.name, s.shift_key FROM shift_assignments s JOIN users u ON u.id=s.user_id
-     WHERE s.tenant_id=? AND s.date=?`,
+     WHERE s.tenant_id=? AND s.date=?${sfShift.sql}`,
     curTenant(),
     today(),
+    ...sfShift.params,
   );
   const shiftLabel = new Map(SHIFT_TEMPLATES.map(item => [item.key, item.label]));
   // ===== 业务串联：晨会是各台账的收口点，把库存/高频沽清/日清/被点名菜一并交给 AI =====
   const lowInventory = q.all(
     `SELECT name, quantity, safe_line, unit FROM inventory_items
-     WHERE tenant_id=? AND quantity < safe_line ORDER BY (safe_line - quantity) DESC LIMIT 8`,
+     WHERE tenant_id=? AND quantity < safe_line${sf.sql} ORDER BY (safe_line - quantity) DESC LIMIT 8`,
     curTenant(),
+    ...sf.params,
   );
   const frequentSoldout = q.all(
     `SELECT d.name, COUNT(*) days FROM (
@@ -618,21 +674,24 @@ r.post('/morning-brief', async (req, res) => {
      ) lastm
      JOIN dish_soldout_marks m ON m.id = lastm.mid AND m.soldout = 1
      JOIN dishes d ON d.id = lastm.dish_id
-     WHERE d.status IS NULL OR d.status != '下架'
+     WHERE (d.status IS NULL OR d.status != '下架')${sfDish.sql}
      GROUP BY lastm.dish_id HAVING days >= 3 ORDER BY days DESC LIMIT 5`,
     curTenant(),
     daysAgo(6),
+    ...sfDish.params,
   );
   const checklistTotalItems = CHECKLIST_TEMPLATES.reduce((sum, template) => sum + template.items.length, 0);
   const checklistDoneYesterday = q.get(
-    `SELECT COUNT(*) n FROM store_checklist_marks WHERE tenant_id=? AND date=?`,
+    `SELECT COUNT(*) n FROM store_checklist_marks WHERE tenant_id=? AND date=?${sf.sql}`,
     curTenant(),
     yesterday,
+    ...sf.params,
   )?.n || 0;
   const mentionedDishes = (() => {
     const dishes = q.all(
-      `SELECT name FROM dishes WHERE tenant_id=? AND (status IS NULL OR status != '下架')`,
+      `SELECT name FROM dishes WHERE tenant_id=? AND (status IS NULL OR status != '下架')${sf.sql}`,
       curTenant(),
+      ...sf.params,
     );
     if (!dishes.length) return [];
     const badBodies = q.all(

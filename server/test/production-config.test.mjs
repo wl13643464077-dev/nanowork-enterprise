@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { stageServerRuntime } from './helpers/stage-server-runtime.mjs';
 import {
   jwtSecretStrengthError,
   platformSuperPasswordStrengthError,
@@ -15,9 +16,10 @@ const strongJwt = '8xQ!2vZ#7mL@4pR$9cT%6kN&3wF*5sH?';
 
 function runProductionProbe(modulePath, env = {}) {
   const dbPath = path.join(os.tmpdir(), `nanowork-production-config-${process.pid}-${Math.random().toString(16).slice(2)}.db`);
-  const moduleUrl = pathToFileURL(path.join(serverDir, modulePath)).href;
+  const stage = stageServerRuntime();
+  const moduleUrl = pathToFileURL(path.join(stage.serverDir, modulePath)).href;
   const result = spawnSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `await import(${JSON.stringify(moduleUrl)});`], {
-    cwd: serverDir,
+    cwd: stage.serverDir,
     env: {
       ...process.env,
       NODE_ENV: 'production',
@@ -31,6 +33,7 @@ function runProductionProbe(modulePath, env = {}) {
     timeout: 20_000,
   });
   for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(file, { force: true });
+  stage.cleanup();
   return { ...result, output: `${result.stdout || ''}\n${result.stderr || ''}` };
 }
 

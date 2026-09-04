@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const WORKSPACE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -352,7 +353,6 @@ test("经营工具箱真实挂载搜图、缩略图代理与版权确认导入�
   assert.match(panelSource, /我已核验该图片的使用权与署名要求/u);
 });
 
-after(() => {
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
+after(async () => {
+  await removeTempDbSafely(dbPath);
 });

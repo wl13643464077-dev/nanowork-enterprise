@@ -1,0 +1,33 @@
+/* 门店经营数据：多门店（连锁）新增列与表单行，样式走 theme.css token */
+.sd-store-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ui-text);
+  font-weight: 600;
+}
+
+.sd-default-tag {
+  margin: 0;
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-accent);
+  font-size: var(--font-1);
+}
+
+.sd-muted {
+  color: var(--ui-muted);
+}
+
+.sd-form-row {
+  display: flex;
+  width: 100%;
+}
+
+.sd-form-grow {
+  flex: 1;
+}
+
+.sd-form-row .ant-space-item:has(.sd-form-grow) {
+  flex: 1;
+}

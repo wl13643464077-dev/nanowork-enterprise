@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -312,8 +313,8 @@ test("员工和模式参数支持范围、去重、稳定排序并拒绝越界�
 
 test("隔离数据库路径门禁拒绝源库与工作库同路径", () => {
   const result = assertIsolatedDatabasePaths("/tmp/source.db", "/tmp/work.db");
-  assert.equal(result.source, "/tmp/source.db");
-  assert.equal(result.work, "/tmp/work.db");
+  assert.equal(result.source, path.resolve("/tmp/source.db"));
+  assert.equal(result.work, path.resolve("/tmp/work.db"));
   assert.throws(
     () =>
       assertIsolatedDatabasePaths("/tmp/source.db", "/tmp/../tmp/source.db"),
@@ -323,16 +324,31 @@ test("隔离数据库路径门禁拒绝源库与工作库同路径", () => {
 
 test("证据输出路径在任何写入前拒绝覆盖源库、软链接别名和隔离库", () => {
   const directory = fs.mkdtempSync(
-    path.join(process.env.TMPDIR || "/tmp", "nanowork-output-guard-"),
+    path.join(os.tmpdir(), "nanowork-output-guard-"),
   );
   try {
-    const source = path.join(directory, "source.db");
+    // A database need not have a .db suffix. Keep the alias .json so this
+    // exercises canonical database identity, not only the extension guard.
+    const source = path.join(directory, "source.db.json");
     const isolated = path.join(directory, "isolated.db");
-    const alias = path.join(directory, "source-alias.json");
+    const aliasDirectory = path.join(directory, "source-alias");
+    const alias = process.platform === "win32"
+      ? path.join(aliasDirectory, path.basename(source))
+      : path.join(directory, "source-alias.json");
     const valid = path.join(directory, "evidence.json");
     fs.writeFileSync(source, "source-db-sentinel");
     fs.writeFileSync(isolated, "isolated-db-sentinel");
-    fs.symlinkSync(source, alias);
+    if (process.platform === "win32") {
+      // Junctions require no machine-wide Developer Mode or admin privilege.
+      // They exercise the same realpath alias boundary with a real file.
+      fs.symlinkSync(directory, aliasDirectory, "junction");
+      assert.equal(fs.lstatSync(aliasDirectory).isSymbolicLink(), true);
+    } else {
+      fs.symlinkSync(source, alias);
+      assert.equal(fs.lstatSync(alias).isSymbolicLink(), true);
+    }
+    assert.equal(fs.realpathSync(alias), fs.realpathSync(source));
+    assert.equal(fs.statSync(alias).isFile(), true);
     const sourceBefore = fs.readFileSync(source, "utf8");
 
     assert.throws(

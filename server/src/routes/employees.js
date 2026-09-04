@@ -103,6 +103,8 @@ function toEmployee(row, canViewInternalProfile = false, viewerRole = null) {
     specialistId: row.id,
     groupEmoji: row.group_emoji || '',
     extension: profile.extension === true,
+    // 自我介绍周校验状态（ok/needs_review/never）：员工卡角标用，只追加不改既有字段。
+    introCheckStatus: row.intro_check_status || 'never',
   };
 }
 
@@ -118,6 +120,7 @@ function visibleEmployees(req) {
     (SELECT t.title FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.status IN ('生成中','执行中')${taskScope.sql} ORDER BY t.id DESC LIMIT 1) current_task,
     (SELECT COUNT(*) FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.created_at>=?${taskScope.sql}) month_tasks,
     (SELECT COUNT(*) FROM agent_tasks t WHERE t.tenant_id=? AND t.specialist_id=s.id AND t.created_at>=? AND t.status='已完成'${taskScope.sql}) month_done,
+    (SELECT o.self_intro_check_status FROM tenant_specialist_overrides o WHERE o.tenant_id=? AND o.specialist_id=s.id) intro_check_status,
     m.sort group_sort,m.emoji group_emoji
     FROM specialists s
     JOIN marshals m ON m.id=s.marshal_id
@@ -128,6 +131,7 @@ function visibleEmployees(req) {
   curTenant(), ...taskScope.params,
   curTenant(), monthStart(), ...taskScope.params,
   curTenant(), monthStart(), ...taskScope.params,
+  curTenant(),
   ...CURRENT_DEPARTMENT_CODES)
     .map(row => toEmployee(row, canViewInternalProfile, req.user?.role || null));
 }
@@ -278,17 +282,23 @@ function normalizeMatchedTeam(parsed, employees) {
   };
 }
 
-r.post('/match-team', async (req, res) => {
-  const text = String(req.body?.text || '').trim();
-  if (!text) return res.status(400).json({ error: '先用一句话说说要办什么事' });
+// 一句话找人的核心（供 /match-team 路由与开店向导 routes/onboarding.js 共用）：
+// 校验 → 占扣 → 真实模型读花名册组队 → 结算。成功返回 { team, billing }；
+// 任何失败抛带 status 的 Error（预授权已释放），由调用方决定如何呈现。
+export async function matchTeamByText(req, rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) throw Object.assign(new Error('先用一句话说说要办什么事'), { status: 400 });
   if (text.length > TEAM_MATCH_MAX_TEXT) {
-    return res.status(400).json({ error: `一句话最长${TEAM_MATCH_MAX_TEXT}字，请精简后再试` });
+    throw Object.assign(new Error(`一句话最长${TEAM_MATCH_MAX_TEXT}字，请精简后再试`), { status: 400 });
   }
   if (!yunwuAvailable()) {
-    return res.status(503).json({ error: '真实 AI 通道未配置，无法读花名册挑人；不会用规则结果冒充 AI 匹配。' });
+    throw Object.assign(
+      new Error('真实 AI 通道未配置，无法读花名册挑人；不会用规则结果冒充 AI 匹配。'),
+      { status: 503 },
+    );
   }
   const employees = visibleEmployees(req);
-  if (!employees.length) return res.status(503).json({ error: '数字员工目录为空，无法匹配' });
+  if (!employees.length) throw Object.assign(new Error('数字员工目录为空，无法匹配'), { status: 503 });
   const roster = teamMatchRoster(employees);
   // 选人是导航型轻任务：固定走轻量文本通道（响应快、限流余量大），
   // 不占用老板级模型的吞吐；派活后的正式任务仍按岗位模型路由执行。
@@ -376,12 +386,7 @@ r.post('/match-team', async (req, res) => {
     try {
       logOp(req.user, '数字员工', '一句话找人', `team:${delivered.delivery.teamName}·${delivered.delivery.members.length}人`);
     } catch { /* 日志失败不影响业务返回 */ }
-    res.set('Cache-Control', 'private, no-store');
-    return res.json({
-      team: delivered.delivery,
-      billing: delivered.billing,
-      boundary: '本次只完成选人建议，未创建任务、未派活、未产生对外动作；派活在各员工工作台确认后才执行。',
-    });
+    return { team: delivered.delivery, billing: delivered.billing };
   } catch (error) {
     if (hold) {
       try {
@@ -389,6 +394,19 @@ r.post('/match-team', async (req, res) => {
       } catch { /* 保留原始错误 */ }
       hold = null;
     }
+    throw error;
+  }
+}
+
+r.post('/match-team', async (req, res) => {
+  try {
+    const matched = await matchTeamByText(req, req.body?.text);
+    res.set('Cache-Control', 'private, no-store');
+    return res.json({
+      ...matched,
+      boundary: '本次只完成选人建议，未创建任务、未派活、未产生对外动作；派活在各员工工作台确认后才执行。',
+    });
+  } catch (error) {
     return res.status(error.status || 502).json({
       error: String(error?.message || '一句话找人失败').slice(0, 300),
       ...(error.billing ? { billing: error.billing } : {}),
@@ -1095,14 +1113,14 @@ r.get('/evolution/:specialistId', requireRole(...EVOLUTION_ROLES), (req, res) =>
   const { stats } = collectEvolutionSignals(specialist.id);
   const notes = q.all(
     `SELECT id, note, rationale, evidence, status, created_at, retired_at
-     FROM employee_evolution_notes WHERE tenant_id=? AND specialist_id=?
+     FROM employee_evolution_notes WHERE tenant_id=? AND domain='restaurant' AND specialist_id=?
      ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, id DESC LIMIT 40`,
     curTenant(),
     specialist.id,
   );
   const proposals = q.all(
     `SELECT id, summary, proposal_json, status, created_at, decided_at
-     FROM employee_evolution_proposals WHERE tenant_id=? AND specialist_id=?
+     FROM employee_evolution_proposals WHERE tenant_id=? AND domain='restaurant' AND specialist_id=?
      ORDER BY id DESC LIMIT 10`,
     curTenant(),
     specialist.id,
@@ -1137,7 +1155,7 @@ r.post('/evolution/:specialistId/propose', requireRole(...EVOLUTION_ROLES), asyn
     });
   }
   const pendingProposal = q.get(
-    `SELECT id FROM employee_evolution_proposals WHERE tenant_id=? AND specialist_id=? AND status='待审核'`,
+    `SELECT id FROM employee_evolution_proposals WHERE tenant_id=? AND domain='restaurant' AND specialist_id=? AND status='待审核'`,
     curTenant(),
     specialist.id,
   );
@@ -1242,7 +1260,7 @@ r.post('/evolution/proposals/:proposalId/decide', requireRole(...EVOLUTION_ROLES
   const decision = String(req.body?.decision || '');
   if (!['adopt', 'reject'].includes(decision)) return res.status(400).json({ error: 'decision 仅支持 adopt/reject' });
   const proposal = q.get(
-    `SELECT * FROM employee_evolution_proposals WHERE tenant_id=? AND id=?`,
+    `SELECT * FROM employee_evolution_proposals WHERE tenant_id=? AND domain='restaurant' AND id=?`,
     curTenant(),
     Number(req.params.proposalId),
   );
@@ -1270,7 +1288,7 @@ r.post('/evolution/proposals/:proposalId/decide', requireRole(...EVOLUTION_ROLES
     for (const noteId of Array.isArray(parsed.retireNoteIds) ? parsed.retireNoteIds : []) {
       const updated = q.run(
         `UPDATE employee_evolution_notes SET status='retired', retired_at=datetime('now','localtime')
-         WHERE tenant_id=? AND specialist_id=? AND id=? AND status='active'`,
+         WHERE tenant_id=? AND domain='restaurant' AND specialist_id=? AND id=? AND status='active'`,
         curTenant(),
         proposal.specialist_id,
         Number(noteId),
@@ -1305,7 +1323,7 @@ r.post('/evolution/proposals/:proposalId/decide', requireRole(...EVOLUTION_ROLES
 r.put('/evolution/notes/:noteId/retire', requireRole(...EVOLUTION_ROLES), (req, res) => {
   const updated = q.run(
     `UPDATE employee_evolution_notes SET status='retired', retired_at=datetime('now','localtime')
-     WHERE tenant_id=? AND id=? AND status='active'`,
+     WHERE tenant_id=? AND domain='restaurant' AND id=? AND status='active'`,
     curTenant(),
     Number(req.params.noteId),
   );

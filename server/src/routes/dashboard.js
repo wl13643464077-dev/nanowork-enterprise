@@ -31,6 +31,7 @@ import {
   canReviewManualTask,
   hasFullDataAccess,
   isManagerRole,
+  storeScopeClause,
   userScopeClause,
 } from "../engines/access.js";
 import { canReviewContentEmployeeRun } from "../engines/content-approval-policy.js";
@@ -815,6 +816,9 @@ r.get("/summary", (req, res) => {
   const taskScope = userScopeClause(req.user, "assignee_id");
   const activityScope = userScopeClause(req.user, "owner_id");
   const orderScope = userScopeClause(req.user, "l.owner_id");
+  // 多门店（最小追加）：当前门店生效时订单/日报/任务各追加 AND store_id=?；未传头为空串，SQL 与现状逐字一致
+  const sOrder = storeScopeClause(req.user, "o.store_id");
+  const sPlain = storeScopeClause(req.user, "store_id");
   const scopeRequested = !!(req.query.period || req.query.mode);
   const selectedScope = resolveDashboardScope(req.query, "month", req.user);
   const fullDataAccess = hasFullDataAccess(req.user);
@@ -825,70 +829,102 @@ r.get("/summary", (req, res) => {
     const orderSales =
       q.get(
         `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id
-      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}`,
+      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}${sOrder.sql}`,
         T,
         selectedScope.start,
         selectedScope.endExclusive,
         ...orderScope.params,
+        ...sOrder.params,
       )?.a || 0;
     const orderRows =
       q.get(
         `SELECT COUNT(*) n FROM orders o LEFT JOIN leads l ON l.id=o.lead_id
-      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}`,
+      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}${sOrder.sql}`,
         T,
         selectedScope.start,
         selectedScope.endExclusive,
         ...orderScope.params,
+        ...sOrder.params,
       )?.n || 0;
     const prevOrderSales =
       q.get(
         `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id
-      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}`,
+      WHERE o.tenant_id=? AND o.created_at >= ? AND o.created_at < ?${orderScope.sql}${sOrder.sql}`,
         T,
         selectedScope.prevStart,
         selectedScope.prevEndExclusive,
         ...orderScope.params,
+        ...sOrder.params,
       )?.a || 0;
     const opsSales = fullDataAccess
       ? q.get(
-          `SELECT COALESCE(SUM(deal_amount),0) a FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`,
+          `SELECT COALESCE(SUM(deal_amount),0) a FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.start,
           selectedScope.endExclusive,
+          ...sPlain.params,
         )?.a || 0
       : 0;
     const opsRows = fullDataAccess
       ? q.get(
-          `SELECT COUNT(*) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`,
+          `SELECT COUNT(*) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.start,
           selectedScope.endExclusive,
+          ...sPlain.params,
         )?.n || 0
       : 0;
     const prevOpsSales = fullDataAccess
       ? q.get(
-          `SELECT COALESCE(SUM(deal_amount),0) a FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`,
+          `SELECT COALESCE(SUM(deal_amount),0) a FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.prevStart,
           selectedScope.prevEndExclusive,
+          ...sPlain.params,
         )?.a || 0
       : 0;
-    // 显式营收口径（修双源短路 bug）：范围内 orders 有记录就用订单口径，否则才用 daily_ops 日报口径；
+    // 多门店过渡方案：门店人工上传/拍照识别的按店日结（store_daily_ops）。同样跟随 sPlain 门店过滤，
+    // 有数据时优先于租户级 daily_ops（daily_ops 无法按店拆分），仍让位于真实订单口径。
+    const storeOpsAgg = (start, end) =>
+      q.get(
+        `SELECT COALESCE(SUM(revenue),0) a, COUNT(*) n FROM store_daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
+        T,
+        start,
+        end,
+        ...sPlain.params,
+      ) || { a: 0, n: 0 };
+    const storeOps = fullDataAccess
+      ? storeOpsAgg(selectedScope.start, selectedScope.endExclusive)
+      : { a: 0, n: 0 };
+    const prevStoreOpsSales = fullDataAccess
+      ? storeOpsAgg(selectedScope.prevStart, selectedScope.prevEndExclusive).a || 0
+      : 0;
+    // 显式营收口径（修双源短路 bug）：范围内 orders 有记录就用订单口径，其次按店日结，最后才用 daily_ops 日报口径；
     // 不再按金额真值 || 回退——订单合计恰为 0 或口径缺失时会静默串源。对比期跟随当期口径，不跨源比较。
     const revenueSource =
-      orderRows > 0 ? "orders" : opsRows > 0 ? "daily_ops" : null;
+      orderRows > 0
+        ? "orders"
+        : Number(storeOps.n) > 0
+          ? "store_daily_ops"
+          : opsRows > 0
+            ? "daily_ops"
+            : null;
     const rangeSales =
       revenueSource === "orders"
         ? orderSales
-        : revenueSource === "daily_ops"
-          ? opsSales
-          : 0;
+        : revenueSource === "store_daily_ops"
+          ? Number(storeOps.a) || 0
+          : revenueSource === "daily_ops"
+            ? opsSales
+            : 0;
     const prevSales =
       revenueSource === "orders"
         ? prevOrderSales
-        : revenueSource === "daily_ops"
-          ? prevOpsSales
-          : 0;
+        : revenueSource === "store_daily_ops"
+          ? prevStoreOpsSales
+          : revenueSource === "daily_ops"
+            ? prevOpsSales
+            : 0;
     const leadRows =
       q.get(
         `SELECT COUNT(*) n FROM leads WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${leadScope.sql}`,
@@ -907,18 +943,20 @@ r.get("/summary", (req, res) => {
       )?.n || 0;
     const opsLeads = fullDataAccess
       ? q.get(
-          `SELECT COALESCE(SUM(new_leads),0) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`,
+          `SELECT COALESCE(SUM(new_leads),0) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.start,
           selectedScope.endExclusive,
+          ...sPlain.params,
         )?.n || 0
       : 0;
     const prevOpsLeads = fullDataAccess
       ? q.get(
-          `SELECT COALESCE(SUM(new_leads),0) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?`,
+          `SELECT COALESCE(SUM(new_leads),0) n FROM daily_ops WHERE tenant_id=? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.prevStart,
           selectedScope.prevEndExclusive,
+          ...sPlain.params,
         )?.n || 0
       : 0;
     const rangeLeads = leadRows || opsLeads || 0;
@@ -961,19 +999,21 @@ r.get("/summary", (req, res) => {
       )?.n || 0;
     const taskTotal =
       q.get(
-        `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${taskScope.sql}`,
+        `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ? AND created_at >= ? AND created_at < ?${taskScope.sql}${sPlain.sql}`,
         T,
         selectedScope.start,
         selectedScope.endExclusive,
         ...taskScope.params,
+        ...sPlain.params,
       )?.n || 0;
     const taskDone =
       q.get(
-        `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ? AND status = '已完成' AND created_at >= ? AND created_at < ?${taskScope.sql}`,
+        `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ? AND status = '已完成' AND created_at >= ? AND created_at < ?${taskScope.sql}${sPlain.sql}`,
         T,
         selectedScope.start,
         selectedScope.endExclusive,
         ...taskScope.params,
+        ...sPlain.params,
       )?.n || 0;
     const businessRows =
       Number(opsRows) +
@@ -983,10 +1023,11 @@ r.get("/summary", (req, res) => {
       Number(taskTotal);
     const latestOps = fullDataAccess
       ? q.get(
-          `SELECT MAX(date) d FROM daily_ops WHERE tenant_id = ? AND date >= ? AND date < ?`,
+          `SELECT MAX(date) d FROM daily_ops WHERE tenant_id = ? AND date >= ? AND date < ?${sPlain.sql}`,
           T,
           selectedScope.start,
           selectedScope.endExclusive,
+          ...sPlain.params,
         )?.d || null
       : null;
     const latestActivity =
@@ -1030,33 +1071,38 @@ r.get("/summary", (req, res) => {
 
   const tOps = fullDataAccess
     ? q.get(
-        `SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?`,
+        `SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?${sPlain.sql}`,
         t,
+        ...sPlain.params,
       ) || {}
     : {};
   const yOps = fullDataAccess
     ? q.get(
-        `SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?`,
+        `SELECT * FROM daily_ops WHERE tenant_id = ${curTenant()} AND date = ?${sPlain.sql}`,
         y,
+        ...sPlain.params,
       ) || {}
     : {};
   const todaySales =
     q.get(
-      `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`,
+      `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}${sOrder.sql}`,
       t,
       ...orderScope.params,
+      ...sOrder.params,
     )?.a || 0;
   const todayOrderRows =
     q.get(
-      `SELECT COUNT(*) n FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`,
+      `SELECT COUNT(*) n FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}${sOrder.sql}`,
       t,
       ...orderScope.params,
+      ...sOrder.params,
     )?.n || 0;
   const yesterdaySales =
     q.get(
-      `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}`,
+      `SELECT COALESCE(SUM(o.amount),0) a FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=?${orderScope.sql}${sOrder.sql}`,
       y,
       ...orderScope.params,
+      ...sOrder.params,
     )?.a || 0;
   // 与范围口径同款修复：今日营收也用显式口径（有订单记录=订单口径，否则=日报口径），不按金额真值串源
   const todayRevenueSource =
@@ -1108,7 +1154,8 @@ r.get("/summary", (req, res) => {
     )?.n || 0;
   const latestOps = fullDataAccess
     ? q.get(
-        `SELECT MAX(date) d FROM daily_ops WHERE tenant_id = ${curTenant()}`,
+        `SELECT MAX(date) d FROM daily_ops WHERE tenant_id = ${curTenant()}${sPlain.sql}`,
+        ...sPlain.params,
       )?.d || null
     : null;
   const latestActivity =
@@ -1118,15 +1165,17 @@ r.get("/summary", (req, res) => {
     )?.d || null;
   const taskTotal =
     q.get(
-      `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= ?${taskScope.sql}`,
+      `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND created_at >= ?${taskScope.sql}${sPlain.sql}`,
       monthStart(),
       ...taskScope.params,
+      ...sPlain.params,
     )?.n || 1;
   const taskDone =
     q.get(
-      `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND status = '已完成' AND created_at >= ?${taskScope.sql}`,
+      `SELECT COUNT(*) n FROM tasks WHERE tenant_id = ${curTenant()} AND status = '已完成' AND created_at >= ?${taskScope.sql}${sPlain.sql}`,
       monthStart(),
       ...taskScope.params,
+      ...sPlain.params,
     )?.n || 0;
   res.json({
     todaySales:
@@ -1173,6 +1222,9 @@ r.get("/trend", requireDashboardModule("analysis"), (req, res) => {
         rangeText: `${daysAgo(29)} 至 ${today()}`,
       };
   const leadScope = userScopeClause(req.user, "l.owner_id");
+  // 多门店（最小追加）：订单子查询与日报 JOIN 各追加门店条件；未传头为空串，SQL 与现状逐字一致
+  const sOrder = storeScopeClause(req.user, "o.store_id");
+  const sOps = storeScopeClause(req.user, "op.store_id");
   const opsDealAmount = hasFullDataAccess(req.user) ? "op.deal_amount" : "NULL";
   const opsDeals = hasFullDataAccess(req.user) ? "op.deals" : "NULL";
   const opsNewLeads = hasFullDataAccess(req.user) ? "op.new_leads" : "NULL";
@@ -1183,17 +1235,20 @@ r.get("/trend", requireDashboardModule("analysis"), (req, res) => {
       SELECT date(d, '+1 day') FROM dates WHERE d < date(?, '-1 day')
     )
     SELECT ds.d date,
-      COALESCE((SELECT SUM(o.amount) FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=ds.d${leadScope.sql}), ${opsDealAmount}, 0) deal_amount,
-      COALESCE(NULLIF((SELECT COUNT(*) FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=ds.d${leadScope.sql}), 0), ${opsDeals}, 0) deals,
+      COALESCE((SELECT SUM(o.amount) FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=ds.d${leadScope.sql}${sOrder.sql}), ${opsDealAmount}, 0) deal_amount,
+      COALESCE(NULLIF((SELECT COUNT(*) FROM orders o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.tenant_id=${curTenant()} AND date(o.created_at)=ds.d${leadScope.sql}${sOrder.sql}), 0), ${opsDeals}, 0) deals,
       COALESCE(NULLIF((SELECT COUNT(*) FROM leads l WHERE l.tenant_id=${curTenant()} AND date(l.created_at)=ds.d${leadScope.sql}), 0), ${opsNewLeads}, 0) new_leads
     FROM dates ds
-    LEFT JOIN daily_ops op ON op.tenant_id = ${curTenant()} AND op.date = ds.d
+    LEFT JOIN daily_ops op ON op.tenant_id = ${curTenant()} AND op.date = ds.d${sOps.sql}
     ORDER BY ds.d`,
     scope.start,
     scope.endExclusive,
     ...leadScope.params,
+    ...sOrder.params,
     ...leadScope.params,
+    ...sOrder.params,
     ...leadScope.params,
+    ...sOps.params,
   );
   if (!scopeRequested) return res.json(rows);
   res.json({ scope, rows });
@@ -1533,7 +1588,7 @@ r.get(
   "/daily-digest",
   requireRole("boss", "ops_director", "manager", "admin"),
   (req, res) => {
-    const digest = buildDailyDigest(daysAgo(1));
+    const digest = buildDailyDigest(daysAgo(1), { user: req.user });
     res.json(digest || { empty: true });
   },
 );

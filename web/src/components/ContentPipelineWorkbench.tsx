@@ -119,10 +119,12 @@ const WORKFLOW_OPTIONS: Array<{ value: ContentPipelineWorkflowMode; label: strin
   { value: 'autopilot', label: '自动接力·最终工位人工审阅' },
   { value: 'manual', label: '逐工位审阅' },
 ];
-const TEMPLATE_OPTIONS = ['蹭热点', '日更选题', '产品软文', '观点输出', '教程干货', '二创改写'].map(value => ({
-  value,
-  label: value,
-}));
+const TEMPLATE_OPTIONS = ['蹭热点', '日更选题', '小红书带货笔记', '产品软文', '观点输出', '教程干货', '二创改写'].map(
+  value => ({
+    value,
+    label: value,
+  }),
+);
 const RUNTIME_EVIDENCE_MISSING = '证据未返回';
 const PHASE_LABELS: Record<string, string> = {
   claim: '领取工位',
@@ -284,6 +286,13 @@ const PIPELINE_OUTPUT_LABELS: Record<string, string> = {
   covers: '封面交付',
   html: '演绎稿',
   versions: '平台版本',
+  strategy: '策略',
+  cover_text: '封面文案',
+  comment_prompt: '首评',
+  framework_ref: '结构参考',
+  facts_used: '登记事实',
+  self_score: '模型自评（非发布效果）',
+  xhsSelection: '老板已选版本',
   publish_plan: '发布计划',
   report: '复盘报告',
   next_topics: '下一轮选题',
@@ -416,6 +425,10 @@ function renderPublishDeliveryMarkdown(value: unknown) {
       `## ${String(item.emoji || '📄')} ${String(item.platform || '平台')}发布包`,
       '',
       `**标题**：${String(item.title || '')}`,
+      item.cover_text ? `**封面文案**：${String(item.cover_text)}` : '',
+      item.strategy ? `**所选策略**：${String(item.strategy)}` : '',
+      item.source_version_id ? `**源版本**：${String(item.source_version_id)}` : '',
+      item.version_id ? `**定稿版本**：${String(item.version_id)}` : '',
       `**建议发布时间**：${String(item.best_time || '')}`,
       tags ? `**标签**：${tags}` : '',
       item.upload_url ? `**发布后台**：${String(item.upload_url)}` : '',
@@ -425,6 +438,7 @@ function renderPublishDeliveryMarkdown(value: unknown) {
       '',
       String(item.body || '').trim(),
       '',
+      item.comment_prompt ? `**首评**：${String(item.comment_prompt)}` : '',
       checklist ? '### 后台操作清单' : '',
       checklist,
       '',
@@ -760,6 +774,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
   const [metricsForm] = Form.useForm<PublicationMetricsFormValues>();
   const metricsPublishedAt = Form.useWatch('publishedAt', metricsForm);
   const watchedPlatforms = Form.useWatch('platforms', form);
+  const selectedContentType = Form.useWatch('type', form);
   const selectedPlatforms = useMemo(
     () => (Array.isArray(watchedPlatforms) ? watchedPlatforms : []),
     [watchedPlatforms],
@@ -1313,6 +1328,10 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
     const pipelineId = activePipeline.id;
     const beforeAction = activePipeline;
     const code = boundaryCode(pendingStation);
+    if (pendingStation.approvalBoundary?.ownerSelectionRequired && !canConfigureApproval) {
+      message.warning('小红书发布版本需由老板或管理员选择');
+      return;
+    }
     const candidates = pipelineCandidates(pendingStation);
     const selectedIndex = selectionByStation[pendingStation.stationIdx];
     if (
@@ -1446,6 +1465,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
         </div>
       </section>
       <Form
+        name="content-pipeline-create"
         form={form}
         className="cpw-chat-composer"
         layout="vertical"
@@ -1460,6 +1480,7 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           approvalPreset: 'internal_auto',
           approvalReviewStations: [],
           paidMediaAuthorized: false,
+          xhsOptions: { versionCount: 3 },
         }}
         onFinish={() => void createPipeline()}
       >
@@ -1531,6 +1552,26 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
               <Form.Item name="refLink" label="参考链接" rules={[{ type: 'url' }, { max: 2000 }]}>
                 <Input placeholder="https://" />
               </Form.Item>
+              {selectedContentType === '小红书带货笔记' && (
+                <>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="多策略笔记必须由老板选版，内部自动接力也会在撰稿人处停下。自评分仅供参考，后续只处理所选版本。"
+                  />
+                  <div className="cpw-form-grid">
+                    <Form.Item name={['xhsOptions', 'versionCount']} label="策略版本数" rules={[{ required: true }]}>
+                      <Select options={[2, 3, 4].map(value => ({ value, label: `${value} 版` }))} />
+                    </Form.Item>
+                    <Form.Item name={['xhsOptions', 'audience']} label="目标客群（可选）" rules={[{ max: 120 }]}>
+                      <Input maxLength={120} placeholder="例如：附近上班族" />
+                    </Form.Item>
+                    <Form.Item name={['xhsOptions', 'scene']} label="消费场景（可选）" rules={[{ max: 120 }]}>
+                      <Input maxLength={120} placeholder="例如：工作日午餐" />
+                    </Form.Item>
+                  </div>
+                </>
+              )}
               {selectedPlatforms.includes('小红书') && (
                 <div className="cpw-style-fields">
                   <Form.Item name={['xhsStyle', 'name']} label="小红书风格名" rules={[{ max: 300 }]}>
@@ -2047,7 +2088,10 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           const candidates = pipelineCandidates(station);
           const code = boundaryCode(station);
           const canReview =
-            !queuedForActive && station.status === 'awaiting_approval' && contentPipelineCanReview(role, code);
+            !queuedForActive &&
+            station.status === 'awaiting_approval' &&
+            contentPipelineCanReview(role, code) &&
+            (!station.approvalBoundary?.ownerSelectionRequired || canConfigureApproval);
           const hasOutput = station.output !== null && station.output !== undefined;
           const artifacts = Array.isArray(station.artifacts) ? station.artifacts : [];
           const providerAssets = Array.isArray(station.providerAssets)
@@ -2462,6 +2506,13 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                     )}
                     {station.status === 'awaiting_approval' && (
                       <div className="cpw-review">
+                        {station.approvalBoundary?.ownerSelectionRequired === true && (
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="请核对下方各策略全文后明确选版。推荐分数不是发布效果，也不会替你做选择。"
+                          />
+                        )}
                         {code === 'pick' && candidates.length > 0 && canReview && (
                           <Select
                             value={selectionByStation[station.stationIdx]}
@@ -2494,7 +2545,11 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                           </Space>
                         ) : (
                           <span className="cpw-review-blocked">
-                            {code === 'force' ? '等待老板或管理员终审' : '等待有权限的管理人员审阅'}
+                            {station.approvalBoundary?.ownerSelectionRequired
+                              ? '等待老板或管理员选择小红书版本'
+                              : code === 'force'
+                                ? '等待老板或管理员终审'
+                                : '等待有权限的管理人员审阅'}
                           </span>
                         )}
                       </div>

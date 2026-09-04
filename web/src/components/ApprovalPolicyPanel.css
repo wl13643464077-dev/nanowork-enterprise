@@ -1,0 +1,213 @@
+/* 企业审批规则面板（B9 审批策略下放老板）：全部走 theme.css token。 */
+.approval-policy {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface-2);
+}
+
+.approval-policy__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.approval-policy__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 800;
+}
+
+.approval-policy__title-icon {
+  color: var(--ui-primary);
+}
+
+.approval-policy__subtitle {
+  margin-top: var(--space-1);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.approval-policy__meta {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+  text-align: right;
+}
+
+.approval-policy__alert {
+  margin-top: var(--space-3);
+}
+
+.approval-policy__loading {
+  padding: var(--space-6);
+  color: var(--ui-muted);
+  text-align: center;
+}
+
+.approval-policy__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.approval-policy__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.approval-policy__card--locked {
+  background: var(--ui-warning-surface);
+  border-color: var(--ui-warm-border);
+}
+
+.approval-policy__card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.approval-policy__card-desc {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.approval-policy__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.approval-policy__radio-hint {
+  display: block;
+  margin-left: var(--space-6);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.approval-policy__label {
+  margin-top: var(--space-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.approval-policy__control {
+  width: 100%;
+}
+
+.approval-policy__exceptions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.approval-policy__exception-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 132px auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.approval-policy__exception-readonly {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.approval-policy__exception-empty {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.approval-policy__threshold {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.approval-policy__safeguards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.approval-policy__safeguard {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+}
+
+.approval-policy__safeguard-icon {
+  color: var(--ui-warning-text);
+}
+
+.approval-policy__preview {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--ui-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.approval-policy__preview-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.approval-policy__preview-lines {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  color: var(--ui-text-2);
+  font-size: var(--font-3);
+  line-height: 1.9;
+}
+
+.approval-policy__preview-lines--stale {
+  opacity: 0.6;
+}
+
+.approval-policy__preview-line--safeguards {
+  color: var(--ui-warning-text);
+  font-weight: 600;
+}
+
+.approval-policy__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 720px) {
+  .approval-policy__exception-row {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-policy__meta {
+    text-align: left;
+  }
+}

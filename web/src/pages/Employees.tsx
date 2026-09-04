@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Alert, Button, Empty, Input, Select, Skeleton, Tooltip } from 'antd';
 import { AppstoreOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { AnimatedNumber } from '../components/Kit';
 import EmployeeAvatar from '../components/EmployeeAvatar';
@@ -54,6 +54,8 @@ type Employee = {
   marshalId: number;
   specialistId: number;
   extension?: boolean;
+  // 自我介绍周校验状态：ok / needs_review / never（needs_review 时卡片显示角标）
+  introCheckStatus?: 'ok' | 'needs_review' | 'never' | string;
 };
 
 // 目录数据里的输入/步骤/交付文案可能带Markdown记号（**加粗**、`代码`），
@@ -219,9 +221,12 @@ export default function Employees() {
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
+  // 周校验通知深链 /employees?introCheck=needs_review：只看需要老板确认自我介绍的员工
+  const introReviewOnly = params.get('introCheck') === 'needs_review';
   const filtered = useMemo(() => {
     const q = debouncedKeyword.trim().toLowerCase();
     return catalog.employees.filter(employee => {
+      if (introReviewOnly && employee.introCheckStatus !== 'needs_review') return false;
       if (group !== '全部分部' && employee.group !== group) return false;
       if (statusFilter && (employee.status || '状态未知') !== statusFilter) return false;
       if (!q) return true;
@@ -231,7 +236,7 @@ export default function Employees() {
           .includes(q),
       );
     });
-  }, [catalog.employees, debouncedKeyword, group, statusFilter]);
+  }, [catalog.employees, debouncedKeyword, group, introReviewOnly, statusFilter]);
 
   // 部门专属色系：8 个分部各占一个明确色相（低饱和专业调），按目录分部顺序分配；
   // 头像、工号、分组视觉随部门换色，扫一眼即可区分部门
@@ -524,6 +529,18 @@ export default function Employees() {
                         <small>
                           #{employee.idx} · {employee.group}
                         </small>
+                        {employee.introCheckStatus === 'needs_review' && (
+                          <Tooltip title="每周自我介绍校验发现需要老板确认的地方，点击查看">
+                            <Link
+                              className="employee-intro-flag"
+                              to={`/employees/restaurant/${employee.idx}/intro`}
+                              aria-label={`${employee.person || employee.name}的自我介绍需要确认`}
+                            >
+                              <i aria-hidden="true" />
+                              介绍待确认
+                            </Link>
+                          </Tooltip>
+                        )}
                       </div>
                       <Tooltip
                         title={

@@ -16,7 +16,9 @@ import {
   createContentProductionHandlerRegistry,
 } from "../src/engines/content-production-handler-registry.js";
 import { validateContentEmployeeOutputContract } from "../src/engines/content-output-contract.js";
-import { VALID_CONTENT_EMPLOYEE_OUTPUTS } from "./helpers/content-output-fixtures.mjs";
+import { VALID_CONTENT_EMPLOYEE_OUTPUTS, validContentEmployeeOutputForPrompt } from "./helpers/content-output-fixtures.mjs";
+import { xhsOutput, xhsFactPack } from "./helpers/xhs-output-fixtures.mjs";
+import { xhsVersionId } from "../src/engines/content-xhs-output.js";
 
 function clone(value) {
   return structuredClone(value);
@@ -265,6 +267,57 @@ function productionRegistry({
     },
   });
 }
+
+test('拆解师生产流水线接受实际响应schema里的结构卡，不被旧出厂字段检查误拦', async () => {
+  const context = pipelineContext(2);
+  context.structureCardsRequired = true;
+  const cards = validContentEmployeeOutputForPrompt('岗位编号：2\n【爆款结构卡·必须输出 structure_cards】').structure_cards;
+  const output = { ...clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[2]), structure_cards: cards };
+  const registry = productionRegistry({ outputFor: () => output, validateOutputFn: validateContentEmployeeOutputContract });
+  const result = await registry.invoke(2, context);
+  assert.deepEqual(result.result.data.structure_cards, cards);
+  assert.equal(result.result.providerDelivery.validated, true);
+});
+
+test('原生多策略在生产供应商消息和响应契约中贯穿撰稿、文风和分发', async () => {
+  const draft = xhsOutput(2);
+  const selected = draft.versions[1];
+  const style = { ...clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[4]), body: selected.body,
+    title_candidates: [selected.title, '午餐选择先看需求', '先看菜单再做决定'] };
+  const publish = { ...clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[8]), versions: [{
+    ...clone(VALID_CONTENT_EMPLOYEE_OUTPUTS[8].versions[0]), platform: '小红书',
+    title: selected.title, body: selected.body, tags: selected.tags,
+  }] };
+  const captured = [];
+  const registry = productionRegistry({ captured, validateOutputFn: validateContentEmployeeOutputContract,
+    outputFor: idx => ({ 3: draft, 4: style, 8: publish })[idx] });
+  for (const idx of [3, 4, 8]) {
+    const context = pipelineContext(idx);
+    context.brief.template = '小红书带货笔记';
+    context.brief.xhsOptions = { versionCount: 2, audience: '午餐白领' };
+    context.storeFacts = clone(xhsFactPack);
+    context.workflow.stationAttempt = 2;
+    if (idx >= 4) context.outputs[3] = { ...clone(draft), xhsSelection: { versionId: xhsVersionId(selected), strategy: selected.strategy } };
+    if (idx === 8) context.outputs[4] = style;
+    const result = await registry.invoke(idx, context);
+    assert.deepEqual(result.privateOutputSnapshot?.validationContext?.storeFacts, xhsFactPack);
+    assert.equal(result.privateOutputSnapshot.stationAttempt, 2);
+    assert.equal(result.evidence.providerDelivery.validationSnapshotFingerprint, result.privateOutputSnapshot.snapshotFingerprint);
+    assert.ok(!JSON.stringify(result).includes('昨天这碗面吃完我连汤都没有剩下'), '私有事实不能泄露到公共结果与证据');
+    assert.equal(Object.getOwnPropertyDescriptor(result, 'privateOutputSnapshot').enumerable, false);
+    assert.equal(result.result.data.body || result.result.data.versions[0].body, idx === 3 ? draft.versions[0].body : selected.body);
+    const args = captured.at(-1).args;
+    if (idx === 3) {
+      assert.equal(args.responseSchema.schema.properties.versions.minItems, 2);
+      assert.match(args.userMsg, /午餐白领/);
+    } else {
+      assert.match(args.userMsg, /人工选定的小红书策略/);
+      assert.ok(args.userMsg.includes(xhsVersionId(selected)));
+      assert.ok(!args.system.includes(xhsVersionId(selected)), '具体选择不进入系统层');
+      if (idx === 8) assert.match(args.userMsg, /逐字保留/);
+    }
+  }
+});
 
 function settledImageBridge(input, calls = []) {
   let attempted = null;

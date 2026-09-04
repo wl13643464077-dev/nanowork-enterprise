@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // Most fixtures in this file intentionally exercise the independent Shanghai
 // business schedule. Runtime stale-recovery has a dedicated non-Shanghai case
@@ -675,33 +677,27 @@ test('媒体恢复优先使用providerExecution ISO心跳，长视频仍活跃�
 });
 
 test('SQLite localtime恢复与上海经营时钟解耦，非上海主机不误杀新任务', () => {
-  const previousTz = process.env.TZ;
-  process.env.TZ = 'America/Los_Angeles';
-  try {
-    // 02:00Z == 19:00 PDT on the previous day. The former Shanghai cutoff
-    // was 09:30 on July 23 and incorrectly classified both rows as stale.
-    const freshJobId = runWithTenant(1, () => Number(q.run(
-      `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
-       VALUES(?,'image','gpt-image-2','PDT新鲜任务','处理中','2026-07-22 18:50:00')`,
-      creatorId,
-    ).lastInsertRowid));
-    const staleJobId = runWithTenant(1, () => Number(q.run(
-      `INSERT INTO media_jobs(user_id,kind,model,prompt,status,created_at)
-       VALUES(?,'image','gpt-image-2','PDT超时任务','处理中','2026-07-22 18:00:00')`,
-      creatorId,
-    ).lastInsertRowid));
-
-    const recovered = runWithTenant(1, () => (
-      recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z'))
-    ));
-    assert.equal(recovered.some(item => item.jobId === freshJobId), false);
-    assert.equal(recovered.some(item => item.jobId === staleJobId), true);
-    assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', freshJobId).status, '处理中');
-    assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', staleJobId).status, '失败');
-    q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id=?`, freshJobId);
-  } finally {
-    process.env.TZ = previousTz;
-  }
+  // SQLite uses the C runtime timezone. On Windows changing JS process.env.TZ
+  // after startup does not change that clock. Supply CRT-compatible TZ before
+  // spawning, and verify the real SQLite conversion before testing recovery.
+  const result = spawnSync(process.execPath, ['--no-warnings', fileURLToPath(
+    new URL('./helpers/scheduler-pacific-clock.mjs', import.meta.url),
+  )], {
+    env: {
+      ...process.env,
+      TZ: process.platform === 'win32' ? 'PST8PDT' : 'America/Los_Angeles',
+      NANOWORK_DB: ':memory:', NANOWORK_TEST_TEMPLATE_AI: '1',
+      NODE_ENV: 'test', ENABLE_SCHEDULER: 'false', ENABLE_BACKGROUND_EMBEDDINGS: 'false',
+      YUNWU_API_KEY: '', OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '',
+    },
+    encoding: 'utf8', windowsHide: true, shell: false, timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  const evidence = JSON.parse(result.stdout.trim().split('\n').at(-1));
+  assert.equal(evidence.sqliteNow, '2026-07-22 19:00:00');
+  assert.equal(evidence.freshStatus, '处理中');
+  assert.equal(evidence.staleStatus, '失败');
+  assert.equal(evidence.databaseFile, '');
 });
 
 test('恢复超时内容员工运行：无产物原子退款，有产物保留占扣待对账，活跃运行不受影响', () => {

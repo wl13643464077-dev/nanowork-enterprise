@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { stageServerRuntime } from './helpers/stage-server-runtime.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(testDir, '..');
@@ -12,8 +13,10 @@ const seedPath = path.join(serverDir, 'src', 'seed.js');
 
 function runSeed(env) {
   const dbPath = path.join(os.tmpdir(), `nanowork-seed-gate-${process.pid}-${Math.random().toString(16).slice(2)}.db`);
-  const result = spawnSync(process.execPath, ['--no-warnings', seedPath], {
-    cwd: serverDir,
+  const stage = env.NODE_ENV === 'production' ? stageServerRuntime() : null;
+  const selectedServer = stage?.serverDir || serverDir;
+  const result = spawnSync(process.execPath, ['--no-warnings', path.join(selectedServer, 'src/seed.js')], {
+    cwd: selectedServer,
     env: { ...process.env, NANOWORK_DB: dbPath, JWT_SECRET: 'Nw9!pR4@xT7#qL2$kV8%mC5&zH1*sD6^', ...env },
     encoding: 'utf8',
     timeout: 10_000,
@@ -21,6 +24,7 @@ function runSeed(env) {
   for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch {}
   }
+  stage?.cleanup();
   return { ...result, output: `${result.stdout || ''}\n${result.stderr || ''}` };
 }
 

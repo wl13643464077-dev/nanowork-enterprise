@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import express from "express";
+import { removePathSafely, removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const dbPath = path.join(os.tmpdir(), `nanowork-task-center-${process.pid}.db`);
 const artifactDir = path.join(
@@ -123,9 +124,14 @@ fs.writeFileSync(
   },
 );
 fs.symlinkSync(
-  path.join(tenantArtifactDir, "restaurant.pdf"),
+  process.platform === "win32"
+    ? tenantArtifactDir
+    : path.join(tenantArtifactDir, "restaurant.pdf"),
   path.join(tenantArtifactDir, "restaurant-link.pdf"),
+  process.platform === "win32" ? "junction" : "file",
 );
+// Both are actual reparse/symbolic-link entries, never a substituted regular file.
+assert.equal(fs.lstatSync(path.join(tenantArtifactDir, "restaurant-link.pdf")).isSymbolicLink(), true);
 
 const restaurantArtifactId = Number(
   q.run(
@@ -501,8 +507,7 @@ test("权威账本区分 held/settled/released/null待对账，状态与服务�
   });
 });
 
-after(() => {
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
-  fs.rmSync(artifactDir, { recursive: true, force: true });
+after(async () => {
+  await removeTempDbSafely(dbPath);
+  await removePathSafely(artifactDir, { recursive: true });
 });

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { q, db } from './db.js';
 import { jwtSecretStrengthError } from './security-config.js';
+import { publish } from './engines/event-bus.js';
 
 export const SESSION_COOKIE = 'nanowork_session';
 const configuredSecret = String(process.env.JWT_SECRET || '');
@@ -145,7 +146,7 @@ export function authMiddleware(req, res, next) {
   if (payload.jti && !sessionActive(payload.jti)) {
     return res.status(401).json({ error: '会话已退出或被吊销，请重新登录' });
   }
-  const current = q.get(`SELECT id,username,name,role,dept,phone,avatar,status,tenant_id,manager_id,modules,auth_version
+  const current = q.get(`SELECT id,username,name,role,dept,phone,avatar,status,tenant_id,manager_id,store_id,modules,auth_version
     FROM users WHERE id=?`, payload.id);
   if (!current || current.status !== '启用') {
     return res.status(401).json({ error: '账号已停用或不存在，请重新登录' });
@@ -207,8 +208,18 @@ export function notify(userId, type, title, body, link = null) {
     && /^\/(?!\/)[^\\\r\n]*$/u.test(link)
     ? link
     : null;
-  q.run('INSERT INTO notifications(user_id,type,title,body,link) VALUES(?,?,?,?,?)',
+  const inserted = q.run('INSERT INTO notifications(user_id,type,title,body,link) VALUES(?,?,?,?,?)',
     userId, type, title, body ?? '', safeLink);
+  // 所有站内通知都经此函数落库：此处一行 publish 即覆盖全部通知来源的实时推送。
+  try {
+    publish({
+      userIds: [userId],
+      type: 'notification.created',
+      payload: { id: Number(inserted?.lastInsertRowid) || null, type, title, link: safeLink },
+    });
+  } catch (error) {
+    console.error('[notify] 实时事件发布失败:', error?.message || error);
+  }
 }
 
 export const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD 本地时区

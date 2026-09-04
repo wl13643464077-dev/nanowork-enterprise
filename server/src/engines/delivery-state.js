@@ -23,6 +23,9 @@ export const BUSINESS_DELIVERY_LABELS = Object.freeze({
   reviewRejected: '失败需返工（人工审阅未通过）',
   remediated: '历史失败（后续已修复）',
   superseded: '已由安全修订版取代',
+  // P0-1 失败不交白卷：质量门未通过但正文已保留；老板可重新派活或接受为内部参考稿
+  draftPending: '未达标草稿（待老板处理）',
+  draftAccepted: '已接受草稿（内部参考，未通过质量门）',
 });
 
 const DELIVERY_STATUS_SET = new Set(CONTENT_DELIVERY_STATUSES);

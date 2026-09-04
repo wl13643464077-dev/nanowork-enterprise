@@ -57,6 +57,30 @@ export function uploadAccessGuard(req, res, next) {
     || String(req.user?.role || '') === 'platform_super'
   )) return next();
 
+  // 海报叠字的“无字底图”副产物：归属跟随其 media_job（快照里记录了底图地址）。
+  const overlayBase = q.get(
+    `SELECT user_id FROM media_jobs
+    WHERE tenant_id=? AND status='成功'
+      AND json_extract(snapshot_json,'$.textOverlay.baseImageUrl')=?`,
+    tenantId,
+    publicPath,
+  );
+  if (overlayBase && (
+    canAccessOwner(req.user, overlayBase.user_id)
+    || String(req.user?.role || '') === 'platform_super'
+  )) return next();
+
+  // 样片库：平台级样片（sample_scope='platform'）对所有已登录租户可见；
+  // 租户自有样片只对本租户可见。
+  const sample = q.get(
+    `SELECT id FROM materials
+    WHERE is_sample=1 AND url=? AND (sample_scope='platform' OR tenant_id=?)
+    LIMIT 1`,
+    publicPath,
+    tenantId,
+  );
+  if (sample) return next();
+
   const escapedPath = publicPath.replace(/[\\%_]/g, '\\$&');
   const candidates = q.all(`SELECT s.user_id,t.assignee_id,s.content FROM task_submissions s
     JOIN tasks t ON t.id=s.task_id AND t.tenant_id=?

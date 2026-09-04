@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { loadRestaurantCatalog } from "../catalog/restaurant.js";
 import { renderRestaurantOutputForExport } from "./restaurant-output-export.js";
+import {
+  classifyContractRule,
+  normalizeContractTier,
+  ruleCategoryIsHard,
+} from "./contract-tiers.js";
 
 const SCHEMA_VERSION = "restaurant-role-output/4";
 const TASK_POLICY_ROUTED_STATUS = "routed_by_task_policy";
@@ -3586,6 +3591,43 @@ function isHardRuntimeContractError(value, taskContext = {}) {
   ].some((pattern) => pattern.test(error));
 }
 
+// 契约分级映射层（P0-1）：不改规则本体，只决定某条运行时校验消息在指定档位下是
+// 硬门（error）还是可见警告（warning）。
+// - strict：全部硬门（等同历史 live 行为）；
+// - lenient：与既有 demo advisory 完全一致（isHardRuntimeContractError 命中即硬门）；
+// - standard：lenient 硬门 + “完整度”类规则升回硬门；数值阈值/可追溯/措辞类仍为警告。
+// 安全、来源真实性、越权声明、结构与算术在任何档位都不会被降级。
+const RESEARCH_WARNING_RELAXED_PATTERNS = Object.freeze([
+  /本次联网任务没有权威允许来源快照/u,
+  /联网任务至少必须在decision_context\.sources中逐字引用/u,
+]);
+
+export function severityFor(rule, tier, taskContext = {}) {
+  const normalized = normalizeContractTier(tier);
+  if (normalized === "strict") return "error";
+  if (isHardRuntimeContractError(rule, taskContext)) return "error";
+  // demo 调研工具超时（allowResearchWarning）时，这两条来源规则按既有 advisory
+  // 口径放行为警告；补造 URL/伪称官方来源等其余来源规则仍是硬门。
+  if (
+    taskContext?.allowResearchWarning === true &&
+    RESEARCH_WARNING_RELAXED_PATTERNS.some((pattern) => pattern.test(String(rule || "")))
+  ) {
+    return "warning";
+  }
+  return ruleCategoryIsHard(classifyContractRule(rule), normalized)
+    ? "error"
+    : "warning";
+}
+
+// 调用方可以显式传 contractTier；未传时沿用旧的 qualityMode 二值语义，
+// 保证历史调用与既有测试行为不变。
+function resolveValidationTier(taskContext = {}) {
+  if (taskContext?.contractTier) {
+    return normalizeContractTier(taskContext.contractTier);
+  }
+  return taskContext?.qualityMode === "advisory" ? "lenient" : "strict";
+}
+
 function safeFilenamePart(value) {
   return (
     String(value)
@@ -3616,6 +3658,7 @@ export function validateRestaurantEmployeeOutputContract(
   taskContext = {},
 ) {
   const contract = contractFor(idx);
+  const contractTier = resolveValidationTier(taskContext);
   const { parsed, error } = parseOutput(rawOutput);
   const errors = error ? [error] : [];
   let warnings = [];
@@ -3627,16 +3670,14 @@ export function validateRestaurantEmployeeOutputContract(
       if (!errors.length) {
         const runtimeErrors = [];
         validateRuntimeSemantics(parsed, contract, taskContext, runtimeErrors);
-        if (taskContext?.qualityMode === "advisory") {
-          errors.push(
-            ...runtimeErrors.filter((runtimeError) =>
-              isHardRuntimeContractError(runtimeError, taskContext),
-            ),
-          );
-          warnings = runtimeErrors.filter(
-            (runtimeError) =>
-              !isHardRuntimeContractError(runtimeError, taskContext),
-          );
+        if (contractTier !== "strict") {
+          for (const runtimeError of runtimeErrors) {
+            if (severityFor(runtimeError, contractTier, taskContext) === "error") {
+              errors.push(runtimeError);
+            } else {
+              warnings.push(runtimeError);
+            }
+          }
         } else {
           errors.push(...runtimeErrors);
         }
@@ -3650,6 +3691,7 @@ export function validateRestaurantEmployeeOutputContract(
       parsed,
       errors,
       warnings,
+      contractTier,
       artifacts: [],
     };
   }
@@ -3659,8 +3701,9 @@ export function validateRestaurantEmployeeOutputContract(
     parsed,
     errors: [],
     warnings,
-    qualityMode:
-      taskContext?.qualityMode === "advisory" ? "advisory" : "strict",
+    // qualityMode 保留二值语义供旧调用方与审计快照使用；档位细节由 contractTier 表达。
+    qualityMode: contractTier === "strict" ? "strict" : "advisory",
+    contractTier,
     artifacts: [buildArtifact(contract, parsed)],
   };
 }
@@ -3718,6 +3761,11 @@ export function inspectRestaurantOutputAudit({
             task: { title: taskTitle, requirement: taskRequirement },
             qualityMode:
               audit?.qualityMode === "advisory" ? "advisory" : "strict",
+            // 生成时按 standard 放行的警告项，复核时必须按同一档位解释，
+            // 否则 live 员工级模型的合格产出会在采纳门被误判为契约失败。
+            ...(audit?.contractTier
+              ? { contractTier: audit.contractTier }
+              : {}),
           },
         )
       : {

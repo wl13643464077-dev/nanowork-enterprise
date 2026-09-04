@@ -71,6 +71,25 @@ const ENUMS = Object.freeze({
   activityStatuses: ['策划中', '筹备中', '报名中', '进行中', '已结束', '已复盘'],
   // 成本科目（餐饮门店口径）
   costCategories: ['食材', '人力', '房租', '水电', '营销', '其他'],
+  // 数字员工任务状态（agent_tasks.status）：含 P0-1 新增的“草稿待处理 / 草稿已接受”
+  agentTaskStatuses: [
+    { value: '生成中', color: 'processing' },
+    { value: '待审阅', color: 'gold' },
+    { value: '已完成', color: 'green' },
+    { value: '已驳回', color: 'red' },
+    { value: '失败', color: 'red' },
+    { value: '草稿待处理', color: 'orange' },
+    { value: '草稿已接受', color: 'orange' },
+  ],
+  // 产物状态（contents.status）：含 P0-1 新增的“未达标草稿”
+  contentStatuses: [
+    { value: '草稿', color: 'default' },
+    { value: '待审核', color: 'gold' },
+    { value: '可使用', color: 'green' },
+    { value: '已发布', color: 'green' },
+    { value: '已驳回', color: 'red' },
+    { value: '未达标草稿', color: 'orange' },
+  ],
 });
 
 r.get('/enums', (req, res) => res.json(ENUMS));

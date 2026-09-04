@@ -16,8 +16,8 @@ const STATUS_PRESENTATION = Object.freeze({
 export const CONTENT_PIPELINE_APPROVAL_PRESETS = Object.freeze([
   Object.freeze({
     value: 'internal_auto',
-    label: '全自动（0→9 不停审）',
-    description: '内部连续执行到复盘；不会因此自动对外发布。',
+    label: '全自动（内部接力）',
+    description: '内部连续执行到复盘；小红书多策略仍须人工选版，不会自动对外发布。',
     reviewStations: Object.freeze([]),
   }),
   Object.freeze({
@@ -275,12 +275,20 @@ export function pipelineCandidates(station) {
   const output = station?.output && typeof station.output === 'object' ? station.output : {};
   const stationIdx = Number(station?.stationIdx);
   const candidates =
-    stationIdx === 0 ? output.topics : stationIdx === 5 ? output.images : stationIdx === 6 ? output.covers : [];
+    stationIdx === 0
+      ? output.topics
+      : stationIdx === 3
+        ? output.versions
+        : stationIdx === 5
+          ? output.images
+          : stationIdx === 6
+            ? output.covers
+            : [];
   if (!Array.isArray(candidates)) return [];
   return candidates.map((candidate, index) => ({
     candidateIndex: index,
     candidateId: candidateId(candidate),
-    label: candidateLabel(candidate, index),
+    label: `${stationIdx === 3 && candidate.strategy ? `${publicText(candidate.strategy)} · ` : ''}${candidateLabel(candidate, index)}`,
     value: candidate,
   }));
 }

@@ -19,6 +19,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { prepareDatabaseStorage } from "../server/src/engines/database-storage.js";
+import { createPrivateArtifact, assertPrivateArtifact } from "../server/src/engines/private-artifact.js";
 
 // 迁移快照、SQLite WAL/SHM 与新建文件默认仅当前用户可访问。
 // 这里只设置进程 umask，不修改 /tmp 或自定义数据库父目录的权限。
@@ -28,8 +30,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
 const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 const DATA_DIR = path.join(ROOT, "server", "data");
-fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-fs.chmodSync(DATA_DIR, 0o700);
 const DB_PATH =
   process.env.NANOWORK_DB || path.join(DATA_DIR, "nanowork-industry.db");
 const SNAPSHOT_DIR =
@@ -40,14 +40,6 @@ const [, , cmd = "status", arg] = process.argv;
 function fail(msg) {
   console.error(`[migrate] ${msg}`);
   process.exit(1);
-}
-
-function protectDatabaseFiles() {
-  if (DB_PATH === ":memory:") return;
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const target = `${DB_PATH}${suffix}`;
-    if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
-  }
 }
 
 function listMigrationFiles() {
@@ -76,10 +68,10 @@ function openDb() {
     fail(
       `数据库不存在：${DB_PATH}（首次建库由 server 启动时 initSchema 完成，迁移只做增量）`,
     );
-  protectDatabaseFiles();
+  prepareDatabaseStorage({ databasePath: DB_PATH, dataDirectory: DATA_DIR,
+    protectDataDirectory: process.env.NODE_ENV !== "test" });
   const db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
-  protectDatabaseFiles();
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -102,6 +94,7 @@ function snapshot() {
   fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const out = path.join(SNAPSHOT_DIR, `migrate-${stamp}.sqlite`);
+  createPrivateArtifact(out);
   const src = new DatabaseSync(DB_PATH, { readOnly: true });
   try {
     src.exec(`VACUUM INTO '${out.replaceAll("'", "''")}'`);
@@ -121,6 +114,7 @@ function snapshot() {
     check.close();
   }
   fs.chmodSync(out, 0o600);
+  assertPrivateArtifact(out);
   console.log(`[migrate] 迁移前快照：${out}`);
   return out;
 }

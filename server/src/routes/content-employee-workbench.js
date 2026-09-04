@@ -9,7 +9,7 @@ import {
   runWithTenant,
   setTenantConfig,
 } from "../db.js";
-import { hasFullDataAccess, userScopeClause } from "../engines/access.js";
+import { canAccessOwner, hasFullDataAccess, userScopeClause } from "../engines/access.js";
 import { canDispatchEmployee } from "../engines/employee-dispatch-policy.js";
 import { resolveMinimalEmployeeDispatchInput } from "../employee-workbench.js";
 import {
@@ -25,8 +25,17 @@ import {
 import {
   getContentEmployeeOutputResponseSchema,
   validateContentEmployeeOutputContract,
+  validateStructureCards,
+  retrospectiveRuntimeFieldPromptLines,
 } from "../engines/content-output-contract.js";
+import {
+  insertBenchmarkCards, listBenchmarkCards, markBenchmarkCardVerified, softDeleteBenchmarkCard,
+} from "../engines/content-benchmark-cards.js";
+import { resolveXhsSalesMode } from "../engines/content-xhs-playbook.js";
+import { xhsVersionId, xhsVersionsForDisplay } from "../engines/content-xhs-output.js";
 import { ensureContentAsset } from "../engines/content-assets.js";
+import { loadContentRetrospectiveEvidence } from "../engines/content-publish-followup.js";
+import { adoptRetrospectiveDraftChanges, retroAdoptionEvidenceKey } from "../engines/employee-evolution.js";
 import {
   BUSINESS_DELIVERY_LABELS,
   loadContentEmployeeRunAuthority,
@@ -59,6 +68,11 @@ import { refsBlock } from "../engines/websearch.js";
 import { agenticWebResearch } from "../engines/agentic-web-research.js";
 import { fetchControlledWebEvidence } from "../engines/controlled-web-evidence.js";
 import {
+  annotateContentSourceFreshness,
+  contentLiveResearchReadiness,
+  contentResearchKindFor,
+} from "../engines/content-live-research.js";
+import {
   retainControlledSourceMatches,
   sanitizeAgenticFacts,
   sanitizePublicSources,
@@ -80,6 +94,7 @@ import {
   wrapUntrusted,
 } from "../engines/risk.js";
 import { logOp, notify } from "../util.js";
+import { publish } from "../engines/event-bus.js";
 import {
   createInternalProfileLeakGuard,
   inspectInternalProfileLeakage,
@@ -91,6 +106,7 @@ import {
   CONTENT_CONNECTOR_REGISTRY,
   connectorDescriptor,
   executeContentConnector,
+  executeContentConnectorLive,
 } from "../engines/content-connectors.js";
 import {
   CONTENT_HANDLER_ADAPTER_CATALOG,
@@ -117,6 +133,35 @@ import {
 
 const CONFIG_ADMIN_ROLES = new Set(["boss", "admin", "platform_super"]);
 const REVIEWER_ROLES = new Set(EMPLOYEE_MANAGEMENT_REVIEW_ROLES);
+
+// 内容员工 run 终态翻转后的实时推送：读回权威状态再发；发布失败不影响交付与审阅结果。
+function publishContentRunStatusChanged(tenantId, runId, { userId = null, status = null } = {}) {
+  try {
+    const row = q.get(
+      `SELECT id,status,title,created_by,employee_idx FROM content_employee_runs
+      WHERE tenant_id=? AND id=?`,
+      tenantId,
+      runId,
+    );
+    if (!row) return;
+    const finalStatus = status || row.status;
+    publish({
+      tenantId,
+      userIds: [row.created_by, userId].filter(Boolean),
+      roles: finalStatus === "待审阅" ? ["ops_director", "manager"] : [],
+      type: "task.status_changed",
+      payload: {
+        kind: "content",
+        id: Number(row.id),
+        status: finalStatus,
+        title: row.title || "",
+        employeeIdx: Number.isInteger(Number(row.employee_idx)) ? Number(row.employee_idx) : null,
+      },
+    });
+  } catch (error) {
+    console.error(`[content-employee-workbench] run#${runId}实时事件发布失败:`, error?.message || error);
+  }
+}
 const CONFIG_KEYS = new Set([
   "textModel",
   "imageModel",
@@ -309,6 +354,14 @@ function publicConnectorDescriptor(descriptor, user) {
     businessEndpoint: descriptor.businessEndpoint,
     primary: descriptor.primary === true,
     addon: descriptor.addon === true,
+    networkAccess: descriptor.networkAccess === true,
+    liveResearch: descriptor.liveResearch
+      ? {
+          supported: descriptor.liveResearch.supported === true,
+          kind: descriptor.liveResearch.kind,
+          freshnessWindowDays: descriptor.liveResearch.freshnessWindowDays,
+        }
+      : null,
   };
 }
 
@@ -1916,6 +1969,30 @@ function publicRun(
     output.internalProfileApplied = true;
     output.internalProfileRedacted = true;
   }
+  if (Number(row.employee_idx) === 3 && snapshot.xhsSales?.salesMode === true
+    && snapshot.contract?.strictValid === true && contract?.valid === true
+    && !internalProfileLeakage?.detected && Array.isArray(snapshot.validatedOutput?.versions)) {
+    output.xhsDraft = {
+      versions: xhsVersionsForDisplay(snapshot.validatedOutput),
+      imagePlan: clone(snapshot.validatedOutput.image_plan),
+      selectedVersionId: snapshot.xhsSelection?.versionId || null,
+      canSelect: CONFIG_ADMIN_ROLES.has(user?.role) && effectiveStatus === "已完成" && state.downloadReady === true,
+      contentId: Number(review?.contentId) || null,
+    };
+  }
+  if (Number(row.employee_idx) === 9 && snapshot.retroMetrics
+    && snapshot.contract?.strictValid === true && contract?.valid === true && !internalProfileLeakage?.detected) {
+    output.retrospective = {
+      contentId: snapshot.retroMetrics.content.id,
+      verification: 'manual_unverified',
+      canAdopt: CONFIG_ADMIN_ROLES.has(user?.role) && effectiveStatus === '已完成' && state.downloadReady === true,
+      changes: (snapshot.validatedOutput?.next_draft_changes || []).map((change, index) => {
+        const note = q.get(`SELECT id,status FROM employee_evolution_notes WHERE tenant_id=? AND domain='content' AND evidence=? ORDER BY id DESC LIMIT 1`,
+          row.tenant_id, retroAdoptionEvidenceKey(row.id, index));
+        return { ...clone(change), index, noteId: note?.id || null, noteStatus: note?.status || null };
+      }),
+    };
+  }
   if (includeSnapshot && canViewInternalProfile) {
     const publicSnapshot = clone(snapshot);
     if (Array.isArray(publicSnapshot.artifacts)) {
@@ -2431,6 +2508,22 @@ function dispatchInput(body) {
     "industry",
   );
   const feedback = cleanText(body.feedback, 4000, "feedback");
+  const retroContentId = body.retroContentId ?? null;
+  if (retroContentId !== null && (!Number.isSafeInteger(retroContentId) || retroContentId <= 0)) throw new WorkbenchRouteError("复盘内容编号必须为正整数");
+  const xhsOptions = body.xhsOptions ?? {};
+  if (!isPlainObject(xhsOptions) || Object.keys(xhsOptions).some(key => !["versionCount", "audience", "scene", "category", "city"].includes(key))) {
+    throw new WorkbenchRouteError("小红书设置只接受版本数、客群、场景、品类和城市");
+  }
+  if (xhsOptions.versionCount !== undefined && (!Number.isInteger(xhsOptions.versionCount) || xhsOptions.versionCount < 2 || xhsOptions.versionCount > 4)) {
+    throw new WorkbenchRouteError("小红书版本数必须是2–4的整数");
+  }
+  const xhs = {
+    versionCount: xhsOptions.versionCount ?? 3,
+    audience: cleanText(xhsOptions.audience, 40, "客群"),
+    scene: cleanText(xhsOptions.scene, 120, "场景"),
+    category: cleanText(xhsOptions.category, 60, "品类"),
+    city: cleanText(xhsOptions.city, 40, "城市"),
+  };
   const booleanActionFlag = (keys, label) => {
     const keyList = Array.isArray(keys) ? keys : [keys];
     const found = keyList
@@ -2520,6 +2613,8 @@ function dispatchInput(body) {
     image,
     imageEvidence,
     structuredBriefInput,
+    xhsOptions: xhs,
+    retroContentId,
   };
 }
 
@@ -2557,6 +2652,13 @@ function attachmentMaterial(requirement, attachments) {
 
 function buildEffectiveExecution(idx, user, input, attachments) {
   const tenantId = tenantIdFor(user);
+  let retroMetrics = null;
+  if (input.retroContentId !== null) {
+    if (idx !== 9) throw new WorkbenchRouteError("发布回填只可交给复盘官", 400);
+    const content = q.get('SELECT * FROM contents WHERE tenant_id=? AND id=?', tenantId, input.retroContentId);
+    if (!content || !canAccessOwner(user, content.creator_id)) throw new WorkbenchRouteError("复盘内容不存在或无权读取", 404);
+    retroMetrics = loadContentRetrospectiveEvidence(content, { tenantId, allowCompanyComparison: hasFullDataAccess(user) });
+  }
   const persistentProfile =
     CONTENT_TENANT_PROFILE_STORE.load(tenantId)?.profile || {};
   const structuredBrief = resolveContentStructuredBrief({
@@ -2565,6 +2667,9 @@ function buildEffectiveExecution(idx, user, input, attachments) {
     explicitInput: input.structuredBriefInput,
   });
   const paihuoBrief = structuredBrief.paihuoBrief;
+  const xhsSales = resolveXhsSalesMode({ idx, taskType: input.type, template: paihuoBrief.template,
+    platforms: paihuoBrief.platforms, direction: paihuoBrief.direction,
+    ...input.xhsOptions, strategies: input.xhsOptions?.versionCount });
   const staticProfile = buildContentEmployeeWorkbenchProfile(idx);
   const row = configRow(idx, tenantId);
   const config = effectiveConfig(staticProfile, row);
@@ -2591,11 +2696,23 @@ function buildEffectiveExecution(idx, user, input, attachments) {
       .join("\n"),
     length: config.outputLength,
   };
-  const compiled = compileContentEmployeeSoloPrompt(idx, task);
   const enterprisePrompt = row?.prompt_override || "";
   const webRequired = staticProfile.workMethod.execution.webRequired === true;
   const webTriggered =
     webRequired || taskRequestsOptionalWeb(input, structuredBrief);
+  // 联网真实状态注入 system：本次会检索时给出真实通道可用性；不检索时明确“未启用”。
+  const liveResearchReadiness = contentLiveResearchReadiness();
+  const compiled = compileContentEmployeeSoloPrompt(idx, task, {
+    xhsSales,
+    liveResearch: webTriggered
+      ? liveResearchReadiness
+      : {
+          configured: false,
+          summary: liveResearchReadiness.configured
+            ? "本次任务未命中联网信号，不触发检索"
+            : liveResearchReadiness.summary,
+        },
+  });
   const web = {
     required: webRequired,
     allowed:
@@ -2695,6 +2812,7 @@ function buildEffectiveExecution(idx, user, input, attachments) {
   const userPrompt = [
     compiled.userPrompt,
     contentStructuredBriefPromptBlock(structuredBrief),
+    ...(retroMetrics ? [retroMetrics.evidenceText, ...retrospectiveRuntimeFieldPromptLines({ hasVersions: retroMetrics.canCompare })] : []),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -2769,6 +2887,8 @@ function buildEffectiveExecution(idx, user, input, attachments) {
       evidence: clone(structuredBrief.evidence),
     },
     web: clone(web),
+    xhsSales: clone(xhsSales),
+    retroMetrics: clone(retroMetrics),
   };
   return {
     staticProfile,
@@ -2782,6 +2902,8 @@ function buildEffectiveExecution(idx, user, input, attachments) {
     config,
     requiredInputText: task.material,
     structuredBrief,
+    xhsSales,
+    retroMetrics,
   };
 }
 
@@ -3049,20 +3171,32 @@ async function attachWorkbenchWebEvidence(
     if (controlledResults.length >= 5) break;
   }
   const seenUrls = new Set();
-  const results = controlledResults
-    .map((item) => ({
-      channel: item.channel || "受控公开网页",
-      title: redactWebEvidence(item.title, 300),
-      url: redactWebEvidence(item.url, 2000),
-      snippet: redactWebEvidence(item.snippet, 1000),
-      body: redactWebEvidence(item.body, 12_000),
-    }))
-    .filter((item) => {
-      const normalized = item.url.toLowerCase().replace(/\/$/u, "");
-      if (seenUrls.has(normalized)) return false;
-      seenUrls.add(normalized);
-      return true;
-    });
+  const webFetchedAt = new Date().toISOString();
+  const freshnessAnnotated = annotateContentSourceFreshness(
+    controlledResults
+      .map((item) => ({
+        channel: item.channel || "受控公开网页",
+        title: redactWebEvidence(item.title, 300),
+        url: redactWebEvidence(item.url, 2000),
+        snippet: redactWebEvidence(item.snippet, 1000),
+        body: redactWebEvidence(item.body, 12_000),
+        publishedAt: item.publishedAt || null,
+        fetchedAt: item.fetchedAt || webFetchedAt,
+      }))
+      .filter((item) => {
+        const normalized = item.url.toLowerCase().replace(/\/$/u, "");
+        if (seenUrls.has(normalized)) return false;
+        seenUrls.add(normalized);
+        return true;
+      }),
+    {
+      kind: contentResearchKindFor(employeeIdx) || "intel",
+      fetchedAt: webFetchedAt,
+    },
+  );
+  const results = freshnessAnnotated.items.map(
+    ({ qualityScore: _qualityScore, ...item }) => item,
+  );
   const providers = [
     ...new Set(
       [
@@ -3097,6 +3231,7 @@ async function attachWorkbenchWebEvidence(
     degraded: !verified,
     provider: providers.join(",") || null,
     results,
+    freshness: freshnessAnnotated.freshness,
     channels: [
       {
         kind: "agentic_web_research",
@@ -3622,6 +3757,10 @@ function currentRunContractAssessment(row, snapshot) {
       requirement,
       feedback: snapshot.dispatch?.feedback || "",
       web: snapshot.web,
+      structureCardsRequired: snapshot.contract?.structureCardsRequired === true,
+      xhsSales: snapshot.xhsSales,
+      storeFacts: snapshot.xhsStoreFacts,
+      retroMetrics: snapshot.retroMetrics,
       enforceRequiredInputs: true,
     },
   );
@@ -4592,12 +4731,15 @@ async function executeRun({
   try {
     progressRecorder?.stage?.("knowledge", { status: "active" });
     const builtHandlerContext = await buildHandlerContextFn({
+      xhsSales: execution.xhsSales,
+      retroMetrics: execution.retroMetrics,
       mode: "solo",
       tenantId,
       actorId: userId,
       employeeIdx: execution.staticProfile.identity.idx,
       task: {
         ...clone(execution.structuredBrief.handlerContext.brief),
+        type: input.type,
         direction:
           execution.structuredBrief.paihuoBrief.direction || input.title,
         industry:
@@ -4635,6 +4777,10 @@ async function executeRun({
     }
     progressRecorder?.stage?.("knowledge", { status: "done" });
     execution.snapshot.handlerContext = clone(builtHandlerContext.snapshot);
+    // 同一份事实用于生成和以后重新读取时的复验，不随门店台账改动漂移。
+    if (execution.xhsSales?.salesMode) {
+      execution.snapshot.xhsStoreFacts = clone(builtHandlerContext.context.storeFacts || { facts: [] });
+    }
     execution.snapshot.handlerExecution = {
       ...(isPlainObject(execution.snapshot.handlerExecution)
         ? execution.snapshot.handlerExecution
@@ -4658,6 +4804,7 @@ async function executeRun({
     const maxTokens = outputTokenBudget(execution.config.outputLength);
     const responseSchema = getContentEmployeeOutputResponseSchema(
       execution.staticProfile.identity.idx,
+      builtHandlerContext.context,
     );
     const generationArgs = {
       kind: "content-employee-workbench",
@@ -4738,6 +4885,10 @@ async function executeRun({
           requirement: execution.requiredInputText || input.requirement,
           feedback: input.feedback,
           web: execution.snapshot.web,
+          storeFacts: handlerContext?.storeFacts || null,
+          xhsSales: execution.xhsSales,
+          structureCardsRequired: handlerContext?.structureCardsRequired === true,
+          retroMetrics: execution.retroMetrics,
           enforceRequiredInputs: true,
         },
       );
@@ -5185,6 +5336,7 @@ async function executeRun({
         : [];
     snapshot.contract = {
       valid: contractValid,
+      structureCardsRequired: handlerContext?.structureCardsRequired === true,
       strictValid: strictContractValid,
       advisory: advisoryAccepted === true,
       errors: clone(contractErrors),
@@ -5335,6 +5487,7 @@ async function executeRun({
         policyReason: effectiveApprovalRoute.reason,
       });
     }
+    publishContentRunStatusChanged(tenantId, runId, { userId });
     try {
       if (contractValid) {
         const billed =
@@ -5496,6 +5649,7 @@ async function executeRun({
       tenantId,
       runId,
     );
+    publishContentRunStatusChanged(tenantId, runId, { userId, status: "失败" });
     try {
       notifyFn(
         userId,
@@ -5560,6 +5714,200 @@ export function createContentEmployeeWorkbenchRouter({
       ),
     });
   }
+
+  router.get("/benchmark-cards", (req, res) => {
+    try {
+      res.json({ cards: listBenchmarkCards(tenantIdFor(req.user), {
+        platform: typeof req.query.platform === "string" ? req.query.platform : null,
+        verifiedOnly: !CONFIG_ADMIN_ROLES.has(req.user?.role) || req.query.verifiedOnly === "true",
+        runId: req.query.runId == null ? null : runId(req.query.runId),
+        limit: 100,
+      }) });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.post("/benchmark-cards/:cardId/verify", (req, res) => {
+    try {
+      assertManager(req.user);
+      const card = markBenchmarkCardVerified(runId(req.params.cardId), req.user.id, { tenantId: tenantIdFor(req.user) });
+      if (!card) throw new WorkbenchRouteError("结构卡不存在或已删除", 404);
+      logOpFn(req.user, "内容生产仓", "确认结构卡可借鉴", `card#${card.id}`);
+      res.json({ card });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.delete("/benchmark-cards/:cardId", (req, res) => {
+    try {
+      assertManager(req.user);
+      const card = softDeleteBenchmarkCard(runId(req.params.cardId), req.user.id, { tenantId: tenantIdFor(req.user) });
+      if (!card) throw new WorkbenchRouteError("结构卡不存在或已删除", 404);
+      logOpFn(req.user, "内容生产仓", "停用结构卡及知识引用", `card#${card.id}`);
+      res.json({ card });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.post("/2/runs/:runId/benchmark-cards", (req, res) => {
+    try {
+      assertManager(req.user);
+      const id = runId(req.params.runId);
+      const result = withImmediateTransaction(() => {
+        const row = runRow(2, id, req.user);
+        if (!row) throw new WorkbenchRouteError("拆解记录不存在或无权读取", 404);
+        const snapshot = parseRunSnapshot(row.snapshot_json);
+        if (row.status !== "已完成" || !["adopt", "auto_adopt"].includes(snapshot.review?.decision)) {
+          throw new WorkbenchRouteError("请先审阅采纳拆解产出，再沉淀结构卡", 409);
+        }
+        assertSettledBillingForAdoption(snapshot);
+        assertRealReviewableOutput(row, snapshot);
+        const outputCards = snapshot.validatedOutput?.structure_cards;
+        const errors = [];
+        validateStructureCards(outputCards, errors);
+        if (errors.length) throw new WorkbenchRouteError("本次没有合格结构卡，请以爆款学习重新派活", 409);
+        const assessment = validateContentEmployeeOutputContract(2, snapshot.validatedOutput, {
+          title: row.title, requirement: snapshot.dispatch?.requirement || row.requirement,
+          web: snapshot.web, structureCardsRequired: true, enforceRequiredInputs: true,
+        });
+        if (!assessment.valid) throw new WorkbenchRouteError("拆解来源或输出契约复验未通过，不能沉淀结构卡", 409);
+        const learned = insertBenchmarkCards({ tenantId: tenantIdFor(req.user), employeeRunId: id,
+          cards: outputCards, category: snapshot.dispatch?.industry || null });
+        snapshot.benchmarkLearning = { cardIds: learned.map(card => card.id), learnedAt: new Date().toISOString() };
+        q.run(`UPDATE content_employee_runs SET snapshot_json=?,updated_at=datetime('now','localtime')
+          WHERE tenant_id=? AND id=? AND employee_idx=2`, JSON.stringify(snapshot), tenantIdFor(req.user), id);
+        return learned;
+      });
+      logOpFn(req.user, "内容生产仓", "沉淀待确认结构卡", `run#${id}/cards:${result.map(card => card.id).join(',')}`);
+      res.json({ cards: result, requiresVerification: true });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.get('/9/retrospective-sources', (req, res) => {
+    try {
+      if (!permissionsFor(req.user, 9).canDispatch) throw new WorkbenchRouteError('无权派活复盘官', 403);
+      const scope = userScopeClause(req.user, 'c.creator_id');
+      const contents = q.all(`SELECT c.id,c.title FROM contents c WHERE c.tenant_id=? ${scope.sql}
+        AND (c.status='已发布' OR EXISTS(SELECT 1 FROM content_publish_logs l WHERE l.tenant_id=c.tenant_id AND l.content_id=c.id))
+        AND EXISTS(SELECT 1 FROM content_publish_metrics m WHERE m.tenant_id=c.tenant_id AND m.content_id=c.id)
+        ORDER BY c.id DESC LIMIT 100`, tenantIdFor(req.user), ...scope.params);
+      res.json({ contents });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.get('/:idx/evolution-notes', (req, res) => {
+    try {
+      const idx = employeeIdx(req.params.idx);
+      const permissions = permissionsFor(req.user, idx);
+      if (!permissions.canDispatch && !CONFIG_ADMIN_ROLES.has(req.user.role)) throw new WorkbenchRouteError('无权查看该员工心得', 403);
+      res.json({ canManage: CONFIG_ADMIN_ROLES.has(req.user.role), notes: q.all(
+        `SELECT id,note,rationale,evidence,status,created_at,retired_at FROM employee_evolution_notes
+         WHERE tenant_id=? AND domain='content' AND specialist_id=? ORDER BY id DESC LIMIT 40`, tenantIdFor(req.user), idx,
+      ) });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.post('/:idx/evolution-notes/:noteId/retire', (req, res) => {
+    try {
+      assertManager(req.user);
+      const idx = employeeIdx(req.params.idx);
+      const id = runId(req.params.noteId);
+      const note = q.get(`SELECT id,status FROM employee_evolution_notes WHERE tenant_id=? AND domain='content' AND specialist_id=? AND id=?`, tenantIdFor(req.user), idx, id);
+      if (!note) throw new WorkbenchRouteError('心得不存在或不属于该员工', 404);
+      q.run(`UPDATE employee_evolution_notes SET status='retired',retired_at=COALESCE(retired_at,datetime('now','localtime'))
+        WHERE tenant_id=? AND domain='content' AND specialist_id=? AND id=?`, tenantIdFor(req.user), idx, id);
+      logOpFn(req.user, '内容生产仓', '停用内容心得', `employee#${idx}/note#${id}`);
+      res.json({ ok: true });
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.post('/9/runs/:runId/adopt-changes', (req, res) => {
+    try {
+      assertManager(req.user);
+      const indexes = req.body?.indexes;
+      if (!Array.isArray(indexes) || !indexes.length || indexes.length > 8 || indexes.some(index => !Number.isInteger(index) || index < 0)) throw new WorkbenchRouteError('请选择1–8条有效改法');
+      const result = withImmediateTransaction(() => {
+        const row = runRow(9, runId(req.params.runId), req.user);
+        if (!row) throw new WorkbenchRouteError('复盘记录不存在或无权读取', 404);
+        const snapshot = parseRunSnapshot(row.snapshot_json);
+        if (row.status !== '已完成' || !['adopt', 'auto_adopt'].includes(snapshot.review?.decision)
+          || snapshot.retroMetrics?.schema !== 'nanowork.content-retrospective-evidence/1'
+          || snapshot.retroMetrics.tenantId !== tenantIdFor(req.user)) throw new WorkbenchRouteError('请先采纳基于发布回填数据的复盘产出', 409);
+        assertSettledBillingForAdoption(snapshot);
+        assertRealReviewableOutput(row, snapshot);
+        const assessment = currentRunContractAssessment(row, snapshot);
+        if (!assessment?.valid) throw new WorkbenchRouteError('复盘契约复验未通过，不能采纳改法', 409);
+        const changes = snapshot.validatedOutput?.next_draft_changes || [];
+        if (indexes.some(index => index >= changes.length)) throw new WorkbenchRouteError('选择的改法不存在');
+        return adoptRetrospectiveDraftChanges({ tenantId: tenantIdFor(req.user), runId: row.id,
+          contentId: snapshot.retroMetrics.content.id, changes, indexes });
+      });
+      logOpFn(req.user, '内容生产仓', '人工采纳复盘改法', `run#${req.params.runId}/notes:${result.adopted.map(item => item.noteId).join(',')}`);
+      res.json(result);
+    } catch (error) { sendError(res, error); }
+  });
+
+  router.post("/3/runs/:runId/select-version", (req, res) => {
+    try {
+      assertManager(req.user);
+      const versionId = cleanText(req.body?.versionId, 100, "versionId", { required: true });
+      const tenantId = tenantIdFor(req.user);
+      const result = withImmediateTransaction(() => {
+        const row = runRow(3, runId(req.params.runId), req.user);
+        if (!row) throw new WorkbenchRouteError("撰稿记录不存在或无权读取", 404);
+        const snapshot = parseRunSnapshot(row.snapshot_json);
+        if (row.status !== "已完成" || !["adopt", "auto_adopt"].includes(snapshot.review?.decision)
+          || snapshot.xhsSales?.salesMode !== true || snapshot.contract?.strictValid !== true) {
+          throw new WorkbenchRouteError("请先采纳完整的小红书多策略稿，再选择发布版本", 409);
+        }
+        assertSettledBillingForAdoption(snapshot);
+        assertRealReviewableOutput(row, snapshot);
+        assertVerifiedRunAuthority(row, "选择小红书发布版本");
+        const assessment = currentRunContractAssessment(row, snapshot);
+        if (!assessment?.valid) throw new WorkbenchRouteError("小红书产出或事实契约复验未通过", 409);
+        const version = snapshot.validatedOutput.versions.find(item => xhsVersionId(item) === versionId);
+        if (!version) throw new WorkbenchRouteError("版本不存在或内容已改变，请刷新后重新选择", 409);
+        let content = q.get(`SELECT * FROM contents WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?`, tenantId, row.id);
+        if (content && snapshot.xhsSelection?.versionId === versionId) return { contentId: Number(content.id), versionId, alreadySelected: true };
+        if (content && (content.status === "已发布"
+          || q.get(`SELECT id FROM content_publish_logs WHERE tenant_id=? AND content_id=? LIMIT 1`, tenantId, content.id)
+          || q.get(`SELECT id FROM content_publish_metrics WHERE tenant_id=? AND content_id=? LIMIT 1`, tenantId, content.id))) {
+          throw new WorkbenchRouteError("已登记发布或回填数据的版本不能替换，请新建任务，保留效果归因", 409);
+        }
+        const selection = { versionId, strategy: version.strategy, selectedBy: Number(req.user.id), selectedAt: new Date().toISOString() };
+        const sourceSnapshot = {
+          ...adoptedContentSnapshot(row, snapshot, req.user),
+          xhsSelection: selection,
+          xhsOutput: clone(snapshot.validatedOutput),
+          boundary: "老板已选择小红书发布版本；只生成手动发布包，没有对外发布。",
+        };
+        if (content) {
+          q.run(`UPDATE contents SET title=?,body=?,snapshot_json=? WHERE tenant_id=? AND id=?`,
+            version.title, version.body, JSON.stringify(sourceSnapshot), tenantId, content.id);
+        } else {
+          const inserted = q.run(`INSERT INTO contents(
+            tenant_id,type,title,body,topic,brand,status,risk_flags,risk_level,ai_mode,creator_id,
+            content_employee_idx,content_employee_key,content_employee_name,content_employee_group,
+            content_run_mode,profile_version,prompt_hash,snapshot_json,source_type,source_id
+          ) VALUES(?,?,?,?,?,?,'可使用','[]','none',?,?,?,?,?,?,'single_station_adopted',?,?,?,'content_employee_run',?)`,
+          tenantId, "小红书带货笔记", version.title, version.body, row.title, "", row.ai_mode, row.created_by,
+          row.employee_idx, row.employee_key, row.employee_name, row.employee_group,
+          row.profile_version, row.prompt_hash, JSON.stringify(sourceSnapshot), row.id);
+          content = { id: Number(inserted.lastInsertRowid) };
+        }
+        content = q.get(`SELECT * FROM contents WHERE tenant_id=? AND id=?`, tenantId, content.id);
+        ensureRunAdoptionApproval(content, row, snapshot, req.user, tenantId, `选择小红书${version.strategy}版本`);
+        ensureContentAsset(content, { tenantId, creatorId: row.created_by, note: `小红书已选版本 ${versionId}；未对外发布。` });
+        q.run(`UPDATE biz_assets SET name=?,note=?,updated_at=datetime('now','localtime')
+          WHERE tenant_id=? AND source_type='content' AND source_id=?`,
+          version.title, `小红书已选版本 ${versionId}；未对外发布。`, tenantId, content.id);
+        snapshot.xhsSelection = selection;
+        snapshot.review.contentId = Number(content.id);
+        q.run(`UPDATE content_employee_runs SET snapshot_json=?,updated_at=datetime('now','localtime') WHERE tenant_id=? AND id=? AND employee_idx=3`,
+          JSON.stringify(snapshot), tenantId, row.id);
+        return { contentId: Number(content.id), versionId, alreadySelected: false };
+      });
+      logOpFn(req.user, "内容生产仓", "选择小红书发布版本", `run#${req.params.runId}/${versionId}`);
+      res.json(result);
+    } catch (error) { sendError(res, error); }
+  });
 
   // 内容生产仓中央任务队列：聚合十名内容员工，但始终保留租户和人员可见范围。
   // 老板/管理员看全企业，运营负责人和直属经理只看自己及下属，普通员工只看自己。
@@ -5776,8 +6124,9 @@ export function createContentEmployeeWorkbenchRouter({
           publicConnectorDescriptor(connector, req.user),
         ),
         total: CONTENT_CONNECTOR_REGISTRY.length,
+        liveResearch: contentLiveResearchReadiness(),
         boundary:
-          "15项连接器全部有明确业务入口；原Paihuo 13项保持不变，AI带货员追加2项。本地辅助不会联网或收费，员工生成连接器继续走鉴权、预授权、云API、质检和策略验收链。",
+          "15项连接器全部有明确业务入口；原Paihuo 13项保持不变，AI带货员追加2项。趋势官/情报员/拆解师连接器在配置了检索通道时真实联网（预授权→检索→结算，来源带抓取时间与时效标注），未配置时诚实返回 unavailable；其余本地辅助不会联网或收费，员工生成连接器继续走鉴权、预授权、云API、质检和策略验收链；任何连接器都不执行自动发布。",
       });
     } catch (error) {
       sendError(res, error);
@@ -5832,7 +6181,7 @@ export function createContentEmployeeWorkbenchRouter({
     }
   });
 
-  router.post("/:idx/connectors/:kind/execute", (req, res) => {
+  router.post("/:idx/connectors/:kind/execute", async (req, res) => {
     try {
       const idx = employeeIdx(req.params.idx);
       const permissions = permissionsFor(req.user, idx);
@@ -5862,7 +6211,18 @@ export function createContentEmployeeWorkbenchRouter({
       const startedAt = new Date().toISOString();
       const startedMs = Date.now();
       const inputHash = sha256(JSON.stringify({ input, context }));
-      const result = executeContentConnector(descriptor.kind, input, context);
+      const tenantId = tenantIdFor(req.user);
+      // 趋势官 / 情报员 / 拆解师在调用方未提供 liveData/samples 时真联网；
+      // 预授权 → 检索 → 结算全部在执行器内完成（D-014），其余连接器仍零联网。
+      const result = descriptor.liveResearch?.supported
+        ? await executeContentConnectorLive(
+            descriptor.kind,
+            input,
+            context,
+            { userId: req.user.id, tenantId },
+            { signal: req.requestSignal },
+          )
+        : executeContentConnector(descriptor.kind, input, context);
       const completedAt = new Date().toISOString();
       const profile = buildContentEmployeeWorkbenchProfile(idx);
       const outputJson = JSON.stringify(result);
@@ -5902,14 +6262,24 @@ export function createContentEmployeeWorkbenchRouter({
         networkAccess: result.networkAccess === true,
         externalActionsPerformed: clone(result.externalActionsPerformed || []),
         model: null,
-        apiProvider: null,
-        tokenUsage: { inputTokens: 0, outputTokens: 0 },
+        apiProvider: result.liveResearch?.provider || null,
+        tokenUsage: {
+          inputTokens: Number(result.liveResearch?.billing?.usage?.inputTokens || 0),
+          outputTokens: Number(result.liveResearch?.billing?.usage?.outputTokens || 0),
+        },
         costIncurred: result.costIncurred === true,
         credentialsAccepted: result.credentialsAccepted === true,
         completed: result.completed === true,
         status: result.status,
+        liveResearch: result.liveResearch
+          ? {
+              lane: result.liveResearch.lane || null,
+              fetchedAt: result.liveResearch.fetchedAt || null,
+              freshness: clone(result.liveResearch.freshness || null),
+              billing: clone(result.liveResearch.billing || null),
+            }
+          : null,
       };
-      const tenantId = tenantIdFor(req.user);
       const inserted = q.run(
         `INSERT INTO content_connector_runs(
         tenant_id,employee_idx,connector_kind,connector_mode,status,input_hash,
@@ -5932,7 +6302,13 @@ export function createContentEmployeeWorkbenchRouter({
         req.user,
         "内容生产仓",
         result.ok ? "运行内容员工连接器" : "内容员工连接器阻断",
-        `${descriptor.employeeName}/${descriptor.kind}:connector-run#${connectorRunId}；未联网、未收费、未执行外部动作`,
+        `${descriptor.employeeName}/${descriptor.kind}:connector-run#${connectorRunId}；${
+          result.networkAccess === true
+            ? `已真实联网（lane=${result.liveResearch?.lane || "unknown"}）、${
+                result.costIncurred ? "已按两阶段计费结算" : "未产生积分消耗"
+              }、未执行发布或账号动作`
+            : "未联网、未收费、未执行外部动作"
+        }`,
       );
       const status = result.ok ? 200 : 422;
       return res.status(status).json({
@@ -6262,6 +6638,10 @@ export function createContentEmployeeWorkbenchRouter({
       });
 
       if (!outcome.alreadyReviewed) {
+        publishContentRunStatusChanged(tenantIdFor(req.user), id, {
+          userId: req.user.id,
+          status: targetStatus,
+        });
         logOpFn(
           req.user,
           "内容生产仓",

@@ -42,14 +42,17 @@ test('完成与跳过由服务端同步，跳过不会在重新打开时伪报�
 
 test('独立手机工作台复用同一账号完成态，并让 partner 看得到其 execution 入口', () => {
   const mobile = read('web/src/pages/Mobile.tsx');
+  // 批次 B：核心工作台清单（含 partner 可见的 execution 入口）迁到 components/mobile/MobileHome.tsx
+  const mobileHome = read('web/src/components/mobile/MobileHome.tsx');
   const onboarding = read('web/src/components/RoleOnboarding.tsx');
 
   assert.match(mobile, /<RoleOnboarding[\s\S]*modules=\{mods\}[\s\S]*compact/);
   assert.match(mobile, /data-onboarding="navigation"/);
   assert.match(mobile, /data-onboarding="workspace"/);
   assert.match(mobile, /data-onboarding="help"/);
+  assert.match(mobile, /view === 'home' && <MobileHome[\s\S]*mods=\{mods\}/);
   assert.match(
-    mobile,
+    mobileHome,
     /key: 'execution'[\s\S]*roles: \['boss', 'ops_director', 'manager', 'sales', 'partner', 'admin'\]/,
   );
   assert.match(onboarding, /compact \? mobileSteps : narrowViewport \? responsiveSteps : desktopSteps/);

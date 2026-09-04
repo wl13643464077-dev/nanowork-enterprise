@@ -1,10 +1,12 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertPrivateArtifact } from '../src/engines/private-artifact.js';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
 import { DatabaseSync } from 'node:sqlite';
+import { removeTempDbSafely } from './helpers/temp-db.mjs';
 
 const DBP = path.join(os.tmpdir(), `shanmei-commercial-security-${process.pid}.db`);
 for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
@@ -151,7 +153,7 @@ test('整库备份仅总部运维可执行，快照包含 WAL 最新数据且完
     assert.equal(result.integrity, 'ok');
     const backupPath = path.join(path.dirname(DBP), result.file);
     createdBackups.push(backupPath);
-    assert.equal(fs.statSync(backupPath).mode & 0o777, 0o600);
+    assertPrivateArtifact(backupPath);
     const backup = new DatabaseSync(backupPath, { readOnly: true });
     try {
       assert.equal(Object.values(backup.prepare('PRAGMA integrity_check').get())[0], 'ok');
@@ -175,6 +177,7 @@ test('实际扣费使用条件更新，余额不足时不产生负数或伪流�
   assert.equal(q.get('SELECT COUNT(*) AS n FROM credit_logs WHERE tenant_id=1').n, beforeLogs);
 });
 
-after(() => {
-  for (const file of [...createdBackups, DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
+after(async () => {
+  for (const file of createdBackups) fs.rmSync(file, { force: true });
+  await removeTempDbSafely(DBP);
 });

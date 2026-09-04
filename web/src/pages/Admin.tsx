@@ -46,7 +46,10 @@ import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
 import { AdminWebSearchPanel } from '../components/AdminWebSearchPanel';
 import { AdminMiniMaxH3Panel } from '../components/AdminMiniMaxH3Panel';
+import { AdminAmapPanel } from '../components/AdminAmapPanel';
+import { AdminCreditBudgetPanel, AdminModelRoutingPanel } from '../components/AdminTenantAiPanels';
 import FeatureGuideCenter from '../components/FeatureGuideCenter';
+import UserOrgFields from '../components/UserStoreField';
 import './Admin.css';
 
 // ===== 常量与小工具 =====
@@ -196,8 +199,8 @@ export default function Admin() {
           {tab === 'users' && <UsersOrg />}
           {tab === 'perms' && <Permissions />}
           {tab === 'marshals' && <MarshalsAdmin />}
-          {tab === 'api' && <ApiConfig />}
-          {tab === 'credits' && <CreditsAdmin />}
+          {tab === 'api' && <AdminModelRoutingPanel platformConfig={<ApiConfig />} />}
+          {tab === 'credits' && <AdminCreditBudgetPanel ledger={<CreditsAdmin />} />}
           {tab === 'logs' && <LogsSecurity />}
         </div>
       </div>
@@ -607,11 +610,13 @@ function UsersOrg() {
 
   const openEdit = (r: any) => {
     setEditing(r);
-    editForm.setFieldsValue({ name: r.name, role: r.role, dept: r.dept, status: r.status || '启用', password: '' });
+    const { name, role, dept, store_id } = r;
+    const status = r.status || '启用';
+    editForm.setFieldsValue({ name, role, dept, status, password: '', storeId: store_id ?? undefined });
   };
   const saveEdit = async () => {
     const v = await editForm.validateFields();
-    const body: any = { name: v.name, role: v.role, dept: v.dept, status: v.status };
+    const body: any = { name: v.name, role: v.role, dept: v.dept, status: v.status, storeId: v.storeId ?? null };
     if (v.password && v.password.trim()) body.password = v.password.trim();
     await api.put(`/admin/users/${editing.id}`, body);
     message.success(`已保存「${v.name}」${body.password ? '，密码已重置' : ''}`);
@@ -772,9 +777,7 @@ function UsersOrg() {
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item name="dept" label="部门">
-            <Input placeholder="如：销售部" />
-          </Form.Item>
+          <UserOrgFields />
           <Form.Item name="password" label="重置密码" rules={[{ min: 8, message: '至少8位' }]}>
             <Input.Password placeholder="留空则不修改" autoComplete="new-password" />
           </Form.Item>
@@ -853,9 +856,7 @@ function UsersOrg() {
           </Row>
           <Row gutter={12}>
             <Col span={12}>
-              <Form.Item name="dept" label="部门">
-                <Input placeholder="如：销售部" />
-              </Form.Item>
+              <UserOrgFields />
             </Col>
             <Col span={12}>
               <Form.Item name="credits" label="同步增发企业共享积分">
@@ -1333,14 +1334,13 @@ function ApiConfig() {
   const setVideoPrice = (model: string, v: any) => setBl({ ...bl, video: { ...bl.video, [model]: v ?? 0 } });
   const setMin = (k: string, v: any) => setBl({ ...bl, minBalance: { ...bl.minBalance, [k]: v ?? 0 } });
   const usage = cfg.usage || {};
+  const channelOf = (key: string) => cfg.readiness?.channels?.find((item: any) => item.key === key);
   const aiReadiness =
     cfg.channel?.readiness ||
-    cfg.readiness?.channels?.find((item: any) => item.key === 'ai') ||
+    channelOf('ai') ||
     ({ effective: cfg.channel?.available ? 'configured_unverified' : 'degraded' } as any);
   const aiState = readinessMeta(aiReadiness);
-  const searchReadiness =
-    cfg.readiness?.channels?.find((item: any) => item.key === 'web_search') ||
-    ({ effective: 'degraded', details: {} } as any);
+  const searchReadiness = channelOf('web_search') || ({ effective: 'degraded', details: {} } as any);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1473,6 +1473,7 @@ function ApiConfig() {
         </Col>
 
         <AdminMiniMaxH3Panel config={cfg.h3} value={h3} onChange={setH3} />
+        <AdminAmapPanel readiness={channelOf('amap')} onRefresh={load} />
       </Row>
 
       {/* D. 计费配置 */}

@@ -3,6 +3,24 @@ import {
   contentEmployeeByIdx,
 } from '../catalog/content-crew.js';
 import { buildContentEmployeeConnectorExecution } from './content-employee-workbench.js';
+import { contentFreshnessWindowDays } from './content-source-freshness.js';
+
+// 真联网引擎依赖 db.js（云雾配置/密钥）；本模块保持可被纯目录测试静态导入，
+// 只在真正执行联网时按需加载。
+async function loadLiveResearchEngine() {
+  return import('./content-live-research.js');
+}
+
+/**
+ * 可真联网的连接器 → 统一检索入口的 kind。分发官 publish_package 与复盘官
+ * performance_retro 不在其中：不做自动发布、不自动抓平台数据（宣讲纪要：
+ * 自动分发已暂停，避免被平台判定违规）。
+ */
+export const CONTENT_LIVE_RESEARCH_CONNECTORS = Object.freeze({
+  trend_research: 'trend',
+  evidence_research: 'intel',
+  benchmark_analysis: 'decompose',
+});
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -99,6 +117,18 @@ const descriptors = CONTENT_EMPLOYEE_ROSTER.flatMap(employee => (
     businessEndpoint: connectorBusinessEndpoint(employee.idx, connector),
     requirements: currentConnectorRequirements(connector.requirements),
     executeBoundary: currentConnectorBoundary(connector.executeBoundary),
+    // 运行期能力（不改 catalog JSON，指纹不变）：三类研究连接器可通过
+    // executeContentConnectorLive 真联网；其余连接器保持零联网。
+    networkAccess: Object.hasOwn(CONTENT_LIVE_RESEARCH_CONNECTORS, connector.kind),
+    liveResearch: Object.hasOwn(CONTENT_LIVE_RESEARCH_CONNECTORS, connector.kind)
+      ? {
+        supported: true,
+        kind: CONTENT_LIVE_RESEARCH_CONNECTORS[connector.kind],
+        freshnessWindowDays: contentFreshnessWindowDays(CONTENT_LIVE_RESEARCH_CONNECTORS[connector.kind]),
+        entry: 'executeContentConnectorLive',
+        callerSuppliedFallback: connector.mode === 'verified_input_assist' ? 'liveData' : 'samples',
+      }
+      : { supported: false, kind: null, freshnessWindowDays: null, entry: null, callerSuppliedFallback: null },
   }))
 ));
 
@@ -607,5 +637,321 @@ export function prepareContentConnectorEmployeeExecution(kind, task, options = {
     modelCalled: false,
     billingPerformed: false,
     externalActionPerformed: false,
+  });
+}
+
+// ===== 真联网执行（趋势官 / 情报员 / 拆解师）=====
+
+const LIVE_RESEARCH_FEATURE = '内容连接器·联网检索';
+const LIVE_RESEARCH_REF_TYPE = 'content_connector_live_research';
+const LIVE_RESEARCH_DEFAULT_MODEL = () => process.env.NANOWORK_RESEARCH_MODEL || 'claude-opus-4-8';
+
+function callerSuppliedLiveInput(descriptor, input, context) {
+  if (descriptor.kind === 'benchmark_analysis') return normalizedSamples(input.samples).length > 0;
+  return normalizedSources(context.liveData ?? input.liveData).length > 0;
+}
+
+function publicLiveSource(item, index) {
+  return {
+    id: index + 1,
+    sourceId: `来源${index + 1}`,
+    title: item.title,
+    url: item.url,
+    source: item.source,
+    snippet: item.snippet,
+    fetchedAt: item.fetchedAt,
+    publishedAt: item.publishedAt ?? null,
+    stale: item.stale ?? null,
+    qualityScore: item.qualityScore,
+    lane: item.lane,
+    verification: item.controlledBody ? 'controlled_web_fetch_verified' : 'search_snippet_only',
+    bodySha256: item.bodySha256 || null,
+  };
+}
+
+function liveOutputFor(descriptor, input, research) {
+  const sources = research.items.map(publicLiveSource);
+  const verified = sources.filter(item => item.verification === 'controlled_web_fetch_verified');
+  const staleNote = research.freshness.staleCount
+    ? `；${research.freshness.staleCount} 条超出 ${research.freshness.windowDays} 天时效窗口已标注 stale`
+    : '';
+  const base = {
+    sources,
+    freshness: research.freshness,
+    freshnessSection: research.freshnessSection,
+    lane: research.lane,
+    provider: research.provider,
+    fetchedAt: research.fetchedAt,
+  };
+  if (descriptor.kind === 'trend_research') {
+    const channels = Array.isArray(input.channels)
+      ? input.channels.map(channel => safeText(channel, 100)).filter(Boolean).slice(0, 20)
+      : [];
+    return {
+      ...base,
+      briefing: `已通过真实联网检索取得 ${sources.length} 条来源（${verified.length} 条受控正文已核验）${staleNote}；热度与生命周期仍需岗位模型或人工结合来源判断，本连接器不推断热度。`,
+      requestedChannels: channels,
+      channelScan: sources.map(item => ({
+        channel: item.source,
+        observedAt: item.fetchedAt,
+        publishedAt: item.publishedAt,
+        stale: item.stale,
+        signal: item.snippet,
+        sourceUrl: item.url,
+        verification: item.verification,
+      })),
+      candidateTopics: verified.slice(0, 5).map(item => ({
+        title: item.title,
+        source: item.source,
+        observedAt: item.fetchedAt,
+        publishedAt: item.publishedAt,
+        stale: item.stale,
+        evidenceExcerpt: item.snippet,
+        heat: 'not_assessed',
+      })),
+    };
+  }
+  if (descriptor.kind === 'evidence_research') {
+    return {
+      ...base,
+      researchQuestion: safeText(input.task, 1_000) || '未提供研究问题',
+      sourceCoverage: [...new Set(sources.map(item => item.source))],
+      evidenceLedger: sources.map(item => ({
+        id: item.id,
+        claimCandidate: item.snippet,
+        title: item.title,
+        source: item.source,
+        observedAt: item.fetchedAt,
+        publishedAt: item.publishedAt,
+        stale: item.stale,
+        url: item.url,
+        verification: item.verification,
+      })),
+      unresolved: [
+        '原文上下文与交叉印证仍需岗位模型或人工完成；发布时间未知的来源不能当作最新信息引用。',
+      ],
+    };
+  }
+  return {
+    ...base,
+    samples: verified.map(item => ({
+      id: item.id,
+      title: item.title,
+      platform: item.source,
+      url: item.url,
+      fetchedAt: item.fetchedAt,
+      publishedAt: item.publishedAt,
+      stale: item.stale,
+      length: [...String(item.snippet || '')].length,
+      openingExcerpt: String(item.snippet || '').slice(0, 120),
+      suppliedMetrics: null,
+      metricsStatus: 'not_available_from_public_page',
+    })),
+    analysisDimensions: ['标题承诺', '开头钩子', '信息结构', '证据位置', '行动引导', '评论区待验证问题'],
+    boundary: '样本来自公开网页正文；没有采集平台互动数据，也不推断热度或评论洞察。',
+  };
+}
+
+function liveResearchEstimateCredits(credits, query) {
+  return credits.estimateCallCredits({
+    kind: 'text',
+    model: LIVE_RESEARCH_DEFAULT_MODEL(),
+    texts: [query],
+    outputTokens: 2_000,
+    overheadTokens: 4_000,
+  });
+}
+
+function fixedLaneCredits(credits, lane) {
+  const configured = credits.billing()?.liveResearch;
+  const value = plainObject(configured) ? Number(configured[lane]) : 0;
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
+}
+
+async function defaultBillingAdapter() {
+  const credits = await import('./credits.js');
+  return {
+    hold: ({ userId, tenantId, query, note }) => credits.holdCredits({
+      userId,
+      tenantId,
+      feature: LIVE_RESEARCH_FEATURE,
+      kind: 'text',
+      model: LIVE_RESEARCH_DEFAULT_MODEL(),
+      credits: liveResearchEstimateCredits(credits, query),
+      refType: LIVE_RESEARCH_REF_TYPE,
+      refId: null,
+      note,
+    }),
+    settle: (hold, research) => {
+      const usage = research?.cost?.usage || {};
+      const tokenLane = research?.lane === 'claude_websearch'
+        && (Number(usage.inputTokens) > 0 || Number(usage.outputTokens) > 0);
+      if (tokenLane) {
+        return credits.settleHold(hold, {
+          usage: { inputTokens: Number(usage.inputTokens) || 0, outputTokens: Number(usage.outputTokens) || 0 },
+          model: LIVE_RESEARCH_DEFAULT_MODEL(),
+          aiMode: 'api',
+          note: `联网检索 lane=${research.lane} 按真实 token 结算`,
+        });
+      }
+      return credits.settleHold(hold, {
+        credits: fixedLaneCredits(credits, research?.lane),
+        aiMode: 'api',
+        note: `联网检索 lane=${research?.lane || 'none'} 无模型 token，按通道固定费用结算`,
+      });
+    },
+    release: (hold, note) => credits.releaseHold(hold, note),
+  };
+}
+
+function liveFacts(research, settlement) {
+  return {
+    networkAccess: true,
+    externalActionsPerformed: ['web_search', 'controlled_web_fetch'],
+    costIncurred: Number(settlement?.credits || 0) > 0,
+    credentialsAccepted: false,
+  };
+}
+
+/**
+ * 趋势官 / 情报员 / 拆解师连接器的真联网执行。
+ *
+ * - 调用方已提供 liveData / samples 时沿用同步的本地整理路径（零联网、零计费）；
+ * - 否则先 hold 再检索（D-014），按 lane 结算：Claude WebSearch 按真实 token，
+ *   TinyFish / 商业 API 按通道固定费用（默认 0）；未取得来源全额释放；
+ * - 未配置任何检索通道时返回 status='unavailable'，绝不回退到模板冒充（D-019 / D-055）。
+ *
+ * @param {object} actor `{ userId, tenantId, hold? }`：hold 存在时复用调用方（如流水线）的预授权，不再二次占扣。
+ */
+export async function executeContentConnectorLive(kind, input = {}, context = {}, actor = {}, deps = {}) {
+  const descriptor = connectorDescriptor(kind);
+  if (!descriptor || !descriptor.liveResearch?.supported || !plainObject(input) || !plainObject(context)) {
+    return executeContentConnector(kind, input, context);
+  }
+  if (callerSuppliedLiveInput(descriptor, input, context)) {
+    return executeContentConnector(kind, input, context);
+  }
+  const engine = typeof deps.readinessFn === 'function' && typeof deps.runLiveResearch === 'function'
+    ? null
+    : await loadLiveResearchEngine();
+  const readinessFn = typeof deps.readinessFn === 'function'
+    ? deps.readinessFn
+    : engine.contentLiveResearchReadiness;
+  const readiness = readinessFn();
+  if (!readiness.configured) {
+    return deepFreeze({
+      ...blocked(
+        descriptor,
+        'unavailable',
+        'CONTENT_CONNECTOR_LIVE_RESEARCH_UNAVAILABLE',
+        '联网检索未配置：请在接口管理中配置 TinyFish、Claude CLI（云雾）或博查 / Tavily / Serper 任一通道；也可改为提供 liveData 让本连接器只整理调用方来源。未配置前不会用模板冒充实时结果。',
+        ['configured_live_research_lane|liveData'],
+      ),
+      liveResearch: { configured: false, readiness },
+    });
+  }
+  const brief = safeText(
+    input.task || input.topic || input.brief || input.direction || context.task || context.brief,
+    4_000,
+  );
+  if (!brief) {
+    return blocked(
+      descriptor,
+      'requires_input',
+      'CONTENT_CONNECTOR_INPUT_REQUIRED',
+      '请提供 task（研究主题）；也可提供 liveData / samples 走调用方来源整理。',
+      ['task'],
+    );
+  }
+  const runResearch = typeof deps.runLiveResearch === 'function'
+    ? deps.runLiveResearch
+    : engine.runContentLiveResearch;
+  const billingAdapter = deps.billing === null
+    ? null
+    : plainObject(deps.billing)
+      ? deps.billing
+      : await defaultBillingAdapter();
+  const query = `${descriptor.employeeName}·${descriptor.kind}：${brief}`;
+  let hold = plainObject(actor.hold) ? actor.hold : null;
+  const reusedHold = Boolean(hold);
+  if (!hold && billingAdapter) {
+    hold = billingAdapter.hold({
+      userId: actor.userId ?? null,
+      tenantId: actor.tenantId ?? null,
+      query,
+      note: `${descriptor.employeeName}/${descriptor.kind} 联网检索前预授权；未取得来源全额释放`,
+    });
+  }
+  let research;
+  try {
+    research = await runResearch({
+      kind: descriptor.liveResearch.kind,
+      brief,
+      platform: safeText(input.platform, 60) || null,
+      channels: Array.isArray(input.channels) ? input.channels : [],
+      tenantId: actor.tenantId ?? null,
+      budget: plainObject(input.budget) ? input.budget : {},
+      signal: deps.signal || null,
+    });
+  } catch (error) {
+    if (hold && !reusedHold && billingAdapter) {
+      billingAdapter.release(hold, `联网检索执行失败（${safeText(error?.code || error?.name || 'failed', 80)}），预授权全额释放`);
+    }
+    throw error;
+  }
+  let settlement = null;
+  if (hold && !reusedHold && billingAdapter) {
+    settlement = research.ok || research.status === 'insufficient_evidence'
+      ? billingAdapter.settle(hold, research)
+      : billingAdapter.release(hold, `联网检索未取得可核验来源（${research.status}），预授权全额释放`);
+  }
+  const billingEvidence = {
+    holdReused: reusedHold,
+    heldCredits: hold ? Number(hold.credits || 0) : 0,
+    settledCredits: settlement ? Number(settlement.credits || 0) : null,
+    lane: research.lane,
+    usage: research.cost?.usage || { inputTokens: 0, outputTokens: 0 },
+    costUsd: research.cost?.costUsd || 0,
+  };
+  const evidence = {
+    lane: research.lane,
+    provider: research.provider,
+    readiness,
+    fetchedAt: research.fetchedAt,
+    freshness: research.freshness,
+    provenance: research.provenance,
+    billing: billingEvidence,
+  };
+  if (research.status === 'unavailable' || research.status === 'no_results') {
+    return deepFreeze({
+      ...blocked(
+        descriptor,
+        research.status,
+        research.status === 'unavailable'
+          ? 'CONTENT_CONNECTOR_LIVE_RESEARCH_UNAVAILABLE'
+          : 'CONTENT_CONNECTOR_LIVE_RESEARCH_NO_RESULTS',
+        research.note || '联网检索未取得可核验来源；不会用模板补位。',
+        ['verifiable_public_sources'],
+      ),
+      networkAccess: research.provenance?.externalCall === true,
+      liveResearch: evidence,
+    });
+  }
+  const output = liveOutputFor(descriptor, input, research);
+  return deepFreeze({
+    ok: research.ok,
+    completed: research.ok,
+    kind: descriptor.kind,
+    mode: descriptor.mode,
+    catalogStatus: descriptor.status,
+    status: research.ok ? 'live_research_completed' : 'live_research_insufficient',
+    code: research.ok ? null : 'CONTENT_CONNECTOR_LIVE_RESEARCH_INSUFFICIENT',
+    completedScope: research.ok ? 'live_web_research_with_controlled_fetch' : 'live_web_research_snippets_only',
+    requirements: clone(descriptor.requirements),
+    output,
+    action: research.ok ? null : research.note,
+    disclaimer: '来源经真实联网检索与受控 WebFetch 取得；每条均带抓取时间，发布时间未知者不冒充最新；本连接器不做自动发布、不采集账号数据。',
+    liveResearch: evidence,
+    ...liveFacts(research, settlement),
   });
 }

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 // Luna-only regression audit.  This test is deliberately local: it never
 // starts a provider, opens the network, or charges a real account.  The
@@ -526,7 +527,6 @@ test("生产 SQL 不得把 global specialists 再按任务 tenant_id 连接；ag
   );
 });
 
-after(() => {
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${DB_PATH}${suffix}`, { force: true });
+after(async () => {
+  await removeTempDbSafely(DB_PATH);
 });

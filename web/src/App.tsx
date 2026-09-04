@@ -14,6 +14,8 @@ const StoreOps = lazy(() => import('./pages/StoreOps'));
 const Reviews = lazy(() => import('./pages/Reviews'));
 const Advisor = lazy(() => import('./pages/Advisor'));
 const Employees = lazy(() => import('./pages/Employees'));
+const EmployeeIntroPage = lazy(() => import('./pages/EmployeeIntroPage'));
+const Agents = lazy(() => import('./pages/Agents'));
 const Toolbox = lazy(() => import('./pages/Toolbox'));
 const Growth = lazy(() => import('./pages/Growth'));
 const Activities = lazy(() => import('./pages/Activities'));
@@ -26,6 +28,7 @@ const Assets = lazy(() => import('./pages/Assets'));
 const System = lazy(() => import('./pages/System'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Mobile = lazy(() => import('./pages/Mobile'));
+const Onboarding = lazy(() => import('./pages/Onboarding'));
 
 function Protected({ children }: { children: JSX.Element }) {
   return getUser() ? children : <Navigate to="/login" replace />;
@@ -68,6 +71,19 @@ function RoleOnly({ roles, children }: { roles: string[]; children: JSX.Element 
   const user = getUser();
   if (!user) return <Navigate to="/login" replace />;
   return roles.includes(user.role) ? children : <Navigate to="/" replace />;
+}
+
+// 开店向导入口：老板/管理员所在企业还没做过初始配置（tenant.onboardingStatus === 'pending'）时，
+// 本次会话首次进入首页转到 /onboarding；跳过或完成后不再打扰，中途退出也只提醒这一次。
+const ONBOARDING_REDIRECT_KEY = 'nw-onboarding-redirected';
+function OnboardingEntry({ children }: { children: JSX.Element }) {
+  const user = getUser();
+  const pending = user && ['boss', 'admin'].includes(user.role) && user.tenant?.onboardingStatus === 'pending';
+  if (pending && !sessionStorage.getItem(ONBOARDING_REDIRECT_KEY)) {
+    sessionStorage.setItem(ONBOARDING_REDIRECT_KEY, '1');
+    return <Navigate to="/onboarding" replace />;
+  }
+  return children;
 }
 
 function SessionGate({ children }: { children: JSX.Element }) {
@@ -124,8 +140,9 @@ export default function App() {
                 </RoleOnly>
               }
             />
+            {/* 移动端：/m 与 /m/dispatch|tasks|inbox|me|customers|content 子路径（Tab 由子路径驱动，见 components/mobile/mobileRoutes.ts） */}
             <Route
-              path="/m"
+              path="/m/*"
               element={
                 <EnterpriseOnly>
                   <Mobile />
@@ -142,9 +159,19 @@ export default function App() {
               <Route
                 path="/"
                 element={
-                  <ModuleOnly moduleKey="dashboard">
-                    <Dashboard />
-                  </ModuleOnly>
+                  <OnboardingEntry>
+                    <ModuleOnly moduleKey="dashboard">
+                      <Dashboard />
+                    </ModuleOnly>
+                  </OnboardingEntry>
+                }
+              />
+              <Route
+                path="/onboarding"
+                element={
+                  <RoleOnly roles={['boss', 'admin']}>
+                    <Onboarding />
+                  </RoleOnly>
                 }
               />
               <Route
@@ -164,10 +191,27 @@ export default function App() {
                 }
               />
               <Route
+                path="/employees/:domain/:idx/intro"
+                element={
+                  <ModuleOnly moduleKey="marshals">
+                    <EmployeeIntroPage />
+                  </ModuleOnly>
+                }
+              />
+              <Route
                 path="/marshals"
                 element={
                   <ModuleOnly moduleKey="marshals">
                     <Navigate to="/employees" replace />
+                  </ModuleOnly>
+                }
+              />
+              {/* 我的智能体：/api/agents 无独立模块键，与派活同挂 marshals 模块 */}
+              <Route
+                path="/agents"
+                element={
+                  <ModuleOnly moduleKey="marshals">
+                    <Agents />
                   </ModuleOnly>
                 }
               />

@@ -33,7 +33,9 @@ import {
   WalletOutlined,
 } from '@ant-design/icons';
 import { api } from '../api/client';
+import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import AvatarStudio from '../components/AvatarStudio';
+import EmployeeDraftCard from '../components/EmployeeDraftCard';
 import EmployeeExecutionTimeline from '../components/EmployeeExecutionTimeline';
 import EmployeeResearchPlan from '../components/EmployeeResearchPlan';
 import { Markdown } from '../components/Markdown';
@@ -101,11 +103,14 @@ const pipelinePhaseLabels: Record<string, string> = {
 };
 
 const DETAIL_RUNNING_REFRESH_MS = 2_000;
+// 有 SSE 实时推送（task.status_changed）时，运行中详情的轮询只作兜底，放宽到 15s；断连自动回到 2s
+const DETAIL_RUNNING_REALTIME_REFRESH_MS = 15_000;
 const DETAIL_ATTENTION_REFRESH_MS = 12_000;
 
-function detailRefreshInterval(detail: any): number | null {
+function detailRefreshInterval(detail: any, realtime = false): number | null {
   if (!detail) return null;
-  if (String(detail.state || '') === 'running') return DETAIL_RUNNING_REFRESH_MS;
+  if (String(detail.state || '') === 'running')
+    return realtime ? DETAIL_RUNNING_REALTIME_REFRESH_MS : DETAIL_RUNNING_REFRESH_MS;
   const attentionStates = [detail.state, detail.status, detail.billing?.state].map(value =>
     String(value || '').toLowerCase(),
   );
@@ -282,8 +287,9 @@ export default function TaskCenter() {
     const initial = window.setTimeout(() => openDetailByRef(kind, id), 0);
     return () => window.clearTimeout(initial);
   }, [openDetailByRef]);
+  const { connected: realtimeConnected } = useRealtimeEvents();
   useEffect(() => {
-    const refreshInterval = detailRefreshInterval(detail);
+    const refreshInterval = detailRefreshInterval(detail, realtimeConnected);
     if (
       !detailKey ||
       !refreshInterval ||
@@ -298,7 +304,18 @@ export default function TaskCenter() {
       }
     }, refreshInterval);
     return () => window.clearInterval(timer);
-  }, [detail, detailKey, openDetailByRef]);
+  }, [detail, detailKey, openDetailByRef, realtimeConnected]);
+  // 事件驱动刷新：任务状态翻转推送到达即刷新对应行与打开中的详情，不等轮询
+  useRealtimeEvent<{ kind?: string; id?: number }>(REALTIME_EVENTS.taskStatus, event => {
+    load(true);
+    const ref =
+      detail && taskKinds.has(String(detail.kind || '')) && Number.isSafeInteger(Number(detail.id))
+        ? { kind: String(detail.kind), id: Number(detail.id) }
+        : taskRefFromSourceKey(detailKey);
+    if (ref && ref.kind === String(event?.kind || '') && ref.id === Number(event?.id)) {
+      openDetailByRef(ref.kind, ref.id, `${ref.kind}:${ref.id}`, true);
+    }
+  });
 
   const refreshCurrentDetail = useCallback(async () => {
     const ref =
@@ -714,13 +731,42 @@ export default function TaskCenter() {
                 <EmployeeExecutionTimeline progress={detail.executionProgress} title="数字员工实时执行链" />
               )}
               <EmployeeResearchPlan evidence={detail.researchEvidence} />
+              {detail.kind === 'restaurant' && detail.draft && (
+                <EmployeeDraftCard
+                  taskId={Number(detail.id)}
+                  draft={detail.draft}
+                  body={detail.report?.markdown || detail.output || ''}
+                  bodyOpen
+                  onRedispatch={
+                    detail.conversationDeepLink && detail.conversationAvailability?.available !== false
+                      ? () =>
+                          nav(
+                            `${detail.conversationDeepLink}${detail.conversationDeepLink.includes('?') ? '&' : '?'}redispatch=1`,
+                          )
+                      : undefined
+                  }
+                  onAccepted={() => {
+                    openDetailByRef('restaurant', Number(detail.id), detail.sourceKey, true);
+                    load(true);
+                  }}
+                />
+              )}
               <section>
                 <h3>任务输入</h3>
                 <pre>{detail.input || '暂无输入说明'}</pre>
               </section>
               <section>
                 <h3>执行结果</h3>
-                {detail.report?.markdown ? (
+                {detail.kind === 'restaurant' && detail.draft ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={
+                      detail.draft.state === 'pending' ? '未达标草稿正文见上方草稿卡' : '已接受草稿正文见上方草稿卡'
+                    }
+                    description="该结果未通过质量门，不会自动进入业务可用状态，也不会生成正式导出文件。"
+                  />
+                ) : detail.report?.markdown ? (
                   <Markdown content={detail.report.markdown} />
                 ) : detail.output ? (
                   /^(https?:\/\/|\/)/.test(detail.output) ? (

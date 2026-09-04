@@ -24,7 +24,9 @@ import { getRules } from "../engines/risk.js";
 import {
   backfillMissingEmbeddings,
   embedDoc,
+  kbHealthSummary,
   kbVectorReadiness,
+  runKbVectorBackfillSweep,
 } from "../engines/rag.js";
 import {
   canAccessOwner,
@@ -59,6 +61,7 @@ import {
   settleHold,
   releaseHold,
 } from "../engines/credits.js";
+import { assertSeatAvailable, seatUsage } from "../engines/plan.js";
 import {
   executeHeldDelivery,
   twoPhaseBillingSummary,
@@ -76,17 +79,59 @@ import {
   resolveContentSpecialProviderReconciliation,
 } from "../engines/ai-reconciliation.js";
 import {
+  APPROVAL_EXCEPTION_MODES,
   APPROVAL_ROUTING_POLICY_KEY,
   APPROVAL_ROUTING_SCHEMA,
   activityApprovalSubjectMatches,
   approvalAssigneeAccess,
+  approvalPolicyCatalogIndex,
   approvalWorkflowTransition,
+  assertApprovalPolicyExceptionsInCatalog,
+  assertApprovalSafeguardsNotDisabled,
   loadApprovalRoutingPolicy,
   normalizeApprovalRoutingPolicy,
+  renderApprovalPolicyPlainText,
 } from "../engines/approval-routing-policy.js";
 import * as yunwu from "../engines/yunwu.js";
+import { publish, sseConnectionStats } from "../engines/event-bus.js";
 
 const r = Router();
+
+// 账务对账改写任务终态后的实时推送：读回权威状态再发，发布失败不影响对账结果。
+function publishReconciledTaskStatus(kind, refId) {
+  try {
+    const row =
+      kind === "restaurant"
+        ? q.get(
+            `SELECT id,status,title,created_by FROM agent_tasks WHERE tenant_id=? AND id=?`,
+            curTenant(),
+            refId,
+          )
+        : q.get(
+            `SELECT id,status,title,created_by,employee_idx FROM content_employee_runs WHERE tenant_id=? AND id=?`,
+            curTenant(),
+            refId,
+          );
+    if (!row) return;
+    publish({
+      userIds: [row.created_by].filter(Boolean),
+      roles: ["ops_director", "manager"],
+      type: "task.status_changed",
+      payload: {
+        kind,
+        id: Number(row.id),
+        status: row.status,
+        title: row.title || "",
+        employeeIdx: Number.isInteger(Number(row.employee_idx))
+          ? Number(row.employee_idx)
+          : null,
+        reconciled: true,
+      },
+    });
+  } catch (error) {
+    console.error("[reconciliation] 实时事件发布失败:", error?.message || error);
+  }
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const KB_UPLOAD_ROOT = path.join(
   __dirname,
@@ -392,6 +437,24 @@ function markApprovalDecision(approval, user, pass, reason) {
     throw Object.assign(new Error("该审批已被其他人处理，请刷新列表"), {
       status: 409,
     });
+  // 非内容类审批（活动策划/待确认事项/风控）的权威决定点；内容类由 decideContentOutput 发布。
+  try {
+    publish({
+      roles: ["ops_director", "manager"],
+      userIds: [approval.submitter_id, approval.assigned_reviewer_id].filter(Boolean),
+      type: "approval.decided",
+      payload: {
+        approvalId: Number(approval.id),
+        status: pass ? "已通过" : "已驳回",
+        targetType: approval.target_type,
+        targetId: Number(approval.target_id) || null,
+        title: approval.title || "",
+        reviewerId: Number(user.id) || null,
+      },
+    });
+  } catch (error) {
+    console.error("[approvals] 实时事件发布失败:", error?.message || error);
+  }
 }
 
 function blockedApprovalAvailability(reason, status = 403) {
@@ -725,6 +788,7 @@ function recordAiReconciliationOutcome(item, action, settled, actor, reason) {
       curTenant(),
       item.refId,
     );
+    publishReconciledTaskStatus("content", item.refId);
     return;
   }
   if (item.refType === "agent_task" && Number(item.refId) > 0) {
@@ -755,6 +819,7 @@ function recordAiReconciliationOutcome(item, action, settled, actor, reason) {
       curTenant(),
       item.refId,
     );
+    publishReconciledTaskStatus("restaurant", item.refId);
     if (action === "release" && Number(task.output_id) > 0) {
       q.run(
         `UPDATE contents SET status='已驳回' WHERE tenant_id=? AND id=?`,
@@ -953,32 +1018,103 @@ function assertConfiguredApprovalReviewers(policy) {
   }
 }
 
-// 企业审批规则：管理层、老板和管理员可查看，只有平台超级管理员能修改。
+// 企业审批规则：管理层、老板和管理员可查看；企业老板、系统管理员与平台
+// 超级管理员可修改（B9 下放：审批规则是企业自己的治理决策，admin 按项目
+// “系统管理员”语义与 role_modules/派活权限矩阵同级，可代老板维护）。
 // 规则只影响之后创建的审批；在途审批继续使用自身不可变快照，避免
-// “改配置后偷换审批人”。platform_super 仍在当前租户上下文中操作，
+// “改配置后偷换审批人”。策略按租户存储（sys_config `approval_routing_policy:<tenant>`，
+// 全局 key 仅作为默认回落）。platform_super 仍在当前租户上下文中操作，
 // 不从请求体接受任意 tenant_id，避免跨租户配置越权。
+const APPROVAL_POLICY_EDIT_ROLES = new Set(["boss", "admin", "platform_super"]);
+const APPROVAL_POLICY_CATALOG_INDEX = approvalPolicyCatalogIndex(RESTAURANT_CATALOG);
+const IMMUTABLE_APPROVAL_SAFEGUARDS = Object.freeze([
+  "对外发布/发送始终需要老板执行授权",
+  "真实付费动作始终需要老板执行授权",
+  "不可逆动作（删除、账号操作等）始终需要老板执行授权",
+]);
+
+function approvalPolicyCatalogForClient() {
+  return {
+    departments: [...APPROVAL_POLICY_CATALOG_INDEX.departments.values()],
+    employees: [...APPROVAL_POLICY_CATALOG_INDEX.employees.values()],
+  };
+}
+
+function approvalReviewerNameMap() {
+  return new Map(
+    q
+      .all(`SELECT id,name FROM users WHERE tenant_id=?`, curTenant())
+      .map((user) => [Number(user.id), user.name]),
+  );
+}
+
 r.get(
   "/approval-policy",
   requireRole("boss", "ops_director", "manager", "admin", "platform_super"),
   (req, res) => {
-    const canEdit = req.user.role === "platform_super";
+    const canEdit = APPROVAL_POLICY_EDIT_ROLES.has(req.user.role);
     res.json({
       policy: loadApprovalRoutingPolicy(curTenant()),
       canEdit,
       reviewerCandidates: canEdit ? approvalReviewerCandidates() : [],
-      immutableSafeguards: [
-        "高风险事项始终由老板终审",
-        "对外发布始终需要人工授权",
-        "付费动作始终需要人工授权",
-      ],
+      catalog: approvalPolicyCatalogForClient(),
+      exceptionModes: APPROVAL_EXCEPTION_MODES,
+      immutableSafeguards: IMMUTABLE_APPROVAL_SAFEGUARDS,
     });
   },
 );
 
-r.put("/approval-policy", requireRole("platform_super"), (req, res) => {
+// 大白话预览：GET 用当前已保存策略；POST 接受草稿（未保存）即时渲染，
+// 前端 300ms 防抖调用。两者共用服务端同一份纯函数，前端不复制文案。
+function approvalPolicyPreviewPayload(policyInput) {
+  const policy = normalizeApprovalRoutingPolicy(
+    policyInput && typeof policyInput === "object" && !Array.isArray(policyInput)
+      ? { ...policyInput, schemaVersion: APPROVAL_ROUTING_SCHEMA }
+      : policyInput,
+  );
+  return renderApprovalPolicyPlainText(policy, {
+    catalogIndex: APPROVAL_POLICY_CATALOG_INDEX,
+    reviewerNames: approvalReviewerNameMap(),
+  });
+}
+
+r.get(
+  "/approval-policy/preview",
+  requireRole("boss", "ops_director", "manager", "admin", "platform_super"),
+  (req, res) => {
+    const policy = loadApprovalRoutingPolicy(curTenant());
+    res.json({
+      ...renderApprovalPolicyPlainText(policy, {
+        catalogIndex: APPROVAL_POLICY_CATALOG_INDEX,
+        reviewerNames: approvalReviewerNameMap(),
+      }),
+      policy,
+    });
+  },
+);
+
+r.post(
+  "/approval-policy/preview",
+  requireRole("boss", "ops_director", "manager", "admin", "platform_super"),
+  (req, res) => {
+    try {
+      const requestedPolicy = req.body?.policy ?? req.body;
+      assertApprovalSafeguardsNotDisabled(requestedPolicy);
+      return res.json(approvalPolicyPreviewPayload(requestedPolicy));
+    } catch (error) {
+      return res
+        .status(error.status || 400)
+        .json({ error: error.message, code: error.code });
+    }
+  },
+);
+
+r.put("/approval-policy", requireRole(...APPROVAL_POLICY_EDIT_ROLES), (req, res) => {
   try {
     const updatedAt = new Date().toISOString();
     const requestedPolicy = req.body?.policy ?? req.body;
+    // 三条底线服务端硬编码；客户端显式传 false 直接 400，而不是静默纠正。
+    assertApprovalSafeguardsNotDisabled(requestedPolicy);
     // API writes always emit v2. v1 is accepted by the read path/snapshot
     // parser only; an old client cannot accidentally persist a legacy mode.
     const policyInput =
@@ -995,6 +1131,9 @@ r.put("/approval-policy", requireRole("platform_super"), (req, res) => {
       },
       updatedAt,
     });
+    // 保存的是企业默认规则，不允许把某次派活的解析结果误存成策略。
+    delete policy.employeeOutput.resolved;
+    assertApprovalPolicyExceptionsInCatalog(policy, APPROVAL_POLICY_CATALOG_INDEX);
     assertConfiguredApprovalReviewers(policy);
     setTenantConfig(APPROVAL_ROUTING_POLICY_KEY, policy);
     logOp(
@@ -1006,6 +1145,10 @@ r.put("/approval-policy", requireRole("platform_super"), (req, res) => {
     return res.json({
       ok: true,
       policy,
+      preview: renderApprovalPolicyPlainText(policy, {
+        catalogIndex: APPROVAL_POLICY_CATALOG_INDEX,
+        reviewerNames: approvalReviewerNameMap(),
+      }),
       message: "审批规则已保存；新任务按新规则流转，在途任务继续使用原规则快照",
     });
   } catch (error) {
@@ -2391,6 +2534,55 @@ r.get("/kb/readiness", (req, res) => {
   });
 });
 
+// 知识库健康（P0-2）：文档总数 / 已向量化 / 待回填 / 24h 查询向量化失败 / 最近回填 / 红点与建议。
+// 不返回知识正文；供系统页“知识库健康”卡与侧栏红点读取。
+r.get("/kb/health", requireRole("boss", "admin", "platform_super"), (req, res) => {
+  res.set("Cache-Control", "private, no-store");
+  res.json(kbHealthSummary({ providerConfigured: aiAvailable() }));
+});
+
+// “立即回填全部待处理”：与每日 04:00 扫描同一入口（同一配额、hold 计费与去重），
+// 单次最多 20 条，其余由后续调用或次日扫描继续。
+r.post("/kb/backfill", requireRole("boss", "admin"), (req, res) => {
+  const health = kbHealthSummary({ providerConfigured: aiAvailable() });
+  if (!health.backgroundEnabled) {
+    return res.status(409).json({
+      error:
+        "后台向量化开关未启用；请先配置 ENABLE_BACKGROUND_EMBEDDINGS=true 并重启服务",
+      health,
+    });
+  }
+  if (!health.providerConfigured) {
+    return res.status(409).json({ error: "AI 向量服务未配置，不能开始回填", health });
+  }
+  const summary = runKbVectorBackfillSweep({
+    tenantId: curTenant(),
+    userId: req.user.id,
+    limit: 20,
+    source: "manual",
+  });
+  if (summary.accepted > 0) {
+    logOp(
+      req.user,
+      "系统管理",
+      "立即回填知识库向量",
+      `已排队${summary.accepted}条；拒绝${summary.rejected}条`,
+    );
+  }
+  const after = kbHealthSummary({ providerConfigured: aiAvailable() });
+  return res.status(summary.accepted > 0 ? 202 : 200).json({
+    ok: summary.rejected === 0,
+    ...summary,
+    health: after,
+    message:
+      summary.accepted > 0
+        ? `已排队 ${summary.accepted} 条知识，向量完成后自动按实际持久化数量结算`
+        : after.pendingBackfill > 0
+          ? "待回填知识存在运行中或待对账任务，本次未重复排队"
+          : "当前没有需要回填的知识",
+  });
+});
+
 r.post("/kb/vector/backfill", requireRole("boss", "admin"), (req, res) => {
   if (req.body?.confirm !== true) {
     return res.status(400).json({
@@ -2653,13 +2845,11 @@ r.put(
 // 企业账号管理（仅本租户；含席位配额）
 r.get("/users", requireRole("boss", "ops_director", "admin"), (req, res) => {
   const tid = curTenant();
-  const t = getTenant(tid) || {};
-  const used =
-    q.get("SELECT COUNT(*) n FROM users WHERE tenant_id = ?", tid)?.n || 0;
+  const seats = seatUsage(tid);
   const scope = userScopeClause(req.user, "id");
   res.json({
-    seatLimit: t.seat_limit ?? 5,
-    seatUsed: used,
+    seatLimit: seats.limit,
+    seatUsed: seats.used,
     users: q.all(
       `SELECT id,username,name,role,dept,phone,status,modules,manager_id,last_login_at,created_at
       FROM users WHERE tenant_id = ? AND role != 'platform_super'${scope.sql} ORDER BY id`,
@@ -2688,15 +2878,17 @@ r.post("/users", requireRole("admin", "boss"), (req, res) => {
   if (!USER_ROLE_SET.has(userRole))
     return res.status(400).json({ error: "账号角色无效" });
   const tid = curTenant();
-  const t = getTenant(tid) || {};
-  const used =
-    q.get("SELECT COUNT(*) n FROM users WHERE tenant_id = ?", tid)?.n || 0;
-  if (used >= (t.seat_limit ?? 5))
-    return res
-      .status(400)
-      .json({
-        error: `账号数已达企业上限（${t.seat_limit ?? 5}个），如需扩容请联系平台`,
-      });
+  // 席位校验：只统计启用中的用户端账号（停用不占席位；平台超管不计），超限 409 + 可读提示
+  try {
+    assertSeatAvailable(tid);
+  } catch (error) {
+    return res.status(error.status || 409).json({
+      error: error.message,
+      code: error.code,
+      seatLimit: error.seatLimit,
+      seatsUsed: error.seatsUsed,
+    });
+  }
   let displayName;
   let managerId;
   let normalizedModules;
@@ -3063,6 +3255,8 @@ r.get(
       healthLabel,
       healthReason,
       readiness,
+      // SSE 实时通道观测：当前进程内在线连接数（多实例不汇总，见 event-bus.js 头注释）
+      realtime: sseConnectionStats(),
       ai: {
         available: aiAvailable(),
         readiness: readiness.channels.find((item) => item.key === "ai"),
@@ -3468,5 +3662,9 @@ r.post("/notifications/read", (req, res) => {
   );
   res.json({ ok: true });
 });
+
+// 供统一收件箱（routes/inbox.js）复用审批中心的可决性与可见范围判定，
+// 保证"待我处理"与 /approvals 列表口径一致（D-037：只有一条权威路径）。
+export { approvalDecisionAvailability, approvalVisibilityClause };
 
 export default r;

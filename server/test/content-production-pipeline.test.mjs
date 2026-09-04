@@ -16,6 +16,9 @@ import {
 import { createContentProductionHandlerRegistry } from "../src/engines/content-production-handler-registry.js";
 import { createContentPaidMediaAuthorization } from "../src/engines/content-paid-media-authorization.js";
 import { VALID_CONTENT_EMPLOYEE_OUTPUTS } from "./helpers/content-output-fixtures.mjs";
+import { xhsOutput, xhsFactPack } from "./helpers/xhs-output-fixtures.mjs";
+import { outputSnapshotFingerprint } from "../src/engines/content-production-private-output-snapshot.js";
+import { xhsVersionId } from "../src/engines/content-xhs-output.js";
 
 const OUTPUTS = Object.freeze([
   Object.freeze({
@@ -208,6 +211,8 @@ function pipelineFixture({
   platforms = ["小红书"],
   imageModel = "gpt-image-2",
   imageUnitCredits = 75,
+  taskOverrides = {},
+  outputOverrides = {},
 } = {}) {
   const db = new DatabaseSync(":memory:");
   const now = clock();
@@ -234,6 +239,8 @@ function pipelineFixture({
         outputs: structuredClone(input.context.outputs),
         runtimePackageLoad: structuredClone(input.context.runtimePackageLoad),
         system: input.prompt.system,
+        user: input.prompt.user,
+        variables: structuredClone(input.variables),
       });
       if (input.employeeIdx === failOnceAt && !failed) {
         failed = true;
@@ -242,8 +249,8 @@ function pipelineFixture({
         throw error;
       }
       return {
-        data: structuredClone(OUTPUTS[input.employeeIdx]),
-        artifacts: [stationArtifact(input.employeeIdx)],
+        data: structuredClone(outputOverrides[input.employeeIdx] || OUTPUTS[input.employeeIdx]),
+        artifacts: [stationArtifact(input.employeeIdx, outputOverrides[input.employeeIdx] || OUTPUTS[input.employeeIdx])],
         tokens: input.employeeIdx + 10,
       };
     },
@@ -270,6 +277,7 @@ function pipelineFixture({
     enable_deck: enableDeck,
     xhs_style: { name: "老板实战", desc: "先讲问题，再讲证据和动作" },
     dy_style: { name: "口语直给", desc: "前3秒问题钩子，后续给步骤" },
+    ...taskOverrides,
   };
   const created = pipeline.create({
     tenantId: 7,
@@ -480,6 +488,130 @@ test("新建流水线持久化v2视觉策略，旧task_json缺版本读取与重
 });
 
 const boss = Object.freeze({ id: 71, name: "老板", role: "boss" });
+
+test('真实registry→流水线事务保存原XHS事实，历史恢复保留3稿及老板第三版且不再调用AI', async t => {
+  const fixture = pipelineFixture({ taskOverrides: { template: '小红书带货笔记', xhsOptions: { versionCount: 3 } } });
+  t.after(() => fixture.db.close());
+  const { db, repository, created } = fixture;
+  const args = { tenantId: 7, pipelineId: created.id };
+  for (const idx of [0, 1, 2]) db.prepare(`UPDATE content_production_pipeline_stations
+    SET status='completed',attempt=1,output_json=? WHERE tenant_id=7 AND pipeline_id=? AND station_idx=?`)
+    .run(JSON.stringify(VALID_CONTENT_EMPLOYEE_OUTPUTS[idx]), created.id, idx);
+  db.prepare('UPDATE content_production_pipeline_jobs SET current_station=3 WHERE tenant_id=7 AND id=?').run(created.id);
+  let calls = 0;
+  let currentFacts = structuredClone(xhsFactPack);
+  const draft = xhsOutput();
+  const registry = createContentProductionHandlerRegistry({
+    role: 'boss', model: 'test-text-model',
+    generateFn: async () => {
+      calls++;
+      return { mode: 'api', model: 'test-text-model', text: JSON.stringify(draft), usage: { inputTokens: 140, outputTokens: 350 } };
+    },
+  });
+  const build = runtimeContextBuilder([]);
+  const pipeline = createContentProductionPipeline({ repository, handlerRegistry: registry, now: fixture.now,
+    resolveImageModel: () => 'gpt-image-2', estimateMaxCredits: () => 75,
+    buildRuntimeContext: async input => {
+      const built = await build(input);
+      built.context.storeFacts = structuredClone(currentFacts);
+      return built;
+    },
+  });
+  let state = await pipeline.resume(args);
+  assert.equal(state.pendingStation, 3, JSON.stringify(state.stations[3].failure));
+  assert.equal(calls, 1);
+  assert.ok(!JSON.stringify(state).includes(xhsFactPack.facts[2].value), '私有评价原话不进入API投影');
+  const originalSnapshot = db.prepare(`SELECT * FROM content_production_pipeline_private_output_snapshots
+    WHERE tenant_id=7 AND pipeline_id=? AND station_idx=3 AND station_attempt=1`).get(created.id);
+  assert.deepEqual(JSON.parse(originalSnapshot.snapshot_json).validationContext.storeFacts, xhsFactPack);
+  state = await pipeline.review({ ...args, actor: boss, action: 'approve', resumeAfterApproval: false,
+    selection: { candidateId: xhsVersionId(draft.versions[2]) } });
+  assert.equal(state.stations[3].output.xhsSelection.versionId, xhsVersionId(draft.versions[2]));
+  const stationRow = () => db.prepare(`SELECT * FROM content_production_pipeline_stations
+    WHERE tenant_id=7 AND pipeline_id=? AND station_idx=3`).get(created.id);
+  const before = stationRow();
+  currentFacts = { facts: [], missing: ['门店资料已变更'] };
+  const removeArtifact = () => db.prepare(`DELETE FROM content_production_pipeline_artifacts
+    WHERE tenant_id=7 AND pipeline_id=? AND station_idx=3 AND station_attempt=1`).run(created.id);
+  const setSnapshot = value => db.prepare(`UPDATE content_production_pipeline_private_output_snapshots
+    SET snapshot_json=? WHERE tenant_id=7 AND pipeline_id=? AND station_idx=3 AND station_attempt=1`)
+    .run(value === null ? 'null' : JSON.stringify(value), created.id);
+  const original = JSON.parse(originalSnapshot.snapshot_json);
+  const assertRejected = code => {
+    repository.ensureSchema();
+    assert.equal(repository.listArtifacts(7, created.id, 3).length, 0);
+    assert.equal(repository.listArtifactBackfills(7, created.id).find(row => row.stationIdx === 3).reasonCode, code);
+    assert.deepEqual(stationRow(), before);
+    assert.equal(calls, 1);
+  };
+  removeArtifact();
+  setSnapshot(null);
+  assertRejected('CONTENT_PIPELINE_ARTIFACT_BACKFILL_XHS_FACT_SNAPSHOT_REQUIRED');
+  for (const change of [
+    copy => { copy.tenantId = 8; },
+    copy => { copy.pipelineId++; },
+    copy => { copy.stationAttempt++; },
+    copy => { copy.validationContext.storeFacts.facts[0].value = '篡改门店'; },
+    copy => { copy.validationContext.outputs[0].briefing = '更换上游'; },
+  ]) {
+    const copy = structuredClone(original);
+    change(copy);
+    setSnapshot(copy);
+    assertRejected('CONTENT_PIPELINE_ARTIFACT_BACKFILL_XHS_FACT_SNAPSHOT_INVALID');
+    // Recomputing the private row hash alone cannot replace provider-bound input.
+    delete copy.snapshotFingerprint;
+    copy.snapshotFingerprint = outputSnapshotFingerprint(copy);
+    setSnapshot(copy);
+    assertRejected('CONTENT_PIPELINE_ARTIFACT_BACKFILL_XHS_FACT_SNAPSHOT_INVALID');
+  }
+  setSnapshot(original);
+  assert.equal(repository.ensureSchema().inserted, 1);
+  const artifacts = repository.listArtifacts(7, created.id, 3);
+  const recovered = repository.getArtifact(7, created.id, 3, artifacts[0].id);
+  for (const version of draft.versions) assert.ok(recovered.content.includes(version.title));
+  assert.ok(!recovered.content.includes(xhsFactPack.facts[2].value));
+  assert.deepEqual(stationRow(), before, '状态/账务/全稿/选版/审批审计逐字段不变');
+  assert.equal(repository.getArtifact(8, created.id, 3, artifacts[0].id), null);
+  assert.equal(repository.ensureSchema().inserted, 0);
+  assert.equal(calls, 1, '恢复不能调用模型或使用变更后的门店资料');
+});
+
+test("多策略流水线在内部全自动模式仍停站，老板选非推荐版后才真实接力", async (t) => {
+  const draft = xhsOutput();
+  // Provider-supplied approval metadata must never become a server-owned choice.
+  draft.xhsSelection = { versionId: xhsVersionId(draft.versions[0]), strategy: draft.versions[0].strategy };
+  const chosen = draft.versions[2];
+  const fixture = pipelineFixture({ workflowMode: "fullauto",
+    approvalPolicy: { mode: "internal_auto", configuredBy: { id: 72, role: "manager" } },
+    taskOverrides: { template: "小红书带货笔记", xhsOptions: { versionCount: 3 } },
+    outputOverrides: { 3: draft, 4: { ...OUTPUTS[4], body: chosen.body, title_candidates: [chosen.title] },
+      8: { ...OUTPUTS[8], versions: [{ platform: "小红书", title: chosen.title, body: chosen.body, tags: chosen.tags }] } },
+  });
+  t.after(() => fixture.db.close());
+  const args = { tenantId: 7, pipelineId: fixture.created.id };
+  let state = await fixture.pipeline.resume(args);
+  assert.equal(state.pendingStation, 3);
+  assert.equal(state.stations[3].approvalBoundary.code, "pick");
+  assert.equal(state.stations[3].handlerEvidence.approvalBoundary.code, "review");
+  assert.equal(state.stations[3].output.xhsSelection, undefined);
+  assert.deepEqual(fixture.invocations.map(v => v.stationIdx), [0, 1, 2, 3]);
+  for (const role of ["staff", "manager", "ops_director"]) {
+    await assert.rejects(fixture.pipeline.review({ ...args, actor: { id: 72, role }, action: "approve", selection: 2 }),
+      error => error.code === "CONTENT_PIPELINE_XHS_OWNER_REQUIRED");
+  }
+  for (const selection of [undefined, 99, { candidateId: "invented-version" }]) {
+    await assert.rejects(fixture.pipeline.review({ ...args, actor: boss, action: "approve", selection }));
+    assert.equal(fixture.pipeline.inspect(args).pendingStation, 3);
+  }
+  state = await fixture.pipeline.review({ ...args, actor: boss, action: "approve", selection: { candidateId: xhsVersionId(chosen) } });
+  assert.equal(state.status, "completed");
+  assert.equal(state.stations[3].output.versions.length, 3);
+  assert.equal(state.stations[3].output.xhsSelection.versionId, xhsVersionId(chosen));
+  assert.equal(state.stations[3].output.xhsSelection.selectedBy, boss.id);
+  assert.equal(fixture.invocations.find(v => v.stationIdx === 4).variables.draft_body, chosen.body);
+  assert.equal(fixture.invocations.find(v => v.stationIdx === 8).variables.body, chosen.body);
+  assert.deepEqual(fixture.invocations.map(v => v.stationIdx), [0,1,2,3,4,5,6,7,8,9]);
+});
 
 test("internal_auto让已认证发起人的内部报告0到9连续执行且不授予外发或业务采纳", async (t) => {
   const fixture = pipelineFixture({

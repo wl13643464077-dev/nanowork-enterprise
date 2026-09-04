@@ -10,6 +10,7 @@ import {
   loadAgentTaskSupersession,
 } from "./delivery-state.js";
 import { augmentMediaJob } from "../routes/media-review.js";
+import { humanizeContractFailures } from "./contract-tiers.js";
 
 export const TASK_CENTER_KINDS = Object.freeze([
   "manual",
@@ -815,6 +816,28 @@ function adoptionContextFor(kind, status, snapshot, routing, evidence = {}) {
   const decisionKind = cleanText(workflow.decisionKind, 60);
   const raw = rawState(status);
 
+  // 未达标草稿永远不是“已采用”：待处理与已接受都只允许作为内部参考。
+  if (String(status || "") === DRAFT_PENDING_STATUS) {
+    return {
+      kind: "draft_pending",
+      adopted: false,
+      terminal: false,
+      source: "task_state",
+      decisionKind: null,
+      label: BUSINESS_DELIVERY_LABELS.draftPending,
+    };
+  }
+  if (String(status || "") === DRAFT_ACCEPTED_STATUS) {
+    return {
+      kind: "draft_accepted",
+      adopted: false,
+      terminal: true,
+      source: "task_state",
+      decisionKind: "draft_accepted",
+      label: BUSINESS_DELIVERY_LABELS.draftAccepted,
+    };
+  }
+
   if (
     decision === "reject" ||
     approvalStatus === "已驳回" ||
@@ -952,6 +975,10 @@ function stateWithAdoption(state, adoptionContext) {
 }
 
 function displayStatusFor(status, state, adoptionContext) {
+  if (String(status || "") === DRAFT_PENDING_STATUS)
+    return BUSINESS_DELIVERY_LABELS.draftPending;
+  if (String(status || "") === DRAFT_ACCEPTED_STATUS)
+    return BUSINESS_DELIVERY_LABELS.draftAccepted;
   if (state === "blocked") return "业务暂不可采用（待账务对账）";
   if (
     adoptionContext.kind !== "not_applicable" &&
@@ -1156,8 +1183,15 @@ function textVideoBilling(row, context = null) {
   };
 }
 
+// P0-1 未达标草稿：待老板处理归入“返工”筛选；已接受为内部参考稿归入“已完成”，
+// 但两者都不是业务可采用结果（adoptionContextFor 单独判定）。
+const DRAFT_PENDING_STATUS = "草稿待处理";
+const DRAFT_ACCEPTED_STATUS = "草稿已接受";
+
 function rawState(status) {
   const value = String(status || "").toLowerCase();
+  if (value === DRAFT_PENDING_STATUS) return "rework";
+  if (value === DRAFT_ACCEPTED_STATUS) return "done";
   if (
     /pending_reconciliation|billing_pending|待账务对账|待对账|blocked|阻断|暂不可/.test(
       value,
@@ -2228,6 +2262,46 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
         output: supersededBy ? "" : row.output || "",
         dueAt: row.due_at,
       };
+      // P0-1：未达标草稿的老板可读信息（不含契约 ID/指纹/字段路径等技术词）
+      if (
+        !supersededBy &&
+        [DRAFT_PENDING_STATUS, DRAFT_ACCEPTED_STATUS].includes(
+          String(row.status || ""),
+        )
+      ) {
+        const report = parseObject(row.contract_report);
+        const failedChecks =
+          Array.isArray(report.failedChecks) && report.failedChecks.length
+            ? report.failedChecks
+            : humanizeContractFailures(report.failedRules || []);
+        const acceptable = report.acceptable === true;
+        const pending = String(row.status || "") === DRAFT_PENDING_STATUS;
+        detail.draft = {
+          state: pending ? "pending" : "accepted",
+          failReason: row.fail_reason || report.failReason || "contract",
+          failReasonLabel:
+            (row.fail_reason || report.failReason) === "timeout"
+              ? "执行超时，已保留最后一轮完整正文"
+              : "质量门未通过，已保留最后一轮完整正文",
+          attempts: Number(report.attempts || 0),
+          failedChecks,
+          failedCheckCount: failedChecks.reduce(
+            (sum, item) => sum + Number(item?.count || 1),
+            0,
+          ),
+          acceptable,
+          canAccept:
+            pending && acceptable && ["boss", "admin"].includes(user?.role),
+          acceptBlockedReason: pending
+            ? acceptable
+              ? ["boss", "admin"].includes(user?.role)
+                ? null
+                : "只有老板或管理员可以决定就用这份草稿"
+              : "草稿引用了本次未核验的来源，不能直接采用；请带原要求重新派活"
+            : null,
+          employeeIdx: Number(row.employee_idx) || null,
+        };
+      }
     }
   } else if (kind === "content") {
     row = scopedOne(

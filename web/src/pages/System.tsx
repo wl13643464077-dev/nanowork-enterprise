@@ -51,6 +51,7 @@ import {
   DeleteOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { notifyCredits, api, getUser } from '../api/client';
 import { Panel } from '../components/Kit';
 import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
@@ -59,11 +60,8 @@ import { createSystemConfigPrimitives } from '../components/SystemConfigPrimitiv
 import { SystemDeletionDrawer } from '../components/SystemDeletionDrawer';
 import { SystemDeletionHistoryPanel } from '../components/SystemDeletionHistoryPanel';
 import { SystemErrorState } from '../components/SystemErrorState';
-import {
-  ApprovalRuleEditor,
-  approvalPolicyPayload,
-  type ApprovalRouteKey,
-} from '../components/SystemApprovalRuleEditor';
+import SystemKbHealthCard from '../components/SystemKbHealthCard';
+import ApprovalPolicyPanel from '../components/ApprovalPolicyPanel';
 import {
   AB_LABELS,
   approvalListResult,
@@ -90,8 +88,8 @@ export default function System() {
   const user = getUser() || {};
   const isAdminish = ['boss', 'ops_director', 'admin'].includes(user.role); // 查看用户/日志/配置
   const canDecide = ['boss', 'ops_director', 'manager', 'admin'].includes(user.role); // 审批权限；具体节点仍按行校验
+  // 审批规则的可编辑性由服务端 canEdit 决定（boss/admin/platform_super），面板自行加载
   const canViewApprovalPolicy = ['boss', 'ops_director', 'manager', 'admin', 'platform_super'].includes(user.role);
-  const canEditApprovalPolicy = ['platform_super'].includes(user.role);
   const canManageUsers = ['boss', 'admin'].includes(user.role); // 增改用户
   const canSaveConfig = ['boss', 'admin'].includes(user.role); // 保存配置
   const canBackup = ['boss', 'admin'].includes(user.role); // 数据备份
@@ -124,14 +122,6 @@ export default function System() {
   const [rejectReason, setRejectReason] = useState('');
   const [approvalView, setApprovalView] = useState<any>(null);
   const [deciding, setDeciding] = useState(false);
-  const [approvalPolicy, setApprovalPolicy] = useState<any>(null);
-  const [approvalPolicyDraft, setApprovalPolicyDraft] = useState<any>(null);
-  const [approvalReviewerCandidates, setApprovalReviewerCandidates] = useState<any[]>([]);
-  const [immutableApprovalSafeguards, setImmutableApprovalSafeguards] = useState<string[]>([]);
-  const [approvalPolicyLoading, setApprovalPolicyLoading] = useState(false);
-  const [approvalPolicySaving, setApprovalPolicySaving] = useState(false);
-  const [approvalPolicyError, setApprovalPolicyError] = useState('');
-  const [approvalPolicyServerCanEdit, setApprovalPolicyServerCanEdit] = useState(false);
   // AI账务对账：只展示权威 hold、业务主产物、契约与供应商用量的交叉核验结果
   const [billingReconciliation, setBillingReconciliation] = useState<any>({ rows: [], summary: {} });
   const [billingLoading, setBillingLoading] = useState(false);
@@ -444,51 +434,6 @@ export default function System() {
         if (st === '待审核') setPendingCount(result.total);
       })
       .catch(() => {});
-  const loadApprovalPolicy = () => {
-    if (!canViewApprovalPolicy) return Promise.resolve();
-    setApprovalPolicyLoading(true);
-    setApprovalPolicyError('');
-    setApprovalPolicyServerCanEdit(false);
-    return api
-      .get('/sys/approval-policy', { silent: true })
-      .then((payload: any) => {
-        const nextPolicy = payload?.policy || null;
-        setApprovalPolicy(nextPolicy);
-        setApprovalPolicyDraft(nextPolicy ? approvalPolicyPayload(nextPolicy) : null);
-        setApprovalReviewerCandidates(Array.isArray(payload?.reviewerCandidates) ? payload.reviewerCandidates : []);
-        setApprovalPolicyServerCanEdit(payload?.canEdit === true);
-        setImmutableApprovalSafeguards(
-          Array.isArray(payload?.immutableSafeguards) ? payload.immutableSafeguards.map(String) : [],
-        );
-        if (payload?.canEdit !== canEditApprovalPolicy) {
-          setApprovalPolicyError('当前账号的审批规则权限与服务端不一致，已阻止编辑，请重新登录后再试。');
-        }
-      })
-      .catch((error: any) => setApprovalPolicyError(error?.message || '审批规则加载失败'))
-      .finally(() => setApprovalPolicyLoading(false));
-  };
-  const updateApprovalPolicyRoute = (routeKey: ApprovalRouteKey, patch: any) => {
-    if (!canEditApprovalPolicy || !approvalPolicyServerCanEdit) return;
-    setApprovalPolicyDraft((current: any) => ({
-      ...current,
-      [routeKey]: { ...current?.[routeKey], ...patch },
-    }));
-  };
-  const saveApprovalPolicy = () => {
-    if (!canEditApprovalPolicy || !approvalPolicyServerCanEdit || !approvalPolicyDraft) return;
-    setApprovalPolicySaving(true);
-    setApprovalPolicyError('');
-    api
-      .put('/sys/approval-policy', { policy: approvalPolicyPayload(approvalPolicyDraft) }, { silent: true })
-      .then((payload: any) => {
-        const nextPolicy = payload?.policy || approvalPolicyDraft;
-        setApprovalPolicy(nextPolicy);
-        setApprovalPolicyDraft(approvalPolicyPayload(nextPolicy));
-        message.success(payload?.message || '审批规则已保存');
-      })
-      .catch((error: any) => setApprovalPolicyError(error?.message || '审批规则保存失败'))
-      .finally(() => setApprovalPolicySaving(false));
-  };
   const loadBillingReconciliation = () => {
     if (!isAdminish) return Promise.resolve();
     setBillingLoading(true);
@@ -569,18 +514,6 @@ export default function System() {
       })
       .catch(() => {});
   }, [approvalStatus]);
-  useEffect(() => {
-    if (!canViewApprovalPolicy) return;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) void loadApprovalPolicy();
-    });
-    return () => {
-      cancelled = true;
-    };
-    // 规则权限只由登录角色决定；加载函数的每次渲染身份不应重复请求。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canViewApprovalPolicy]);
   useEffect(() => {
     api
       .get(`/sys/kb?category=${encodeURIComponent(kbCat)}`)
@@ -1326,142 +1259,8 @@ export default function System() {
             : []),
         ]),
   ];
-  const approvalPolicyCanEdit = canEditApprovalPolicy && approvalPolicyServerCanEdit;
-  const approvalPolicyDirty =
-    !!approvalPolicy &&
-    !!approvalPolicyDraft &&
-    JSON.stringify(approvalPolicyPayload(approvalPolicy)) !==
-      JSON.stringify(approvalPolicyPayload(approvalPolicyDraft));
-  const approvalSafeguards = immutableApprovalSafeguards.length
-    ? immutableApprovalSafeguards
-    : ['高风险事项始终由老板终审', '对外发布始终需要人工授权', '付费动作始终需要人工授权'];
-  const approvalPolicySection = canViewApprovalPolicy ? (
-    <div
-      role="region"
-      aria-label="企业审批规则"
-      style={{
-        border: '1px solid var(--ui-border-strong)',
-        borderRadius: 14,
-        padding: 16,
-        marginBottom: 18,
-        background: 'var(--ui-surface-2)',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-        <div>
-          <div style={{ fontWeight: 800, color: 'var(--ui-text)', fontSize: 15 }}>
-            <SafetyCertificateOutlined style={{ color: 'var(--ui-primary)', marginRight: 6 }} />
-            企业审批规则
-          </div>
-          <div style={{ color: 'var(--ui-muted)', fontSize: 12, marginTop: 4 }}>
-            按数字员工产出、活动方案和活动待确认事项分别设置，不再对所有任务一刀切。
-          </div>
-        </div>
-        {approvalPolicy?.updatedAt && (
-          <div style={{ color: 'var(--ui-muted)', fontSize: 11, textAlign: 'right', lineHeight: 1.6 }}>
-            最后更新：{approvalPolicy.updatedAt}
-            <br />
-            {approvalPolicy.configuredBy?.name ? `操作人：${approvalPolicy.configuredBy.name}` : ''}
-          </div>
-        )}
-      </div>
-
-      <Alert
-        type="warning"
-        showIcon
-        style={{ marginTop: 12 }}
-        message="规则仅对保存后的新提交生效"
-        description="已在途的审批会继续使用提交时锁定的不可变规则快照，修改配置不会偷换审批人或跳过现有节点。"
-      />
-      {!approvalPolicyCanEdit && !approvalPolicyLoading && !approvalPolicyError && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginTop: 10 }}
-          message="当前为只读视图"
-          description="管理层、老板和企业管理员可以查看企业规则；只有平台超级管理员可以修改规则。"
-        />
-      )}
-      {approvalPolicyError && (
-        <Alert
-          type="error"
-          showIcon
-          style={{ marginTop: 10 }}
-          message="审批规则未能完成同步"
-          description={approvalPolicyError}
-          action={<Button onClick={loadApprovalPolicy}>重新加载</Button>}
-        />
-      )}
-
-      {approvalPolicyLoading && !approvalPolicyDraft ? (
-        <div style={{ padding: 24, textAlign: 'center', color: 'var(--ui-muted)' }}>正在读取企业审批规则…</div>
-      ) : approvalPolicyDraft ? (
-        <>
-          <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-            {(['employeeOutput', 'activityPlan', 'activityChecklist'] as ApprovalRouteKey[]).map(routeKey => (
-              <Col xs={24} xl={8} key={routeKey}>
-                <ApprovalRuleEditor
-                  routeKey={routeKey}
-                  route={approvalPolicyDraft[routeKey]}
-                  canEdit={approvalPolicyCanEdit}
-                  reviewerCandidates={approvalReviewerCandidates}
-                  onChange={patch => updateApprovalPolicyRoute(routeKey, patch)}
-                />
-              </Col>
-            ))}
-          </Row>
-
-          <div
-            style={{
-              marginTop: 12,
-              border: '1px solid var(--ui-border)',
-              borderRadius: 12,
-              padding: 12,
-              background: 'var(--ui-surface)',
-            }}
-          >
-            <div style={{ fontWeight: 700, color: 'var(--ui-text)', marginBottom: 8 }}>
-              不可关闭的交付安全底线 <Tag color="red">强制执行</Tag>
-            </div>
-            <Space wrap size={[18, 8]}>
-              {approvalSafeguards.map(item => (
-                <span key={item} style={{ color: 'var(--ui-text-2)', fontSize: 12 }}>
-                  <Switch size="small" checked disabled style={{ marginRight: 6 }} />
-                  {item}
-                </span>
-              ))}
-            </Space>
-          </div>
-
-          {approvalPolicyCanEdit && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <Button
-                disabled={!approvalPolicyDirty || approvalPolicySaving}
-                onClick={() => setApprovalPolicyDraft(approvalPolicyPayload(approvalPolicy))}
-              >
-                撤销未保存修改
-              </Button>
-              <Button
-                type="primary"
-                icon={<SaveOutlined />}
-                loading={approvalPolicySaving}
-                disabled={!approvalPolicyDirty}
-                onClick={saveApprovalPolicy}
-              >
-                保存审批规则
-              </Button>
-            </div>
-          )}
-        </>
-      ) : (
-        !approvalPolicyError && (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="审批规则证据未返回">
-            <Button onClick={loadApprovalPolicy}>重新加载</Button>
-          </Empty>
-        )
-      )}
-    </div>
-  ) : null;
+  // B9：企业审批规则面板自包含（加载/保存/大白话预览），老板与管理员可编辑，其余只读
+  const approvalPolicySection = canViewApprovalPolicy ? <ApprovalPolicyPanel /> : null;
   const approvalsTab = (
     <Panel
       title={
@@ -1731,6 +1530,7 @@ export default function System() {
           }
         />
       </Panel>
+      {canEditKb && <SystemKbHealthCard canBackfill={canBackfillKb} />}
       {gaps.length > 0 && (
         <Alert
           type="warning"
@@ -3047,6 +2847,7 @@ export default function System() {
         <Tabs
           activeKey={tab}
           onChange={changeTab}
+          tabBarExtraContent={canEditPrompt ? <Link to="/onboarding">重新进入开店向导</Link> : null}
           items={[
             { key: 'overview', label: '系统概览', children: overviewTab },
             { key: 'data-intake', label: '数据录入中枢', children: isAdminish ? <DataIntake /> : noPermTip },

@@ -49,9 +49,10 @@ function cliCandidates() {
 }
 
 export function resolveAgenticResearchCli() {
-  return cliCandidates().find(candidate => {
+  return cliCandidates().map(candidate => path.resolve(candidate)).find(candidate => {
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
+      fs.accessSync(candidate, /\.(?:mjs|cjs|js)$/iu.test(candidate)
+        ? fs.constants.R_OK : fs.constants.X_OK);
       return fs.statSync(candidate).isFile();
     } catch {
       return false;
@@ -497,10 +498,16 @@ async function claudeAgenticWebResearch(query, {
   let killGraceTimer = null;
   let onAbort = null;
   try {
-    child = spawn(cliExecutable, args, {
+    // Windows does not execute a Node shebang. Keep the explicit entrypoint
+    // and every CLI argument separate: paths with spaces/metacharacters must
+    // never pass through a shell, nor pick up a different node from PATH.
+    const nodeEntrypoint = /\.(?:mjs|cjs|js)$/iu.test(cliExecutable);
+    child = spawn(nodeEntrypoint ? process.execPath : cliExecutable,
+      nodeEntrypoint ? [cliExecutable, ...args] : args, {
       cwd: workdir,
       env: runner.env,
       shell: false,
+      windowsHide: true,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     });

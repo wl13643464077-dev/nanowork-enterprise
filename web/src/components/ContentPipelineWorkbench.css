@@ -418,6 +418,7 @@
 }
 
 .cpw-station > article {
+  box-sizing: border-box;
   min-width: 0;
   padding: 12px 14px;
   border: 1px solid var(--ui-border);
@@ -1286,6 +1287,15 @@
 }
 
 @media (max-width: 420px) {
+  .cpw-station {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .cpw-station > article {
+    padding: 10px;
+  }
+
   .cpw-provider-assets-grid {
     grid-template-columns: 1fr;
   }

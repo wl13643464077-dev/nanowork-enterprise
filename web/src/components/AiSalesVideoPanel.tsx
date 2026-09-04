@@ -5,10 +5,22 @@ import { notifyCredits, api } from '../api/client';
 
 export type ReferenceImage = { id: string; name: string; url: string; size: number };
 
-export const SALES_VIDEO_DEFAULT_MODEL = 'MiniMax-Hailuo-2.3';
+export const SALES_VIDEO_DEFAULT_MODEL = 'wan2.6-i2v';
 const SALES_VIDEO_RESULT_STORAGE_KEY = 'nanowork.content.aiSalesVideo.last';
 
 type SalesVideoStatus = 'processing' | 'success' | 'failed' | 'blocked';
+const billingPending = (result: any) =>
+  result?.salesVideo?.voiceMode === 'voiced' && result?.billing?.state !== 'settled';
+const stageLabels: Record<string, string> = {
+  preflight: '生成前检查',
+  queued: '等待执行',
+  script: '生成/校验独白',
+  voice: '配音与时长校验',
+  video: '生成两段视频',
+  compose: '合成与字幕校验',
+  recovery: '复用原任务恢复',
+  complete: '成片与结算完成',
+};
 
 const salesVideoStatus = (value: any): SalesVideoStatus => {
   const raw = String(value?.technicalStatus || value?.status || '').trim();
@@ -57,6 +69,8 @@ type AiSalesVideoPanelProps = {
   loadSummary: () => void | Promise<unknown>;
   loadMediaJobs: (kind: string, options?: { silent?: boolean }) => void | Promise<unknown>;
   onTaskSubmitted: () => void;
+  /** 样片库“照这个风格做一条”：预填任务目标；key 变化即重新预填 */
+  presetBrief?: { key: number; text: string } | null;
 };
 
 /**
@@ -74,12 +88,43 @@ export default function AiSalesVideoPanel({
   loadSummary,
   loadMediaJobs,
   onTaskSubmitted,
+  presetBrief = null,
 }: AiSalesVideoPanelProps) {
   const [submitting, setSubmitting] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [polling, setPolling] = useState(false);
   const [form] = Form.useForm();
+  const [videoOptions, setVideoOptions] = useState<any>(null);
+  const [optionsError, setOptionsError] = useState('');
+  const model = Form.useWatch('model', form) || SALES_VIDEO_DEFAULT_MODEL;
+  const voicedMode = model === 'wan2.6-i2v';
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void api
+      .get('/content/ai-sales-video/options', { silent: true })
+      .then(options => {
+        if (!cancelled) {
+          setVideoOptions(options);
+          setOptionsError('');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVideoOptions(null);
+          setOptionsError('配置检查失败，请关闭后重新打开；尚未发起生成。');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !presetBrief?.text) return;
+    form.setFieldsValue({ brief: presetBrief.text });
+  }, [open, presetBrief?.key, presetBrief?.text, form]);
   const pollTimerRef = useRef<number | null>(null);
   const pollJobRef = useRef<number | null>(null);
   const pollUrlRef = useRef('');
@@ -147,7 +192,8 @@ export default function AiSalesVideoPanel({
           if (status !== 'processing') {
             clearPolling();
             if (status === 'success') {
-              message.success('技术成片已完成，待管理层媒体验收/导入素材库；未自动发布');
+              if (billingPending(current)) message.warning('视频已生成，账务待核验，暂不可使用；可复用原任务恢复');
+              else message.success('技术成片已完成，待管理层媒体验收/导入素材库；未自动发布');
               await Promise.all([loadMaterials(), loadSummary(), loadMediaJobs('video', { silent: true })]);
             } else if (status === 'failed') {
               message.error(
@@ -196,7 +242,8 @@ export default function AiSalesVideoPanel({
         message.info('任务仍在后台生成，已继续轮询');
       } else if (status === 'success') {
         clearPolling();
-        message.success('技术成片已完成，待管理层媒体验收/导入素材库；未自动发布');
+        if (billingPending(latest)) message.warning('视频已生成，账务待核验，暂不可使用；可复用原任务恢复');
+        else message.success('技术成片已完成，待管理层媒体验收/导入素材库；未自动发布');
       } else if (status === 'failed') {
         clearPolling();
         message.error(`${latest?.error || latest?.reason || 'AI带货员成片失败'}；请查看账务状态`);
@@ -221,13 +268,23 @@ export default function AiSalesVideoPanel({
       return;
     }
     if (!saved?.jobId) return;
-    queueMicrotask(() => {
-      setResult(saved);
-      if (salesVideoStatus(saved) === 'processing' && saved.pollUrl) {
-        startPolling(saved.pollUrl, Number(saved.jobId));
-      }
-    });
-  }, [initialJobId, startPolling]);
+    // Reauthorize on every restoration; a prior account's cached status must
+    // not appear for a different user/tenant in the same browser tab.
+    const pollUrl = `/content/media-jobs/${Number(saved.jobId)}`;
+    void api
+      .get(pollUrl, { silent: true })
+      .then(latest => {
+        const status = applyPollResult(latest, Number(saved.jobId), pollUrl);
+        if (status === 'processing') startPolling(pollUrl, Number(saved.jobId));
+      })
+      .catch(() => {
+        try {
+          window.sessionStorage.removeItem(SALES_VIDEO_RESULT_STORAGE_KEY);
+        } catch {
+          /* storage may be disabled */
+        }
+      });
+  }, [applyPollResult, initialJobId, startPolling]);
 
   useEffect(() => {
     const jobId = Number(initialJobId);
@@ -258,6 +315,10 @@ export default function AiSalesVideoPanel({
         return;
       }
       const values = await form.validateFields();
+      if (values.model === 'wan2.6-i2v' && !videoOptions?.ready) {
+        message.warning('有声生成前检查尚未通过，请先查看配置提示');
+        return;
+      }
       if (!refImgs.length) {
         message.error('请至少上传一张人物、菜品/商品或门店图片');
         return;
@@ -267,6 +328,14 @@ export default function AiSalesVideoPanel({
       const response = await api.post('/content/ai-sales-video', {
         brief: values.brief,
         model: values.model || SALES_VIDEO_DEFAULT_MODEL,
+        ...(values.model === 'wan2.6-i2v'
+          ? {
+              mode: 'voiced',
+              voiceId: values.voiceId,
+              audience: values.audience,
+              quoteFingerprint: videoOptions?.quoteFingerprint,
+            }
+          : {}),
         referenceImages: refImgs.map(image => image.url),
       });
       const jobId = Number(response?.jobId);
@@ -286,7 +355,7 @@ export default function AiSalesVideoPanel({
       onTaskSubmitted();
       void loadMaterials();
       if (normalizedStatus === 'blocked') {
-        message.info('30秒脚本与分镜已建立；视频供应商待开通或待付费授权');
+        message.info(response.reason || '生成前检查未通过，尚未发起视频生成');
       } else if (normalizedStatus === 'processing' && jobId && pollUrl) {
         startPolling(pollUrl, jobId);
         message.success('AI带货员已接单，任务在后台生成；可关闭窗口后再查看结果');
@@ -344,26 +413,32 @@ export default function AiSalesVideoPanel({
   }, [applyPollResult, result, startPolling]);
 
   const currentStatus = salesVideoStatus(result);
+  const voicedResult = result?.salesVideo || (result?.plan?.voiceMode === 'voiced' ? result.plan : null);
+  const awaitingBilling = currentStatus === 'success' && billingPending(result);
   const resultAlert = result && (
     <Alert
       type={
-        currentStatus === 'failed'
-          ? 'error'
-          : currentStatus === 'blocked'
-            ? 'warning'
-            : currentStatus === 'success'
-              ? 'success'
-              : 'info'
+        awaitingBilling
+          ? 'warning'
+          : currentStatus === 'failed'
+            ? 'error'
+            : currentStatus === 'blocked'
+              ? 'warning'
+              : currentStatus === 'success'
+                ? 'success'
+                : 'info'
       }
       showIcon
       message={
-        currentStatus === 'success'
-          ? '技术成片已完成，待管理层媒体验收/导入素材库；未自动发布'
-          : currentStatus === 'failed'
-            ? 'AI带货员成片失败'
-            : currentStatus === 'blocked'
-              ? '脚本与分镜已建立，成片能力待开通'
-              : 'AI带货员已接单，后台生成中'
+        awaitingBilling
+          ? '视频已生成，账务待核验（暂不可使用）'
+          : currentStatus === 'success'
+            ? '技术成片已完成，待管理层媒体验收/导入素材库；未自动发布'
+            : currentStatus === 'failed'
+              ? 'AI带货员成片失败'
+              : currentStatus === 'blocked'
+                ? '生成前检查未通过，尚未生成视频'
+                : 'AI带货员已接单，后台生成中'
       }
       description={
         <div>
@@ -378,27 +453,68 @@ export default function AiSalesVideoPanel({
                     : '本次未形成可交付成片，积分状态待对账。'
                   : '可关闭窗口，任务会继续在后台执行。')}
           </p>
-          {Array.isArray(result.plan?.segments) && (
-            <p>
-              已规划 {result.plan.segments.length} 个镜头片段；实际外部调用 {result.providerCalls || 0} 次。
-            </p>
+          {voicedResult ? (
+            <div>
+              <p>
+                当前阶段：{stageLabels[voicedResult.stage] || '等待检查'} · 音色：
+                {videoOptions?.voices?.find((voice: any) => voice.id === voicedResult.voiceId)?.label ||
+                  voicedResult.voiceId}
+              </p>
+              <p>
+                已发起调用：文本 {voicedResult.calls?.text || 0} 次 · 配音 {voicedResult.calls?.tts || 0} 次 · 视频{' '}
+                {voicedResult.calls?.video || 0} 次
+              </p>
+              <p>
+                音轨验证：{voicedResult.audioVerified ? '通过（30秒、两段非静音）' : '尚未通过'}；字幕烧录：
+                {voicedResult.subtitlesBurnedIn ? '已核验' : '尚未核验'}。
+              </p>
+              <p>
+                账务：
+                {result.billing?.state === 'settled'
+                  ? `已结算 ${result.billing.chargedCredits ?? result.credits ?? 0} 积分`
+                  : result.billing?.state === 'released'
+                    ? '预授权已退回'
+                    : result.billing?.state === 'not_held'
+                      ? '未占扣'
+                      : `预授权 ${result.billing?.heldCredits ?? result.billing?.estimatedCredits ?? 0} 积分${result.billing?.pendingReconciliation ? '，待对账' : ''}`}
+              </p>
+              {voicedResult.script?.shots?.length === 2 && (
+                <details>
+                  <summary>查看已校验独白</summary>
+                  {voicedResult.script.shots.map((shot: any) => (
+                    <p key={shot.index}>
+                      {shot.start}–{shot.end}秒：{shot.voiceover}
+                    </p>
+                  ))}
+                </details>
+              )}
+            </div>
+          ) : (
+            Array.isArray(result.plan?.segments) && (
+              <p>
+                已规划 {result.plan.segments.length} 个镜头片段；实际外部调用 {result.providerCalls || 0} 次。
+              </p>
+            )
           )}
           <Space wrap size={8}>
             <Button size="small" loading={polling} onClick={() => void refreshResult()}>
               刷新任务结果
             </Button>
-            {result?.recovery?.available === true && (
+            {result?.recovery?.available === true && (!voicedResult || videoOptions?.canRecover) && (
               <Button
                 size="small"
                 type="primary"
                 loading={recovering}
+                style={{ whiteSpace: 'normal', height: 'auto' }}
                 onClick={() => void recoverExistingProviderTasks()}
               >
                 复用原任务恢复成片（不重复生成）
               </Button>
             )}
             {currentStatus === 'processing' && <Tag color="processing">后台轮询中，不会重复提交</Tag>}
-            {currentStatus === 'success' && <Tag color="gold">待管理层验收 / 导入素材库</Tag>}
+            {currentStatus === 'success' && (
+              <Tag color="gold">{awaitingBilling ? '账务待核验，暂不可使用' : '待管理层验收 / 导入素材库'}</Tag>
+            )}
             {currentStatus === 'failed' && (
               <Tag color={result.billing?.state === 'released' ? 'green' : 'orange'}>
                 {result.billing?.state === 'released' ? '预授权已退回' : '积分待对账'}
@@ -416,31 +532,37 @@ export default function AiSalesVideoPanel({
         <Alert
           style={{ marginBottom: 16 }}
           type={
-            currentStatus === 'failed'
-              ? 'error'
-              : currentStatus === 'blocked'
-                ? 'warning'
-                : currentStatus === 'success'
-                  ? 'success'
-                  : 'info'
+            awaitingBilling
+              ? 'warning'
+              : currentStatus === 'failed'
+                ? 'error'
+                : currentStatus === 'blocked'
+                  ? 'warning'
+                  : currentStatus === 'success'
+                    ? 'success'
+                    : 'info'
           }
           showIcon
           message={
-            currentStatus === 'success'
-              ? 'AI带货员：技术成片已完成'
-              : currentStatus === 'failed'
-                ? 'AI带货员：成片任务失败'
-                : currentStatus === 'blocked'
-                  ? 'AI带货员：成片能力待开通'
-                  : 'AI带货员：任务正在后台生成'
+            awaitingBilling
+              ? 'AI带货员：已成片，账务待核验'
+              : currentStatus === 'success'
+                ? 'AI带货员：技术成片已完成'
+                : currentStatus === 'failed'
+                  ? 'AI带货员：成片任务失败'
+                  : currentStatus === 'blocked'
+                    ? 'AI带货员：成片能力待开通'
+                    : 'AI带货员：任务正在后台生成'
           }
           description={
             <Space wrap size={8}>
               <span>
                 任务 #{result.jobId} ·{' '}
-                {currentStatus === 'success'
-                  ? '待管理层媒体验收/导入素材库，未自动发布'
-                  : result.reason || result.error || '可关闭窗口，后台会继续执行'}
+                {awaitingBilling
+                  ? '暂不可使用，可复用原任务核验账本，不重新生成'
+                  : currentStatus === 'success'
+                    ? '待管理层媒体验收/导入素材库，未自动发布'
+                    : result.reason || result.error || '可关闭窗口，后台会继续执行'}
               </span>
               <Button size="small" onClick={() => onOpenChange(true)}>
                 查看任务结果
@@ -460,7 +582,9 @@ export default function AiSalesVideoPanel({
         okText="开始工作"
         cancelText="关闭"
         confirmLoading={submitting}
-        okButtonProps={{ disabled: Boolean(result && currentStatus === 'processing') }}
+        okButtonProps={{
+          disabled: Boolean(result && currentStatus === 'processing') || (voicedMode && !videoOptions?.ready),
+        }}
         onOk={submit}
         onCancel={() => onOpenChange(false)}
       >
@@ -468,10 +592,15 @@ export default function AiSalesVideoPanel({
           type="info"
           showIcon
           message="你只管说要卖什么，其余交给数字员工"
-          description="上传人物、菜品/商品或门店图片，再写一句目标。AI带货员会自动完成事实整理、30秒口播、分镜、字幕和视频任务；缺少付费授权时会停在待开通，不会伪造视频。"
+          description="上传真实图片并写一句目标。有声模式会生成中文独白、配音、两段视频与字幕；旧MiniMax模式保留画面生成。生成前检查未通过时不会调用收费服务。"
           style={{ marginBottom: 16 }}
         />
-        <Form form={form} layout="vertical" initialValues={{ model: SALES_VIDEO_DEFAULT_MODEL }}>
+        <Form
+          name="ai-sales-video"
+          form={form}
+          layout="vertical"
+          initialValues={{ model: SALES_VIDEO_DEFAULT_MODEL, voiceId: 'presenter_female' }}
+        >
           <Form.Item
             name="brief"
             label="这次要卖什么？"
@@ -527,11 +656,52 @@ export default function AiSalesVideoPanel({
           <Form.Item name="model" label="视频模型">
             <Select
               options={[
-                { value: 'MiniMax-Hailuo-2.3', label: 'Hailuo 2.3 · 质量优先' },
-                { value: 'MiniMax-H3', label: 'MiniMax H3 · 最新多模态（需官方API密钥与后台双核验）' },
+                { value: 'wan2.6-i2v', label: 'Wan2.6 · 中文独白 + 配音 + 字幕（30秒）' },
+                { value: 'MiniMax-Hailuo-2.3', label: 'Hailuo 2.3 · 旧画面模式（无独白配音）' },
+                { value: 'MiniMax-H3', label: 'MiniMax H3 · 需官方API密钥与后台双核验' },
               ]}
             />
           </Form.Item>
+          {voicedMode && (
+            <>
+              <Form.Item name="voiceId" label="口播音色" rules={[{ required: true, message: '请选择可用音色' }]}>
+                <Select
+                  loading={!videoOptions && !optionsError}
+                  options={(videoOptions?.voices || []).map((voice: any) => ({ value: voice.id, label: voice.label }))}
+                />
+              </Form.Item>
+              <Form.Item name="audience" label="目标客群（选填）">
+                <Input maxLength={120} placeholder="例如：附近家庭、午餐上班族" />
+              </Form.Item>
+              <Alert
+                type={optionsError || videoOptions?.blockers?.length ? 'warning' : 'info'}
+                showIcon
+                message={
+                  optionsError ||
+                  (!videoOptions
+                    ? '正在检查有声生成配置…'
+                    : videoOptions.ready
+                      ? '有声生成配置检查通过'
+                      : '有声生成配置未就绪')
+                }
+                description={
+                  <div>
+                    {videoOptions?.blockers?.map((reason: string) => (
+                      <p key={reason}>{reason}</p>
+                    ))}
+                    {videoOptions?.estimatedMaxCredits != null && (
+                      <p>
+                        本次最多预授权 {videoOptions.estimatedMaxCredits}{' '}
+                        积分，覆盖最多3次文本、3次配音、2段视频。按实际调用结算，未用额度退回；结果不明时保留待对账，不自动重复生成。
+                      </p>
+                    )}
+                    <p>字幕按实测配音时长分句排列，不是逐字语音识别对齐；生成完成后仍需人工检查声音、嘴型和画面。</p>
+                  </div>
+                }
+                style={{ marginBottom: 16 }}
+              />
+            </>
+          )}
         </Form>
         {resultAlert}
       </Modal>

@@ -1,0 +1,264 @@
+/* 充值中心：我的套餐 / 套餐分组 / 积分权益换算 */
+.rc-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 我的套餐卡 */
+.rc-plan {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--shadow-1);
+}
+
+.rc-plan[data-status='expiring'] {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--ui-border));
+  background: color-mix(in srgb, var(--warn) 6%, var(--ui-surface));
+}
+
+.rc-plan[data-status='expired'] {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--ui-border));
+  background: color-mix(in srgb, var(--danger) 5%, var(--ui-surface));
+}
+
+.rc-plan-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.rc-plan-label {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.rc-plan-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 700;
+}
+
+.rc-plan-value {
+  color: var(--ui-text);
+  font-size: var(--font-5);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.rc-plan-value small {
+  margin-left: var(--space-1);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  font-weight: 500;
+}
+
+.rc-plan-hint {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.rc-plan-hint[data-tone='warn'] {
+  color: var(--ui-warning-text);
+}
+
+.rc-plan-hint[data-tone='danger'] {
+  color: var(--danger);
+}
+
+/* 积分能做什么 */
+.rc-equiv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--ui-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+}
+
+.rc-equiv-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ui-text-2);
+  font-weight: 600;
+}
+
+.rc-equiv-items {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.rc-equiv-items b {
+  color: var(--ui-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 每项后的"≈ ¥X 成本"小字：供应商成本口径，弱化显示 */
+.rc-equiv-cost {
+  margin-left: var(--space-1);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rc-equiv-assumptions {
+  display: grid;
+  gap: var(--space-1);
+  max-width: 360px;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+/* 套餐分组 */
+.rc-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-1) 0;
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.rc-group-title span {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  font-weight: 500;
+}
+
+.rc-pkg {
+  position: relative;
+  height: 100%;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--shadow-1);
+}
+
+.rc-pkg[data-kind='plan'] {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+  background: linear-gradient(180deg, var(--ui-primary-soft), var(--ui-surface) 60%);
+}
+
+.rc-pkg-tag {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+}
+
+.rc-pkg-name {
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.rc-pkg-price {
+  margin: var(--space-3) 0 var(--space-1);
+  color: var(--danger);
+  font-size: var(--font-7);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.rc-pkg-price small {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  font-weight: 500;
+}
+
+.rc-pkg-credits {
+  color: var(--ui-accent);
+  font-size: var(--font-3);
+  font-weight: 600;
+}
+
+.rc-pkg-bonus {
+  margin-top: 2px;
+  color: var(--chart-2);
+  font-size: var(--font-1);
+}
+
+.rc-pkg-terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-2) 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.rc-pkg-terms li {
+  list-style: none;
+}
+
+.rc-pkg-terms li + li::before {
+  content: '·';
+  margin-right: var(--space-2);
+  color: var(--ui-muted);
+}
+
+.rc-pkg-est {
+  min-height: 32px;
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.rc-pkg-buy {
+  border: none;
+  background: linear-gradient(90deg, var(--ui-primary-strong), var(--ui-muted));
+}
+
+.rc-pkg[data-kind='plan'] .rc-pkg-buy {
+  background: linear-gradient(90deg, var(--ui-primary-strong), var(--ui-primary));
+}
+
+/* 下单确认框内的说明块 */
+.rc-order-box {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  font-size: var(--font-2);
+  line-height: 2;
+}
+
+.rc-order-box .rc-price {
+  color: var(--danger);
+}
+
+.rc-order-box .rc-credit {
+  color: var(--ui-accent);
+}
+
+.rc-order-box .rc-muted {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+@media (max-width: 900px) {
+  .rc-plan {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -37,7 +37,7 @@ const offScaleDetail = new Map();
 
 for (const file of files) {
   const src = fs.readFileSync(file, "utf8");
-  const rel = path.relative(root, file);
+  const rel = path.relative(root, file).split(path.sep).join("/");
   const isTsx = file.endsWith(".tsx");
 
   if (isTsx) {

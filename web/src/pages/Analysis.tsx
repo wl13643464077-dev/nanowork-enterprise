@@ -44,6 +44,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import dayjs, { Dayjs } from 'dayjs';
 import { api, fmtMoney, fmtWan } from '../api/client';
+import { useStoreVersion } from '../api/store-context';
 import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
@@ -78,6 +79,7 @@ const buttonResetStyle = {
 
 export default function Analysis() {
   const nav = useNavigate();
+  const storeVersion = useStoreVersion();
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(29, 'day'), dayjs()]);
   const [overview, setOverview] = useState<any>({});
   const [drill, setDrill] = useState<{ open: boolean; kind: string; data: any }>({ open: false, kind: '', data: null });
@@ -216,7 +218,8 @@ export default function Analysis() {
     api.get(`/analysis/health${qs}`).then(apply(setHealth));
     api.get(`/analysis/insights${qs}`).then(apply(setInsights));
     api.get('/analysis/weekly-review/latest').then(setWeekly);
-  }, [range]);
+    // storeVersion：顶栏切换门店（store-changed）后按新门店上下文整页重拉
+  }, [range, storeVersion]);
 
   const reloadAnalysis = () => {
     const requestId = ++analysisRequestRef.current;

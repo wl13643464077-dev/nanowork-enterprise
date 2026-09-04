@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { removeTempDbSafely } from './helpers/temp-db.mjs';
 
 const nativeFetch = globalThis.fetch;
 const DBP = path.join(os.tmpdir(), `nanowork-runtime-readiness-${process.pid}.db`);
@@ -33,6 +34,8 @@ for (const key of [
   'ALIPAY_PRIVATE_KEY',
   'ALIPAY_PUBLIC_KEY',
   'ALIPAY_NOTIFY_URL',
+  'AMAP_WEB_KEY',
+  'AMAP_BASE_URL',
 ]) process.env[key] = '';
 
 const {
@@ -51,6 +54,10 @@ const {
 } = await import('../src/engines/runtime-readiness.js');
 const adminRoutes = (await import('../src/routes/admin.js')).default;
 const systemRoutes = (await import('../src/routes/system.js')).default;
+const {
+  resetAmapRuntimeState,
+  createAmapClient,
+} = await import('../src/engines/amap.js');
 
 initSchema();
 migrateV2();
@@ -407,8 +414,136 @@ test('readiness GET 严禁联网，AI 显式测试成败会更新进程内证据
   });
 });
 
-after(() => {
+test('第 9 通道高德：未配置=disabled，已配置未验证=configured_unverified，测试通过=connected，配额超限=blocked，密钥变化使验证过期', async () => {
+  const previousKey = process.env.AMAP_WEB_KEY;
+  const previousBase = process.env.AMAP_BASE_URL;
+  const amapKey = 'amap-runtime-readiness-key-must-never-leak';
+  try {
+    clearRuntimeReadinessChecks();
+    resetAmapRuntimeState();
+    setConfig('amap_verified_at', '');
+    setConfig('amap_verified_fingerprint', '');
+    process.env.AMAP_WEB_KEY = '';
+    process.env.AMAP_BASE_URL = '';
+
+    let matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1 }));
+    assert.equal(matrix.channels.length, 9, '就绪矩阵应为 9 通道');
+    assert.equal(matrix.summary.total, 9);
+    let amap = channel(matrix, 'amap');
+    assert.equal(amap.configured, false);
+    assert.equal(amap.effective, 'disabled');
+    assert.equal(amap.verification, 'not_applicable');
+    assert.equal(amap.description, '高德地图未配置，选址岗位使用 OSM 与公开检索。');
+    assert.match(amap.missing.join(' '), /AMAP_WEB_KEY/u);
+    assert.equal(amap.canPerformExternalAction, false);
+    assert.equal(amap.details.fallback, 'osm_and_public_web_search');
+    assert.equal(amap.details.cacheTable, 'geo_poi_cache');
+
+    process.env.AMAP_WEB_KEY = amapKey;
+    matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 1_000 }));
+    amap = channel(matrix, 'amap');
+    assert.equal(amap.configured, true);
+    assert.equal(amap.effective, 'configured_unverified');
+    assert.equal(amap.verified, false);
+    assert.match(amap.nextAction, /api-config\/amap\/test/u);
+    assert.doesNotMatch(JSON.stringify(amap), /must-never-leak/u);
+
+    await withServer(async base => {
+      let amapCalls = 0;
+      globalThis.fetch = async input => {
+        const url = new URL(String(input));
+        assert.equal(url.hostname, 'restapi.amap.com');
+        assert.equal(url.pathname, '/v3/geocode/geo');
+        assert.equal(url.searchParams.get('key'), amapKey);
+        amapCalls += 1;
+        return Response.json({
+          status: '1',
+          infocode: '10000',
+          geocodes: [{ location: '116.48,39.99', adcode: '110105', formatted_address: '北京市朝阳区阜通东大街6号' }],
+        });
+      };
+      let result = await request(base, '/admin/api-config/amap/test', 'POST', {});
+      assert.equal(result.response.status, 200);
+      assert.equal(result.json.ok, true);
+      assert.equal(result.json.adcode, '110105');
+      assert.equal(result.json.readiness.effective, 'connected');
+      assert.equal(result.json.readiness.verification, 'passed');
+      assert.equal(result.json.readiness.lastCheck.evidence.blocked, false);
+      assert.equal(amapCalls, 1);
+      assert.doesNotMatch(JSON.stringify(result.json), /must-never-leak/u);
+      assert.equal(typeof q.get("SELECT value FROM sys_config WHERE key='amap_verified_at'")?.value, 'string');
+
+      globalThis.fetch = async () => {
+        amapCalls += 1;
+        throw new Error('readiness GET 不允许调用 fetch');
+      };
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(result.response.status, 200);
+      assert.equal(amapCalls, 1);
+      assert.equal(channel(result.json, 'amap').effective, 'connected');
+      assert.ok(channel(result.json, 'amap').details.persistedVerifiedAt);
+
+      // 进程内检查清空后，持久化 amap_verified_at（指纹一致、24h 内）仍支撑 connected
+      clearRuntimeReadinessChecks();
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(channel(result.json, 'amap').effective, 'connected');
+      assert.equal(channel(result.json, 'amap').verification, 'never');
+
+      // 密钥变化 → 指纹不同 → 持久化验证失效
+      process.env.AMAP_WEB_KEY = `${amapKey}-rotated`;
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(channel(result.json, 'amap').effective, 'configured_unverified');
+      assert.equal(channel(result.json, 'amap').details.persistedVerificationStale, true);
+      process.env.AMAP_WEB_KEY = amapKey;
+
+      // 日配额超限 → blocked，且旧持久化验证被作废
+      globalThis.fetch = async () => Response.json({ status: '0', info: 'DAILY_QUERY_OVER_LIMIT', infocode: '10003' });
+      result = await request(base, '/admin/api-config/amap/test', 'POST', {});
+      assert.equal(result.response.status, 200);
+      assert.equal(result.json.ok, false);
+      assert.equal(result.json.blocked, true);
+      assert.equal(result.json.quotaExceeded, true);
+      assert.equal(result.json.infocode, '10003');
+      assert.equal(result.json.readiness.effective, 'blocked');
+      assert.match(result.json.readiness.description, /受阻/u);
+      assert.match(result.json.readiness.capabilitySummary, /回落 OSM/u);
+      assert.equal(q.get("SELECT value FROM sys_config WHERE key='amap_verified_at'")?.value, '""');
+
+      // 运行时（派活链）命中 10001 同样翻 blocked，成功调用后恢复
+      clearRuntimeReadinessChecks();
+      resetAmapRuntimeState();
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(channel(result.json, 'amap').effective, 'configured_unverified');
+      const runtimeClient = createAmapClient({
+        fetchImpl: async () => Response.json({ status: '0', info: 'INVALID_USER_KEY', infocode: '10001' }),
+        cache: false,
+      });
+      await assert.rejects(() => runtimeClient.geocode('太原吾悦广场', '太原'));
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(channel(result.json, 'amap').effective, 'blocked');
+      assert.equal(channel(result.json, 'amap').details.runtime.lastBlocked.infocode, '10001');
+      const okClient = createAmapClient({
+        fetchImpl: async () => Response.json({ status: '1', infocode: '10000', geocodes: [{ location: '1,2', adcode: '1' }] }),
+        cache: false,
+      });
+      await okClient.geocode('x', 'y');
+      result = await request(base, '/admin/runtime-readiness');
+      assert.equal(channel(result.json, 'amap').effective, 'configured_unverified');
+    });
+  } finally {
+    globalThis.fetch = nativeFetch;
+    resetAmapRuntimeState();
+    setConfig('amap_verified_at', '');
+    setConfig('amap_verified_fingerprint', '');
+    if (previousKey === undefined) delete process.env.AMAP_WEB_KEY;
+    else process.env.AMAP_WEB_KEY = previousKey;
+    if (previousBase === undefined) delete process.env.AMAP_BASE_URL;
+    else process.env.AMAP_BASE_URL = previousBase;
+  }
+});
+
+after(async () => {
   globalThis.fetch = nativeFetch;
   clearRuntimeReadinessChecks();
-  for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: true });
+  await removeTempDbSafely(DBP);
 });

@@ -19,8 +19,10 @@ function walk(dir, out = []) {
   return out;
 }
 
+// rel 统一为正斜杠：LEGACY_ALLOW / MAX_LINES 的 key 都是 POSIX 风格，
+// Windows 下 path.relative 返回反斜杠会让豁免与上限表整体失配（误报术语残留、漏查行数）。
 const files = walk(SRC).map((f) => ({
-  rel: path.relative(root, f),
+  rel: path.relative(root, f).split(path.sep).join("/"),
   src: fs.readFileSync(f, "utf8"),
 }));
 const violations = [];

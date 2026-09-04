@@ -43,12 +43,12 @@ jobs:
           echo "DOCX_FONT_PATH=$RUNNER_TEMP/NotoSansCJKsc-Regular.otf" >> "$GITHUB_ENV"
 
       - name: 安装依赖（server）
-        run: npm ci --prefix server || npm install --prefix server
+        run: npm ci --prefix server
 
       - name: 安装依赖（web）
-        run: npm ci --prefix web || npm install --prefix web
+        run: npm ci --prefix web
 
-      # 后端测试：79 个 node:test 文件
+      # 使用独立数据库和模板 AI，运行当前全部 node:test 文件。
       - name: 后端测试
         run: npm run test
 

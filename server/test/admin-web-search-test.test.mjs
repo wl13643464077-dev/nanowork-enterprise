@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { removeTempDirSafely } from './helpers/temp-db.mjs';
 
 const testRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), `nanowork-admin-web-search-${process.pid}-`),
@@ -409,11 +410,12 @@ test('同一用户并发点击联网验收只触发一次昂贵主备链调用',
   assert.equal(fetchCalls, 1);
 });
 
-after(() => {
+after(async () => {
   globalThis.fetch = nativeFetch;
+  // 先清理再还原环境：helper 依据 NANOWORK_DB 判断是否需要关闭共享库连接
+  await removeTempDirSafely(testRoot, { dbPath });
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  fs.rmSync(testRoot, { recursive: true, force: true });
 });

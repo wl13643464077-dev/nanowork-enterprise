@@ -1,0 +1,249 @@
+/* 开店向导：5 个固定问题 → 门店档案 + 企业知识 + 推荐 3 位数字员工。
+   全部尺寸/颜色走 theme.css token；窄屏（≤640px）改竖排步骤条与单列卡片。 */
+.onboarding-page {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 920px;
+  margin: 0 auto;
+  padding-bottom: var(--space-7);
+}
+
+.onboarding-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.onboarding-kicker {
+  margin: 0 0 var(--space-1);
+  color: var(--ui-primary);
+  font-size: var(--font-1);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.onboarding-title {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-6);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.onboarding-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-3);
+  line-height: 1.6;
+}
+
+.onboarding-card {
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--shadow-1);
+}
+
+.onboarding-steps {
+  margin-bottom: var(--space-5);
+}
+
+.onboarding-step-title {
+  margin: 0 0 var(--space-1);
+  color: var(--ui-text);
+  font-size: var(--font-5);
+  font-weight: 600;
+}
+
+.onboarding-step-hint {
+  margin: 0 0 var(--space-5);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.onboarding-form .ant-form-item {
+  margin-bottom: var(--space-4);
+}
+
+.onboarding-form .ant-form-item-label > label {
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 500;
+}
+
+.onboarding-number {
+  width: 100%;
+  max-width: 240px;
+}
+
+.onboarding-slider-value {
+  margin-top: var(--space-1);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+}
+
+.onboarding-files {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--ui-border);
+}
+
+.onboarding-actions-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.onboarding-draft-state {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.onboarding-summary {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.onboarding-summary strong {
+  color: var(--ui-text);
+}
+
+.onboarding-team-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 var(--space-3);
+}
+
+.onboarding-team-head h3 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 600;
+}
+
+.onboarding-team-note {
+  margin: 0 0 var(--space-3);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.onboarding-team {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.onboarding-member {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+.onboarding-member:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+}
+
+.onboarding-member-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.onboarding-member-name {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 600;
+}
+
+.onboarding-member-duty {
+  margin: 2px 0 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.onboarding-member-task {
+  flex: 1;
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  line-height: 1.65;
+}
+
+.onboarding-member-why {
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.5;
+}
+
+.onboarding-member-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.onboarding-credit-hint {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.onboarding-done-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+@media (max-width: 640px) {
+  .onboarding-card {
+    padding: var(--space-4);
+  }
+
+  .onboarding-title {
+    font-size: var(--font-5);
+  }
+
+  .onboarding-team {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-actions .ant-btn {
+    flex: 1 1 auto;
+  }
+}

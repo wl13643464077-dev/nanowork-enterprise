@@ -30,6 +30,7 @@ import {
   SoundOutlined,
 } from '@ant-design/icons';
 import { api, getUser } from '../api/client';
+import { useStoreVersion } from '../api/store-context';
 import './StoreOps.css';
 
 // 门店日常操作台：日清检查 / 沽清板 / 排班考勤 / AI 晨会。
@@ -856,8 +857,11 @@ function MorningBrief() {
 }
 
 export default function StoreOps() {
+  // 多门店：顶栏切换门店后各台账按新门店重拉（用 key 重挂子面板，保留当前页签）
+  const storeVersion = useStoreVersion();
+  const [activeTab, setActiveTab] = useState('checklists');
   return (
-    <div className="sop-page">
+    <div className="sop-page" key={storeVersion}>
       <header className="sop-head">
         <div>
           <span className="sop-kicker">门店日常 · 每天开门要干的活</span>
@@ -867,7 +871,8 @@ export default function StoreOps() {
       </header>
       <MorningBrief />
       <Tabs
-        defaultActiveKey="checklists"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'checklists',

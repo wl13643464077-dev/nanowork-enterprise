@@ -4,6 +4,9 @@ import {
   verifyPassword, hashPassword, signToken, verifyToken, authMiddleware, logOp, notify, SESSION_COOKIE,
   tokenFromRequest, createSession, touchSession, revokeSession, listSessions,
 } from '../util.js';
+import { planSummary } from '../engines/plan.js';
+import { listTenantStores } from '../engines/store-scope.js';
+import { budgetSummary } from '../engines/credits.js';
 
 const r = Router();
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -107,6 +110,7 @@ r.post('/login', asyncRoute(async (req, res) => {
       tenant: {
         id: tenant.id, name: tenant.name, status: tenant.status, plan: tenant.plan,
         dataMode: tenant.data_mode ?? 'live',
+        onboardingStatus: tenant.onboarding_status ?? 'pending',
       },
     },
   });
@@ -187,13 +191,21 @@ r.post('/register', (req, res) => {
 });
 
 r.get('/me', authMiddleware, (req, res) => {
-  const u = q.get('SELECT id,username,name,role,dept,phone,tenant_id,last_login_at FROM users WHERE id = ?', req.user.id);
+  const u = q.get('SELECT id,username,name,role,dept,phone,tenant_id,store_id,last_login_at FROM users WHERE id = ?', req.user.id);
   const tenant = getTenant(u?.tenant_id || 1);
   res.json({
     ...u, credits: tenant?.credits ?? 0, modules: modulesFor(u),
+    // 多门店：storeId=NULL 表示总部/全店；tenant.stores 供顶栏门店切换器（>1 家才显示）
+    storeId: u?.store_id == null ? null : Number(u.store_id),
     tenant: tenant ? {
       id: tenant.id, name: tenant.name, status: tenant.status, plan: tenant.plan,
       dataMode: tenant.data_mode ?? 'live',
+      onboardingStatus: tenant.onboarding_status ?? 'pending',
+      stores: listTenantStores(tenant.id, 200),
+      // 年度套餐摘要（plan 仍是旧文本标签，只追加字段）：{code,name,seatLimit,seatsUsed,startedAt,expiresAt,status,daysLeft}
+      planSummary: planSummary(tenant),
+      // 月度 AI 预算摘要（顶栏预警 Tag 用）：{month,budget,alertRatio,used,remaining,forecast,ratioUsed,state}
+      budgetSummary: budgetSummary(tenant),
     } : null,
   });
 });

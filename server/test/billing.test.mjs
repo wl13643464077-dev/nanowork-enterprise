@@ -32,13 +32,18 @@ test('入账：余额 / 累计充值 / 流水 三者一致', () => {
 
 test('扣减：按 token 精确计费，余额减少量 == 流水记账量', () => {
   const before = credits.balanceOfTenant(T);
-  // deepseek-v4-flash 单价 in/out=5/5（元/百万token）；(1000*5+1000*5)/1e6=0.01元 ×1.5毛利 /0.01元每分 = 1.5 → 向上取整 2 分
+  // 按价目表精确计费：credits = ceil((1000×in + 1000×out)/1e6 元 × 毛利 ÷ 每分元)。
+  // 单价跟随价目表（2026-09-03 已按中转站实价核验），这里不写死分值，只锁公式与账实一致。
+  const b = credits.billing();
+  const p = b.text['deepseek-v4-flash'];
+  const expected = Math.ceil(((1000 * p.in + 1000 * p.out) / 1e6) * b.marginMultiplier / b.creditYuan);
+  assert.ok(expected >= 1);
   const r = credits.charge({ userId: U, feature: 'AI话术', kind: 'text', model: 'deepseek-v4-flash', usage: { inputTokens: 1000, outputTokens: 1000 }, aiMode: 'api' });
-  assert.equal(r.credits, 2, '计费公式：ceil(成本×毛利/单价)');
-  assert.equal(r.balance, before - 2, '余额应精确减少 2 分');
+  assert.equal(r.credits, expected, '计费公式：ceil(成本×毛利/单价)');
+  assert.equal(r.balance, before - expected, `余额应精确减少 ${expected} 分`);
   const log = db.prepare('SELECT credits,balance_after FROM credit_logs WHERE tenant_id=? ORDER BY id DESC LIMIT 1').get(T);
-  assert.equal(log.credits, 2);
-  assert.equal(log.balance_after, before - 2);
+  assert.equal(log.credits, expected);
+  assert.equal(log.balance_after, before - expected);
 });
 
 test('模板模式（aiMode=template）零扣费，但保留审计流水', () => {

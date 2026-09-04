@@ -1,0 +1,47 @@
+/* 顶栏门店切换器：贴着「当前门店：企业名」显示，只在连锁（>1 家门店）时出现 */
+.store-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 24px;
+}
+
+.store-switcher-icon {
+  color: var(--ui-accent);
+}
+
+.store-switcher-select {
+  min-width: 120px;
+  max-width: 220px;
+}
+
+.store-switcher-select .ant-select-selector {
+  padding-inline: var(--space-1) !important;
+}
+
+.store-switcher-select .ant-select-selection-item {
+  color: var(--ui-text);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+.store-switcher--locked {
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  color: var(--ui-text);
+  font-weight: 600;
+}
+
+.store-switcher-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

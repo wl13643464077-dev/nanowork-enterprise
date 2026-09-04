@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
-import { q, db, getTenant, runWithTenant } from '../db.js';
-import { logOp, requireRole, notify } from '../util.js';
-import { balanceOfTenant, creditTenant } from '../engines/credits.js';
+import { q, db, getTenant, runWithTenant, curTenant } from '../db.js';
+import { logOp, requireRole, notify, safeJsonParse } from '../util.js';
+import { balanceOfTenant, creditTenant, estimateCreditEquivalents, budgetSummary } from '../engines/credits.js';
 import { paymentChannels, createPayment, queryPayment, closePayment } from '../engines/payment.js';
+import { applyPlanForPaidOrderInTransaction, planSummary } from '../engines/plan.js';
 
 // 在线支付扩展列（幂等迁移：首次用到时补齐，不改 db.js）
 let payColumnsReady = false;
@@ -45,15 +46,20 @@ export function settlePaidOrder({ orderNo, channelName, tradeNo = '', paidFen })
     if (o.status !== '待支付') {
       throw Object.assign(new Error(`订单 ${o.order_no} 当前状态为「${o.status}」，不能自动入账，请平台人工核对`), { status: 409 });
     }
-    const bal = creditTenant({
-      tenantId: o.tenant_id, delta: Number(o.credits), userId: o.created_by,
-      feature: `充值到账·${o.package_name}`, note: `订单 ${o.order_no}`, manageTransaction: false,
-    });
+    // 年度套餐订单 credits 可能为 0（不含积分）：购买积分为 0 时不记 recharge 流水，只生效套餐与赠送积分
+    const bal = Number(o.credits) > 0
+      ? creditTenant({
+        tenantId: o.tenant_id, delta: Number(o.credits), userId: o.created_by,
+        feature: `充值到账·${o.package_name}`, note: `订单 ${o.order_no}`, manageTransaction: false,
+      })
+      : { balance: balanceOfTenant(o.tenant_id) };
+    // 套餐订单：同一事务内写 plan_code/到期日/席位并入账赠送积分（顺延逻辑见 engines/plan.js）
+    const plan = applyPlanForPaidOrderInTransaction(o);
     const updated = q.run(`UPDATE recharge_orders SET status='已支付', paid_at=datetime('now','localtime'), pay_method=?, pay_trade_no=? WHERE id=? AND status='待支付'`,
       channelName, String(tradeNo || ''), o.id);
     if (!updated.changes) throw Object.assign(new Error('订单已被并发处理'), { status: 409 });
     db.exec('COMMIT');
-    outcome = { ok: true, duplicated: false, orderNo: o.order_no, balance: bal.balance, order: o };
+    outcome = { ok: true, duplicated: false, orderNo: o.order_no, balance: plan?.balance ?? bal.balance, order: o, plan };
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw e;
@@ -63,14 +69,29 @@ export function settlePaidOrder({ orderNo, channelName, tradeNo = '', paidFen })
     const o = outcome.order;
     runWithTenant(o.tenant_id, () => {
       for (const u of q.all(`SELECT id FROM users WHERE tenant_id = ? AND role IN ('boss','ops_director')`, o.tenant_id)) {
-        notify(u.id, '充值到账', `充值到账 ${o.credits} 积分`, `${o.package_name}（¥${o.price_yuan}，${channelName}）已到账，当前余额 ${outcome.balance} 积分`);
+        if (outcome.plan) {
+          notify(u.id, '充值到账', `「${o.package_name}」已开通`,
+            `有效期至 ${outcome.plan.expiresAt}${outcome.plan.rolledOver ? '（已按原到期日顺延）' : ''}，含 ${outcome.plan.seatLimit ?? '-'} 个账号${outcome.plan.bonusCredits > 0 ? `，赠送 ${outcome.plan.bonusCredits} 积分已到账` : ''}，当前余额 ${outcome.balance} 积分`, '/recharge');
+        } else {
+          notify(u.id, '充值到账', `充值到账 ${o.credits} 积分`, `${o.package_name}（¥${o.price_yuan}，${channelName}）已到账，当前余额 ${outcome.balance} 积分`);
+        }
       }
     });
   } catch (e) { console.warn('[recharge] 到账通知发送失败：', e?.message || e); }
-  return { ok: outcome.ok, duplicated: outcome.duplicated, orderNo: outcome.orderNo, balance: outcome.balance };
+  return { ok: outcome.ok, duplicated: outcome.duplicated, orderNo: outcome.orderNo, balance: outcome.balance, plan: outcome.plan || null };
 }
 
 const r = Router();
+
+// 积分权益换算（A3）：登录即可读，供充值页"积分能做什么"与销售话术对齐；数字全部由价目表反算。
+// 透传人民币口径（unit.*CostYuan / supplierCostYuan / marginFactor）与 basis：本企业真实文本流水样本足够时
+// basis='observed'（observedSample 只含次数与 token 均值），否则 'price_table'。
+r.get('/equivalents', (req, res) => {
+  const raw = Number(req.query.credits);
+  const credits = Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 1e12) : 60000;
+  res.json(estimateCreditEquivalents(credits, { tenantId: req.user?.tenant_id ?? curTenant() }));
+});
+
 r.use(requireRole('boss', 'admin'));
 
 function safePaymentAudit(user, action, target) {
@@ -88,12 +109,14 @@ r.get('/channels', (_req, res) => {
   res.json({ channels: paymentChannels() });
 });
 
-// 充值套餐（启用中，按 sort）
+// 充值套餐（启用中，按 sort）：kind=plan 为年度套餐、kind=credits 为纯积分包；features 为 JSON
 r.get('/packages', (req, res) => {
-  res.json(q.all('SELECT * FROM recharge_packages WHERE enabled = 1 ORDER BY sort, price_yuan'));
+  res.json(q.all('SELECT * FROM recharge_packages WHERE enabled = 1 ORDER BY sort, price_yuan')
+    .map(p => ({ ...p, kind: p.kind || 'credits', features: safeJsonParse(p.features, null) })));
 });
 
 // 当前企业积分池 + 流水（充值 + 消耗合并时间线，对账用）
+// plan 为套餐摘要 {code,name,seatLimit,seatsUsed,startedAt,expiresAt,status,daysLeft}；planLabel 保留旧文本标签
 r.get('/balance', (req, res) => {
   const tid = req.user.tenant_id || 1;
   const t = getTenant(tid) || {};
@@ -102,7 +125,9 @@ r.get('/balance', (req, res) => {
   const spent = q.get(`SELECT COALESCE(SUM(credits),0) s FROM credit_logs WHERE tenant_id = ? AND credits > 0`, tid)?.s || 0;
   res.json({
     credits: t.credits ?? 0, totalRecharged: t.total_recharged ?? 0, totalSpent: spent,
-    plan: t.plan, tenantName: t.name, logs,
+    plan: t.id ? planSummary(t) : null, planLabel: t.plan, tenantName: t.name, logs,
+    // 月度 AI 预算摘要（与 /auth/me 同源，字段见 engines/credits.js budgetSummary）
+    budget: t.id ? budgetSummary(t) : null,
   });
 });
 

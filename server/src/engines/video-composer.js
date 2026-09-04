@@ -6,7 +6,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { mediaBinarySearchDirectories } from './media-binaries.js';
+import { mediaBinarySearchDirectories, mediaBinaryNames } from './media-binaries.js';
+import { voiceSubtitleAss, voicedVideoFilter, assertAudibleTrack, assertVoiceProbe } from './video-voice-composition.js';
 
 export const AI_SALES_VIDEO_TARGET_DURATION_SECONDS = 30;
 export const AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS = Object.freeze([2, 3]);
@@ -56,25 +57,27 @@ async function resolveComposerBinary({
   explicitPath,
   pathEnv,
   isExecutable,
+  platform = process.platform,
+  pathApi = platform === 'win32' ? path.win32 : path.posix,
 }) {
   const configured = String(explicitPath || '').trim();
   if (configured.includes('\0')) {
     throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
   }
-  if (configured && !path.isAbsolute(configured) && /[\\/]/u.test(configured)) {
+  if (configured && !pathApi.isAbsolute(configured) && /[\\/]/u.test(configured)) {
     throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
   }
-  const executableName = configured && !path.isAbsolute(configured)
+  const executableName = configured && !pathApi.isAbsolute(configured)
     ? configured
     : binaryName;
   if (!/^[A-Za-z0-9._+-]+$/u.test(executableName)) {
     throw composerBinaryError(binaryName, 'AI_SALES_VIDEO_COMPOSER_BINARY_PATH_INVALID');
   }
   // 目录探测清单与 media-binaries 保持同源，launchd 最小 PATH 也能命中 Homebrew。
-  const candidates = path.isAbsolute(configured)
-    ? [path.normalize(configured)]
-    : mediaBinarySearchDirectories(pathEnv).map(directory => (
-        path.join(directory, executableName)
+  const candidates = pathApi.isAbsolute(configured)
+    ? [pathApi.normalize(configured)]
+    : mediaBinarySearchDirectories(pathEnv, undefined, pathApi).flatMap(directory => (
+        mediaBinaryNames(executableName, platform).map(name => pathApi.join(directory, name))
       ));
   for (const candidate of candidates) {
     if (await isExecutable(candidate)) return candidate;
@@ -93,6 +96,7 @@ export async function assertAiSalesVideoComposerReady({
   ffmpegPath,
   ffprobePath,
   isExecutable = defaultExecutableCheck,
+  platform = process.platform,
 } = {}) {
   if (typeof isExecutable !== 'function') {
     throw new TypeError('isExecutable must be a function');
@@ -102,12 +106,14 @@ export async function assertAiSalesVideoComposerReady({
     explicitPath: ffmpegPath === undefined ? env?.FFMPEG_PATH : ffmpegPath,
     pathEnv,
     isExecutable,
+    platform,
   });
   const resolvedFfprobe = await resolveComposerBinary({
     binaryName: FFPROBE_BINARY_NAME,
     explicitPath: ffprobePath === undefined ? env?.FFPROBE_PATH : ffprobePath,
     pathEnv,
     isExecutable,
+    platform,
   });
   return {
     ffmpegPath: resolvedFfmpeg,
@@ -120,7 +126,7 @@ function commandError(file, args, result) {
     return composerBinaryError(path.basename(String(file || FFMPEG_BINARY_NAME)));
   }
   const error = composerError(
-    `${path.basename(String(file || 'ffmpeg'))}执行失败${result?.stderr ? `：${String(result.stderr).slice(-500)}` : ''}`,
+    `${path.basename(String(file || 'ffmpeg'))}执行失败`,
     'AI_SALES_VIDEO_COMPOSER_COMMAND_FAILED',
   );
   error.command = path.basename(String(file || ''));
@@ -183,28 +189,55 @@ function commandResult(value) {
   };
 }
 
-function spawnCommand(file, args, { cwd } = {}) {
+export function runAiSalesMediaCommand(file, args, { cwd, timeoutMs = 180_000, signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
       cwd,
       shell: false,
       windowsHide: true,
+      signal,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk) => { stdout += chunk; });
-    child.stderr?.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', reject);
+    const timer = setTimeout(() => { child.kill(); reject(commandError(file, args, {})); }, timeoutMs);
+    timer.unref();
+    child.stdout?.on('data', (chunk) => { stdout = (stdout + chunk).slice(-2 * 1024 * 1024); });
+    child.stderr?.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2 * 1024 * 1024); });
+    child.once('error', error => { clearTimeout(timer); reject(commandError(file, args, error)); });
     child.once('close', (code, signal) => {
+      clearTimeout(timer);
       const result = { stdout, stderr, code, signal };
       if (code === 0) resolve(result);
       else reject(commandError(file, args, result));
     });
   });
 }
+
+// Native voiced callers must run this before creating a hold or calling TTS.
+// An executable alone does not prove subtitle/MP3/H264/AAC support.
+export async function assertAiSalesVoicedComposerReady({ runner = runAiSalesMediaCommand, ...options } = {}) {
+  const binaries = await assertAiSalesVideoComposerReady(options);
+  const filters = await runner(binaries.ffmpegPath, ['-hide_banner', '-filters']);
+  const filterText = `${filters.stdout || ''}\n${filters.stderr || ''}`;
+  for (const name of ['ass', 'volumedetect', 'atempo', 'apad']) {
+    if (!new RegExp(`\\b${name}\\s+[AV]`).test(filterText)) {
+      throw composerError(`有声合成环境缺少 ${name} 滤镜`, 'AI_SALES_VIDEO_COMPOSER_CAPABILITY_MISSING');
+    }
+  }
+  const encoders = await runner(binaries.ffmpegPath, ['-hide_banner', '-encoders']);
+  const encoderText = `${encoders.stdout || ''}\n${encoders.stderr || ''}`;
+  for (const name of ['libx264', 'aac', 'libmp3lame']) {
+    if (!new RegExp(`\\b${name}\\s`).test(encoderText)) {
+      throw composerError(`有声合成环境缺少 ${name} 编码器`, 'AI_SALES_VIDEO_COMPOSER_CAPABILITY_MISSING');
+    }
+  }
+  return binaries;
+}
+
+const spawnCommand = runAiSalesMediaCommand;
 
 function parseProbeResult(result, label) {
   let payload;
@@ -326,6 +359,9 @@ export async function composeAiSalesVideo({
   ffprobePath,
   runner = spawnCommand,
   targetDurationSeconds = AI_SALES_VIDEO_TARGET_DURATION_SECONDS,
+  requireAudio = false,
+  voiceTracks = [],
+  subtitleCues = [],
 } = {}) {
   let resolvedFfmpegPath = ffmpegPath;
   let resolvedFfprobePath = ffprobePath;
@@ -348,6 +384,16 @@ export async function composeAiSalesVideo({
     throw composerError('目标视频时长无效');
   }
   const inputPaths = await validateLocalSegments(segments);
+  let voicePaths = [], subtitles = null;
+  if (requireAudio) {
+    if (inputPaths.length !== 2 || targetDuration !== 30 || voiceTracks.length !== 2) {
+      throw composerError('有声模式必须提供两段视频及两段15秒配音音轨');
+    }
+    voicePaths = await validateLocalSegments(voiceTracks);
+    subtitles = voiceSubtitleAss(subtitleCues, targetDuration);
+  } else if (voiceTracks.length || subtitleCues.length) {
+    throw composerError('配音/字幕必须显式启用有声模式');
+  }
   if (typeof outputRoot !== 'string' || !outputRoot.trim() || outputRoot.includes('\0')
     || !path.isAbsolute(outputRoot)) {
     throw composerError('输出目录必须是绝对本地路径');
@@ -363,6 +409,7 @@ export async function composeAiSalesVideo({
     for (const [index, inputPath] of inputPaths.entries()) {
       const args = [
         '-v', 'error',
+        '-protocol_whitelist', 'file,pipe',
         '-show_entries', 'format=duration:stream=codec_type,width,height,duration',
         '-of', 'json',
         inputPath,
@@ -377,10 +424,24 @@ export async function composeAiSalesVideo({
       probes.push(parseProbeResult(result, `第${index + 1}段`));
     }
 
-    const ffmpegArgs = ['-hide_banner', '-loglevel', 'error', '-y'];
-    for (const inputPath of inputPaths) ffmpegArgs.push('-i', inputPath);
+    if (requireAudio) {
+      if (probes.some(probe => !probe.hasAudio || Math.abs(probe.duration - 15) > 0.35)) {
+        throw composerError('供应商片段缺少音轨或实测时长不符合15秒', 'AI_SALES_VIDEO_COMPOSER_AUDIO_INVALID');
+      }
+      for (const voicePath of voicePaths) {
+        assertVoiceProbe(await runner(resolvedFfprobePath, [
+          '-v', 'error', '-protocol_whitelist', 'file,pipe',
+          '-show_entries', 'format=duration:stream=codec_type,duration', '-of', 'json', voicePath,
+        ], { cwd: tempDir }));
+        await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: voicePath, cwd: tempDir, durationSeconds: 15 });
+      }
+      await fsp.writeFile(path.join(tempDir, 'captions.ass'), subtitles, { flag: 'wx', mode: 0o600 });
+    }
+
+    const ffmpegArgs = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y'];
+    for (const inputPath of [...inputPaths, ...voicePaths]) ffmpegArgs.push('-protocol_whitelist', 'file,pipe', '-i', inputPath);
     ffmpegArgs.push(
-      '-filter_complex', buildFilterGraph(probes, targetDuration),
+      '-filter_complex', requireAudio ? voicedVideoFilter(inputPaths.length) : buildFilterGraph(probes, targetDuration),
       '-map', '[vout]', '-map', '[aout]',
       '-c:v', VIDEO_CODEC,
       '-profile:v', 'high',
@@ -409,6 +470,7 @@ export async function composeAiSalesVideo({
     try {
       outputProbeResult = await runner(resolvedFfprobePath, [
         '-v', 'error',
+        '-protocol_whitelist', 'file,pipe',
         '-show_entries', 'format=duration:stream=codec_name,codec_type,width,height',
         '-of', 'json',
         tempOutput,
@@ -418,6 +480,13 @@ export async function composeAiSalesVideo({
       throw commandError(resolvedFfprobePath, [], error);
     }
     const outputProbe = parseOutputDuration(outputProbeResult, targetDuration);
+    const audioVerification = [];
+    if (requireAudio) {
+      if (Math.abs(outputProbe.duration - 30) > 0.25) throw composerError('有声成片时长偏离30秒', 'AI_SALES_VIDEO_COMPOSER_OUTPUT_INVALID');
+      for (const startSeconds of [0, 15]) {
+        audioVerification.push(await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: tempOutput, cwd: tempDir, durationSeconds: 15, startSeconds }));
+      }
+    }
     await fsp.mkdir(tenantDir, { recursive: true, mode: 0o750 });
     await fsp.rename(tempOutput, filePath);
     committed = true;
@@ -441,6 +510,7 @@ export async function composeAiSalesVideo({
       videoCodec: VIDEO_CODEC,
       audioCodec: AUDIO_CODEC,
       segmentCount: inputPaths.length,
+      ...(requireAudio ? { hasAudio: true, audioVerified: true, audioVerification, subtitleCount: subtitleCues.length, subtitlesBurnedIn: true, audioSource: 'reviewed_tts' } : {}),
     };
   } catch (error) {
     if (committed) await fsp.rm(filePath, { force: true }).catch(() => {});

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, q, runWithTenant } from '../db.js';
 import { logOp, requireRole, notify, pageParams, safeJsonParse } from '../util.js';
 import { creditTenant, billing } from '../engines/credits.js';
+import { activatePlanForTenant, applyPlanForPaidOrderInTransaction, planSummary } from '../engines/plan.js';
 
 const r = Router();
 r.use(requireRole('platform_super')); // 全部接口仅平台超级管理员
@@ -47,7 +48,7 @@ r.get('/analytics', (req, res) => {
   const tenants = q.all(`SELECT t.id, t.name, t.status, t.plan, t.credits, t.total_recharged, t.created_at,
       (SELECT COALESCE(SUM(credits),0) FROM credit_logs WHERE tenant_id = t.id AND credits > 0) spent,
       (SELECT COALESCE(SUM(cost_yuan),0) FROM credit_logs WHERE tenant_id = t.id AND credits > 0) cost,
-      (SELECT COUNT(*) FROM credit_logs WHERE tenant_id = t.id AND ai_mode != 'recharge') calls,
+      (SELECT COUNT(*) FROM credit_logs WHERE tenant_id = t.id AND ai_mode NOT IN ('recharge','bonus')) calls,
       (SELECT MAX(created_at) FROM credit_logs WHERE tenant_id = t.id) last_active,
       (SELECT COUNT(*) FROM users WHERE tenant_id = t.id) users
     FROM tenants t WHERE t.id > 1 ORDER BY t.total_recharged DESC`).map(t => {
@@ -115,7 +116,34 @@ r.get('/tenants/:id', (req, res) => {
   if (!t) return res.status(404).json({ error: '租户不存在' });
   const users = q.all('SELECT id,username,name,role,dept,status,last_login_at FROM users WHERE tenant_id = ? ORDER BY id', t.id);
   const orders = q.all('SELECT * FROM recharge_orders WHERE tenant_id = ? ORDER BY id DESC LIMIT 20', t.id);
-  res.json({ ...t, modules: safeJsonParse(t.modules, null), users, orders });
+  res.json({ ...t, modules: safeJsonParse(t.modules, null), users, orders, planSummary: planSummary(t) });
+});
+
+// 线下签约后手工开通年度套餐（招商会现场对公转账场景）：写到期日/席位并入账赠送积分；未到期则顺延
+r.post('/tenants/:id/plan/activate', (req, res) => {
+  const t = q.get('SELECT * FROM tenants WHERE id = ?', req.params.id);
+  if (!t) return res.status(404).json({ error: '租户不存在' });
+  const packageId = Number(req.body?.packageId);
+  const pkg = Number.isInteger(packageId) && packageId > 0
+    ? q.get('SELECT * FROM recharge_packages WHERE id = ?', packageId)
+    : null;
+  if (!pkg) return res.status(400).json({ error: '套餐不存在' });
+  if (pkg.kind !== 'plan') return res.status(400).json({ error: '所选套餐不是年度套餐（kind=plan）' });
+  if (!pkg.enabled) return res.status(400).json({ error: '该套餐已下架' });
+  let outcome;
+  try {
+    outcome = activatePlanForTenant({ tenantId: t.id, pkg, operatorUserId: req.user.id, source: 'manual' });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message });
+  }
+  runWithTenant(t.id, () => {
+    for (const u of q.all(`SELECT id FROM users WHERE tenant_id = ? AND role IN ('boss','ops_director','admin')`, t.id)) {
+      notify(u.id, '账号开通', `「${pkg.name}」已开通`,
+        `有效期至 ${outcome.expiresAt}${outcome.rolledOver ? '（已按原到期日顺延）' : ''}，含 ${outcome.seatLimit ?? '-'} 个账号${outcome.bonusCredits > 0 ? `，赠送 ${outcome.bonusCredits} 积分已到账` : ''}`, '/recharge');
+    }
+  });
+  logOp(req.user, '平台运营', '手工开通年度套餐', `${t.name}/${pkg.name} 至 ${outcome.expiresAt}`);
+  res.json({ ok: true, ...outcome, plan: planSummary(t.id) });
 });
 
 // 审核开通（FR-SAAS-02）：分配模块权限 + 套餐，可选赠送体验积分
@@ -195,13 +223,18 @@ r.post('/recharge-orders/:id/confirm', (req, res) => {
   const o = q.get('SELECT * FROM recharge_orders WHERE id = ?', req.params.id);
   if (!o) return res.status(404).json({ error: '订单不存在' });
   if (o.status !== '待支付') return res.status(400).json({ error: '该订单已处理' });
-  let bal;
+  let bal; let plan = null;
   try {
     db.exec('BEGIN IMMEDIATE');
     const current = q.get(`SELECT status FROM recharge_orders WHERE id=?`, o.id);
     if (current?.status !== '待支付') throw Object.assign(new Error('该订单已处理'), { status: 409 });
-    bal = creditTenant({ tenantId: o.tenant_id, delta: Number(o.credits), userId: req.user.id,
-      feature: `充值到账·${o.package_name}`, note: `订单 ${o.order_no}`, manageTransaction: false });
+    // 年度套餐订单 credits 可能为 0（不含积分）：只生效套餐 + 入账赠送积分，不记购买积分流水
+    bal = Number(o.credits) > 0
+      ? creditTenant({ tenantId: o.tenant_id, delta: Number(o.credits), userId: req.user.id,
+        feature: `充值到账·${o.package_name}`, note: `订单 ${o.order_no}`, manageTransaction: false })
+      : { balance: q.get('SELECT credits FROM tenants WHERE id = ?', o.tenant_id)?.credits ?? 0 };
+    plan = applyPlanForPaidOrderInTransaction(o, { operatorUserId: req.user.id });
+    if (plan) bal = { balance: plan.balance };
     const updated = q.run(`UPDATE recharge_orders SET status='已支付',confirmed_by=?,paid_at=datetime('now','localtime') WHERE id=? AND status='待支付'`, req.user.id, o.id);
     if (!updated.changes) throw Object.assign(new Error('该订单已处理'), { status: 409 });
     db.exec('COMMIT');
@@ -211,35 +244,77 @@ r.post('/recharge-orders/:id/confirm', (req, res) => {
   }
   runWithTenant(o.tenant_id, () => {
     for (const u of q.all(`SELECT id FROM users WHERE tenant_id = ? AND role IN ('boss','ops_director')`, o.tenant_id)) {
-      notify(u.id, '充值到账', `充值到账 ${o.credits} 积分`, `${o.package_name}（¥${o.price_yuan}）已到账，当前余额 ${bal.balance} 积分`);
+      if (plan) {
+        notify(u.id, '充值到账', `「${o.package_name}」已开通`,
+          `有效期至 ${plan.expiresAt}${plan.rolledOver ? '（已按原到期日顺延）' : ''}，含 ${plan.seatLimit ?? '-'} 个账号${plan.bonusCredits > 0 ? `，赠送 ${plan.bonusCredits} 积分已到账` : ''}，当前余额 ${bal.balance} 积分`, '/recharge');
+      } else {
+        notify(u.id, '充值到账', `充值到账 ${o.credits} 积分`, `${o.package_name}（¥${o.price_yuan}）已到账，当前余额 ${bal.balance} 积分`);
+      }
     }
   });
-  logOp(req.user, '平台运营', '确认充值到账', `${o.order_no} +${o.credits}`);
-  res.json({ ok: true, balance: bal.balance });
+  logOp(req.user, '平台运营', '确认充值到账', `${o.order_no} +${o.credits}${plan ? ` 套餐至${plan.expiresAt}` : ''}`);
+  res.json({ ok: true, balance: bal.balance, plan });
 });
 
 // 套餐管理
-r.get('/packages', (req, res) => res.json(q.all('SELECT * FROM recharge_packages ORDER BY sort, price_yuan')));
+// kind=credits：到账积分 = 价格×100 + 赠送（沿用旧口径，支付成功一次入账）
+// kind=plan：年度套餐，base/total 即套餐自带积分（默认 0=不含积分），bonus_credits 在套餐生效时独立入账；
+//            seat_limit/valid_days 必填；is_active/sort_order 分别落到 enabled/sort 列。
+const PACKAGE_KINDS = new Set(['credits', 'plan']);
+function normalizePackageInput(body, prev = null) {
+  const src = body || {};
+  const kind = String(src.kind ?? prev?.kind ?? 'credits');
+  if (!PACKAGE_KINDS.has(kind)) throw Object.assign(new Error('套餐类型只能是 credits（积分包）或 plan（年度套餐）'), { status: 400 });
+  const name = String(src.name ?? prev?.name ?? '').trim();
+  if (!name || name.length > 60) throw Object.assign(new Error('套餐名必填且不超过 60 字'), { status: 400 });
+  const price = Number(src.price_yuan ?? prev?.price_yuan);
+  if (!Number.isFinite(price) || price <= 0 || price > 10_000_000) throw Object.assign(new Error('价格（元）必须是大于 0 的数字'), { status: 400 });
+  const bonus = boundedInteger(src.bonus_credits ?? prev?.bonus_credits ?? 0, '赠送积分');
+  const enabledRaw = src.enabled ?? src.is_active;
+  const enabled = enabledRaw === undefined ? (prev ? prev.enabled : 1) : (enabledRaw ? 1 : 0);
+  const sort = boundedInteger(src.sort ?? src.sort_order ?? prev?.sort ?? 99, '排序', { min: -1000, max: 100000 });
+  const tag = String(src.tag ?? prev?.tag ?? '').trim().slice(0, 20);
+  const code = src.code === undefined ? (prev?.code ?? null) : (String(src.code || '').trim().slice(0, 60) || null);
+  if (code && !/^[a-z0-9_.-]{2,60}$/i.test(code)) throw Object.assign(new Error('套餐编码只能是 2-60 位字母、数字、_ . -'), { status: 400 });
+  let features = prev?.features ?? null;
+  if (src.features !== undefined) {
+    features = src.features == null || src.features === '' ? null
+      : typeof src.features === 'string' ? src.features : JSON.stringify(src.features);
+    if (features && features.length > 4000) throw Object.assign(new Error('features 过长'), { status: 400 });
+  }
+  if (kind === 'plan') {
+    const seatLimit = boundedInteger(src.seat_limit ?? prev?.seat_limit, '账号数', { min: 1, max: 10000 });
+    const validDays = boundedInteger(src.valid_days ?? prev?.valid_days, '有效期天数', { min: 1, max: 3650 });
+    const base = boundedInteger(src.base_credits ?? (prev?.kind === 'plan' ? prev?.base_credits : 0) ?? 0, '套餐自带积分');
+    return { kind, name, price, base, bonus, total: base, seatLimit, validDays, enabled, sort, tag, code, features };
+  }
+  const base = Math.round(price * 100);
+  return { kind, name, price, base, bonus, total: base + bonus, seatLimit: null, validDays: null, enabled, sort, tag, code, features };
+}
+r.get('/packages', (req, res) => res.json(q.all('SELECT * FROM recharge_packages ORDER BY sort, price_yuan')
+  .map(p => ({ ...p, kind: p.kind || 'credits', is_active: p.enabled, sort_order: p.sort }))));
 r.post('/packages', (req, res) => {
-  const { name, price_yuan, bonus_credits = 0, tag = '', sort = 99 } = req.body || {};
-  if (!name || !price_yuan) return res.status(400).json({ error: '套餐名与价格必填' });
-  const base = Math.round(price_yuan * 100);
-  const total = base + Number(bonus_credits || 0);
-  const result = q.run('INSERT INTO recharge_packages(name,price_yuan,base_credits,bonus_credits,total_credits,tag,sort) VALUES(?,?,?,?,?,?,?)',
-    name, price_yuan, base, bonus_credits, total, tag, sort);
-  logOp(req.user, '平台运营', '新增套餐', name);
+  let v;
+  try { v = normalizePackageInput(req.body); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  if (v.code && q.get('SELECT id FROM recharge_packages WHERE code = ?', v.code)) return res.status(409).json({ error: `套餐编码 ${v.code} 已存在` });
+  const result = q.run(`INSERT INTO recharge_packages(code,name,kind,price_yuan,base_credits,bonus_credits,total_credits,seat_limit,valid_days,features,tag,sort,enabled)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  v.code, v.name, v.kind, v.price, v.base, v.bonus, v.total, v.seatLimit, v.validDays, v.features, v.tag, v.sort, v.enabled);
+  logOp(req.user, '平台运营', '新增套餐', `${v.name}(${v.kind})`);
   res.json({ id: result.lastInsertRowid });
 });
 r.put('/packages/:id', (req, res) => {
   const p = q.get('SELECT * FROM recharge_packages WHERE id = ?', req.params.id);
   if (!p) return res.status(404).json({ error: '套餐不存在' });
-  const { name, price_yuan, bonus_credits, tag, sort, enabled } = req.body || {};
-  const price = price_yuan ?? p.price_yuan;
-  const bonus = bonus_credits ?? p.bonus_credits;
-  const base = Math.round(price * 100);
-  q.run(`UPDATE recharge_packages SET name=?, price_yuan=?, base_credits=?, bonus_credits=?, total_credits=?, tag=?, sort=?, enabled=? WHERE id=?`,
-    name ?? p.name, price, base, bonus, base + Number(bonus), tag ?? p.tag, sort ?? p.sort,
-    enabled === undefined ? p.enabled : (enabled ? 1 : 0), p.id);
+  let v;
+  try { v = normalizePackageInput(req.body, p); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  if (v.code && v.code !== p.code && q.get('SELECT id FROM recharge_packages WHERE code = ? AND id != ?', v.code, p.id)) {
+    return res.status(409).json({ error: `套餐编码 ${v.code} 已存在` });
+  }
+  q.run(`UPDATE recharge_packages SET code=?, name=?, kind=?, price_yuan=?, base_credits=?, bonus_credits=?, total_credits=?,
+    seat_limit=?, valid_days=?, features=?, tag=?, sort=?, enabled=? WHERE id=?`,
+  v.code, v.name, v.kind, v.price, v.base, v.bonus, v.total, v.seatLimit, v.validDays, v.features, v.tag, v.sort, v.enabled, p.id);
+  logOp(req.user, '平台运营', '修改套餐', `${v.name}(${v.kind})`);
   res.json({ ok: true });
 });
 

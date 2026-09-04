@@ -2,6 +2,8 @@
  * 按派活 build_delivery 组装内容流水线终态：
  * 定稿 + 各平台发布包（文案版本 + 该平台封面/配图 + 后台直达）。
  */
+import { isXhsPipelineDraft, selectedXhsPipelineVersion } from './content-xhs-pipeline.js';
+import { xhsVersionsForDisplay } from './content-xhs-output.js';
 
 const CONTENT_PLATFORM_DELIVERY_SPECS = Object.freeze({
   小红书: Object.freeze({
@@ -73,16 +75,18 @@ export function assembleContentPipelineDelivery(stationOutputs = {}) {
   const cover = outputAt(stationOutputs, 6);
   const publish = outputAt(stationOutputs, 8);
   const retro = outputAt(stationOutputs, 9);
-  const titleCandidates = Array.isArray(style.title_candidates) && style.title_candidates.length
+  const xhsDraft = isXhsPipelineDraft(draft);
+  const xhs = selectedXhsPipelineVersion(stationOutputs, { required: false });
+  const titleCandidates = xhs ? [xhs.version.title] : xhsDraft ? [] : Array.isArray(style.title_candidates) && style.title_candidates.length
     ? style.title_candidates
     : Array.isArray(draft.title_candidates)
       ? draft.title_candidates
       : [];
-  const body = firstString(style.body) || firstString(draft.body);
-  const tags = Array.isArray(draft.tags) ? draft.tags : [];
+  const body = xhs ? xhs.version.body : xhsDraft ? '' : firstString(style.body) || firstString(draft.body);
+  const tags = xhs ? xhs.version.tags : Array.isArray(draft.tags) ? draft.tags : [];
   const images = Array.isArray(media.images) ? media.images : [];
   const covers = Array.isArray(cover.covers) ? cover.covers : [];
-  const versions = Array.isArray(publish.versions) ? publish.versions : [];
+  const versions = xhsDraft && !xhs ? [] : Array.isArray(publish.versions) ? publish.versions : [];
   const fallbackCover = covers[0] || null;
   const packs = versions.map((version) => {
     const platform = firstString(version?.platform);
@@ -96,6 +100,11 @@ export function assembleContentPipelineDelivery(stationOutputs = {}) {
     });
     return {
       ...version,
+      ...(xhs && platform === '小红书' ? {
+        title: xhs.version.title, body: xhs.version.body, tags: xhs.version.tags,
+        cover_text: xhs.version.cover_text, comment_prompt: xhs.version.comment_prompt,
+        strategy: xhs.version.strategy, source_version_id: xhs.sourceVersionId, version_id: xhs.versionId,
+      } : {}),
       emoji: spec.emoji,
       upload_url: spec.upload_url,
       cover: packCover,
@@ -114,6 +123,8 @@ export function assembleContentPipelineDelivery(stationOutputs = {}) {
     packs,
     publish_plan: firstString(publish.publish_plan),
     retro,
+    ...(xhsDraft ? { xhsVersions: xhsVersionsForDisplay(draft), xhsImagePlan: draft.image_plan,
+      xhsSelection: xhs?.selection || null, xhsSelectionRequired: !xhs, xhsFinalVersion: xhs ? { ...xhs.version, versionId: xhs.versionId } : null } : {}),
   });
 }
 
@@ -138,6 +149,8 @@ export function renderContentPipelineDeliveryMarkdown(delivery) {
       `## ${pack.emoji || "📄"} ${firstString(pack.platform) || "平台"}发布包`,
       "",
       `**标题**：${firstString(pack.title)}`,
+      pack.cover_text ? `**封面文案**：${firstString(pack.cover_text)}` : '',
+      pack.source_version_id ? `**所选源版本**：${firstString(pack.source_version_id)}（${firstString(pack.strategy)}）` : '',
       `**建议发布时间**：${firstString(pack.best_time)}`,
       tags ? `**标签**：${tags}` : "",
       pack.upload_url ? `**发布后台**：${pack.upload_url}` : "",
@@ -146,6 +159,7 @@ export function renderContentPipelineDeliveryMarkdown(delivery) {
       "### 适配正文",
       "",
       firstString(pack.body),
+      pack.comment_prompt ? `\n**首评**：${firstString(pack.comment_prompt)}` : '',
       "",
       checklist ? "### 后台操作清单\n" : "",
       checklist,

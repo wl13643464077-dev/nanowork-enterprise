@@ -22,6 +22,11 @@ import {
   fetchPublicPageEvidence,
 } from "./controlled-web-evidence.js";
 import { sanitizePublicSources } from "./public-source-quality.js";
+import {
+  loadGeneratedImageBytes,
+  POSTER_TEXT_NO_TEXT_DIRECTIVE,
+  renderPosterTextOverlay,
+} from "./poster-text-overlay.js";
 
 const PROMPT_VERSION = "toolbox-template-v1";
 const AI_PROMPT_VERSION = "toolbox-ai-v1";
@@ -236,6 +241,10 @@ const INPUT_SCHEMAS = Object.freeze({
     product: stringField("产品 / 套餐", { required: true, max: 500 }),
     facts: stringField("可核验的真实卖点", { required: true, max: 3_000 }),
     channels: stringArrayField("使用渠道", { maxItems: 6, itemMax: 30 }),
+    // 海报指定汉字（矢量叠字，不经图像模型）：菜名 / 价格 / 门店名三层默认布局
+    overlayTitle: stringField("海报菜名（精确叠字）", { max: 60 }),
+    overlayPrice: stringField("海报价格（精确叠字）", { max: 30 }),
+    overlayStore: stringField("海报门店名（精确叠字）", { max: 60 }),
   }),
   "menu-copy": Object.freeze({
     imageFileId: integerField("文件中心图片ID", {
@@ -2553,17 +2562,31 @@ function mediaArtifactUrl(value, mimeType = "application/octet-stream") {
   return "";
 }
 
+// 产品图文的“精确叠字”三层：菜名 / 价格 / 门店名。任一填写即启用矢量叠字。
+export function shotTextOverlayLayers(inputs) {
+  const layers = [];
+  if (inputs?.overlayTitle)
+    layers.push({ text: String(inputs.overlayTitle), role: "title", position: "top" });
+  if (inputs?.overlayPrice)
+    layers.push({ text: String(inputs.overlayPrice), role: "price", position: "center" });
+  if (inputs?.overlayStore)
+    layers.push({ text: String(inputs.overlayStore), role: "store", position: "bottom" });
+  return layers;
+}
+
 function mediaPrompt(definition, inputs, employeeExecution) {
   const boundary = employeeExecution?.systemContext
     ? `岗位边界：${String(employeeExecution.systemContext).slice(0, 1_200)}`
     : "";
   if (definition.key === "shot") {
+    const overlay = shotTextOverlayLayers(inputs);
     return [
       "生成一张真实商业餐饮摄影质感的竖版产品主图，不在画面内生成任何文字、价格、徽标或虚构顾客。",
       `产品/套餐：${display(inputs.product)}`,
       `已核验卖点：${display(inputs.facts)}`,
       `使用渠道：${display(inputs.channels)}`,
       "只呈现用户明确提供的产品事实；不得添加未提供的配料、份量、品牌或经营数据。",
+      overlay.length ? POSTER_TEXT_NO_TEXT_DIRECTIVE : "",
       boundary,
     ]
       .filter(Boolean)
@@ -2593,7 +2616,13 @@ function mediaDeliveryMarkdown(definition, inputs, artifact) {
 - **可核验卖点：** ${md(inputs.facts)}
 - **使用渠道：** ${md(inputs.channels)}
 - **真实产物：** 已由 ${md(artifact.model)} 图片接口生成 ${md(artifact.mimeType)} 主图；不是文字示意图。
-
+${
+  artifact.textOverlay?.applied
+    ? `- **精确叠字：** 画面文字（${artifact.textOverlay.layers
+        .map((layer) => `${md(layer.role)}=“${md(layer.text)}”`)
+        .join("、")}）由系统矢量叠加，与输入逐字一致，不经图像模型；无字底图见 ${artifact.textOverlay.baseImageUrl ? `[底图](${artifact.textOverlay.baseImageUrl})` : "产物快照"}。\n`
+    : ""
+}
 ## 渠道标题与文案
 
 **标题：** ${md(inputs.product)}｜把真实食材、工艺与适用场景讲清楚<br />
@@ -2748,6 +2777,38 @@ async function generateToolboxMediaRun(
           },
         );
       delivered = { ...output, ready: true, url, mimeType };
+      const overlayLayers = shotTextOverlayLayers(inputs);
+      if (overlayLayers.length) {
+        // 精确叠字：本地矢量渲染，不调用模型、不计费；供应商图作为无字底图保留。
+        options.onProgress?.({
+          phase: "media_overlay",
+          message: "正在把菜名/价格/门店名精确叠加到主图",
+          attempt: 1,
+        });
+        const overlayRender = options.renderTextOverlayFn || renderPosterTextOverlay;
+        const baseBytes = await loadGeneratedImageBytes(
+          output?.b64 ? { b64: output.b64 } : { url },
+          { signal: options.signal || null, fetchFn: options.fetchFn },
+        );
+        const rendered = await overlayRender({
+          imageBuffer: baseBytes,
+          layers: overlayLayers,
+        });
+        delivered = {
+          ...delivered,
+          url: `data:image/png;base64,${rendered.png.toString("base64")}`,
+          mimeType: "image/png",
+          textOverlay: {
+            applied: true,
+            engine: "poster-text-overlay",
+            billed: false,
+            layers: rendered.layers,
+            baseImageUrl: /^https:\/\//iu.test(url) ? url : null,
+            width: rendered.width,
+            height: rendered.height,
+          },
+        };
+      }
     } else {
       const createVideo = options.generateVideoFn || generateVideo;
       const submitted = await createVideo({
@@ -2775,6 +2836,7 @@ async function generateToolboxMediaRun(
       ...(delivered.taskId
         ? { providerTaskId: String(delivered.taskId).slice(0, 200) }
         : {}),
+      ...(delivered.textOverlay ? { textOverlay: delivered.textOverlay } : {}),
     };
     return {
       ...template,

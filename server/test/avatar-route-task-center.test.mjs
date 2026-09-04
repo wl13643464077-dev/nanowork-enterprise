@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import test, { after } from "node:test";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const WORKSPACE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -307,12 +308,11 @@ test("前端摄影棚静态契约包含创建、轮询、取消、重试、费�
   }
 });
 
-after(() => {
+after(async () => {
   for (const row of q.all(
     "SELECT file_path FROM uploaded_files WHERE purpose LIKE 'avatar-%'",
   )) {
     fs.rmSync(row.file_path, { force: true });
   }
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
+  await removeTempDbSafely(dbPath);
 });

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { stageServerRuntime } from './helpers/stage-server-runtime.mjs';
 
 const DBP = path.join(os.tmpdir(), `shanmei-baseline-${process.pid}.db`);
 for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
@@ -11,8 +13,9 @@ for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
 process.env.NANOWORK_DB = DBP;
 process.env.NODE_ENV = 'production';
 
-const { initSchema, migrateV2, q } = await import('../src/db.js');
-const { ensureBaselineCatalogs } = await import('../src/baseline.js');
+const stage = stageServerRuntime();
+const { db, initSchema, migrateV2, q } = await import(pathToFileURL(path.join(stage.serverDir, 'src/db.js')));
+const { ensureBaselineCatalogs } = await import(pathToFileURL(path.join(stage.serverDir, 'src/baseline.js')));
 
 initSchema();
 migrateV2();
@@ -45,7 +48,9 @@ test('生产基础目录独立于演示数据，且重复执行不覆盖现有�
 });
 
 test('cleanup', () => {
+  db.close();
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch {}
   }
+  stage.cleanup();
 });

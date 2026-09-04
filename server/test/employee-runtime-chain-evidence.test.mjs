@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const DB_PATH = path.join(
   os.tmpdir(),
@@ -44,10 +45,8 @@ migrateV2();
 ensureBaselineCatalogs();
 migrateV2();
 
-after(() => {
-  for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
-    fs.rmSync(file, { force: true });
-  }
+after(async () => {
+  await removeTempDbSafely(DB_PATH);
 });
 
 const manager = Object.freeze({

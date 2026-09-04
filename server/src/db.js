@@ -4,6 +4,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createPrivateArtifact, assertPrivateArtifact } from "./engines/private-artifact.js";
+import { prepareDatabaseStorage } from "./engines/database-storage.js";
 
 // 本项目运行数据默认只允许当前用户访问。umask 会保护随后由 SQLite
 // 创建的数据库、WAL/SHM 以及运行期文件；不会修改 /tmp 或自定义路径的父目录权限。
@@ -19,21 +21,12 @@ const safeJsonParse = (value, fallback = null) => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "..", "data");
-fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-fs.chmodSync(DATA_DIR, 0o700);
 // 默认使用新项目独立数据库；测试或独立部署只能通过 NANOWORK_DB 显式指定。
 export const DB_PATH =
   process.env.NANOWORK_DB || path.join(DATA_DIR, "nanowork-industry.db");
 
-function protectDatabaseFiles() {
-  if (DB_PATH === ":memory:") return;
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const target = `${DB_PATH}${suffix}`;
-    if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
-  }
-}
-
-protectDatabaseFiles();
+prepareDatabaseStorage({ databasePath: DB_PATH, dataDirectory: DATA_DIR,
+  protectDataDirectory: process.env.NODE_ENV !== "test" });
 export const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL;");
 // 面向百人级并发的写竞争加固：
@@ -45,12 +38,14 @@ db.exec("PRAGMA journal_mode = WAL;");
 db.exec("PRAGMA busy_timeout = 8000;");
 db.exec("PRAGMA synchronous = NORMAL;");
 db.exec("PRAGMA cache_size = -32000;");
-protectDatabaseFiles();
 
 export function backupDatabase(destination) {
   const output = path.resolve(destination);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   if (fs.existsSync(output)) throw new Error("备份文件已存在，请重新发起备份");
+  // VACUUM INTO accepts an existing empty file. Establish exclusive ownership
+  // and native permissions before any database bytes are written.
+  createPrivateArtifact(output);
   const escaped = output.replaceAll("'", "''");
   db.exec(`VACUUM INTO '${escaped}'`);
   const backup = new DatabaseSync(output, { readOnly: true });
@@ -64,6 +59,7 @@ export function backupDatabase(destination) {
     backup.close();
   }
   fs.chmodSync(output, 0o600);
+  assertPrivateArtifact(output);
   return output;
 }
 
@@ -249,6 +245,41 @@ export function initSchema() {
   );
   CREATE INDEX IF NOT EXISTS idx_content_publish_logs_content
     ON content_publish_logs(tenant_id,content_id,created_at DESC,id DESC);
+  -- 合规半自动分发（B6）：排期到期提醒与 T+1/3/7 催复盘的幂等台账。
+  -- kind='schedule_due' 时 day=0；kind='followup' 时 day∈{1,3,7}。不做任何自动发布。
+  CREATE TABLE IF NOT EXISTS content_publish_followups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    content_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('schedule_due','followup')),
+    day INTEGER NOT NULL DEFAULT 0 CHECK(day IN (0,1,3,7)),
+    publish_log_id INTEGER,
+    notified_user_ids TEXT NOT NULL DEFAULT '[]',
+    notified_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,content_id,kind,day)
+  );
+  CREATE INDEX IF NOT EXISTS idx_content_publish_followups_content
+    ON content_publish_followups(tenant_id,content_id,kind,day);
+  -- 发布后人工回填的平台数据（浏览/点赞/收藏/评论/订单 + 可选截图）；平台未核验。
+  CREATE TABLE IF NOT EXISTS content_publish_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    content_id INTEGER NOT NULL,
+    publish_log_id INTEGER,
+    channel TEXT,
+    views INTEGER CHECK(views IS NULL OR views >= 0),
+    likes INTEGER CHECK(likes IS NULL OR likes >= 0),
+    saves INTEGER CHECK(saves IS NULL OR saves >= 0),
+    comments INTEGER CHECK(comments IS NULL OR comments >= 0),
+    orders INTEGER CHECK(orders IS NULL OR orders >= 0),
+    screenshot_file_id INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    verification TEXT NOT NULL DEFAULT 'manual_unverified',
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_content_publish_metrics_content
+    ON content_publish_metrics(tenant_id,content_id,created_at DESC,id DESC);
   CREATE TABLE IF NOT EXISTS content_automation_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL,
@@ -442,6 +473,16 @@ export function initSchema() {
   );
   CREATE INDEX IF NOT EXISTS idx_kb_embedding_jobs_recovery
     ON kb_embedding_jobs(tenant_id,status,created_at);
+  CREATE TABLE IF NOT EXISTS kb_health_events (
+    -- 知识库健康事件（P0-2）：查询向量化失败 / 检索命中零向量文档 / 回填需求与回填结果
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('query_embed_failed','zero_vector_doc','backfill_needed','backfill_run')),
+    detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_kb_health_events_tenant_kind
+    ON kb_health_events(tenant_id,kind,created_at);
   CREATE TABLE IF NOT EXISTS prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT UNIQUE, name TEXT, role_card TEXT, output_rule TEXT, style TEXT,
@@ -709,6 +750,8 @@ const ISOLATED = new Set([
   "content_pipeline_schedule_runs",
   "content_production_pipeline_idempotency",
   "content_publish_logs",
+  "content_publish_followups",
+  "content_publish_metrics",
   "content_material_refs",
   "kb_embedding_jobs",
   "stores",
@@ -725,9 +768,12 @@ const ISOLATED = new Set([
   "inventory_items",
   "inventory_moves",
   "delivery_daily",
+  "store_daily_ops",
   // 数字员工自动进化
   "employee_evolution_notes",
   "employee_evolution_proposals",
+  // 拆解师爆款结构卡（engines/content-benchmark-cards.js 懒建表；INSERT 显式带 tenant_id，登记为读写兜底）
+  "content_benchmark_cards",
   // 注：specialists（数字员工）与 marshals（内部任务分部）一样是全局基础数据，全租户共享同一份编制，
   // 不在隔离集——读取本就应跨租户取全量；如误列入会导致非总部企业看到 0 个专员。
 ]);
@@ -825,11 +871,33 @@ function scopedSelect(table, tail = "", cols = "*") {
   return `SELECT ${cols} FROM ${table} WHERE tenant_id = ?${t ? ` ${t}` : ""}`;
 }
 
+// ===== 写入观察钩子（事件总线用）=====
+// q.run 是业务写入的唯一常规入口；观察者只拿到 (sql, result, tenantId) 做刷新信号派生，
+// 不改写 SQL、不参与事务。观察者异常绝不反噬业务写入。无观察者时零开销。
+const writeObservers = new Set();
+export function onWrite(observer) {
+  writeObservers.add(observer);
+  return () => writeObservers.delete(observer);
+}
+function runObserved(sql, p) {
+  const result = db.prepare(injectTenantInsert(sql, curTenant())).run(...p);
+  if (writeObservers.size && result?.changes) {
+    const tid = curTenant();
+    for (const observer of writeObservers) {
+      try {
+        observer(sql, result, tid);
+      } catch (error) {
+        console.error("[db] 写入观察者异常:", error?.message || error);
+      }
+    }
+  }
+  return result;
+}
+
 export const q = {
   all: (sql, ...p) => db.prepare(sql).all(...p),
   get: (sql, ...p) => db.prepare(sql).get(...p),
-  run: (sql, ...p) =>
-    db.prepare(injectTenantInsert(sql, curTenant())).run(...p),
+  run: (sql, ...p) => runObserved(sql, p),
   // 读侧作用域包装（BE-C2）：q.scopedAll('leads', 'AND stage = ? ORDER BY created_at DESC', stage)
   scopedAll: (table, tail = "", ...p) =>
     db.prepare(scopedSelect(table, tail)).all(curTenant(), ...p),
@@ -1066,6 +1134,12 @@ export function migrateV2() {
   addCol("agent_tasks", "employee_input_snapshot", "TEXT");
   addCol("agent_tasks", "employee_web_snapshot", "TEXT");
   addCol("agent_tasks", "approval_routing_policy_snapshot", "TEXT");
+  // 自定义智能体工作流导入：保留导入时的原始 JSON（本平台导出或通用步骤式工作流）以便回溯。
+  addCol("custom_agents", "source_workflow", "TEXT");
+  // 契约分级与“失败不交白卷”（P0-1）：档位快照、失败原因、机器校验报告（不含正文）
+  addCol("agent_tasks", "contract_tier", "TEXT");
+  addCol("agent_tasks", "fail_reason", "TEXT");
+  addCol("agent_tasks", "contract_report", "TEXT");
   addCol("task_submissions", "reviewer_id", "INTEGER");
   addCol("task_submissions", "reviewed_at", "TEXT");
   addCol("task_submissions", "review_reason", "TEXT");
@@ -1078,8 +1152,20 @@ export function migrateV2() {
   addCol("materials", "body_snapshot", "TEXT");
   addCol("materials", "artifact_snapshot_json", "TEXT");
   addCol("materials", "snapshot_hash", "TEXT");
+  // 视频/图片样片库：is_sample=1 表示样片；sample_scope='platform' 为平台级共享
+  //（platform_super 上传，全租户可读），'tenant' 为租户自有（严格隔离）。
+  addCol("materials", "is_sample", "INTEGER DEFAULT 0");
+  addCol("materials", "sample_tags", "TEXT");
+  addCol("materials", "sample_note", "TEXT");
+  addCol("materials", "sample_scope", "TEXT");
   addCol("contents", "source_type", "TEXT");
   addCol("contents", "source_id", "INTEGER");
+  // 合规半自动分发（B6）：人工排期与目标平台。到期只提醒、不自动发布。
+  // scheduled_publish_at 存 ISO-8601 UTC 字串，与调度器 JS 时钟直接字典序比较。
+  addCol("contents", "scheduled_publish_at", "TEXT");
+  addCol("contents", "publish_channel", "TEXT");
+  // idx_contents_scheduled_publish 依赖 contents.tenant_id，该列在下方多租户补列循环后才
+  // 一定存在（全新库此处尚无该列会报 no such column），索引创建挪到 idx_approvals_assigned 旁。
   addCol(
     "content_automation_rules",
     "brief_json",
@@ -1541,6 +1627,73 @@ export function migrateV2() {
     for (const p of pkgs) ins.run(...p);
   }
 
+  // ===== V8：年度套餐/计划模型（2026-09 成都招商会定价：9800 元/年，5 账号，赠 6 万积分）=====
+  // recharge_packages 同时承载「纯积分包」(kind=credits) 与「年度套餐」(kind=plan)：
+  // - credits 包沿用 base/bonus/total 口径，total_credits 在支付成功时一次入账；
+  // - plan 包 total_credits 表示套餐自带积分（本档为 0，不含积分），bonus_credits 在套餐生效时
+  //   作为独立 bonus 流水入账，与购买积分区分开。enabled/sort 复用为 is_active/sort_order 语义。
+  addCol("recharge_packages", "code", "TEXT"); // 固定判重键（种子/接口按 code 幂等）
+  addCol("recharge_packages", "kind", "TEXT DEFAULT 'credits'");
+  addCol("recharge_packages", "seat_limit", "INTEGER");
+  addCol("recharge_packages", "valid_days", "INTEGER");
+  addCol("recharge_packages", "features", "TEXT"); // JSON，预留（试用档/月付档/多门店阶梯价）
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_recharge_packages_code ON recharge_packages(code) WHERE code IS NOT NULL",
+  );
+  // 租户当前生效套餐（保留旧 plan 文本标签不删；seat_limit 已在 V7 存在，年度套餐生效时覆写）
+  addCol("tenants", "plan_code", "TEXT");
+  addCol("tenants", "plan_started_at", "TEXT");
+  addCol("tenants", "plan_expires_at", "TEXT");
+  addCol("tenants", "plan_status", "TEXT DEFAULT 'none'"); // none/active/expiring/expired
+  {
+    const p = DEFAULT_PLAN_PACKAGE;
+    const existed = db
+      .prepare("SELECT id FROM recharge_packages WHERE code = ?")
+      .get(p.code);
+    if (!existed) {
+      db.prepare(
+        `INSERT INTO recharge_packages(code,name,kind,price_yuan,base_credits,bonus_credits,total_credits,seat_limit,valid_days,features,tag,sort,enabled)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+      ).run(
+        p.code,
+        p.name,
+        p.kind,
+        p.priceYuan,
+        p.credits,
+        p.bonusCredits,
+        p.credits,
+        p.seatLimit,
+        p.validDays,
+        JSON.stringify(p.features),
+        p.tag,
+        p.sort,
+      );
+    }
+  }
+
+  // ===== V9：租户级模型路由 + 月度 AI 积分预算（2026-09-02 宣讲会承诺，本轮只做租户级）=====
+  // tenant_model_routing：每家企业一行，routing_json 与 yunwu.js DEFAULT_ROUTING 同形，
+  // 解析优先级 租户覆盖 > sys_config.model_routing（平台全局）> DEFAULT_ROUTING（见 engines/yunwu.js routing()）。
+  // 表按 tenant_id 主键、显式带租户读写，属系统级配置表，不进 ISOLATED 自动注入集合。
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS tenant_model_routing (
+    tenant_id INTEGER PRIMARY KEY,
+    routing_json TEXT NOT NULL,
+    updated_by INTEGER,
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  `);
+  // 月度预算：NULL=不限；达到 budget_alert_ratio 当天首次触发通知老板（engines/credits.js）。
+  addCol("tenants", "monthly_credit_budget", "INTEGER");
+  addCol("tenants", "budget_alert_ratio", "REAL DEFAULT 0.8");
+  // 预算/用量报表按租户 + 时间聚合，credit_logs 此前只有 user_id 索引
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_credit_logs_tenant_created ON credit_logs(tenant_id, created_at)",
+  );
+  // 按人月度配额：本轮只预留列 + 读取统计（precheck 只记录 quotaState，不拦截）；
+  // 按人强制拦截为后续版本，见建议清单 B1。
+  addCol("users", "monthly_credit_quota", "INTEGER");
+
   // ===== V7：多租户数据隔离 + 账号配额（FR-SAAS-06）=====
   addCol("tenants", "seat_limit", "INTEGER DEFAULT 5"); // 企业账号席位上限
   db.prepare(`UPDATE tenants SET seat_limit = 999 WHERE id = 1`).run(); // 总部不限
@@ -1582,9 +1735,34 @@ export function migrateV2() {
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_assigned
     ON approvals(tenant_id,status,assigned_reviewer_id,created_at)`);
+  // 合规半自动分发（B6）排期索引：contents.tenant_id 已由上方补列循环保证存在。
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_contents_scheduled_publish
+    ON contents(tenant_id,scheduled_publish_at)
+    WHERE scheduled_publish_at IS NOT NULL`);
   addCol("notifications", "link", "TEXT");
   // 门店订单完整性：订单头明确归属门店；明细批量提交使用独立幂等账本。
   addCol("orders", "store_id", "INTEGER");
+  // 开店向导（租户级新手引导，routes/onboarding.js）：pending/in_progress/completed/skipped。
+  // 首次加列时，已经在用系统的老企业（有门店/知识/任务数据）直接记为 skipped，
+  // 避免升级后被强制拉进向导；只有空白新企业保持 pending。
+  const onboardingColumnFresh = !db
+    .prepare(`PRAGMA table_info("tenants")`)
+    .all()
+    .some((item) => item.name === "onboarding_status");
+  addCol("tenants", "onboarding_status", "TEXT DEFAULT 'pending'");
+  addCol("tenants", "onboarding_answers", "TEXT");
+  addCol("tenants", "onboarding_completed_at", "TEXT");
+  if (onboardingColumnFresh) {
+    db.prepare(
+      `UPDATE tenants SET onboarding_status='skipped'
+       WHERE COALESCE(onboarding_status,'pending')='pending'
+         AND (
+           EXISTS(SELECT 1 FROM stores s WHERE s.tenant_id=tenants.id)
+           OR EXISTS(SELECT 1 FROM kb_docs k WHERE k.tenant_id=tenants.id)
+           OR EXISTS(SELECT 1 FROM agent_tasks t WHERE t.tenant_id=tenants.id)
+         )`,
+    ).run();
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS order_item_commits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1882,6 +2060,27 @@ export function migrateV2() {
     UNIQUE(tenant_id, date, platform)
   );
   CREATE INDEX IF NOT EXISTS idx_delivery_daily_tenant_date ON delivery_daily(tenant_id, date);
+  -- ===== 门店每日营业汇总（连锁过渡方案：门店人工上传/拍照识别的日结数据，按店按日唯一）=====
+  -- daily_ops 是租户级经营日报（UNIQUE(tenant_id,date)），无法按店拆分；本表承接多门店汇总，
+  -- 同店同日重复导入 = 覆盖。source 记录来源（excel_import / vision_import / manual）。
+  CREATE TABLE IF NOT EXISTS store_daily_ops (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    store_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    revenue REAL NOT NULL DEFAULT 0,
+    orders INTEGER,                    -- 可空：未识别/未填写不落 0
+    avg_ticket REAL,
+    delivery_revenue REAL,
+    delivery_ratio REAL,
+    refunds REAL,
+    note TEXT,
+    source TEXT NOT NULL DEFAULT 'excel_import',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id, store_id, date)
+  );
+  CREATE INDEX IF NOT EXISTS idx_store_daily_ops_tenant_date ON store_daily_ops(tenant_id, date);
   -- ===== 数字员工自动进化（Warp 自我改进模式）：
   -- 老板验收反馈（通过/驳回+理由）→ 改进器 AI 提炼「实战心得」提案 → 人审采纳 → 派活注入。
   -- notes 是员工的进化沉淀（原则+为什么+证据），proposals 是待人审的进化提案。
@@ -2503,6 +2702,21 @@ export function migrateV2() {
   `);
   addCol("tenant_marshal_overrides", "online", "INTEGER");
   addCol("tenant_marshal_overrides", "synced_at", "TEXT");
+  // 数字员工自我介绍（老板叮嘱 + 每周校验状态）：按 (tenant_id, specialist_id) 追加在既有覆盖行上，
+  // 没有覆盖行时读取侧回落到 catalog 默认介绍。
+  addCol("tenant_specialist_overrides", "self_intro", "TEXT");
+  addCol("tenant_specialist_overrides", "self_intro_source", "TEXT");
+  addCol("tenant_specialist_overrides", "self_intro_updated_at", "TEXT");
+  addCol("tenant_specialist_overrides", "self_intro_verified_at", "TEXT");
+  addCol("tenant_specialist_overrides", "self_intro_check_status", "TEXT");
+  addCol("tenant_specialist_overrides", "self_intro_check_note", "TEXT");
+  // 进化心得/提案的员工域：restaurant 时 specialist_id 指 specialists.id；
+  // content 时 specialist_id 存内容员工 idx（0-10），两域各自独立取数与注入。
+  addCol("employee_evolution_notes", "domain", "TEXT NOT NULL DEFAULT 'restaurant'");
+  addCol("employee_evolution_proposals", "domain", "TEXT NOT NULL DEFAULT 'restaurant'");
+  // 发布时冻结版本归因；旧日志/回填留 NULL，不用当前选版伪造历史归属。
+  addCol("content_publish_logs", "attribution_json", "TEXT");
+  addCol("content_publish_metrics", "attribution_json", "TEXT");
   // 评价归因列：老库（表已存在但无此列）在建表语句之后补列
   addCol("store_reviews", "category", "TEXT");
   addCol("data_import_commits", "request_hash", "TEXT");
@@ -2895,6 +3109,141 @@ export function migrateV2() {
       SELECT RAISE(ABORT,'material snapshot hash is immutable');
     END;
   `);
+
+  // ===== V11：多门店（连锁）——追加式列 + 默认门店回填（幂等；见 migrateMultiStore）=====
+  migrateMultiStore(addCol);
+}
+
+// 多门店数据模型（连锁客户）：所有列可空、默认回落，单店客户零感知。
+// - users.store_id：NULL=总部/全店；stores.is_default：每租户至多一家默认门店。
+// - 业务表 store_id：历史 NULL 行回填为该租户默认门店（只对已有业务数据的租户创建默认店；
+//   空白新租户在首次写入时由 engines/store-scope.js 的 defaultStoreId() 懒创建，不打扰开店向导）。
+// - store_checklist_marks / delivery_daily / inventory_items 的 UNIQUE 原本按租户唯一，多店会互相冲突，
+//   首次迁移时重建为「租户+门店」复合唯一（以 store_id 列缺失作为一次性触发条件）。
+const MULTI_STORE_TABLES = Object.freeze([
+  "orders",
+  "costs",
+  "tasks",
+  "store_inspections",
+  "store_checklist_marks",
+  "dish_soldout_marks",
+  "shift_assignments",
+  "attendance_records",
+  "inventory_items",
+  "inventory_moves",
+  "delivery_daily",
+  "daily_ops",
+  "store_reviews",
+]);
+function migrateMultiStore(addCol) {
+  addCol("users", "store_id", "INTEGER");
+  addCol("stores", "code", "TEXT");
+  addCol("stores", "is_default", "INTEGER DEFAULT 0");
+  addCol("stores", "region", "TEXT");
+  addCol("stores", "manager_user_id", "INTEGER");
+  addCol("stores", "status", "TEXT DEFAULT '营业中'");
+
+  const hasCol = (table, col) =>
+    db
+      .prepare(`PRAGMA table_info("${table}")`)
+      .all()
+      .some((item) => item.name === col);
+  // UNIQUE 需包含 store_id 的三张表：仅在 store_id 列尚不存在时重建一次（新库此时表刚建好、为空）
+  const rebuildWithStore = (table, columnsSql, copyCols, indexSql) => {
+    if (hasCol(table, "store_id")) return;
+    db.exec(`
+      DROP TABLE IF EXISTS ${table}__ms;
+      CREATE TABLE ${table}__ms (${columnsSql});
+      INSERT INTO ${table}__ms (${copyCols},store_id) SELECT ${copyCols},NULL FROM ${table};
+      DROP TABLE ${table};
+      ALTER TABLE ${table}__ms RENAME TO ${table};
+      ${indexSql}
+    `);
+  };
+  rebuildWithStore(
+    "store_checklist_marks",
+    `id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, date TEXT NOT NULL,
+     checklist_key TEXT NOT NULL, item_key TEXT NOT NULL, done_by INTEGER, done_by_name TEXT, note TEXT,
+     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), store_id INTEGER,
+     UNIQUE(tenant_id, store_id, date, checklist_key, item_key)`,
+    "id,tenant_id,date,checklist_key,item_key,done_by,done_by_name,note,created_at",
+    "CREATE INDEX IF NOT EXISTS idx_checklist_marks_tenant_date ON store_checklist_marks(tenant_id, date);",
+  );
+  rebuildWithStore(
+    "delivery_daily",
+    `id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, date TEXT NOT NULL, platform TEXT NOT NULL,
+     orders INTEGER NOT NULL DEFAULT 0, revenue REAL NOT NULL DEFAULT 0, rating REAL, avg_prep_minutes REAL,
+     bad_reviews INTEGER NOT NULL DEFAULT 0, recorded_by INTEGER,
+     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), store_id INTEGER,
+     UNIQUE(tenant_id, store_id, date, platform)`,
+    "id,tenant_id,date,platform,orders,revenue,rating,avg_prep_minutes,bad_reviews,recorded_by,updated_at",
+    "CREATE INDEX IF NOT EXISTS idx_delivery_daily_tenant_date ON delivery_daily(tenant_id, date);",
+  );
+  rebuildWithStore(
+    "inventory_items",
+    `id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, name TEXT NOT NULL, category TEXT,
+     unit TEXT NOT NULL DEFAULT '份', quantity REAL NOT NULL DEFAULT 0, safe_line REAL NOT NULL DEFAULT 0,
+     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), updated_by_name TEXT, store_id INTEGER,
+     UNIQUE(tenant_id, store_id, name)`,
+    "id,tenant_id,name,category,unit,quantity,safe_line,updated_at,updated_by_name",
+    "",
+  );
+  for (const table of MULTI_STORE_TABLES) addCol(table, "store_id", "INTEGER");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_users_tenant_store ON users(tenant_id, store_id);
+    CREATE INDEX IF NOT EXISTS idx_stores_tenant_default ON stores(tenant_id, is_default);
+    CREATE INDEX IF NOT EXISTS idx_orders_tenant_store_created ON orders(tenant_id, store_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_tenant_store ON tasks(tenant_id, store_id);
+  `);
+
+  // 回填：按租户循环（每条 SQL 都带 tenant_id 条件）。
+  const tenants = db.prepare("SELECT id, name FROM tenants ORDER BY id").all();
+  const firstStore = db.prepare(
+    "SELECT id FROM stores WHERE tenant_id=? ORDER BY is_default DESC, id LIMIT 1",
+  );
+  const hasDefault = db.prepare(
+    "SELECT id FROM stores WHERE tenant_id=? AND is_default=1 ORDER BY id LIMIT 1",
+  );
+  const orphanCounters = MULTI_STORE_TABLES.map((table) =>
+    db.prepare(
+      `SELECT COUNT(*) n FROM ${table} WHERE tenant_id=? AND store_id IS NULL`,
+    ),
+  );
+  const backfillers = MULTI_STORE_TABLES.map((table) =>
+    db.prepare(
+      `UPDATE ${table} SET store_id=? WHERE tenant_id=? AND store_id IS NULL`,
+    ),
+  );
+  for (const tenant of tenants) {
+    let defaultId = hasDefault.get(tenant.id)?.id ?? null;
+    if (!defaultId) {
+      const first = firstStore.get(tenant.id);
+      if (first) {
+        db.prepare(
+          "UPDATE stores SET is_default=1 WHERE tenant_id=? AND id=?",
+        ).run(tenant.id, first.id);
+        defaultId = first.id;
+      }
+    }
+    const orphanRows = orphanCounters.reduce(
+      (sum, stmt) => sum + Number(stmt.get(tenant.id)?.n || 0),
+      0,
+    );
+    if (!orphanRows) continue;
+    if (!defaultId) {
+      // 有历史业务数据却没有门店的老租户：建一家默认门店承接（名称=企业名，兜底「总店」）
+      defaultId = Number(
+        db
+          .prepare(
+            `INSERT INTO stores(tenant_id,name,is_default,biz_type,status)
+             VALUES(?,?,1,'快餐','营业中')`,
+          )
+          .run(tenant.id, String(tenant.name || "").trim() || "总店")
+          .lastInsertRowid,
+      );
+    }
+    for (const stmt of backfillers) stmt.run(defaultId, tenant.id);
+  }
 }
 
 // 内部任务分部：全局基线 + 当前租户覆盖合并
@@ -3054,3 +3403,20 @@ export function getTenantConfig(key, dflt, tid = curTenant()) {
 export function setTenantConfig(key, value, tid = curTenant()) {
   setConfig(`${key}:${tid}`, value);
 }
+
+// ===== 默认年度套餐（2026-09-09 成都招商会敲定；本次只做这一档，字段预留扩展）=====
+// 价格单位与 recharge_packages.price_yuan 一致（元）；credits=0 表示不含积分，按用量另行充值；
+// bonusCredits 为本次套餐额外赠送、在套餐生效时作为独立 bonus 流水入账。
+export const DEFAULT_PLAN_PACKAGE = Object.freeze({
+  code: "restaurant_annual_v1",
+  name: "餐饮版年度套餐",
+  kind: "plan",
+  priceYuan: 9800,
+  credits: 0,
+  bonusCredits: 60000,
+  seatLimit: 5,
+  validDays: 365,
+  tag: "年度",
+  sort: 0,
+  features: Object.freeze({ roles: ["boss", "ops_director", "sales"], note: "含老板/管理层/员工账号" }),
+});

@@ -60,6 +60,11 @@ import WechatDraftStudio from '../components/WechatDraftStudio';
 import ContentReferencePanel from '../components/ContentReferencePanel';
 import ContentFactoryRecentCard from '../components/ContentFactoryRecentCard';
 import AiSalesVideoPanel from '../components/AiSalesVideoPanel';
+import ContentSampleLibrary, { sampleBriefFromSample } from '../components/ContentSampleLibrary';
+import ContentPublishAssistant, {
+  PUBLISH_PLATFORM_OPTIONS,
+  type PublishAssistantTab,
+} from '../components/ContentPublishAssistant';
 import { useReferenceImages } from '../components/useReferenceImages';
 import {
   CONTENT_EXECUTION_STATIONS,
@@ -256,6 +261,15 @@ export default function ContentFactory() {
   const [dailyPack, setDailyPack] = useState<any>(null);
   const [dailyOpen, setDailyOpen] = useState(false);
   const [salesVideoOpen, setSalesVideoOpen] = useState(Boolean(requestedMediaJobId));
+  const [sampleLibraryOpen, setSampleLibraryOpen] = useState(false);
+  // 发布助手深链：站内通知“该发到 xx 了 / 回填数据”落到 /content?publishAssistant=<id>&assistantTab=<tab>
+  const [publishAssistant, setPublishAssistant] = useState<{ id: number; tab: PublishAssistantTab } | null>(() => {
+    const id = Number(searchParams.get('publishAssistant'));
+    const tab = searchParams.get('assistantTab');
+    if (!Number.isSafeInteger(id) || id <= 0) return null;
+    return { id, tab: tab === 'pack' || tab === 'metrics' || tab === 'timeline' ? tab : 'schedule' };
+  });
+  const [salesVideoPreset, setSalesVideoPreset] = useState<{ key: number; text: string } | null>(null);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [pipelineFocusId, setPipelineFocusId] = useState<number | null>(requestedPipelineId);
   const [viewRec, setViewRec] = useState<any>(null);
@@ -802,6 +816,7 @@ export default function ContentFactory() {
   const [crewConnected, setCrewConnected] = useState(false);
   const [crewWorkbenchIdx, setCrewWorkbenchIdx] = useState<number | null>(null);
   const [crewWorkbenchRunId, setCrewWorkbenchRunId] = useState<number | null>(null);
+  const [retroContentId, setRetroContentId] = useState<number | null>(null);
   const employeePendingReviewCount = employeeTaskQueue?.statusCounts?.['待审阅'] || 0;
   const pipelinePendingReviewCount = pipelinePendingReviews.length;
   const totalPendingReviewCount = pending.length + employeePendingReviewCount + pipelinePendingReviewCount;
@@ -1451,7 +1466,8 @@ export default function ContentFactory() {
       });
     setPublishIdempotencyKey(key);
     setPubRec(rec);
-    pubForm.setFieldsValue({ channel: rec?.channel || '朋友圈', views: 0, leads: 0 });
+    const defaultChannel = ['小红书', '小红书带货笔记'].includes(rec?.type) ? '小红书' : '朋友圈';
+    pubForm.setFieldsValue({ channel: rec?.channel || defaultChannel, views: 0, leads: 0 });
   };
   const submitPublish = () => {
     if (!pubRec?.id || !publishIdempotencyKey || publishing) return;
@@ -1854,6 +1870,11 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
                       30秒带货视频
                     </Button>
                   )}
+                  {station.key === 'commerce_video' && (
+                    <Button icon={<FolderOpenOutlined />} onClick={() => setSampleLibraryOpen(true)}>
+                      样片库
+                    </Button>
+                  )}
                 </div>
               </article>
             );
@@ -1880,6 +1901,37 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         loadSummary={loadSummary}
         loadMediaJobs={loadMediaJobs}
         onTaskSubmitted={() => setEmployeeTaskRefreshToken(value => value + 1)}
+        presetBrief={salesVideoPreset}
+      />
+
+      <ContentSampleLibrary
+        open={sampleLibraryOpen}
+        onClose={() => setSampleLibraryOpen(false)}
+        onUseSample={sample => {
+          setSalesVideoPreset({ key: Date.now(), text: sampleBriefFromSample(sample) });
+          setSampleLibraryOpen(false);
+          setSalesVideoOpen(true);
+        }}
+      />
+
+      <ContentPublishAssistant
+        open={publishAssistant !== null}
+        contentId={publishAssistant?.id ?? null}
+        initialTab={publishAssistant?.tab}
+        onClose={() => setPublishAssistant(null)}
+        onOpenRetrospective={id => {
+          setPublishAssistant(null);
+          setRetroContentId(id);
+          setCrewWorkbenchRunId(null);
+          setCrewWorkbenchIdx(9);
+        }}
+        onOpenPublishLog={id => {
+          setPublishAssistant(null);
+          api
+            .get(`/content/detail/${id}`)
+            .then((row: any) => openPublish(row))
+            .catch(() => message.error('内容详情加载失败，请稍后重试'));
+        }}
       />
 
       <EmployeeWorkbench
@@ -1887,6 +1939,12 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         domain="content"
         idx={crewWorkbenchIdx}
         initialRunId={crewWorkbenchRunId}
+        initialRetroContentId={crewWorkbenchIdx === 9 ? retroContentId : null}
+        initialDirective={
+          crewWorkbenchIdx === 9 && retroContentId
+            ? '依据这篇内容的发布回填数据复盘，并提出有证据支持的下一稿改法。'
+            : null
+        }
         identityHint={(() => {
           const station = contentCrew.find(item => item.employeeIdx === crewWorkbenchIdx);
           return station
@@ -1905,6 +1963,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         onClose={() => {
           setCrewWorkbenchIdx(null);
           setCrewWorkbenchRunId(null);
+          setRetroContentId(null);
           setEmployeeTaskRefreshToken(value => value + 1);
           loadMaterials();
           loadSummary();
@@ -4075,6 +4134,18 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
             </Tooltip>
           ),
           viewRec?.id && (
+            <Button
+              key="assistant"
+              icon={<CalendarOutlined />}
+              onClick={() => {
+                setPublishAssistant({ id: Number(viewRec.id), tab: 'schedule' });
+                setViewRec(null);
+              }}
+            >
+              发布助手
+            </Button>
+          ),
+          viewRec?.id && (
             <Popconfirm
               key="del"
               title={`删除「${viewRec?.title || viewRec?.topic || '该内容'}」？`}
@@ -4589,6 +4660,7 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         open={!!pubRec}
         title="发布登记"
         okText="提交登记"
+        cancelText="取消"
         forceRender
         confirmLoading={publishing}
         onCancel={() => {
@@ -4601,11 +4673,14 @@ ${pages.map((p: any, i: number) => `<h2>第${i + 2}页 ${escapeHtml(p?.title)}</
         <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginBottom: 12 }}>
           登记内容：{pubRec?.title || pubRec?.topic || (pubRec ? `#${pubRec.id}` : '')}
         </div>
-        <Form form={pubForm} layout="vertical">
+        <Form form={pubForm} name="content-publish-log" layout="vertical">
           <Form.Item label="发布渠道" name="channel" rules={[{ required: true, message: '请选择发布渠道' }]}>
             <Select
               placeholder="选择发布渠道"
-              options={['短视频', '朋友圈', '社群'].map(c => ({ value: c, label: c }))}
+              options={['短视频', ...PUBLISH_PLATFORM_OPTIONS.map(option => option.value)].map(value => ({
+                value,
+                label: value,
+              }))}
             />
           </Form.Item>
           <Row gutter={12}>

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const dbPath = path.join(
   os.tmpdir(),
@@ -161,7 +162,6 @@ test("参谋会诊任务继续按用户/管理链隔离", async () => {
   });
 });
 
-after(() => {
-  for (const suffix of ["", "-wal", "-shm"])
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
+after(async () => {
+  await removeTempDbSafely(dbPath);
 });

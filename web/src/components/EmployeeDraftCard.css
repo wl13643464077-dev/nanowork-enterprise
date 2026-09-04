@@ -1,0 +1,125 @@
+/* 未达标草稿卡（P0-1）：橙色警示但不刺眼，老板先看“没过什么”，再决定出路。 */
+.employee-draft-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--card-pad);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--ui-border));
+  border-left: 4px solid var(--warn);
+  border-radius: var(--radius-md);
+  background: var(--ui-warning-surface);
+  color: var(--ui-text);
+}
+
+.employee-draft-card.is-accepted {
+  border-left-color: color-mix(in srgb, var(--warn) 55%, var(--ui-border-strong));
+  background: color-mix(in srgb, var(--ui-warning-surface) 55%, var(--ui-surface));
+}
+
+.employee-draft-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.employee-draft-card__head h4 {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--font-4);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.employee-draft-card__head p {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.employee-draft-card__accepted {
+  margin-top: var(--space-1);
+}
+
+.employee-draft-card__checks,
+.employee-draft-card__body {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+}
+
+.employee-draft-card__checks > summary,
+.employee-draft-card__body > summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.employee-draft-card__checks > summary::-webkit-details-marker,
+.employee-draft-card__body > summary::-webkit-details-marker {
+  display: none;
+}
+
+.employee-draft-card__checks > summary strong {
+  color: var(--ui-warning-text);
+  font-size: var(--font-3);
+}
+
+.employee-draft-card__body > summary strong {
+  font-size: var(--font-3);
+}
+
+.employee-draft-card__checks > summary small,
+.employee-draft-card__body > summary small {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.employee-draft-card__checks > ul {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3) var(--space-6);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.employee-draft-card__check-label {
+  font-size: var(--font-2);
+  font-weight: 600;
+}
+
+.employee-draft-card__check-details {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.employee-draft-card__markdown {
+  padding: 0 var(--space-3) var(--space-3);
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.employee-draft-card__actions {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.employee-draft-card__hint {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.employee-draft-confirm p {
+  margin: 0 0 var(--space-2);
+}
+
+.employee-draft-confirm ul {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-5);
+}

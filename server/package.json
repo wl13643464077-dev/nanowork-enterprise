@@ -7,7 +7,7 @@
     "dev": "node --no-warnings src/index.js",
     "start": "node --no-warnings src/index.js",
     "seed:demo": "SEED_DEMO=true node --no-warnings src/seed.js",
-    "test": "NANOWORK_TEST_TEMPLATE_AI=1 node --test --no-warnings test/*.test.mjs"
+    "test": "node scripts/run-tests.mjs"
   },
   "engines": {
     "node": ">=22.12.0"

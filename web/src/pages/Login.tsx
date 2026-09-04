@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Checkbox, Form, Input, message } from 'antd';
+import { Alert, Button, Checkbox, Form, Input, message } from 'antd';
 import {
   BarChartOutlined,
   CheckSquareOutlined,
@@ -220,6 +220,7 @@ export default function Login() {
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
   const [panelOpen, setPanelOpen] = useState(params.get('login') === '1');
   const [form] = Form.useForm();
   const sound = useLoginSound();
@@ -269,9 +270,14 @@ export default function Login() {
 
   const submit = async (values: { username: string; password: string; remember?: boolean }) => {
     setLoading(true);
+    setLoginError('');
     sound.press();
     try {
-      const data = await api.post('/auth/login', { username: values.username, password: values.password });
+      const data = await api.post(
+        '/auth/login',
+        { username: values.username, password: values.password },
+        { silent: true },
+      );
       const usernameToRemember = String(values.username || '').trim();
       if (values.remember && usernameToRemember) localStorage.setItem(REMEMBER_KEY, usernameToRemember);
       else localStorage.removeItem(REMEMBER_KEY);
@@ -294,6 +300,8 @@ export default function Login() {
       message.success(`欢迎回来，${data.user.name}`);
       const isMobile = /Mobile|Android|iPhone|iPad|Windows Phone/i.test(navigator.userAgent);
       nav(isMobile ? '/m' : '/');
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : '登录失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -502,10 +510,12 @@ export default function Login() {
                 className="au-min-form"
                 form={form}
                 onFinish={submit}
+                onValuesChange={() => setLoginError('')}
                 requiredMark={false}
                 size="large"
                 layout="vertical"
               >
+                {loginError && <Alert className="lp-login-error" type="error" showIcon message={loginError} />}
                 <Form.Item name="username" rules={[{ required: true, message: '请输入账号' }]}>
                   <Input
                     prefix={<UserOutlined />}

@@ -21,6 +21,7 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     tenant_id INTEGER NOT NULL,
     manager_id INTEGER,
+    store_id INTEGER,
     name TEXT,
     role TEXT,
     status TEXT
@@ -489,6 +490,22 @@ async function routeServer(t, options = {}) {
 
   return { ...fixture, request };
 }
+
+test('小红书人工选版的HTTP权限和通知仅面向老板与管理员', async t => {
+  const fixture = await routeServer(t);
+  const target = fixture.seed({ createdBy: ACTORS.manager.id, currentStation: 3, pendingStation: 3,
+    status: 'awaiting_approval', stations: [{ stationIdx: 3, status: 'awaiting_approval',
+      approvalBoundary: { code: 'pick', ownerSelectionRequired: true }, output: { versions: [] }, artifacts: [] }] });
+  const denied = await fixture.request(`/api/content/pipelines/${target.id}/review`, {
+    actor: ACTORS.manager, method: 'POST', body: { action: 'approve', selection: { candidateIndex: 0 } },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(fixture.calls.review.length, 0);
+  const crossTenant = await fixture.request(`/api/content/pipelines/${target.id}`, { actor: ACTORS.otherBoss });
+  assert.equal(crossTenant.status, 404);
+  assert.deepEqual(contentPipelineReviewAudienceIds({ users: db.prepare('SELECT * FROM users WHERE tenant_id=11').all(),
+    creatorId: ACTORS.manager.id, boundaryCode: 'pick', ownerSelectionRequired: true }), [ACTORS.boss.id, ACTORS.admin.id]);
+});
 
 test("boss创建保留exact 11字段Brief，自定义停审点且配置人不可伪造", async (t) => {
   const fixture = await routeServer(t);

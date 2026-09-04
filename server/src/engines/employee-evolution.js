@@ -3,18 +3,72 @@
 // 「员工怎么做的 vs 老板怎么反应的」→ 提炼最小聚焦的「实战心得」提案（1-3 条）
 // → 人工审批采纳 → 下次派活自动注入。心得是文件化知识（写原则+为什么），
 // 不是死规则；提案永远人审后才生效，防错误反馈污染员工行为。
+//
+// 两个员工域共用同一张心得/提案表，靠 domain 列区分：
+//   restaurant：specialist_id = specialists.id，信号来自 agent_tasks + approvals(target_type='content')
+//   content   ：specialist_id = 内容员工 idx(0-10)，信号来自 content_employee_runs 的审阅结论、
+//               经 contents 关联的 approvals，以及 content_publish_metrics 的分策略效果
 import { curTenant, q } from '../db.js';
+import { contentStrategyMetricsSummary } from './content-publish-followup.js';
+import {
+  EVOLUTION_DOMAINS,
+  RETRO_CHANGE_TARGET_EMPLOYEE,
+  RETRO_CHANGE_TARGET_LABELS,
+  evolutionNotesPromptLines,
+  sanitizeEvolutionNotesForPrompt,
+} from './employee-evolution-prompt.js';
+
+export {
+  EVOLUTION_DOMAINS,
+  RETRO_CHANGE_TARGET_EMPLOYEE,
+  RETRO_CHANGE_TARGET_LABELS,
+  evolutionNotesPromptLines,
+  sanitizeEvolutionNotesForPrompt,
+};
 
 export const EVOLUTION_SIGNAL_DAYS = 30;
 export const EVOLUTION_SIGNAL_LIMIT = 40;
 export const EVOLUTION_NOTE_INJECT_LIMIT = 8;
 export const EVOLUTION_MIN_SIGNALS = 3;
+const RETRO_ADOPT_NOTE_PREFIX = 'retro_adopt';
 
-// 采集进化信号：该员工近 N 天已定案任务 + 对应验收记录（approvals.reason 是核心养料）
-export function collectEvolutionSignals(specialistId, {
-  days = EVOLUTION_SIGNAL_DAYS,
-  limit = EVOLUTION_SIGNAL_LIMIT,
-} = {}) {
+function positiveDays(days) {
+  return Math.max(1, Math.trunc(Number(days) || EVOLUTION_SIGNAL_DAYS));
+}
+
+function positiveLimit(limit, fallback) {
+  return Math.max(1, Math.trunc(Number(limit) || fallback));
+}
+
+/**
+ * 进化目标归一化：
+ *   数字 / 数字字符串             → { domain:'restaurant', id: specialistId }
+ *   { domain:'content', employeeIdx } → { domain:'content', id: employeeIdx }
+ *   { domain:'restaurant', specialistId } → restaurant
+ */
+export function resolveEvolutionTarget(input) {
+  if (input && typeof input === 'object') {
+    const domain = EVOLUTION_DOMAINS.includes(input.domain) ? input.domain : 'restaurant';
+    const raw = domain === 'content'
+      ? input.employeeIdx ?? input.id
+      : input.specialistId ?? input.id;
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id < 0) {
+      throw Object.assign(new Error('进化目标员工编号无效'), { status: 400 });
+    }
+    if (domain === 'content' && id > 10) {
+      throw Object.assign(new Error('内容员工编号必须在0-10之间'), { status: 400 });
+    }
+    return { domain, id };
+  }
+  const id = Number(input);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw Object.assign(new Error('进化目标员工编号无效'), { status: 400 });
+  }
+  return { domain: 'restaurant', id };
+}
+
+function restaurantSignals(target, { days, limit }) {
   const rows = q.all(
     `SELECT t.id, t.title, t.type, t.requirement, t.status, t.created_at,
        a.status approval_status, a.reason approval_reason, a.decided_at
@@ -25,11 +79,11 @@ export function collectEvolutionSignals(specialistId, {
        AND t.created_at >= datetime('now','localtime',?)
      ORDER BY t.id DESC LIMIT ?`,
     curTenant(),
-    Number(specialistId),
-    `-${Math.max(1, Math.trunc(Number(days) || EVOLUTION_SIGNAL_DAYS))} days`,
-    Math.max(1, Math.trunc(Number(limit) || EVOLUTION_SIGNAL_LIMIT)),
+    target.id,
+    `-${positiveDays(days)} days`,
+    positiveLimit(limit, EVOLUTION_SIGNAL_LIMIT),
   );
-  const signals = rows.map(row => ({
+  return rows.map(row => ({
     taskId: row.id,
     title: String(row.title || '').slice(0, 80),
     type: String(row.type || '').slice(0, 20),
@@ -38,41 +92,132 @@ export function collectEvolutionSignals(specialistId, {
     reason: String(row.approval_reason || '').slice(0, 300) || null,
     decidedAt: row.decided_at || row.created_at,
   }));
+}
+
+// 内容员工：content_employee_runs 已定案记录 + 工作台审阅意见 + 经 contents 关联的审批理由
+function contentRunSignals(target, { days, limit }) {
+  const rows = q.all(
+    `SELECT r.id, r.title, r.type, r.requirement, r.status, r.created_at,
+       json_extract(r.snapshot_json,'$.review.opinion') review_opinion,
+       json_extract(r.snapshot_json,'$.review.decision') review_decision,
+       json_extract(r.snapshot_json,'$.review.reviewedAt') reviewed_at,
+       (SELECT a.status FROM approvals a
+          JOIN contents c ON c.tenant_id = a.tenant_id AND c.id = a.target_id
+        WHERE a.tenant_id = r.tenant_id AND a.target_type = 'content'
+          AND c.source_type = 'content_employee_run' AND c.source_id = r.id
+        ORDER BY a.id DESC LIMIT 1) approval_status,
+       (SELECT a.reason FROM approvals a
+          JOIN contents c ON c.tenant_id = a.tenant_id AND c.id = a.target_id
+        WHERE a.tenant_id = r.tenant_id AND a.target_type = 'content'
+          AND c.source_type = 'content_employee_run' AND c.source_id = r.id
+        ORDER BY a.id DESC LIMIT 1) approval_reason
+     FROM content_employee_runs r
+     WHERE r.tenant_id = ? AND r.employee_idx = ? AND r.status IN ('已完成','已驳回')
+       AND r.created_at >= datetime('now','localtime',?)
+     ORDER BY r.id DESC LIMIT ?`,
+    curTenant(),
+    target.id,
+    `-${positiveDays(days)} days`,
+    positiveLimit(limit, EVOLUTION_SIGNAL_LIMIT),
+  );
+  return rows.map(row => {
+    const opinion = String(row.review_opinion || '').trim();
+    const approvalReason = String(row.approval_reason || '').trim();
+    const reason = [opinion, approvalReason && approvalReason !== opinion ? approvalReason : '']
+      .filter(Boolean)
+      .join('；')
+      .slice(0, 300);
+    return {
+      taskId: row.id,
+      title: String(row.title || '').slice(0, 80),
+      type: String(row.type || '').slice(0, 20),
+      requirement: String(row.requirement || '').slice(0, 200),
+      outcome: row.status,
+      reason: reason || null,
+      decidedAt: row.reviewed_at || row.created_at,
+      source: 'content_employee_run',
+      approvalStatus: row.approval_status || null,
+      autoAdopted: row.review_decision === 'auto_adopt',
+    };
+  });
+}
+
+// 采集进化信号：该员工近 N 天已定案任务 + 对应验收记录（approvals.reason 是核心养料）。
+// 内容域额外附带 stats.strategyStats：哪种撰稿策略的收藏率/点赞率更高（来自发布回填）。
+export function collectEvolutionSignals(targetInput, {
+  days = EVOLUTION_SIGNAL_DAYS,
+  limit = EVOLUTION_SIGNAL_LIMIT,
+} = {}) {
+  const target = resolveEvolutionTarget(targetInput);
+  const signals = target.domain === 'content'
+    ? contentRunSignals(target, { days, limit })
+    : restaurantSignals(target, { days, limit });
   const rejected = signals.filter(item => item.outcome === '已驳回');
-  return {
-    signals,
-    stats: {
-      total: signals.length,
-      adopted: signals.filter(item => item.outcome === '已完成').length,
-      rejected: rejected.length,
-      rejectReasons: rejected.filter(item => item.reason).map(item => item.reason).slice(0, 12),
-      windowDays: days,
-    },
+  const stats = {
+    domain: target.domain,
+    total: signals.length,
+    adopted: signals.filter(item => item.outcome === '已完成').length,
+    rejected: rejected.length,
+    rejectReasons: rejected.filter(item => item.reason).map(item => item.reason).slice(0, 12),
+    windowDays: positiveDays(days),
   };
+  if (target.domain === 'content') {
+    let strategyStats = [];
+    try {
+      strategyStats = contentStrategyMetricsSummary(curTenant(), {
+        days: positiveDays(days),
+        employeeIdx: target.id,
+      });
+    } catch {
+      strategyStats = [];
+    }
+    stats.strategyStats = strategyStats;
+    stats.metricContents = strategyStats.reduce((sum, item) => sum + Number(item.contents || 0), 0);
+  }
+  return { signals, stats };
 }
 
 // 已生效心得（派活注入用，渐进披露：只注入最新 N 条）
-export function activeEvolutionNotes(specialistId, {
+export function activeEvolutionNotes(targetInput, {
   limit = EVOLUTION_NOTE_INJECT_LIMIT,
   tenantId = null,
 } = {}) {
+  const target = resolveEvolutionTarget(targetInput);
   return q.all(
     `SELECT id, note, rationale, evidence, created_at FROM employee_evolution_notes
-     WHERE tenant_id = ? AND specialist_id = ? AND status = 'active'
+     WHERE tenant_id = ? AND domain = ? AND specialist_id = ? AND status = 'active'
      ORDER BY id DESC LIMIT ?`,
     tenantId ?? curTenant(),
-    Number(specialistId),
-    Math.max(1, Math.trunc(Number(limit) || EVOLUTION_NOTE_INJECT_LIMIT)),
+    target.domain,
+    target.id,
+    positiveLimit(limit, EVOLUTION_NOTE_INJECT_LIMIT),
   );
 }
 
-// 派活 prompt 的心得注入块（两种派活模式共用同一措辞）
-export function evolutionNotesPromptLines(notes = []) {
-  if (!notes.length) return [];
+// 内容员工派活/流水线注入用：读表失败（如极早期库缺表）时返回空数组，不影响派活
+export function activeContentEvolutionNotes(employeeIdx, { tenantId = null, limit } = {}) {
+  try {
+    return activeEvolutionNotes({ domain: 'content', employeeIdx }, { tenantId, limit });
+  } catch {
+    return [];
+  }
+}
+
+function strategyStatsLines(stats) {
+  const items = Array.isArray(stats?.strategyStats) ? stats.strategyStats : [];
+  if (!items.length) return [];
   return [
-    '【实战心得·从老板验收反馈进化而来（必须遵守，违背这些心得的产出曾被驳回）】',
-    ...notes.map(item =>
-      `- ${item.note}${item.rationale ? `（为什么：${item.rationale}）` : ''}`),
+    '',
+    `【发布效果按策略汇总（来自发布后人工回填，平台未核验；近 ${stats.windowDays} 天）】`,
+    ...items.map(item => {
+      const rates = [
+        item.avgSaveRate != null ? `收藏率均值 ${item.avgSaveRate}%` : '',
+        item.avgLikeRate != null ? `点赞率均值 ${item.avgLikeRate}%` : '',
+        item.avgCommentRate != null ? `评论率均值 ${item.avgCommentRate}%` : '',
+      ].filter(Boolean).join('、');
+      return `- 策略「${item.strategy}」：${item.contents} 篇已回填${rates ? `；${rates}` : '；缺少浏览量分母，无法算率'}`;
+    }),
+    '样本少于 3 篇的策略只记现象，不据此立心得。',
   ];
 }
 
@@ -100,6 +245,7 @@ export function buildEvolutionPrompt({ employeeName, signals, stats, existingNot
     '',
     `【近期验收记录（共 ${stats.total} 条：采纳 ${stats.adopted} / 驳回 ${stats.rejected}）】`,
     ...signalLines,
+    ...strategyStatsLines(stats),
     '',
     '【已生效心得（可提议退役，引用 id）】',
     ...noteLines,
@@ -148,4 +294,87 @@ export function parseEvolutionProposal(rawText) {
     additions: verdict === 'insufficient' ? [] : additions,
     retireNoteIds: verdict === 'insufficient' ? [] : retireNoteIds,
   };
+}
+
+// ===== 复盘 → 心得：老板在工作台勾选复盘官 next_draft_changes 后直接写成 active 心得 =====
+
+export function retroAdoptionEvidenceKey(runId, index) {
+  return `${RETRO_ADOPT_NOTE_PREFIX}:run#${Number(runId)}:change[${Number(index)}]`;
+}
+
+/**
+ * 把复盘官 next_draft_changes 中被勾选的条目写入目标员工的心得库。
+ * 老板勾选即人审确认，因此直接 active（不再走提案）。幂等：同一 run 同一条目只写一次。
+ * @returns {{ adopted: Array, skipped: Array }}
+ */
+export function adoptRetrospectiveDraftChanges({
+  tenantId,
+  runId,
+  contentId = null,
+  changes,
+  indexes,
+}) {
+  const tid = Number(tenantId) || curTenant();
+  const list = Array.isArray(changes) ? changes : [];
+  const adopted = [];
+  const skipped = [];
+  const seen = new Set();
+  for (const rawIndex of Array.isArray(indexes) ? indexes : []) {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= list.length || seen.has(index)) {
+      skipped.push({ index: rawIndex, reason: 'invalid_index' });
+      continue;
+    }
+    seen.add(index);
+    const change = list[index];
+    const target = String(change?.target || '');
+    const employeeIdx = RETRO_CHANGE_TARGET_EMPLOYEE[target];
+    if (employeeIdx === undefined) {
+      skipped.push({ index, reason: 'unknown_target' });
+      continue;
+    }
+    const evidenceKey = retroAdoptionEvidenceKey(runId, index);
+    const existing = q.get(
+      `SELECT id, status FROM employee_evolution_notes
+       WHERE tenant_id = ? AND domain = 'content' AND specialist_id = ? AND evidence = ?
+       ORDER BY id DESC LIMIT 1`,
+      tid,
+      employeeIdx,
+      evidenceKey,
+    );
+    if (existing) {
+      adopted.push({
+        index,
+        target,
+        employeeIdx,
+        noteId: Number(existing.id),
+        created: false,
+        status: existing.status,
+      });
+      continue;
+    }
+    const note = `${RETRO_CHANGE_TARGET_LABELS[target] || target}：${String(change?.change || '').trim()}`.slice(0, 260);
+    const rationale = [
+      String(change?.evidence || '').trim(),
+      contentId ? `（内容#${Number(contentId)}人工回填，平台未核验）` : '',
+    ].filter(Boolean).join('').slice(0, 260) || null;
+    const inserted = q.run(
+      `INSERT INTO employee_evolution_notes(tenant_id,domain,specialist_id,note,rationale,evidence,status,proposal_id)
+       VALUES(?,'content',?,?,?,?,'active',NULL)`,
+      tid,
+      employeeIdx,
+      note,
+      rationale,
+      evidenceKey,
+    );
+    adopted.push({
+      index,
+      target,
+      employeeIdx,
+      noteId: Number(inserted.lastInsertRowid),
+      created: true,
+      status: 'active',
+    });
+  }
+  return { adopted, skipped };
 }

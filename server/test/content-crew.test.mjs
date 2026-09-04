@@ -404,7 +404,7 @@ test('GET /content/crew只把契约有效且业务可用的成品计入当前账
       assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 1);
       assert.equal(data.employees.find(employee => employee.idx === 0).skill, CONTENT_EMPLOYEES[0].skill);
       assert.deepEqual(data.employees.find(employee => employee.idx === 0).capabilities, CONTENT_EMPLOYEES[0].capabilities);
-      assert.deepEqual(data.employees.find(employee => employee.idx === 3).taskTypes, ['文案初稿', '标题方案', '配图建议']);
+      assert.deepEqual(data.employees.find(employee => employee.idx === 3).taskTypes, ['文案初稿', '标题方案', '配图建议', '小红书带货笔记']);
       assert.deepEqual(data.employees.find(employee => employee.idx === 7).taskTypes, ['HTML演绎稿', '网页演示方案', '交互演绎稿']);
       const summary = await fetch(`${base}/content/summary`).then(result => result.json());
       assert.equal(summary.total, 1);

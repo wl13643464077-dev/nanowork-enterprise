@@ -47,6 +47,7 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, fmtMoney, getUser } from '../api/client';
+import { onStoreChanged, storeHeaders } from '../api/store-context';
 import { StatCard, Panel, StageTag, GradeTag, ErrorState } from '../components/Kit';
 import DashboardInspectionCard from '../components/DashboardInspectionCard';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
@@ -122,6 +123,8 @@ export default function Dashboard() {
   };
   const [loadError, setLoadError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // 多门店：顶栏切换门店后整页重新拉数（store-changed 事件，与 credits-updated 同款）
+  useEffect(() => onStoreChanged(() => setReloadKey(k => k + 1)), []);
   const [weekActs, setWeekActs] = useState<any[]>([]);
   const [marshals, setMarshals] = useState<any[]>([]);
   const [followOverview, setFollowOverview] = useState<any>({ summary: {}, daily: [], staff: [], recent: [] });
@@ -202,7 +205,7 @@ export default function Dashboard() {
         .then((d: any) => setDigest(d && !d.empty ? d : null))
         .catch(() => setDigest(null));
     }
-  }, [canViewAnalysis, canViewGrowth, canViewManagementBriefing, canViewMarshals]);
+  }, [canViewAnalysis, canViewGrowth, canViewManagementBriefing, canViewMarshals, reloadKey]);
 
   const dataMarshal = marshals.find((m: any) => m.code === 'M-07');
   useEffect(() => {
@@ -299,7 +302,10 @@ export default function Dashboard() {
       return;
     }
     let cancelled = false;
-    fetch(`/api/store-data/kpi?month=${dayjs().format('YYYY-MM')}`, { credentials: 'same-origin' })
+    fetch(`/api/store-data/kpi?month=${dayjs().format('YYYY-MM')}`, {
+      credentials: 'same-origin',
+      headers: storeHeaders(),
+    })
       .then(r => (r.ok ? r.json() : null))
       .then(d => {
         if (!cancelled) setStoreKpi(d);
@@ -310,7 +316,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [canViewStoreData]);
+  }, [canViewStoreData, reloadKey]);
 
   const openDayDetail = (date: string) => {
     setDayDetail({ loading: true, date });

@@ -171,8 +171,9 @@ async function decide(actor, approvalId, pass = true, reason = undefined) {
   });
 }
 
-test('管理层、老板和管理员可查看审批规则，只有平台超级管理员可修改', async () => {
-  for (const actor of ['opsOne', 'manager', 'boss', 'admin']) {
+test('管理层可查看审批规则，老板/管理员/平台超级管理员可修改，负责人与经理不可修改', async () => {
+  // B9 审批策略下放：boss/admin 现在是企业级编辑者；ops_director/manager 仍只读。
+  for (const actor of ['opsOne', 'manager']) {
     const visible = await api(actor, '/sys/approval-policy');
     assert.equal(visible.status, 200, JSON.stringify(visible.json));
     assert.equal(visible.json.canEdit, false);
@@ -186,12 +187,19 @@ test('管理层、老板和管理员可查看审批规则，只有平台超级�
       body: policyWithActivityPlan({ mode: 'manager', reviewerUserId: ids.opsOne }),
     });
     assert.equal(denied.status, 403, `${actor}: ${JSON.stringify(denied.json)}`);
+    assert.equal(denied.json.error, '无权限执行此操作');
   }
-
-  const adminDenied = await savePlanPolicy('admin', { mode: 'boss' }, 403);
-  assert.equal(adminDenied.error, '无权限执行此操作');
-  const bossDenied = await savePlanPolicy('boss', { mode: 'manager' }, 403);
-  assert.equal(bossDenied.error, '无权限执行此操作');
+  for (const actor of ['boss', 'admin']) {
+    const visible = await api(actor, '/sys/approval-policy');
+    assert.equal(visible.status, 200, JSON.stringify(visible.json));
+    assert.equal(visible.json.canEdit, true, `${actor} 应可编辑企业审批规则`);
+    assert.ok(visible.json.reviewerCandidates.length > 0);
+  }
+  const bossSaved = await savePlanPolicy('boss', { mode: 'boss' });
+  assert.equal(bossSaved.policy.activityPlan.mode, 'boss');
+  assert.equal(bossSaved.policy.configuredBy.role, 'boss');
+  const adminSaved = await savePlanPolicy('admin', { mode: 'two_step' });
+  assert.equal(adminSaved.policy.configuredBy.role, 'admin');
 
   const platformSaved = await savePlanPolicy('platformSuper', {
     mode: 'manager', reviewerUserId: ids.opsOne,

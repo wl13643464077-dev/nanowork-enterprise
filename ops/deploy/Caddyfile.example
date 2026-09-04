@@ -1,0 +1,87 @@
+# 纳米Work行业版 · Caddy 反向代理示例（自动 HTTPS，Let's Encrypt）
+# 复制到 /etc/caddy/Caddyfile，把 demo.example.com 换成真实域名（A 记录须先解析到本机公网 IP，80/443 需放通）。
+# 校验：caddy validate --config /etc/caddy/Caddyfile ；生效：systemctl reload caddy
+#
+# 与后端配置的对应关系（/etc/nanowork/server.env）：
+#   HOST=127.0.0.1 PORT=3107           只监听回环，公网入口只有 Caddy
+#   TRUST_PROXY=1                      信任一跳代理 → req.ip / req.secure / X-Forwarded-Proto 正确，登录 Cookie 才带 Secure
+#   CORS_ORIGINS=https://demo.example.com
+#   PUBLIC_BASE_URL=https://demo.example.com
+{
+	# 证书到期/续期通知邮箱（Let's Encrypt 要求）；不想留邮箱可删掉本行
+	email ops@example.com
+	# 如需先用测试 CA 验证 DNS/端口是否通，再切正式证书，可临时打开下一行
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+demo.example.com {
+	# 与 server/src/app.js 的 express.json({ limit: '32mb' }) 对齐并留余量：视频/知识库上传走 JSON base64 或 multipart
+	request_body {
+		max_size 64MB
+	}
+
+	# 只压缩静态与 JSON；明确排除 text/event-stream，避免 SSE 被压缩缓冲
+	encode zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type text/javascript*
+			header Content-Type image/svg+xml*
+			header Content-Type application/wasm*
+			header Content-Type font/*
+		}
+	}
+
+	header {
+		# HSTS：正式域名确认无误后再开；演示期若域名可能更换，建议保留较短 max-age
+		Strict-Transport-Security "max-age=86400"
+		# 后端已设置 X-Content-Type-Options / X-Frame-Options / CSP 等，这里不重复，避免冲突
+		-Server
+	}
+
+	# 静态资源、SPA fallback、/api、/uploads 全部由同进程后端处理（web/dist 由 Express 托管），
+	# 因此不在这里拆分路径，保证 Cookie/Origin 同源。
+	reverse_proxy 127.0.0.1:3107 {
+		# SSE / 流式 AI 回复：立即刷出，不做响应缓冲
+		# 批次 B 新增的 GET /api/events/stream（任务状态/审批/通知实时推送）同样依赖本项：
+		#   - flush_interval -1 保证每个 `id:/event:/data:` 帧即时到达浏览器，不被 Caddy 攒包；
+		#   - 上方 encode 已排除 text/event-stream，不要把它加回压缩白名单；
+		#   - 下方 transport 的 read_timeout/write_timeout 0 允许长连接，服务端每 25s 发 `: ping` 保活；
+		#   - 后端每用户最多 3 条连接、断线由浏览器 EventSource 自动带 Last-Event-ID 重连补发。
+		flush_interval -1
+
+		# Caddy 默认已透传 Host、X-Forwarded-For、X-Forwarded-Proto、X-Forwarded-Host；
+		# 这里补 X-Real-IP 方便看日志
+		header_up X-Real-IP {remote_host}
+
+		# 下载响应头（Content-Disposition / Content-Length / Cache-Control）Caddy 默认原样透传，无需额外配置。
+
+		transport http {
+			# AI 生成、视频合成、PDF 导出等长请求：等待上游首字节最长 10 分钟；
+			# 0 = 不限制读超时（SSE 长连接需要）
+			response_header_timeout 600s
+			read_timeout 0
+			write_timeout 0
+			dial_timeout 5s
+		}
+	}
+
+	log {
+		output file /var/log/caddy/nanowork-access.log {
+			roll_size 50MiB
+			roll_keep 7
+			roll_keep_for 336h
+		}
+		format json
+		# 不记录 Cookie / Authorization，避免会话令牌落日志
+		# （Caddy 默认已对 Cookie/Authorization/Set-Cookie 做 REDACTED）
+	}
+}
+
+# 可选：把裸域或 www 跳转到主域名
+# www.demo.example.com {
+# 	redir https://demo.example.com{uri} permanent
+# }

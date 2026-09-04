@@ -26,6 +26,8 @@ export const CONTENT_KB_CAT = Object.freeze({
   '短视频脚本': '话术案例', '朋友圈文案': '话术案例', '社群话题': '话术案例', '私聊邀约话术': '话术案例', '优惠话术': '话术案例',
   '复购礼赠文案': '话术案例', '合伙人每日素材包': '话术案例', '招商文案': '招商政策', 'AIPPT': '品牌资料',
   ...CONTENT_EMPLOYEE_TASK_KB_CAT,
+  // 拆解师爆款结构卡（engines/content-benchmark-cards.js）：独立分类，供撰稿人/带货员 few-shot 召回
+  '爆款结构卡': '爆款结构卡',
 });
 
 export function syncContentToKb({ contentId, type, title, body, topic }) {

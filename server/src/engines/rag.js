@@ -1,4 +1,4 @@
-import { db, q, curTenant, getConfig, runWithTenant } from '../db.js';
+import { db, q, curTenant, getConfig, runWithTenant, setTenantConfig } from '../db.js';
 import { acquireBackgroundAiLease } from '../ai-limits.js';
 import { holdCredits, releaseHold, settleHold } from './credits.js';
 import { embed } from './yunwu.js';
@@ -932,6 +932,251 @@ export function recoverStaleEmbeddingHolds({
     }
   }
   return recovered;
+}
+
+// ===== 知识库健康（P0-2）：事件记录、检索期主动入队、每日回填扫描、健康口径 =====
+const KB_HEALTH_EVENT_KINDS = Object.freeze([
+  'query_embed_failed',
+  'zero_vector_doc',
+  'backfill_needed',
+  'backfill_run',
+]);
+const KB_HEALTH_LAST_BACKFILL_KEY = 'kb_vector_backfill_last';
+// 单次检索最多把多少篇零向量文档交给后台队列；其余留给每日 04:00 扫描。
+const KB_SEARCH_ENQUEUE_LIMIT = 5;
+
+function kbHealthTableReady() {
+  return Boolean(
+    db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_health_events'`).get(),
+  );
+}
+
+/**
+ * 记录一次知识库健康事件。detail 只存计数与机器码，不存知识正文或查询原文。
+ * 任何失败都吞掉：健康观测不能反过来打断检索或派活。
+ */
+export function recordKbHealthEvent(kind, detail = null, { tenantId = curTenant() } = {}) {
+  if (!KB_HEALTH_EVENT_KINDS.includes(kind)) return false;
+  const tid = Number(tenantId);
+  if (!Number.isSafeInteger(tid) || tid <= 0) return false;
+  try {
+    if (!kbHealthTableReady()) return false;
+    q.run(
+      `INSERT INTO kb_health_events(tenant_id,kind,detail) VALUES(?,?,?)`,
+      tid,
+      kind,
+      detail == null ? null : JSON.stringify(detail).slice(0, 2000),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把检索时发现的零向量/未向量化文档交给既有后台向量化任务（同一 hold 计费、
+ * 租户配额与队列护栏），并记录 zero_vector_doc 事件。
+ * - 已有 preparing/queued/running/pending_reconciliation 任务的文档不重复排队；
+ * - 已经有向量的文档（并发写入后）会被 SQL 过滤掉；
+ * - 后台向量化开关未启用时只记事件（backfill_needed），不排队、不占额。
+ */
+export function enqueueMissingVectorDocs(docIds, {
+  tenantId = curTenant(),
+  userId = null,
+  source = 'kb_search',
+  limit = KB_SEARCH_ENQUEUE_LIMIT,
+} = {}) {
+  const ids = [...new Set((Array.isArray(docIds) ? docIds : [])
+    .map(Number)
+    .filter(id => Number.isSafeInteger(id) && id > 0))];
+  const tid = Number(tenantId);
+  if (!ids.length || !Number.isSafeInteger(tid) || tid <= 0) {
+    return { accepted: 0, skipped: 0, candidates: 0, results: [] };
+  }
+  let candidates = [];
+  try {
+    ensureEmbeddingJobTable();
+    const blockingPlaceholders = BLOCKING_EMBEDDING_JOB_STATUSES.map(() => '?').join(',');
+    candidates = db.prepare(`SELECT d.id,d.title,d.body
+      FROM kb_docs d
+      WHERE d.tenant_id=? AND d.enabled=1
+        AND d.id IN (${ids.map(() => '?').join(',')})
+        AND trim(COALESCE(d.body,''))<>''
+        AND NOT ${hasStoredVectorSql('d')}
+        AND NOT EXISTS(
+          SELECT 1 FROM kb_embedding_jobs j
+          WHERE j.tenant_id=d.tenant_id AND j.doc_id=d.id
+            AND j.status IN (${blockingPlaceholders})
+        )
+        AND NOT EXISTS(
+          -- 冷却：一小时内刚失败/释放过的文档不在检索路径上反复重试，留给每日扫描。
+          SELECT 1 FROM kb_embedding_jobs j2
+          WHERE j2.tenant_id=d.tenant_id AND j2.doc_id=d.id
+            AND j2.finished_at IS NOT NULL
+            -- finished_at 由 updateEmbeddingJob 以 UTC ISO 写入，这里同样按 UTC 比较
+            AND j2.finished_at >= datetime('now','-60 minutes')
+        )
+      ORDER BY d.updated_at DESC,d.id DESC
+      LIMIT ?`).all(tid, ...ids, ...BLOCKING_EMBEDDING_JOB_STATUSES, Math.max(1, positiveInt(limit, KB_SEARCH_ENQUEUE_LIMIT)));
+  } catch {
+    return { accepted: 0, skipped: ids.length, candidates: 0, results: [] };
+  }
+  if (!candidates.length) {
+    return { accepted: 0, skipped: ids.length, candidates: 0, results: [] };
+  }
+  const enabled = backgroundEmbeddingsEnabled();
+  const results = [];
+  for (const doc of candidates) {
+    if (!enabled) {
+      results.push({ docId: Number(doc.id), accepted: false, reason: 'disabled' });
+      continue;
+    }
+    try {
+      const queued = runWithTenant(tid, () => embedDoc(doc.id, doc.title, doc.body, { userId }));
+      results.push({
+        docId: Number(doc.id),
+        accepted: queued?.accepted === true,
+        reason: queued?.reason || null,
+      });
+    } catch (error) {
+      results.push({
+        docId: Number(doc.id),
+        accepted: false,
+        reason: Number(error?.status) === 402 ? 'billing_hold_failed' : 'schedule_failed',
+      });
+    }
+  }
+  const accepted = results.filter(item => item.accepted).length;
+  recordKbHealthEvent(enabled ? 'zero_vector_doc' : 'backfill_needed', {
+    source,
+    candidates: candidates.length,
+    accepted,
+    docIds: candidates.map(doc => Number(doc.id)).slice(0, 20),
+  }, { tenantId: tid });
+  return { accepted, skipped: ids.length - candidates.length, candidates: candidates.length, results };
+}
+
+/**
+ * 每日 04:00（上海时钟）由调度器 runOnce 调用：扫描当前租户零向量/未向量化文档并按
+ * 既有配额入队；把结果写入 sys_config 与事件表。也可由 POST /kb/backfill 立即触发。
+ */
+export function runKbVectorBackfillSweep({
+  tenantId = curTenant(),
+  userId = null,
+  limit = 20,
+  source = 'scheduler',
+  now = new Date(),
+} = {}) {
+  const tid = Number(tenantId);
+  const readiness = kbVectorReadiness({ tenantId: tid });
+  const result = readiness.missingDocs > 0
+    ? runWithTenant(tid, () => backfillMissingEmbeddings({ userId, limit }))
+    : { accepted: 0, rejected: 0, candidates: 0, requestedLimit: limit, reason: 'nothing_missing', results: [] };
+  const summary = {
+    source,
+    ranAt: now.toISOString(),
+    missingBefore: readiness.missingDocs,
+    enabledDocs: readiness.enabledDocs,
+    backgroundEnabled: readiness.backgroundEnabled,
+    accepted: result.accepted,
+    rejected: result.rejected,
+    candidates: result.candidates,
+    reason: result.reason || null,
+  };
+  try {
+    setTenantConfig(KB_HEALTH_LAST_BACKFILL_KEY, summary, tid);
+  } catch {
+    // sys_config 不可写时不影响事件表记录。
+  }
+  recordKbHealthEvent(
+    readiness.missingDocs > 0 && !readiness.backgroundEnabled ? 'backfill_needed' : 'backfill_run',
+    summary,
+    { tenantId: tid },
+  );
+  return summary;
+}
+
+function lastBackfillSummary(tenantId) {
+  try {
+    const row = q.get(
+      'SELECT value FROM sys_config WHERE key = ?',
+      `${KB_HEALTH_LAST_BACKFILL_KEY}:${tenantId}`,
+    );
+    return row?.value ? JSON.parse(row.value) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /api/sys/kb/health 的口径：文档总数、已向量化、待回填、24h 查询向量化失败次数、
+ * 最近回填时间、红点（needsAttention）与下一步建议文案。不返回知识正文。
+ */
+export function kbHealthSummary({
+  tenantId = curTenant(),
+  env = process.env,
+  providerConfigured = true,
+} = {}) {
+  const tid = Number(tenantId);
+  const vector = kbVectorReadiness({ tenantId: tid, env });
+  let queryEmbedFailures24h = 0;
+  let zeroVectorHits24h = 0;
+  let lastQueryEmbedFailureAt = null;
+  if (kbHealthTableReady()) {
+    const rows = q.all(
+      `SELECT kind,COUNT(*) n,MAX(created_at) last_at FROM kb_health_events
+       WHERE tenant_id=? AND created_at >= datetime('now','localtime','-24 hours')
+       GROUP BY kind`,
+      tid,
+    );
+    for (const row of rows) {
+      if (row.kind === 'query_embed_failed') {
+        queryEmbedFailures24h = Number(row.n || 0);
+        lastQueryEmbedFailureAt = row.last_at || null;
+      }
+      if (row.kind === 'zero_vector_doc') zeroVectorHits24h = Number(row.n || 0);
+    }
+  }
+  const lastBackfill = lastBackfillSummary(tid);
+  const pendingBackfill = vector.missingDocs;
+  const needsAttention = pendingBackfill > 0 || queryEmbedFailures24h > 0;
+  let nextStep = '知识库语义检索状态正常，无需处理。';
+  if (vector.enabledDocs === 0) {
+    nextStep = '暂无已启用知识；先上传、录入或一键初始化知识库。';
+  } else if (pendingBackfill > 0 && !providerConfigured) {
+    nextStep = `有 ${pendingBackfill} 条知识未生成语义向量，且 AI 向量服务未配置；请先在部署侧配置向量服务。`;
+  } else if (pendingBackfill > 0 && !vector.backgroundEnabled) {
+    nextStep = `有 ${pendingBackfill} 条知识未生成语义向量；需由部署人员启用 ENABLE_BACKGROUND_EMBEDDINGS=true 并重启后点击“立即回填”。`;
+  } else if (pendingBackfill > 0 && vector.reconciliationJobs > 0) {
+    nextStep = `${vector.reconciliationJobs} 个向量任务待账务对账；先处理对账，再回填剩余 ${pendingBackfill} 条。`;
+  } else if (pendingBackfill > 0 && vector.activeJobs > 0) {
+    nextStep = `${vector.activeJobs} 个向量任务正在处理，剩余 ${pendingBackfill} 条将在完成后自动继续；也可点击“立即回填”加速。`;
+  } else if (pendingBackfill > 0) {
+    nextStep = `有 ${pendingBackfill} 条知识未生成语义向量，数字员工暂时检索不到它们；点击“立即回填”。`;
+  } else if (queryEmbedFailures24h > 0) {
+    nextStep = `最近 24 小时有 ${queryEmbedFailures24h} 次问题向量化失败（本轮未注入知识）；请检查 AI 向量服务连通性与超时配置。`;
+  }
+  return {
+    tenantId: tid,
+    enabledDocs: vector.enabledDocs,
+    vectorizedDocs: vector.vectorizedDocs,
+    pendingBackfill,
+    percent: vector.percent,
+    activeJobs: vector.activeJobs,
+    reconciliationJobs: vector.reconciliationJobs,
+    backgroundEnabled: vector.backgroundEnabled,
+    providerConfigured,
+    canBackfill: vector.canBackfill && providerConfigured,
+    queryEmbedFailures24h,
+    zeroVectorHits24h,
+    lastQueryEmbedFailureAt,
+    lastBackfillAt: lastBackfill?.ranAt || null,
+    lastBackfill,
+    needsAttention,
+    state: vector.state,
+    message: vector.message,
+    nextStep,
+  };
 }
 
 // 供 backfill 脚本同步调用（脚本环境无请求上下文）

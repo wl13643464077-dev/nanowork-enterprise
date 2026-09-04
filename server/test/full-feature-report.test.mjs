@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertPrivateArtifact } from "../src/engines/private-artifact.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -1007,8 +1008,8 @@ test("导出器用显式八类证据可重复生成同一 reportId 的 Markdown 
   assert.match(fs.readFileSync(options.mdOut, "utf8"), /# 测试报告/u);
   assert.match(fs.readFileSync(options.mdOut, "utf8"), /业务功能报告结论/u);
   assert.match(fs.readFileSync(options.mdOut, "utf8"), /员工输出质量报告结论/u);
-  assert.equal(fs.statSync(options.jsonOut).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(options.mdOut).mode & 0o777, 0o600);
+  assertPrivateArtifact(options.jsonOut);
+  assertPrivateArtifact(options.mdOut);
 });
 
 test("输出质量引用矩阵必须存在且实算哈希一致，并拒绝路径穿越", () => {

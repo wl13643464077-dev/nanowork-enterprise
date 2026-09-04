@@ -54,6 +54,7 @@ import {
   SearchOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  DeploymentUnitOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
@@ -62,7 +63,15 @@ import CommandPalette, { rememberRecent } from '../components/CommandPalette';
 import { RouteErrorBoundary } from '../components/AppErrorBoundary';
 import FeatureGuideCenter from '../components/FeatureGuideCenter';
 import RoleOnboarding from '../components/RoleOnboarding';
+import StoreSwitcher from '../components/StoreSwitcher';
+import InboxDrawer, { InboxTrigger, useInboxCount } from '../components/InboxDrawer';
+import { KB_HEALTH_UPDATED_EVENT } from '../components/SystemKbHealthCard';
+import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import './MainLayout.css';
+
+// 通知铃铛轮询：有 SSE 实时推送时放宽到 5 分钟兜底；连接不可用时恢复原 60s
+const NOTIF_POLL_MS = 60_000;
+const NOTIF_POLL_REALTIME_MS = 5 * 60_000;
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
 // group 字段把 13 个一级项按「老板一天里的动作顺序」聚成 4 组：
@@ -87,6 +96,8 @@ const MENUS = [
   { key: '/reviews', icon: <CommentOutlined />, label: '评价中心', mod: 'dashboard', group: 'work' },
   { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities', group: 'work' },
   { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth', group: 'work' },
+  // 自定义智能体：/api/agents 无独立模块键，沿用 marshals（餐饮数字员工）模块
+  { key: '/agents', icon: <DeploymentUnitOutlined />, label: '我的智能体', mod: 'marshals', group: 'work' },
   { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'make' },
   { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'make' },
   { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'make' },
@@ -120,6 +131,7 @@ const KEY_OF_PATH: Record<string, string> = {
   '/advisor': 'advisor',
   '/employees': 'marshals',
   '/marshals': 'marshals',
+  '/agents': 'marshals',
   '/toolbox': 'content',
   '/growth': 'growth',
   '/activities': 'activities',
@@ -134,6 +146,14 @@ const KEY_OF_PATH: Record<string, string> = {
   '/data-intake': 'system',
   '/system': 'system',
 };
+
+// 菜单 key 精确匹配路径；子路由（如 /employees/:domain/:idx/intro 自我介绍页）归到其父菜单高亮与模块门控。
+const MENU_PATH_PREFIXES = ['/employees'];
+function menuPathOf(pathname: string): string {
+  if (KEY_OF_PATH[pathname]) return pathname;
+  const prefix = MENU_PATH_PREFIXES.find(p => pathname.startsWith(`${p}/`));
+  return prefix || pathname;
+}
 
 // 无障碍：给非 button 的可点击元素补键盘可达性（role/tabIndex/Enter/Space），不改布局结构
 function pressable(fn: () => void) {
@@ -156,6 +176,44 @@ function menusFor(modules: string[], role?: string) {
     if (menu.managerOnly && !['boss', 'ops_director', 'manager', 'admin'].includes(role || '')) return false;
     return !menu.mod || modules.includes(menu.mod);
   });
+}
+
+// P0-2：知识库健康红点。只对 boss/admin 拉 /sys/kb/health（其他角色无权限也不需要）；
+// 10 分钟轮询 + 可见性门控，并监听系统页健康卡广播的 kb-health-updated 事件即时同步。
+const KB_HEALTH_POLL_MS = 10 * 60 * 1000;
+function useKbHealthAttention(role?: string) {
+  const [attention, setAttention] = useState(false);
+  const eligible = ['boss', 'admin'].includes(role || '');
+  useEffect(() => {
+    if (!eligible) return undefined;
+    let cancelled = false;
+    const pull = () => {
+      api
+        .get('/sys/kb/health', { silent: true })
+        .then((health: any) => {
+          if (!cancelled) setAttention(health?.needsAttention === true);
+        })
+        .catch(() => {
+          /* 读取失败不点亮红点，也不打断壳层 */
+        });
+    };
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ needsAttention?: boolean } | null>).detail;
+      if (detail && typeof detail.needsAttention === 'boolean') setAttention(detail.needsAttention);
+    };
+    const initial = window.setTimeout(pull, 0);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') pull();
+    }, KB_HEALTH_POLL_MS);
+    window.addEventListener(KB_HEALTH_UPDATED_EVENT, onUpdated);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+      window.removeEventListener(KB_HEALTH_UPDATED_EVENT, onUpdated);
+    };
+  }, [eligible]);
+  return eligible && attention;
 }
 
 export default function MainLayout() {
@@ -184,6 +242,25 @@ export default function MainLayout() {
             };
   const [notifs, setNotifs] = useState<any[]>([]);
   const [credits, setCredits] = useState<number>(user?.credits ?? 0);
+  // 年度套餐摘要（/auth/me → tenant.planSummary）：仅在 expiring/expired 时于顶栏积分旁给小提示
+  const [planSummary, setPlanSummary] = useState<{
+    status?: string;
+    daysLeft?: number | null;
+    expiresAt?: string | null;
+  } | null>(null);
+  // 月度 AI 预算摘要（/auth/me → tenant.budgetSummary）：仅在 alert/exceeded 时于积分旁给小提示，与套餐 Tag 同风格
+  const [budgetSummary, setBudgetSummary] = useState<{
+    state?: string;
+    budget?: number | null;
+    used?: number;
+    remaining?: number | null;
+    ratioUsed?: number | null;
+  } | null>(null);
+  // 多门店（连锁）：/auth/me → tenant.stores 与 storeId；门店数 > 1 时顶栏出现切换器，单店客户完全看不到
+  const [storeCtx, setStoreCtx] = useState<{ stores: any[]; bound: number | null }>({
+    stores: user?.tenant?.stores || [],
+    bound: user?.storeId ?? null,
+  });
   const [modules, setModules] = useState<string[]>(user?.modules || Object.values(KEY_OF_PATH));
   const canUseAdvisor = modules.includes('advisor');
   const assistantCopy =
@@ -218,7 +295,8 @@ export default function MainLayout() {
     }
   };
   const visibleMenus = menusFor(modules, user?.role);
-  const current = MENUS.find(m => m.key === loc.pathname) || visibleMenus[0] || MENUS[0];
+  const menuPath = menuPathOf(loc.pathname);
+  const current = MENUS.find(m => m.key === menuPath) || visibleMenus[0] || MENUS[0];
   const currentGroup = MENU_GROUPS.find(group => group.key === current.group)?.label || '经营工作台';
   const menuLabel = (m: any) => {
     if (m.mod === 'advisor') {
@@ -236,18 +314,32 @@ export default function MainLayout() {
     if (user?.role === 'boss') return '老板驾驶舱';
     return '我的工作台';
   };
+  // P0-2 知识库健康红点：boss/admin 读 /sys/kb/health（待回填 > 0 或 24h 问题向量化失败）；
+  // 系统页“知识库健康”卡刷新/回填后通过同名事件同步，不必再等下一轮轮询。
+  const kbNeedsAttention = useKbHealthAttention(user?.role);
   // 分组渲染：只保留有可见项的组，避免权限受限用户看到空标题
   const menuItems = useMemo(
     () =>
       MENU_GROUPS.map(g => {
         const children = visibleMenus
           .filter(m => m.group === g.key)
-          .map(m => ({ key: m.key, icon: m.icon, label: menuLabel(m) }));
+          .map(m => ({
+            key: m.key,
+            icon: m.icon,
+            label:
+              m.key === '/system' && kbNeedsAttention ? (
+                <Badge dot offset={[6, 0]} title="知识库有待回填或检索失败，需处理">
+                  {menuLabel(m)}
+                </Badge>
+              ) : (
+                menuLabel(m)
+              ),
+          }));
         return children.length ? { key: `grp-${g.key}`, type: 'group' as const, label: g.label, children } : null;
       }).filter(Boolean),
     // menuLabel 只依赖 user.role，随 visibleMenus 一起变化
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleMenus, user?.role],
+    [visibleMenus, user?.role, kbNeedsAttention],
   );
   // 命令面板的导航项：与侧栏同源同权限，带分组名做为副标题
   const paletteNavItems = useMemo(
@@ -284,41 +376,66 @@ export default function MainLayout() {
 
   // 记录最近访问，供命令面板在空查询时优先展示
   useEffect(() => {
-    const hit = MENUS.find(m => m.key === loc.pathname);
+    const hit = MENUS.find(m => m.key === menuPathOf(loc.pathname));
     if (hit) rememberRecent(hit.key, menuLabel(hit));
     // menuLabel 仅依赖 user.role
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc.pathname, user?.role]);
 
+  // 实时事件流：单例挂载在壳层；connected=false 时各处轮询自动恢复原频率
+  const { connected: realtimeConnected } = useRealtimeEvents();
+  const inbox = useInboxCount(realtimeConnected);
+  const [inboxOpen, setInboxOpen] = useState(false);
   useEffect(() => {
     api
       .get('/sys/notifications')
       .then(setNotifs)
       .catch(() => {});
-    // 60s 轮询：带可见性门控（后台标签页不发请求）；依赖为空数组，切页不再重建定时器
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible')
-        api
-          .get('/sys/notifications')
-          .then(setNotifs)
-          .catch(() => {});
-    }, 60000);
+    // 轮询兜底：带可见性门控（后台标签页不发请求）；有实时推送时放宽到 5 分钟
+    const timer = setInterval(
+      () => {
+        if (document.visibilityState === 'visible')
+          api
+            .get('/sys/notifications')
+            .then(setNotifs)
+            .catch(() => {});
+      },
+      realtimeConnected ? NOTIF_POLL_REALTIME_MS : NOTIF_POLL_MS,
+    );
     return () => clearInterval(timer);
-  }, []);
+  }, [realtimeConnected]);
+  // 收到 notification.created 立即刷新铃铛，不再等轮询
+  useRealtimeEvent(REALTIME_EVENTS.notification, () => {
+    api
+      .get('/sys/notifications')
+      .then(setNotifs)
+      .catch(() => {});
+  });
   useEffect(() => {
     api
       .get('/auth/me')
       .then(me => {
         setCredits(me.credits ?? 0);
         if (me.modules?.length) setModules(me.modules);
+        setPlanSummary(me.tenant?.planSummary ?? null);
+        setBudgetSummary(me.tenant?.budgetSummary ?? null);
+        setStoreCtx({ stores: me.tenant?.stores || [], bound: me.storeId ?? null });
       })
       .catch(() => {});
     const onCredits = (e: any) => setCredits(current => e.detail?.balance ?? current);
+    // 后台保存预算 / 任何请求被 BUDGET_EXCEEDED 拦截时刷新预算提示（client.ts 统一派发）
+    const onBudget = (e: any) => {
+      if (e.detail && typeof e.detail === 'object') setBudgetSummary(current => ({ ...(current || {}), ...e.detail }));
+    };
     window.addEventListener('credits-updated', onCredits);
-    return () => window.removeEventListener('credits-updated', onCredits);
+    window.addEventListener('budget-updated', onBudget);
+    return () => {
+      window.removeEventListener('credits-updated', onCredits);
+      window.removeEventListener('budget-updated', onBudget);
+    };
   }, []);
   useEffect(() => {
-    const need = KEY_OF_PATH[loc.pathname];
+    const need = KEY_OF_PATH[menuPathOf(loc.pathname)];
     if (need && modules.length && !modules.includes(need)) {
       const first = menusFor(modules, user?.role)[0]?.key || '/';
       if (loc.pathname !== first) nav(first, { replace: true });
@@ -472,6 +589,7 @@ export default function MainLayout() {
           <span className="os-brand-sub">实体门店智能经营工作台</span>
           <span className="os-brand-div">｜</span>
           <span className="os-brand-tenant">当前门店：{user?.tenant?.name || '当前企业'}</span>
+          <StoreSwitcher stores={storeCtx.stores} bound={storeCtx.bound} />
         </div>
         {/* 原为三条永不变化的静态文案（数据口径/岗位档案/任务产出），占着顶栏黄金位置却不可点。
             换成命令面板入口：同样的位置，变成真正能用的全局搜索与快捷动作。 */}
@@ -551,6 +669,48 @@ export default function MainLayout() {
               ◆ {Number(credits).toLocaleString()} 积分
             </span>
           </Tooltip>
+          {planSummary && (planSummary.status === 'expiring' || planSummary.status === 'expired') && (
+            <Tooltip
+              title={
+                planSummary.status === 'expired'
+                  ? `年度套餐已于 ${planSummary.expiresAt || ''} 到期，功能暂未锁定，请尽快续费`
+                  : `年度套餐将于 ${planSummary.expiresAt || ''} 到期（剩余 ${planSummary.daysLeft ?? '-'} 天）`
+              }
+            >
+              <Tag
+                className="os-plan-tag"
+                color={planSummary.status === 'expired' ? 'error' : 'warning'}
+                {...(user?.role === 'boss' ? pressable(() => nav('/recharge')) : {})}
+              >
+                {planSummary.status === 'expired'
+                  ? '套餐已到期'
+                  : planSummary.daysLeft === 0
+                    ? '套餐今天到期'
+                    : `套餐 ${planSummary.daysLeft} 天后到期`}
+              </Tag>
+            </Tooltip>
+          )}
+          {budgetSummary && (budgetSummary.state === 'alert' || budgetSummary.state === 'exceeded') && (
+            <Tooltip
+              title={
+                budgetSummary.state === 'exceeded'
+                  ? `本月 AI 预算 ${Number(budgetSummary.budget || 0).toLocaleString()} 积分已用完，AI 任务暂停；请老板在管理后台「积分管理」调整预算`
+                  : `本月 AI 预算已用 ${Math.round((budgetSummary.ratioUsed || 0) * 100)}%（${Number(budgetSummary.used || 0).toLocaleString()} / ${Number(budgetSummary.budget || 0).toLocaleString()} 积分）`
+              }
+            >
+              <Tag
+                className="os-plan-tag"
+                color={budgetSummary.state === 'exceeded' ? 'error' : 'warning'}
+                {...(user?.role === 'boss' || user?.role === 'admin'
+                  ? pressable(() => window.location.assign('/admin'))
+                  : {})}
+              >
+                {budgetSummary.state === 'exceeded'
+                  ? '本月 AI 预算已用完'
+                  : `AI 预算已用 ${Math.round((budgetSummary.ratioUsed || 0) * 100)}%`}
+              </Tag>
+            </Tooltip>
+          )}
           {canUseAdvisor && (
             <Tooltip title={assistantCopy.entry}>
               <button
@@ -584,6 +744,7 @@ export default function MainLayout() {
               </button>
             </Tooltip>
           )}
+          <InboxTrigger count={inbox.count} connected={realtimeConnected} onClick={() => setInboxOpen(true)} />
           <Popover
             trigger="click"
             placement="bottomRight"
@@ -820,14 +981,25 @@ export default function MainLayout() {
             </section>
             <section className="os-sec" aria-labelledby="assistant-todos-title">
               <div id="assistant-todos-title" className="os-sec-t">
-                {assistantCopy.todo} <Tag className="os-cnt">{todos.length}</Tag>
+                {assistantCopy.todo} <Tag className="os-cnt">{inbox.count}</Tag>
               </div>
               {todos.slice(0, 3).map((n: any) => (
                 <div className="os-todo" key={n.id} {...pressable(() => openNotif(n))}>
                   {n.title}
                 </div>
               ))}
-              {todos.length === 0 && <div className="os-empty">暂无待办事项</div>}
+              {todos.length === 0 && inbox.count === 0 && <div className="os-empty">暂无待办事项</div>}
+              {/* 权威待办数来自 /api/inbox/count（D-046）；完整列表与内联处理在统一收件箱 */}
+              <button
+                type="button"
+                className="ui-link-button os-todo-inbox-link"
+                onClick={() => {
+                  setAiOpen(false);
+                  setInboxOpen(true);
+                }}
+              >
+                打开待我处理（{inbox.count}）→
+              </button>
             </section>
             <section className="os-sec os-suggest" aria-labelledby="assistant-suggestion-title">
               <div id="assistant-suggestion-title" className="os-sec-t">
@@ -867,6 +1039,8 @@ export default function MainLayout() {
           </div>
         </Drawer>
       )}
+
+      <InboxDrawer open={inboxOpen} onClose={() => setInboxOpen(false)} onChanged={inbox.refresh} />
 
       <Drawer
         title={
@@ -1118,7 +1292,8 @@ export default function MainLayout() {
         modules={modules}
         navigate={path => nav(path)}
         manualOpenNonce={onboardingNonce}
-        suspended={helpOpen || featureGuideOpen}
+        // 开店向导页专注填写企业信息，角色指引抽屉在该页不自动弹出
+        suspended={helpOpen || featureGuideOpen || loc.pathname === '/onboarding'}
       />
       <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} navItems={paletteNavItems} modules={modules} />
     </div>

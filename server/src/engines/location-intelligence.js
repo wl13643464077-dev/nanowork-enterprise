@@ -1,3 +1,10 @@
+import {
+  AMAP_FACILITY_TYPECODES,
+  AMAP_RESTAURANT_TYPECODE,
+  AMAP_UNCONFIGURED_REASON,
+  createAmapClient,
+} from "./amap.js";
+
 const DEFAULT_USER_AGENT =
   process.env.NANOWORK_HTTP_USER_AGENT ||
   "NanoWorkEnterprise/1.0 (restaurant-location-intelligence)";
@@ -944,4 +951,753 @@ export async function collectLocationIntelligence(
       externalCall: true,
     },
   };
+}
+
+// ===========================================================================
+// 商圈结构化事实：高德 Web 服务优先，失败/未配置回落 OSM 证据；逐字段 provenance。
+// ===========================================================================
+
+export const TRADE_AREA_FACTS_SCHEMA_VERSION = "nanowork.trade-area-facts/1";
+export const DEFAULT_TRADE_AREA_RADII = Object.freeze([500, 1000, 1500]);
+const TRADE_AREA_FACILITY_RADIUS = 1000;
+const TRADE_AREA_TOP_N = 10;
+const COST_BUCKETS = Object.freeze([
+  ["≤30元", 0, 30],
+  ["30-60元", 30, 60],
+  ["60-100元", 60, 100],
+  ["100-150元", 100, 150],
+  [">150元", 150, Number.POSITIVE_INFINITY],
+]);
+const RATING_BUCKETS = Object.freeze([
+  ["<3.5", 0, 3.5],
+  ["3.5-4.0", 3.5, 4],
+  ["4.0-4.5", 4, 4.5],
+  ["≥4.5", 4.5, Number.POSITIVE_INFINITY],
+]);
+const OSM_FACILITY_LABELS = Object.freeze({
+  商业: "商场",
+  学校: "学校",
+  医疗: "医院",
+  交通: "公交/地铁站",
+  办公: "写字楼",
+});
+
+export function detectCity(text) {
+  const value = safeText(text, 600);
+  return CITY_NAMES.find((city) => value.includes(city)) || null;
+}
+
+/**
+ * 从派活文本解析可地理编码的地址与城市；识别不到具体场所时返回 null，
+ * 避免把整句需求送去地理编码。城市识别沿用既有 CITY_NAMES 正则（provenance=regex）。
+ */
+export function extractTradeAreaAddress(text) {
+  const value = safeText(text, 600);
+  if (!value) return null;
+  const city = detectCity(value);
+  const candidates = locationQueryCandidates(value).filter(
+    (candidate) => candidate !== value,
+  );
+  const suffixPattern = new RegExp(`${LOCATION_SUFFIX}$`, "u");
+  const addressText =
+    candidates.find(
+      (candidate) =>
+        suffixPattern.test(candidate) && (!city || candidate.includes(city)),
+    ) ||
+    candidates.find((candidate) => suffixPattern.test(candidate)) ||
+    null;
+  if (!addressText) return null;
+  return {
+    addressText,
+    city,
+    candidates,
+    provenance: {
+      provider: "regex",
+      endpoint: "locationQueryCandidates",
+      fetchedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function provenanceOf(provider, endpoint, fetchedAt, extra = {}) {
+  return {
+    provider,
+    endpoint: endpoint || null,
+    fetchedAt: fetchedAt || null,
+    ...extra,
+  };
+}
+
+function roundTo(value, digits = 1) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
+}
+
+function bucketCounts(values, buckets) {
+  return Object.fromEntries(
+    buckets.map(([label, min, max]) => [
+      label,
+      values.filter((value) => value >= min && value < max).length,
+    ]),
+  );
+}
+
+function numericDistribution(values, buckets) {
+  // 高德缺失字段已被适配器归一为 null；Number(null)===0 会把“未提供”伪装成 0 元/0 分，必须先剔除。
+  const nums = values
+    .filter((value) => value != null && value !== "")
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const percentile = (p) =>
+    nums[Math.min(nums.length - 1, Math.floor(p * (nums.length - 1)))];
+  return {
+    sampleSize: nums.length,
+    min: nums[0],
+    p25: percentile(0.25),
+    median: percentile(0.5),
+    p75: percentile(0.75),
+    max: nums.at(-1),
+    mean: roundTo(nums.reduce((sum, value) => sum + value, 0) / nums.length),
+    buckets: bucketCounts(nums, buckets),
+  };
+}
+
+function poiCategory(poi) {
+  const parts = String(poi?.type || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return {
+    category: parts[1] || parts[0] || "未分类",
+    subcategory: parts[2] || null,
+  };
+}
+
+function matchesCategoryKeyword(poi, keyword) {
+  if (!keyword) return true;
+  const haystack = `${poi?.name || ""} ${poi?.type || ""}`;
+  return haystack.includes(keyword);
+}
+
+function countByCategory(pois) {
+  const counts = {};
+  for (const poi of pois) {
+    const { category } = poiCategory(poi);
+    counts[category] = (counts[category] || 0) + 1;
+  }
+  return Object.fromEntries(
+    Object.entries(counts).sort((a, b) => b[1] - a[1]),
+  );
+}
+
+function facilityMatches(poi, typecode) {
+  const code = String(poi?.typecode || "");
+  if (!code) return false;
+  // 高德 typecode 六位：大类2位+中类2位+小类2位；配置为中类码（末两位 00）时按前四位匹配。
+  const prefix = typecode.endsWith("00") ? typecode.slice(0, 4) : typecode;
+  return code
+    .split("|")
+    .some((item) => item.trim().startsWith(prefix));
+}
+
+function amapErrorSummary(error) {
+  return {
+    message: safeText(error?.message || error, 200),
+    infocode: error?.infocode || null,
+    blocked: error?.blocked === true,
+    transient: error?.transient === true,
+    quotaExceeded: error?.quotaExceeded === true,
+  };
+}
+
+/**
+ * 解析商圈结构化事实。
+ *
+ * @param {object} params
+ * @param {string} params.addressText 可地理编码的地址/场所
+ * @param {string|null} params.city 城市（可空）
+ * @param {number[]} params.radii 竞品统计半径（米）
+ * @param {string|null} params.categoryKeyword 同品类关键词（如“火锅”），用于 Top10 同品类竞品
+ * @param {object} params.amapClient 可注入高德客户端（createAmapClient 返回值）
+ * @param {Function} params.fetchImpl 未注入客户端时用于构造默认客户端的 fetch
+ * @param {object|null} params.osmEvidence collectLocationIntelligence 返回的 evidence（回落与等时圈补充）
+ * @param {Function|null} params.osmFallback 惰性获取 osmEvidence 的函数（可复用在途请求）
+ */
+export async function resolveTradeAreaFacts({
+  addressText,
+  city = null,
+  radii = DEFAULT_TRADE_AREA_RADII,
+  categoryKeyword = null,
+  amapClient,
+  fetchImpl,
+  cache,
+  signal,
+  osmEvidence = null,
+  osmFallback = null,
+  now = () => new Date(),
+} = {}) {
+  const startedAt = now().toISOString();
+  const normalizedRadii = positiveUniqueNumbers(radii, DEFAULT_TRADE_AREA_RADII)
+    .map((value) => Math.max(100, Math.min(5000, value)))
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .sort((a, b) => a - b);
+  const facts = {
+    schemaVersion: TRADE_AREA_FACTS_SCHEMA_VERSION,
+    ok: false,
+    provider: null,
+    input: {
+      addressText: safeText(addressText, 200) || null,
+      city: safeText(city, 40) || null,
+      radii: normalizedRadii,
+      categoryKeyword: safeText(categoryKeyword, 40) || null,
+    },
+    center: null,
+    competitors: null,
+    topCompetitors: null,
+    priceDistribution: null,
+    ratingDistribution: null,
+    facilities: null,
+    isochrones: null,
+    amap: {
+      configured: false,
+      attempted: false,
+      ok: false,
+      blocked: false,
+      error: null,
+      requestCount: 0,
+      cacheHits: 0,
+    },
+    sources: [],
+    missingCriticalFacts: [],
+    attempts: [],
+    startedAt,
+    fetchedAt: startedAt,
+  };
+  const missing = (field, reason) => {
+    if (!facts.missingCriticalFacts.some((item) => item.field === field)) {
+      facts.missingCriticalFacts.push({ field, reason: safeText(reason, 240) });
+    }
+  };
+  const addSource = (source, label) => {
+    if (!source?.provider) return;
+    facts.sources.push({
+      label,
+      provider: source.provider,
+      endpoint: source.endpoint || null,
+      fetchedAt: source.fetchedAt || null,
+      cached: source.cached === true,
+    });
+    if (source.cached === true) facts.amap.cacheHits += 1;
+  };
+
+  const client = amapClient || createAmapClient({ fetchImpl, cache });
+  facts.amap.configured = client.configured === true;
+  const address = facts.input.addressText;
+  if (!address) missing("center", "任务中未识别到可地理编码的地址或场所");
+
+  // ---- 高德：地理编码 ----
+  let center = null;
+  if (address && facts.amap.configured) {
+    facts.amap.attempted = true;
+    try {
+      const geo = await client.geocode(address, facts.input.city, { signal });
+      if (geo?.unavailable) {
+        facts.amap.error = { message: geo.reason, blocked: false };
+        facts.attempts.push({ step: "amap_geocode", ok: false, note: geo.reason });
+      } else {
+        facts.amap.requestCount += 1;
+        addSource(geo.source, "商圈中心地理编码");
+        if (geo?.data) {
+          center = geo.data;
+          facts.provider = "amap";
+          facts.amap.ok = true;
+          facts.center = {
+            value: {
+              lng: center.lng,
+              lat: center.lat,
+              adcode: center.adcode,
+              formattedAddress: center.formattedAddress,
+              province: center.province,
+              city: center.city,
+              district: center.district,
+              level: center.level,
+            },
+            provenance: provenanceOf("amap", geo.source.endpoint, geo.source.fetchedAt),
+          };
+          facts.attempts.push({ step: "amap_geocode", ok: true });
+        } else {
+          facts.attempts.push({
+            step: "amap_geocode",
+            ok: false,
+            note: geo?.note || "高德未匹配到该地址",
+          });
+        }
+      }
+    } catch (error) {
+      facts.amap.error = amapErrorSummary(error);
+      facts.amap.blocked = error?.blocked === true;
+      facts.attempts.push({
+        step: "amap_geocode",
+        ok: false,
+        note: facts.amap.error.message,
+      });
+    }
+  } else if (address) {
+    facts.amap.error = { message: AMAP_UNCONFIGURED_REASON, blocked: false };
+  }
+
+  // ---- 高德：周边竞品 / 分布 / 配套 ----
+  if (center) {
+    const aroundResults = await Promise.allSettled(
+      normalizedRadii.map((radius) =>
+        client.searchAround({
+          lng: center.lng,
+          lat: center.lat,
+          radius,
+          types: AMAP_RESTAURANT_TYPECODE,
+          signal,
+        }),
+      ),
+    );
+    const byRadius = [];
+    let widest = null;
+    aroundResults.forEach((entry, index) => {
+      const radius = normalizedRadii[index];
+      if (entry.status === "rejected" || entry.value?.unavailable) {
+        const reason =
+          entry.status === "rejected"
+            ? amapErrorSummary(entry.reason)
+            : { message: entry.value.reason, blocked: false };
+        if (reason.blocked) facts.amap.blocked = true;
+        if (!facts.amap.error || reason.blocked) facts.amap.error = reason;
+        facts.attempts.push({
+          step: `amap_around_${radius}`,
+          ok: false,
+          note: reason.message,
+        });
+        missing(
+          `competitors.${radius}m`,
+          `高德周边搜索（${radius}米）失败：${reason.message}`,
+        );
+        return;
+      }
+      const { data, source } = entry.value;
+      facts.amap.requestCount += Number(data?.requestCount || 0);
+      addSource(source, `周边餐饮POI（${radius}米）`);
+      facts.attempts.push({
+        step: `amap_around_${radius}`,
+        ok: true,
+        count: data.count,
+        returned: data.returned,
+        cached: source.cached === true,
+      });
+      byRadius.push({
+        radius,
+        value: {
+          count: data.count,
+          returned: data.returned,
+          truncated: data.truncated === true,
+          byCategory: countByCategory(data.pois),
+          sameCategoryCount: facts.input.categoryKeyword
+            ? data.pois.filter((poi) =>
+                matchesCategoryKeyword(poi, facts.input.categoryKeyword),
+              ).length
+            : null,
+        },
+        provenance: provenanceOf("amap", source.endpoint, source.fetchedAt, {
+          cached: source.cached === true,
+        }),
+      });
+      if (!widest || radius > widest.radius) {
+        widest = { radius, pois: data.pois, source, truncated: data.truncated === true };
+      }
+    });
+    if (byRadius.length) {
+      facts.competitors = {
+        byRadius,
+        typecode: AMAP_RESTAURANT_TYPECODE,
+        note: byRadius.some((item) => item.value.truncated)
+          ? "部分半径的POI明细按高德分页上限截断（≤75条），count 为高德返回总数；品类/价格/评分分布仅基于已返回明细"
+          : null,
+      };
+    }
+    if (widest) {
+      const sameCategory = widest.pois.filter((poi) =>
+        matchesCategoryKeyword(poi, facts.input.categoryKeyword),
+      );
+      const ranked = [...(sameCategory.length ? sameCategory : widest.pois)]
+        .sort(
+          (a, b) =>
+            (a.distance ?? Number.POSITIVE_INFINITY) -
+            (b.distance ?? Number.POSITIVE_INFINITY),
+        )
+        .slice(0, TRADE_AREA_TOP_N)
+        .map((poi) => ({
+          name: poi.name,
+          distance: poi.distance,
+          address: poi.address,
+          type: poi.type,
+          cost: poi.biz_ext?.cost ?? null,
+          rating: poi.biz_ext?.rating ?? null,
+        }));
+      facts.topCompetitors = {
+        radius: widest.radius,
+        matchedCategoryKeyword: Boolean(
+          facts.input.categoryKeyword && sameCategory.length,
+        ),
+        value: ranked,
+        provenance: provenanceOf("amap", widest.source.endpoint, widest.source.fetchedAt, {
+          cached: widest.source.cached === true,
+        }),
+      };
+      if (!ranked.length) missing("topCompetitors", `高德在${widest.radius}米内未返回餐饮POI`);
+
+      const costs = widest.pois.map((poi) => poi.biz_ext?.cost);
+      const costDistribution = numericDistribution(costs, COST_BUCKETS);
+      facts.priceDistribution = {
+        radius: widest.radius,
+        value: costDistribution,
+        note: costDistribution
+          ? `${costDistribution.sampleSize}/${widest.pois.length} 个POI带人均字段`
+          : "高德未提供人均（周边POI的 biz_ext.cost 为空）",
+        provenance: provenanceOf("amap", widest.source.endpoint, widest.source.fetchedAt),
+      };
+      if (!costDistribution) missing("priceDistribution", "高德未提供人均，未获取");
+
+      const ratings = widest.pois.map((poi) => poi.biz_ext?.rating);
+      const ratingDistribution = numericDistribution(ratings, RATING_BUCKETS);
+      facts.ratingDistribution = {
+        radius: widest.radius,
+        value: ratingDistribution,
+        note: ratingDistribution
+          ? `${ratingDistribution.sampleSize}/${widest.pois.length} 个POI带评分字段`
+          : "高德未提供评分（周边POI的 biz_ext.rating 为空）",
+        provenance: provenanceOf("amap", widest.source.endpoint, widest.source.fetchedAt),
+      };
+      if (!ratingDistribution) missing("ratingDistribution", "高德未提供评分，未获取");
+    }
+
+    const facilityEntries = Object.entries(AMAP_FACILITY_TYPECODES);
+    const facilityResults = await Promise.allSettled(
+      facilityEntries.map(([, typecode]) =>
+        client.searchAround({
+          lng: center.lng,
+          lat: center.lat,
+          radius: TRADE_AREA_FACILITY_RADIUS,
+          types: typecode,
+          pages: 1,
+          signal,
+        }),
+      ),
+    );
+    const facilityValue = {};
+    const facilityFailures = [];
+    let facilitySource = null;
+    facilityResults.forEach((entry, index) => {
+      const [label, typecode] = facilityEntries[index];
+      if (entry.status === "rejected" || entry.value?.unavailable) {
+        const reason =
+          entry.status === "rejected"
+            ? amapErrorSummary(entry.reason)
+            : { message: entry.value.reason, blocked: false };
+        if (reason.blocked) facts.amap.blocked = true;
+        facilityValue[label] = null;
+        facilityFailures.push(`${label}：${reason.message}`);
+        return;
+      }
+      const { data, source } = entry.value;
+      facts.amap.requestCount += Number(data?.requestCount || 0);
+      if (!facilitySource) facilitySource = source;
+      const matched = data.pois.filter((poi) => facilityMatches(poi, typecode)).length;
+      facilityValue[label] = Number.isFinite(data.count) ? data.count : matched;
+    });
+    if (facilitySource) addSource(facilitySource, `周边配套POI（${TRADE_AREA_FACILITY_RADIUS}米）`);
+    facts.facilities = {
+      radius: TRADE_AREA_FACILITY_RADIUS,
+      typecodes: { ...AMAP_FACILITY_TYPECODES },
+      value: facilityValue,
+      note: facilityFailures.length ? `部分配套类型未获取：${facilityFailures.join("；")}` : null,
+      provenance: facilitySource
+        ? provenanceOf("amap", facilitySource.endpoint, facilitySource.fetchedAt)
+        : provenanceOf("amap", "/v3/place/around", null, { failed: true }),
+    };
+    for (const failure of facilityFailures) missing("facilities", `周边配套部分类型未获取：${failure}`);
+  }
+
+  // ---- OSM 证据：回落中心/计数，并始终补充路网等时圈 ----
+  let osm = osmEvidence && typeof osmEvidence === "object" ? osmEvidence : null;
+  if (!osm && typeof osmFallback === "function") {
+    try {
+      osm = (await osmFallback()) || null;
+    } catch (error) {
+      facts.attempts.push({
+        step: "osm_fallback",
+        ok: false,
+        note: safeText(error?.message || error, 160),
+      });
+    }
+  }
+  const osmCenter =
+    osm?.center &&
+    Number.isFinite(Number(osm.center.lat)) &&
+    Number.isFinite(Number(osm.center.lon))
+      ? osm.center
+      : null;
+  if (!center) {
+    if (osmCenter) {
+      facts.provider = "osm";
+      facts.center = {
+        value: {
+          lng: Number(osmCenter.lon),
+          lat: Number(osmCenter.lat),
+          adcode: null,
+          formattedAddress: safeText(osmCenter.displayName, 200) || null,
+        },
+        provenance: provenanceOf(
+          "osm",
+          "nominatim.openstreetmap.org/search",
+          osm.fetchedAt,
+        ),
+      };
+      const counts = osm.counts && typeof osm.counts === "object" ? osm.counts : {};
+      const osmRadius = Number(osm.radiusMeters) || 1500;
+      const poiEndpoint =
+        osm.poiSource === "Overpass"
+          ? "overpass-api.de/api/interpreter"
+          : "nominatim.openstreetmap.org/search";
+      facts.competitors = {
+        byRadius: [
+          {
+            radius: osmRadius,
+            value: {
+              count: Number(counts["餐饮"]) || 0,
+              returned: Number(counts["餐饮"]) || 0,
+              truncated: null,
+              byCategory: null,
+              sameCategoryCount: null,
+            },
+            provenance: provenanceOf("osm", poiEndpoint, osm.fetchedAt),
+          },
+        ],
+        typecode: null,
+        note: "OpenStreetMap 已命名餐饮POI计数；OSM 覆盖不完整，不含品类细分、人均与评分",
+      };
+      facts.facilities = {
+        radius: osmRadius,
+        typecodes: null,
+        value: Object.fromEntries(
+          Object.entries(OSM_FACILITY_LABELS).map(([kind, label]) => [
+            label,
+            Number(counts[kind]) || 0,
+          ]),
+        ),
+        note: "OpenStreetMap 分类计数，覆盖不完整",
+        provenance: provenanceOf("osm", poiEndpoint, osm.fetchedAt),
+      };
+      facts.attempts.push({ step: "osm_fallback", ok: true });
+      const why = facts.amap.configured
+        ? `高德未命中或调用失败（${facts.amap.error?.message || "未知原因"}）`
+        : "高德地图未配置";
+      missing("topCompetitors", `${why}；OSM 证据仅提供分类计数，竞品名录未获取`);
+      missing("priceDistribution", `${why}；OSM 不提供人均消费，未获取`);
+      missing("ratingDistribution", `${why}；OSM 不提供评分，未获取`);
+      missing(
+        "competitors.byCategory",
+        `${why}；OSM 不提供餐饮品类细分，未获取`,
+      );
+    } else {
+      const why = !address
+        ? "任务中未识别到可地理编码的地址"
+        : facts.amap.configured
+          ? `高德未命中或调用失败（${facts.amap.error?.message || "未知原因"}），且无 OSM 定位证据`
+          : "高德地图未配置，且无 OSM 定位证据";
+      missing("center", why);
+      missing("competitors", `${why}；竞品数量未获取`);
+      missing("topCompetitors", `${why}；竞品名录未获取`);
+      missing("priceDistribution", `${why}；人均分布未获取`);
+      missing("ratingDistribution", `${why}；评分分布未获取`);
+      missing("facilities", `${why}；周边配套未获取`);
+    }
+  }
+
+  if (osm?.isochroneComplete === true && Array.isArray(osm.isochrones) && osm.isochrones.length) {
+    facts.isochrones = {
+      value: {
+        provider: osm.isochroneProvider || null,
+        modes: osm.isochroneModes || [],
+        minutes: osm.isochroneMinutes || [],
+        modeMinutes: osm.isochroneModeMinutes || null,
+        zones: osm.isochrones.map((zone) => ({
+          mode: zone.mode,
+          minutes: zone.minutes,
+        })),
+      },
+      provenance: provenanceOf("osm", osm.isochroneSource || null, osm.fetchedAt, {
+        routing: "Valhalla (OpenStreetMap routing graph)",
+      }),
+    };
+    facts.sources.push({
+      label: "步行/骑行/驾车/公交等时圈",
+      provider: "osm",
+      endpoint: osm.isochroneSource || null,
+      fetchedAt: osm.fetchedAt || null,
+      cached: false,
+    });
+  } else {
+    missing(
+      "isochrones",
+      osm?.isochroneError
+        ? `路网等时圈未完成：${osm.isochroneError}`
+        : "路网等时圈未获取（OSM 定位链未返回等时圈）",
+    );
+  }
+
+  facts.ok = Boolean(facts.center);
+  facts.fetchedAt = now().toISOString();
+  const seenSources = new Set();
+  facts.sources = facts.sources.filter((source) => {
+    const key = `${source.provider}|${source.endpoint}|${source.label}`;
+    if (seenSources.has(key)) return false;
+    seenSources.add(key);
+    return true;
+  });
+  return facts;
+}
+
+/** 供 prompt 使用的紧凑摘要（去掉 attempts，控制体积）。 */
+export function tradeAreaFactsPromptSummary(facts, { maxChars = 6000 } = {}) {
+  if (!facts || typeof facts !== "object") return "";
+  const compact = {
+    schemaVersion: facts.schemaVersion,
+    provider: facts.provider,
+    input: facts.input,
+    center: facts.center,
+    competitors: facts.competitors,
+    topCompetitors: facts.topCompetitors
+      ? {
+          ...facts.topCompetitors,
+          value: (facts.topCompetitors.value || []).slice(0, TRADE_AREA_TOP_N),
+        }
+      : null,
+    priceDistribution: facts.priceDistribution,
+    ratingDistribution: facts.ratingDistribution,
+    facilities: facts.facilities,
+    isochrones: facts.isochrones,
+    amap: {
+      configured: facts.amap?.configured === true,
+      ok: facts.amap?.ok === true,
+      blocked: facts.amap?.blocked === true,
+      error: facts.amap?.error?.message || null,
+    },
+    sources: facts.sources,
+    missingCriticalFacts: facts.missingCriticalFacts,
+    fetchedAt: facts.fetchedAt,
+  };
+  const text = JSON.stringify(compact);
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…(已截断)` : text;
+}
+
+const PROVIDER_LABELS = Object.freeze({
+  amap: "高德地图 Web 服务 API",
+  osm: "OpenStreetMap（Nominatim/Overpass/Valhalla）",
+  regex: "任务文本解析",
+});
+
+function provenanceLabel(provenance) {
+  if (!provenance?.provider) return "—";
+  const provider = PROVIDER_LABELS[provenance.provider] || provenance.provider;
+  const endpoint = provenance.endpoint
+    ? `（${String(provenance.endpoint).replace(/^https?:\/\//u, "").slice(0, 80)}）`
+    : "";
+  return `${provider}${endpoint}${provenance.cached ? "，缓存命中" : ""}`;
+}
+
+function fetchedAtLabel(value) {
+  const text = safeText(value, 40);
+  return text ? text.replace("T", " ").replace(/\.\d+Z$/u, "Z") : "—";
+}
+
+export const TRADE_AREA_PROVENANCE_HEADING = "## 数据来源与时效";
+
+/**
+ * 交付报告尾部的“数据来源与时效”一节。措辞刻意避开输出契约里的
+ * “据/来自…公开/地图/平台”断言模式，防止在无来源快照时被硬交付门误判。
+ */
+export function renderTradeAreaProvenanceMarkdown(facts) {
+  if (!facts || typeof facts !== "object") return "";
+  const rows = [];
+  const missingFor = (field) =>
+    (facts.missingCriticalFacts || []).find(
+      (item) => item.field === field || String(item.field).startsWith(`${field}.`),
+    );
+  const row = (label, node, field) => {
+    const gap = missingFor(field);
+    if (node?.value != null && (!Array.isArray(node.value) || node.value.length)) {
+      const note = node.note ? `已获取；${node.note}` : "已获取";
+      rows.push(`| ${label} | ${provenanceLabel(node.provenance)} | ${fetchedAtLabel(node.provenance?.fetchedAt)} | ${note} |`);
+    } else {
+      rows.push(`| ${label} | — | — | 未获取：${gap?.reason || node?.note || "本次未取得"} |`);
+    }
+  };
+  row("商圈中心定位", facts.center, "center");
+  if (facts.competitors?.byRadius?.length) {
+    for (const item of facts.competitors.byRadius) {
+      row(`周边餐饮竞品（${item.radius}米）`, { ...item, note: item.value?.truncated ? "明细按分页上限截断" : null }, `competitors.${item.radius}m`);
+    }
+  } else {
+    row("周边餐饮竞品", null, "competitors");
+  }
+  row("同品类竞品 Top 10", facts.topCompetitors, "topCompetitors");
+  row("人均消费分布", facts.priceDistribution, "priceDistribution");
+  row("评分分布", facts.ratingDistribution, "ratingDistribution");
+  row("周边配套计数", facts.facilities, "facilities");
+  row("步行/骑行/驾车/公交等时圈", facts.isochrones, "isochrones");
+
+  const statement =
+    facts.provider === "amap"
+      ? `本报告商圈数字由高德地图 Web 服务 API 实时抓取（抓取时间 ${fetchedAtLabel(facts.fetchedAt)}）；等时圈由 OpenStreetMap 路网计算；标注“未获取”的项目本次没有取得，不做推断。`
+      : facts.provider === "osm"
+        ? "本报告未接入高德实时数据；商圈数字仅依赖 OpenStreetMap 与公开网页检索结果，仅供参考，标注“未获取”的项目本次没有取得。"
+        : "本报告未接入高德实时数据；商圈数字仅依赖公开网页检索结果，仅供参考，标注“未获取”的项目本次没有取得。";
+  const amapLine =
+    facts.amap?.blocked
+      ? `- 高德通道状态：受阻（${facts.amap?.error?.message || "凭证或配额问题"}），请管理员在接口管理中重新测试连接。`
+      : facts.amap?.configured
+        ? facts.amap?.ok
+          ? "- 高德通道状态：已调用成功。"
+          : `- 高德通道状态：已配置但本次未成功（${facts.amap?.error?.message || "未命中"}）。`
+        : "- 高德通道状态：未配置（AMAP_WEB_KEY 为空）。";
+  return [
+    TRADE_AREA_PROVENANCE_HEADING,
+    "",
+    "| 项目 | 来源 | 抓取时间 | 状态 |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+    "",
+    statement,
+    amapLine,
+  ].join("\n");
+}
+
+const TRADE_AREA_PROVENANCE_HEADING_PATTERN = /^#{1,6}\s*数据来源与时效/mu;
+
+/** 报告是否已含“数据来源与时效”一节（任意级别标题）。 */
+export function hasTradeAreaProvenanceSection(markdown) {
+  return TRADE_AREA_PROVENANCE_HEADING_PATTERN.test(String(markdown || ""));
+}
+
+/**
+ * 若报告缺少“数据来源与时效”一节则追加；已存在时原样返回。
+ * 注意：派活主链路的正文必须与供应商响应逐字节一致（哈希反造假门），
+ * 本函数只供导出/展示层使用，不得用于改写入库正文。
+ */
+export function ensureTradeAreaProvenanceSection(markdown, facts) {
+  const text = String(markdown || "");
+  if (!facts || typeof facts !== "object") return text;
+  if (hasTradeAreaProvenanceSection(text)) return text;
+  const section = renderTradeAreaProvenanceMarkdown(facts);
+  if (!section) return text;
+  return `${text.trimEnd()}\n\n${section}\n`;
 }

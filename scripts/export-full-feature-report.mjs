@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { writePrivateArtifact } from "../server/src/engines/private-artifact.js";
 
 import {
   buildFullFeatureReport,
@@ -344,9 +345,7 @@ export function inspectReferencedQualityMatrix(
 
 function atomicWrite(file, body) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(temp, body, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  writePrivateArtifact(file, body, { overwrite: true });
 }
 
 export function exportFullFeatureReport(options) {

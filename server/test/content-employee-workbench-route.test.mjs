@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import express from "express";
+import { xhsFactPack, xhsOutput } from './helpers/xhs-output-fixtures.mjs';
 
 import {
   CONTENT_EMPLOYEE_ARTIFACT_KINDS,
@@ -29,6 +30,9 @@ process.env.ANTHROPIC_API_KEY = "";
 
 const { db, initSchema, migrateV2, q, runWithTenant, setTenantConfig } =
   await import("../src/db.js");
+assert.equal(path.resolve(db.prepare('PRAGMA database_list').get().file), path.resolve(DB_PATH), '路由测试必须使用本进程独立临时库');
+const { buildContentHandlerRuntimeContext } = await import('../src/engines/content-handler-runtime-context.js');
+const { buildContentPublishPack } = await import('../src/engines/content-publish-followup.js');
 const { CONTENT_EMPLOYEES, CONTENT_EMPLOYEE_ROSTER, EMPLOYEE_SKILL_PROFILES } =
   await import("../src/catalog/content-crew.js");
 const { EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS } =
@@ -48,7 +52,11 @@ const {
   createContentEmployeeWorkbenchRouter,
   persistContentSpecialProviderOutput,
 } = await import("../src/routes/content-employee-workbench.js");
-const { holdCredits, settleHold } = await import("../src/engines/credits.js");
+const { holdCredits, settleHold, estimateMaxCredits } = await import("../src/engines/credits.js");
+// 多媒体师/封面师的真实图片 provider 按价目表（gpt-image-2 单张）占扣与结算；
+// 价目表会随中转站实价核验变动（2026-09-03 已调），断言只锁"文本 + N 张图"的结构，不写死分值。
+// 惰性求值：billing() 读 sys_config，必须在 initSchema 之后调用。
+const imageProviderCredits = () => estimateMaxCredits("image", "gpt-image-2");
 const { releaseFailedAiHold } =
   await import("../src/engines/ai-delivery-status.js");
 const { loadContentDeliveryState } =
@@ -106,6 +114,19 @@ db.exec(`
 
 const scheduled = [];
 const generated = [];
+const m5RetroOutput = {
+  report: '# 发布内容复盘\n\n本次使用服务端锁定的人工回填台账分析，平台尚未核验。浏览量1000，收藏数50，评论数12，收藏率5%。这些数字只描述本篇内容的记录，不代表经营转化，也不代表策略胜出。\n\n当前没有同渠道足量策略对照组，因此不判定胜出策略，不把模型自评分当成平台效果。下一稿可以把具体场景放在标题前面，让读者先理解内容讨论什么，再呈现方法和动作。封面则围绕同一场景保留清楚的视觉重点，不叠加未经核验的价格或效果承诺。\n\n发布后继续以同一观察窗口回填数据，保留原始截图和负责人记录，逐项核对平台口径。改法须经老板勾选采纳后才成为相应员工的业务建议，不自动修改员工身份或触发发布。',
+  next_topics: [
+    { title: '如何把门店场景写清楚', reason: '下一轮围绕清晰表达做可核对的内容实验，不预先承诺效果。' },
+    { title: '封面如何承接正文重点', reason: '保持封面与正文讨论相同场景，再观察人工回填信号。' },
+    { title: '发布后如何记录观察数据', reason: '统一观察窗口并核对来源，以便下一轮进行同口径比较。' },
+  ],
+  profile_updates: [],
+  next_draft_changes: [
+    { target: 'title', change: '标题先呈现具体场景，再提出可以核对的问题', evidence: '本篇收藏率5%，仅作为人工回填观察依据' },
+    { target: 'cover', change: '封面保持单一视觉重点，并与正文场景一致', evidence: '本篇评论数12，平台未核验，后续继续观察' },
+  ],
+};
 const billingEvents = [];
 const notificationEvents = [];
 const operationEvents = [];
@@ -117,7 +138,7 @@ const EXPECTED_TASK_TYPES = [
   ["趋势简报", "候选选题", "热点扫描"],
   ["事实资料包", "核验报告", "来源清单"],
   ["爆款拆解", "评论洞察", "用户语言报告"],
-  ["文案初稿", "标题方案", "配图建议"],
+  ["文案初稿", "标题方案", "配图建议", "小红书带货笔记"],
   ["文风改写", "人设一致性校对", "表达优化稿"],
   ["多媒体素材方案", "正文配图方案", "SVG信息图方案"],
   ["封面方案", "封面备选组", "视觉钩子方案"],
@@ -272,7 +293,9 @@ function validContentEmployeeOutputForPrompt(userMsg) {
 function expectedRoutedArtifactContent(idx) {
   if (idx >= 0 && idx <= 2) {
     return JSON.stringify(
-      addVerifiedWebAttribution(validContentEmployeeOutput(idx)),
+      addVerifiedWebAttribution(idx === 2
+        ? rawValidContentEmployeeOutputForPrompt('岗位编号：2\n【爆款结构卡·必须输出 structure_cards】')
+        : validContentEmployeeOutput(idx)),
       null,
       2,
     );
@@ -283,6 +306,18 @@ function expectedRoutedArtifactContent(idx) {
 const generateStub = async (args) => {
   generated.push(args);
   dispatchLifecycleEvents.push({ action: "model", args });
+  if (args.userMsg.includes('M5真实回填闭环验收')) {
+    assert.ok(args.responseSchema.schema.required.includes('next_draft_changes'));
+    assert.ok(!args.responseSchema.schema.required.includes('winning_strategy'));
+    assert.match(args.userMsg, /浏览量：1000/u);
+    return { text: JSON.stringify(m5RetroOutput), mode: 'api', model: 'test-model', usage: { inputTokens: 150, outputTokens: 180 } };
+  }
+  if (args.userMsg.includes("M3多策略闭环验收")) {
+    assert.match(args.system, /versions、image_plan/u);
+    assert.match(args.userMsg, /门店名称：示例面馆/u);
+    return { text: JSON.stringify(xhsOutput(args.responseSchema.schema.properties.versions.minItems)),
+      mode: "api", model: "test-model", usage: { inputTokens: 150, outputTokens: 120 } };
+  }
   if (
     args.userMsg.includes("演示报告优先闭环") ||
     args.userMsg.includes("演示联网超时报告")
@@ -731,6 +766,7 @@ function workbenchSpecialProviderBridge(input, dependencies = {}) {
 }
 
 const router = createContentEmployeeWorkbenchRouter({
+  buildHandlerContextFn: args => buildContentHandlerRuntimeContext(args, args.xhsSales?.salesMode ? { storeFactsFn: () => xhsFactPack } : {}),
   generateFn: generateStub,
   textModelForFn: () => "test-default-text-model",
   agenticWebResearchFn: workbenchAgenticResearchStub,
@@ -2729,7 +2765,11 @@ test("[employee-output-matrix] 0-9十岗合法结构化产出完成生成、下�
       assert.equal(run.billing.model, undefined);
       assert.equal(
         run.billing.chargedCredits,
-        employee.idx === 6 ? 80 : employee.idx === 5 ? 155 : 5,
+        employee.idx === 6
+          ? 5 + imageProviderCredits()
+          : employee.idx === 5
+            ? 5 + 2 * imageProviderCredits()
+            : 5,
         "多媒体师与封面师必须同时结算文本与真实图片 provider，其余岗位保持文本调用实扣",
       );
       assert.equal(run.canReview, false);
@@ -4235,9 +4275,9 @@ test("内容员工单派按最终提示词与附件两段式计费，成功按�
     );
     assert.equal(detail.response.status, 200);
     assert.equal(detail.payload.run.billing.state, "settled");
-    // 工位5现在必须同时预授权并结算真实图片 provider：文本12 + 图片150。
-    assert.equal(detail.payload.run.billing.estimatedCredits, 162);
-    assert.equal(detail.payload.run.billing.chargedCredits, 155);
+    // 工位5现在必须同时预授权并结算真实图片 provider：文本 12 估 / 5 实 + 2 张图按价目表。
+    assert.equal(detail.payload.run.billing.estimatedCredits, 12 + 2 * imageProviderCredits());
+    assert.equal(detail.payload.run.billing.chargedCredits, 5 + 2 * imageProviderCredits());
     const settle = billingEvents
       .slice(billingBefore)
       .find(
@@ -4249,13 +4289,14 @@ test("内容员工单派按最终提示词与附件两段式计费，成功按�
       item.userMsg.includes("两段式计费验收"),
     );
     assert.equal(generatedRun.model, "test-default-text-model");
+    const chargedPattern = new RegExp(`实扣${5 + 2 * imageProviderCredits()}积分`, "u");
     assert.ok(
       notificationEvents
         .slice(notifyBefore)
         .some(
           (event) =>
             event.userId === 31005 &&
-            /实扣155积分/u.test(event.body) &&
+            chargedPattern.test(event.body) &&
             /(未|不会)执行对外发布/u.test(event.body),
         ),
     );
@@ -8620,6 +8661,159 @@ test("权限范围外的后续同题成功不能标记可见旧失败已修复�
     assert.equal(managerQueue.payload.remediatedCount, 0);
     assert.equal(managerQueue.payload.statusCounts["失败"], 1);
     assert.equal(managerQueue.payload.runs[0].remediated, false);
+  });
+});
+
+test("M2 真实派活边界：拆解输出结构卡→采纳→幂等沉淀→确认→停用，权限与企业隔离", async () => {
+  await withServer(async (base) => {
+    const tenant = 96;
+    setCentralEmployeeApprovalMode(tenant, "boss");
+    const endpoint = "/employee-workbench/content/benchmark-cards";
+    const dispatched = await jsonCall(base, "/employee-workbench/content/2/dispatch", {
+      method: "POST", tenant, role: "staff", body: { title: "爆款学习闭环验收", type: "爆款拆解",
+        requirement: "依据提供的公开来源拆解结构，标注证据，不编造热度；生成可借鉴的结构卡。" },
+    });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    const runPath = `/employee-workbench/content/2/runs/${dispatched.payload.runId}`;
+    await drainScheduled();
+    const generated = await jsonCall(base, runPath, { tenant });
+    assert.equal(generated.payload.run.status, "待审阅", JSON.stringify(generated.payload.run.contract));
+    const beforeApproval = await jsonCall(base, `${runPath}/benchmark-cards`, { tenant, method: "POST", body: {} });
+    assert.equal(beforeApproval.response.status, 409);
+    const adopted = await jsonCall(base, `${runPath}/review`, { tenant, method: "POST", body: { decision: "adopt" } });
+    assert.equal(adopted.response.status, 200, JSON.stringify(adopted.payload));
+    const first = await jsonCall(base, `${runPath}/benchmark-cards`, { tenant, method: "POST", body: {} });
+    assert.equal(first.response.status, 200, JSON.stringify(first.payload));
+    assert.equal(first.payload.cards.length, 1);
+    const id = first.payload.cards[0].id;
+    const again = await jsonCall(base, `${runPath}/benchmark-cards`, { tenant, method: "POST", body: {} });
+    assert.equal(again.payload.cards[0].id, id);
+    const staff = await jsonCall(base, endpoint, { tenant, role: "staff" });
+    assert.ok(!staff.payload.cards.some(card => card.id === id));
+    assert.equal((await jsonCall(base, `${endpoint}/${id}/verify`, { tenant, role: "staff", method: "POST", body: {} })).response.status, 403);
+    assert.equal((await jsonCall(base, `${endpoint}/${id}/verify`, { tenant: 66, method: "POST", body: {} })).response.status, 404);
+    assert.equal((await jsonCall(base, `${endpoint}/${id}`, { tenant: 66, method: "DELETE" })).response.status, 404);
+    assert.equal((await jsonCall(base, `${endpoint}/${id}/verify`, { tenant, method: "POST", body: {} })).response.status, 200);
+    const visible = await jsonCall(base, endpoint, { tenant, role: "staff" });
+    assert.ok(visible.payload.cards.some(card => card.id === id));
+    assert.equal((await jsonCall(base, `${endpoint}/${id}`, { tenant, method: "DELETE" })).response.status, 200);
+    const deleted = await jsonCall(base, endpoint, { tenant });
+    assert.ok(!deleted.payload.cards.some(card => card.id === id));
+    assert.equal(db.prepare("SELECT enabled FROM kb_docs WHERE tenant_id=? AND source_type='benchmark_card' AND source_id=?").get(tenant, id).enabled, 0);
+  });
+});
+
+test("M3 隔离HTTP闭环：派活多版→采纳→显式选择→完整发布包，幂等/发布锁/越权拒绝", async () => {
+  await withServer(async base => {
+    const tenant = 97;
+    setCentralEmployeeApprovalMode(tenant, "boss");
+    const dispatched = await jsonCall(base, "/employee-workbench/content/3/dispatch", { method: "POST", tenant, role: "staff",
+      body: { title: "M3多策略闭环验收", type: "小红书带货笔记", requirement: "核对门店事实，给出互不相同的小红书策略。", xhsOptions: { versionCount: 2, audience: "白领" } } });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    const runPath = `/employee-workbench/content/3/runs/${dispatched.payload.runId}`;
+    await drainScheduled();
+    const generatedRun = (await jsonCall(base, runPath, { tenant })).payload.run;
+    assert.equal(generatedRun.status, "待审阅", JSON.stringify(generatedRun));
+    assert.equal(generatedRun.xhsDraft.versions.length, 2);
+    assert.equal(generatedRun.xhsDraft.selectedVersionId, null);
+    const versionId = generatedRun.xhsDraft.versions[0].versionId;
+    const choose = (id, options={}) => jsonCall(base, `${runPath}/select-version`, { method: "POST", tenant, body: { versionId: id }, ...options });
+    assert.equal((await choose(versionId)).response.status, 409);
+    assert.equal((await jsonCall(base, `${runPath}/review`, { tenant, method: "POST", body: { decision: "adopt" } })).response.status, 200);
+    assert.equal((await choose(versionId, { role: "staff" })).response.status, 403);
+    assert.equal((await choose(versionId, { tenant: 96 })).response.status, 404);
+    assert.equal((await choose("xhs-stale")).response.status, 409);
+    db.exec("CREATE TEMP TRIGGER fail_m3_asset BEFORE INSERT ON biz_assets WHEN NEW.tenant_id=97 BEGIN SELECT RAISE(ABORT,'injected asset write failure'); END;");
+    try {
+      assert.equal((await choose(versionId)).response.status, 400);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM contents WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?").get(tenant, dispatched.payload.runId).n, 0);
+      assert.equal((await jsonCall(base, runPath, { tenant })).payload.run.xhsDraft.selectedVersionId, null);
+    } finally { db.exec('DROP TRIGGER fail_m3_asset'); }
+    const selected = await choose(versionId);
+    assert.equal(selected.response.status, 200, JSON.stringify(selected.payload));
+    const again = await choose(versionId);
+    assert.equal(again.payload.contentId, selected.payload.contentId);
+    assert.equal(again.payload.alreadySelected, true);
+    const content = db.prepare('SELECT * FROM contents WHERE tenant_id=? AND id=?').get(tenant, selected.payload.contentId);
+    const pack = runWithTenant(tenant, () => buildContentPublishPack(content, { tenantId: tenant }));
+    assert.equal(pack.source, 'xhs_selected'); assert.equal(pack.packs.length, 1);
+    assert.equal(pack.packs[0].versionId, versionId);
+    assert.equal(pack.packs[0].body, xhsOutput(2).versions[0].body);
+    assert.equal(pack.packs[0].coverText, xhsOutput(2).versions[0].cover_text);
+    assert.equal(pack.packs[0].firstComment, xhsOutput(2).versions[0].comment_prompt);
+    const authority = runWithTenant(tenant, () => loadContentDeliveryState(content, { tenantId: tenant }));
+    assert.equal(authority.eligible, true, JSON.stringify(authority));
+    assert.equal(authority.state, 'usable');
+    const reread = (await jsonCall(base, runPath, { tenant })).payload.run;
+    assert.equal(reread.xhsDraft.selectedVersionId, versionId);
+    assert.equal(reread.contentId, content.id);
+    const secondVersionId = generatedRun.xhsDraft.versions[1].versionId;
+    assert.equal((await choose(secondVersionId)).payload.contentId, content.id);
+    const updated = db.prepare('SELECT * FROM contents WHERE tenant_id=? AND id=?').get(tenant, content.id);
+    assert.equal(buildContentPublishPack(updated, { tenantId: tenant }).packs[0].body, xhsOutput(2).versions[1].body);
+    assert.equal(db.prepare("SELECT name FROM biz_assets WHERE tenant_id=? AND source_type='content' AND source_id=?").get(tenant, content.id).name, xhsOutput(2).versions[1].title);
+    db.prepare("INSERT INTO content_publish_logs(tenant_id,content_id,channel,idempotency_key,created_by) VALUES(?,?,'小红书',?,?)").run(tenant, content.id, `m3-publish-${content.id}`, tenant * 1000 + 1);
+    assert.equal((await choose(versionId)).response.status, 409);
+    assert.equal((await choose(secondVersionId)).response.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM contents WHERE tenant_id=? AND source_type='content_employee_run' AND source_id=?").get(tenant, dispatched.payload.runId).n, 1);
+  });
+});
+
+test('M5 回填复盘→采纳改法→目标员工实际消息→停用，事务/企业/员工域隔离', async () => {
+  await withServer(async base => {
+    const tenant = 98;
+    await jsonCall(base, '/employee-workbench/content/9', { tenant });
+    setCentralEmployeeApprovalMode(tenant, 'boss');
+    const contentId = Number(db.prepare(`INSERT INTO contents(tenant_id,type,title,body,creator_id,content_employee_idx,status) VALUES(?,'小红书文案','M5测试内容','已发布正文',?,3,'已发布')`).run(tenant, tenant * 1000 + 5).lastInsertRowid);
+    db.prepare(`INSERT INTO content_publish_metrics(tenant_id,content_id,channel,views,saves,comments,created_by) VALUES(?,?,'小红书',1000,50,12,?)`).run(tenant, contentId, tenant * 1000 + 5);
+    const body = { title: 'M5真实回填闭环验收', type: '复盘报告', requirement: '依据回填记录复盘，给出具体可采纳的下一稿改法。', retroContentId: contentId };
+    assert.equal((await jsonCall(base, '/employee-workbench/content/9/dispatch', { tenant: 66, method: 'POST', body })).response.status, 404);
+    assert.equal((await jsonCall(base, '/employee-workbench/content/9/dispatch', { tenant, role: 'staff2', method: 'POST', body })).response.status, 404);
+    assert.equal((await jsonCall(base, '/employee-workbench/content/3/dispatch', { tenant, method: 'POST', body })).response.status, 400);
+    const sent = await jsonCall(base, '/employee-workbench/content/9/dispatch', { tenant, role: 'staff', method: 'POST', body });
+    assert.equal(sent.response.status, 200, JSON.stringify(sent.payload));
+    const runPath = `/employee-workbench/content/9/runs/${sent.payload.runId}`;
+    await drainScheduled();
+    const completed = (await jsonCall(base, runPath, { tenant })).payload.run;
+    assert.equal(completed.status, '待审阅', JSON.stringify({ error: completed.error, contract: completed.contract }));
+    assert.equal(completed.retrospective.changes.length, 2);
+    assert.match(completed.resultMd, /下一稿改法/u);
+    const adopt = (indexes, extra = {}) => jsonCall(base, `${runPath}/adopt-changes`, { tenant, method: 'POST', body: { indexes }, ...extra });
+    assert.equal((await adopt([0])).response.status, 409);
+    assert.equal((await jsonCall(base, `${runPath}/review`, { tenant, method: 'POST', body: { decision: 'adopt' } })).response.status, 200);
+    assert.equal((await adopt([0], { role: 'staff' })).response.status, 403);
+    assert.equal((await adopt([0], { tenant: 66 })).response.status, 404);
+    assert.equal((await adopt([9])).response.status, 400);
+    db.exec("CREATE TEMP TRIGGER m5_fail_note BEFORE INSERT ON employee_evolution_notes WHEN NEW.tenant_id=98 AND NEW.specialist_id=6 BEGIN SELECT RAISE(ABORT,'injected M5 note failure'); END;");
+    try {
+      assert.equal((await adopt([0, 1])).response.status, 400);
+      assert.equal(db.prepare("SELECT count(*) n FROM employee_evolution_notes WHERE tenant_id=? AND domain='content'").get(tenant).n, 0);
+    } finally { db.exec('DROP TRIGGER m5_fail_note'); }
+    const chosen = await adopt([0, 1]);
+    assert.equal(chosen.response.status, 200, JSON.stringify(chosen.payload));
+    assert.equal(chosen.payload.adopted.length, 2);
+    assert.deepEqual((await adopt([0, 1])).payload.adopted.map(item => item.noteId), chosen.payload.adopted.map(item => item.noteId));
+    const writerNote = chosen.payload.adopted.find(item => item.employeeIdx === 3);
+    const getContext = (idx, tid = tenant) => buildContentHandlerRuntimeContext({ mode: 'solo', tenantId: tid, actorId: tid * 1000 + 1, employeeIdx: idx, task: { direction: 'M5下一稿验证' } }, { kbSearchFn: async () => ({ text: '', refs: [] }) });
+    const ctx = await getContext(3);
+    assert.ok(ctx.context.evolutionNotes.some(note => note.id === writerNote.noteId));
+    assert.ok(!(await getContext(4)).context.evolutionNotes.length);
+    assert.ok(!(await getContext(3, 66)).context.evolutionNotes.length);
+    const injected = await jsonCall(base, '/employee-workbench/content/3/dispatch', { tenant, method: 'POST', body: { title: 'M5下一稿消息验收', type: '文案初稿', requirement: '按岗位规范写门店经营方法初稿，不编造事实。' } });
+    assert.equal(injected.response.status, 200);
+    await drainScheduled();
+    const invocation = generated.find(args => args.userMsg.includes('M5下一稿消息验收'));
+    assert.match(invocation.userMsg, /标题先呈现具体场景/u);
+    assert.doesNotMatch(invocation.system, /标题先呈现具体场景/u);
+    const notePath = `/employee-workbench/content/3/evolution-notes/${writerNote.noteId}/retire`;
+    assert.equal((await jsonCall(base, notePath, { tenant, role: 'staff', method: 'POST', body: {} })).response.status, 403);
+    assert.equal((await jsonCall(base, notePath, { tenant: 66, method: 'POST', body: {} })).response.status, 404);
+    assert.equal((await jsonCall(base, notePath.replace('/3/', '/6/'), { tenant, method: 'POST', body: {} })).response.status, 404);
+    assert.equal((await jsonCall(base, notePath, { tenant, method: 'POST', body: {} })).response.status, 200);
+    assert.ok(!(await getContext(3)).context.evolutionNotes.length);
+    assert.equal((await adopt([0])).payload.adopted[0].status, 'retired', '重复采纳不能复活已停用的心得');
+    const reread = (await jsonCall(base, runPath, { tenant })).payload.run;
+    assert.equal(reread.retrospective.changes[0].noteStatus, 'retired');
   });
 });
 

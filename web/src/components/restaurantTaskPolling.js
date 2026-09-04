@@ -1,4 +1,6 @@
 export const RESTAURANT_TASK_POLL_INTERVAL_MS = 5_000;
+// SSE 实时推送在线时的兜底轮询间隔；断连后组件自动回到 RESTAURANT_TASK_POLL_INTERVAL_MS
+export const RESTAURANT_TASK_REALTIME_POLL_INTERVAL_MS = 20_000;
 export const RESTAURANT_TASK_POLL_MAX_DELAY_MS = 30_000;
 
 function safeFailureCount(value) {

@@ -21,6 +21,11 @@ import {
   assertRealAiOutput,
   releaseFailedAiHold,
 } from '../engines/ai-delivery-status.js';
+import {
+  exportCustomAgent,
+  parseAgentImport,
+  sourceWorkflowEnvelope,
+} from '../engines/agent-workflow-import.js';
 
 // ===== 自定义智能体（用户自建；三档：simple 提示词 / normal +技能 / expert +技能+人设）=====
 const r = Router();
@@ -56,11 +61,57 @@ function normalizedAgent(body, current = {}) {
 }
 
 // 本企业的智能体列表（custom_agents 已纳入租户隔离集，q.run 写入自动带 tenant_id）
+// last_used_at 取该用户在该智能体下最近一次会话时间，用于“最近使用”排序展示。
 r.get('/', (req, res) => {
-  const scope = userScopeClause(req.user, 'creator_id');
-  res.json(q.all(`SELECT id,name,emoji,tier,prompt,skills,persona,creator_id,created_at
-    FROM custom_agents WHERE tenant_id=?${scope.sql} ORDER BY id DESC`, curTenant(), ...scope.params)
-    .map(a => ({ ...a, skills: safeJsonArray(a.skills) })));
+  const scope = userScopeClause(req.user, 'a.creator_id');
+  res.json(q.all(`SELECT a.id,a.name,a.emoji,a.tier,a.prompt,a.skills,a.persona,a.creator_id,a.created_at,
+      (a.source_workflow IS NOT NULL) imported,
+      (SELECT MAX(COALESCE(s.updated_at,s.created_at)) FROM custom_agent_chat_sessions s
+        WHERE s.tenant_id=a.tenant_id AND s.agent_id=a.id AND s.user_id=?) last_used_at
+    FROM custom_agents a WHERE a.tenant_id=?${scope.sql} ORDER BY a.id DESC`,
+  req.user.id, curTenant(), ...scope.params)
+    .map(a => ({ ...a, imported: Number(a.imported) === 1, skills: safeJsonArray(a.skills) })));
+});
+
+// 导出：不含租户/创建者等内部字段，可直接再导入本平台。
+r.get('/:id/export', (req, res) => {
+  const agent = agentForUser(req.params.id, req.user);
+  if (!agent) return res.status(404).json({ error: '智能体不存在或无权访问' });
+  logOp(req.user, '智能体', '导出智能体', agent.name);
+  res.json(exportCustomAgent(agent));
+});
+
+// 导入预览：只解析与编译，不落库；前端“预览步骤 → 确认创建”的第一步。
+function importSourceOf(body) {
+  if (body && typeof body === 'object' && body.payload !== undefined) return body.payload;
+  if (body && typeof body === 'object' && body.text !== undefined) return body.text;
+  return body;
+}
+
+r.post('/import/preview', (req, res) => {
+  try {
+    const parsed = parseAgentImport(importSourceOf(req.body));
+    const input = normalizedAgent(parsed.agent);
+    res.json({ kind: parsed.kind, agent: input, workflow: parsed.workflow });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
+});
+
+// 导入：支持本平台导出 JSON 与通用步骤式工作流 JSON；原始 JSON 存 source_workflow 便于回溯。
+r.post('/import', (req, res) => {
+  try {
+    const parsed = parseAgentImport(importSourceOf(req.body));
+    const override = req.body && typeof req.body === 'object' && typeof req.body.name === 'string' && req.body.name.trim()
+      ? { name: req.body.name.trim() }
+      : {};
+    const input = normalizedAgent({ ...parsed.agent, ...override });
+    const out = q.run(
+      'INSERT INTO custom_agents(name,emoji,tier,prompt,skills,persona,creator_id,source_workflow) VALUES(?,?,?,?,?,?,?,?)',
+      input.name, input.emoji, input.tier, input.prompt, JSON.stringify(input.skills), input.persona, req.user.id,
+      sourceWorkflowEnvelope(parsed, { importedBy: req.user.id }),
+    );
+    logOp(req.user, '智能体', '导入智能体', `${input.name}（${parsed.kind}）`);
+    res.json({ id: out.lastInsertRowid, kind: parsed.kind, agent: input, workflow: parsed.workflow });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
 });
 
 // 创建：simple 只用提示词；normal 提示词+最多2技能；expert 提示词+技能+人设

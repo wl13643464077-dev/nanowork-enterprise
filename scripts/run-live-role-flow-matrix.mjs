@@ -7,6 +7,7 @@ import process from "node:process";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { assertPrivateArtifact } from "../server/src/engines/private-artifact.js";
 
 import {
   LIVE_ROLE_FLOW_MATRIX_SCHEMA,
@@ -370,10 +371,7 @@ if (options.resumePath) {
   if (!fs.existsSync(options.resumePath) || !fs.statSync(options.resumePath).isFile()) {
     throw new Error(`要恢复的checkpoint不存在：${options.resumePath}`);
   }
-  const checkpointStat = fs.statSync(options.resumePath);
-  if ((checkpointStat.mode & 0o077) !== 0) {
-    throw new Error("checkpoint权限必须是0600");
-  }
+  assertPrivateArtifact(options.resumePath);
   const raw = fs.readFileSync(options.resumePath, "utf8");
   if (Buffer.byteLength(raw, "utf8") > 1_000_000) {
     throw new Error("checkpoint超过1MB限制");
@@ -446,6 +444,7 @@ function recursivelyListCodeDependencyFiles(root) {
 const codeDependencyFiles = [
   path.join(PROJECT_ROOT, "scripts/run-live-role-flow-matrix.mjs"),
   path.join(PROJECT_ROOT, "scripts/lib/live-role-flow-matrix.mjs"),
+  path.join(PROJECT_ROOT, "server/src/engines/windows-private-artifact.ps1"),
   path.join(PROJECT_ROOT, "scripts/lib/real-employee-matrix.mjs"),
   path.join(PROJECT_ROOT, "scripts/lib/employee-output-quality-audit.mjs"),
   ...recursivelyListCodeDependencyFiles(path.join(PROJECT_ROOT, "server/src")),
@@ -516,11 +515,24 @@ function installSignalHandlers() {
   };
   const onSigint = () => handler("SIGINT");
   const onSigterm = () => handler("SIGTERM");
+  // Windows child.kill('SIGINT') terminates forcibly. A Node parent can request
+  // the same graceful cancellation over its private IPC channel, without a
+  // network listener, credentials in argv, or an external control file.
+  const onParentMessage = (message) => {
+    if (message && typeof message === "object" && !Array.isArray(message) &&
+      Object.keys(message).length === 1 &&
+      message.type === "nanowork.live-role-flow.cancel.v1") {
+      handler("IPC_CANCEL");
+    }
+  };
   process.once("SIGINT", onSigint);
   process.once("SIGTERM", onSigterm);
+  if (process.connected) process.on("message", onParentMessage);
   return () => {
     process.removeListener("SIGINT", onSigint);
     process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("message", onParentMessage);
+    if (process.connected) process.disconnect();
   };
 }
 

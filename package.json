@@ -7,9 +7,12 @@
     "doc": "docs"
   },
   "scripts": {
+    "local:start": "node scripts/local-start.mjs",
+    "local:sync": "node scripts/local-start.mjs --sync",
+    "local:prepare": "node scripts/local-start.mjs --prepare-only",
     "start": "npm --prefix server start",
     "dev": "npm --prefix web run dev",
-    "test": "npm --prefix server test",
+    "test": "node server/scripts/run-tests.mjs",
     "typecheck": "npm --prefix web run typecheck",
     "build": "npm --prefix web run build",
     "desktop:start": "npm --prefix desktop start",

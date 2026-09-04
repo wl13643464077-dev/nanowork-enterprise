@@ -5,6 +5,7 @@
 import { createRequire } from 'node:module';
 
 import { q } from '../db.js';
+import { matchStoreByName } from './store-scope.js';
 
 const require = createRequire(import.meta.url);
 // 巡店标准库 1:1 取自派活AI-R7 inspectionstandards（版本化产品数据，非租户数据）。
@@ -134,15 +135,17 @@ export function recordInspectionFromTask({ tenantId, taskId, contentId = null, u
   if (!parsed.ok) return { recorded: false, reason: parsed.reason };
   const d = parsed.data;
   try {
+    // 多门店：巡店结果里的门店名/编码能匹配到本租户门店时记 store_id，匹配不到保留 NULL（不猜）
+    const storeId = matchStoreByName(d.store, tenantId);
     q.run(`INSERT INTO store_inspections(
         tenant_id,task_id,content_id,supervisor_user_id,supervisor_name,store_name,inspection_type,
-        score,sub_scores_json,issue_count,high_issues,issues_json,rectified_json,standards_version
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        score,sub_scores_json,issue_count,high_issues,issues_json,rectified_json,standards_version,store_id
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(task_id) DO NOTHING`,
       tenantId, taskId, contentId, userId, String(userName || '').slice(0, 80), d.store, d.inspectionType,
       d.score, JSON.stringify(d.subScores), d.issues.length, d.highIssues,
       JSON.stringify(d.issues), d.rectified ? JSON.stringify(d.rectified) : null,
-      inspectionStandardsVersion());
+      inspectionStandardsVersion(), storeId);
     return { recorded: true, store: d.store, score: d.score, issues: d.issues.length };
   } catch (error) {
     return { recorded: false, reason: `归档写入失败：${error.message}` };

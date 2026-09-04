@@ -39,7 +39,7 @@ import {
   rehydrateMessageHistory,
   resolveRequestedAttachments,
 } from "../engines/filehub.js";
-import { canAccessOwner, userScopeClause } from "../engines/access.js";
+import { canAccessOwner, storeScopeClause, userScopeClause } from "../engines/access.js";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,7 @@ import {
 import {
   loadApprovalRoutingPolicy,
   resolveApprovalRoute,
+  resolveEmployeeOutputPolicy,
 } from "../engines/approval-routing-policy.js";
 import {
   internalProfileLeakageNotice,
@@ -87,6 +88,15 @@ import {
   inspectionSummary,
   recordInspectionFromTask,
 } from "../engines/store-inspections.js";
+import { publish } from "../engines/event-bus.js";
+import {
+  AGENT_TASK_DRAFT_STATUS,
+  CONTENT_DRAFT_STATUS,
+  buildDraftContractReport,
+  classifyEmployeeDraftDisposition,
+  humanizeContractFailures,
+  resolveContractTier,
+} from "../engines/contract-tiers.js";
 
 const r = Router();
 const TASK_TYPES = new Set(EMPLOYEE_TASK_TYPES);
@@ -205,6 +215,42 @@ function mergeJoinedMarshal(row, nameKey = "marshal_name") {
 
 function restaurantReviewRoles(approvalMode, riskLevel) {
   return resolveEmployeeReviewAccess({ approvalMode, riskLevel }).allowedRoles;
+}
+
+// 任务终态翻转后的实时推送（P2-7）：读取权威状态再发，不猜；发布失败不影响交付。
+function publishRestaurantTaskStatusChanged(
+  tenantId,
+  taskId,
+  { userId = null, employeeIdx = null, title = "", status = null } = {},
+) {
+  try {
+    const row = q.get(
+      `SELECT id,status,title,created_by,output_id FROM agent_tasks WHERE tenant_id=? AND id=?`,
+      tenantId,
+      taskId,
+    );
+    if (!row) return;
+    const finalStatus = status || row.status;
+    publish({
+      tenantId,
+      userIds: [row.created_by, userId].filter(Boolean),
+      roles: finalStatus === "待审阅" ? ["ops_director", "manager"] : [],
+      type: "task.status_changed",
+      payload: {
+        kind: "restaurant",
+        id: Number(row.id),
+        status: finalStatus,
+        title: row.title || title || "",
+        employeeIdx: Number.isInteger(Number(employeeIdx)) ? Number(employeeIdx) : null,
+        outputId: Number(row.output_id) || null,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `[marshal] 任务#${taskId}实时事件发布失败:`,
+      error?.message || error,
+    );
+  }
 }
 
 function notifyRestaurantTaskReady({
@@ -739,6 +785,9 @@ function employeeContractAudit(out) {
     schemaVersion: out.employeeContract.schemaVersion || null,
     primaryArtifact: out.employeeContract.primaryArtifact || null,
     qualityMode: out.employeeContract.qualityMode || "strict",
+    ...(out.employeeContract.contractTier
+      ? { contractTier: out.employeeContract.contractTier }
+      : {}),
     ...(out.employeeContract.deliveryStyle
       ? { deliveryStyle: out.employeeContract.deliveryStyle }
       : {}),
@@ -784,17 +833,137 @@ function employeeContractAudit(out) {
   };
 }
 
+// ===== P0-1 失败不交白卷：把失败错误 / 超时前留底的完整候选折成“未达标草稿”输出 =====
+// 只有非安全类失败才有草稿；安全类（外发/付费/不可逆、内部档案、平台伪造）返回 null，
+// 调用方继续走原失败释放路径。正文原样保留，不做任何改写（反造假哈希链）。
+function employeeDraftFromFailure(error, { lastObservedCandidate, contractTier }) {
+  if (error?.draft && error.draft.text) {
+    return { ...error.draft, source: "marshal_work_failure" };
+  }
+  if (error?.draftBlockedBy === "safety") return null;
+  const timeout =
+    error?.code === "EMPLOYEE_TASK_TIMEOUT" || error?.status === 504;
+  if (!timeout) return null;
+  if (!lastObservedCandidate?.text) {
+    // 墙钟耗尽前没有任何一轮完整正文：失败证据记下“无正文”，便于区分空白超时与草稿超时
+    if (error && typeof error === "object" && error.draftBlockedBy == null) {
+      error.draftBlockedBy = "no_text";
+    }
+    return null;
+  }
+  const disposition = classifyEmployeeDraftDisposition({
+    contractErrors: lastObservedCandidate.contractErrors || [],
+    hardDeliveryErrors: lastObservedCandidate.hardDelivery?.errors || [],
+    text: lastObservedCandidate.text,
+    mode: "api",
+    usage: lastObservedCandidate.usage,
+    complete: lastObservedCandidate.complete !== false,
+    failReason: "timeout",
+  });
+  if (!disposition.eligible) {
+    if (error && typeof error === "object" && error.draftBlockedBy == null) {
+      error.draftBlockedBy = disposition.blockedBy;
+    }
+    return null;
+  }
+  return {
+    text: String(lastObservedCandidate.text || ""),
+    model: lastObservedCandidate.model || null,
+    requestedModel: lastObservedCandidate.requestedModel || null,
+    effectiveModel: lastObservedCandidate.model || null,
+    modelFailover: null,
+    usage: lastObservedCandidate.usage,
+    finishReason: lastObservedCandidate.finishReason ?? null,
+    contractErrors: lastObservedCandidate.contractErrors || [],
+    warnings: lastObservedCandidate.warnings || [],
+    deliveryStyle: lastObservedCandidate.deliveryStyle || null,
+    parsed: lastObservedCandidate.parsed || null,
+    hardDelivery: lastObservedCandidate.hardDelivery || null,
+    contractTier: lastObservedCandidate.contractTier || contractTier || null,
+    attempts: Number(lastObservedCandidate.candidateAttempts || 0),
+    transportFailures: Number(lastObservedCandidate.transportFailures || 0),
+    stoppedReason: "task_wall_clock_exhausted",
+    disposition,
+    source: "timeout_last_candidate",
+  };
+}
+
+function employeeDraftOutput(draft, error, { web, kb, reviewDatasetImport }) {
+  const report = buildDraftContractReport({
+    disposition: draft.disposition,
+    contractTier: draft.contractTier,
+    attempts: draft.attempts,
+    transportFailures: draft.transportFailures,
+    stoppedReason: draft.stoppedReason,
+    deliveryStyle: draft.deliveryStyle,
+    requestedModel: draft.requestedModel,
+    effectiveModel: draft.effectiveModel || draft.model,
+    contractErrors: draft.contractErrors,
+  });
+  return {
+    text: draft.text,
+    mode: "api",
+    model: draft.model,
+    usage: draft.usage,
+    finishReason: draft.finishReason,
+    requestedModel: draft.requestedModel,
+    effectiveModel: draft.effectiveModel || draft.model,
+    modelFailover: draft.modelFailover || null,
+    hardDelivery: draft.hardDelivery,
+    internalProfileLeakage: error?.internalProfileLeakage || null,
+    web: error?.web || web || null,
+    kb: error?.kb || kb || null,
+    ...(error?.reviewDatasetImport || reviewDatasetImport
+      ? { reviewDatasetImport: error?.reviewDatasetImport || reviewDatasetImport }
+      : {}),
+    employeeDraft: {
+      failReason: draft.disposition?.failReason || "contract",
+      acceptable: draft.disposition?.acceptable === true,
+      source: draft.source,
+      failureCode: String(error?.code || "EMPLOYEE_DRAFT_FALLBACK").slice(0, 100),
+      failureMessage: String(error?.message || "").slice(0, 300),
+      report,
+    },
+    employeeContract: {
+      valid: false,
+      draft: true,
+      blocked: null,
+      contractTier: draft.contractTier,
+      requestedModel: draft.requestedModel,
+      effectiveModel: draft.effectiveModel || draft.model,
+      modelFailover: draft.modelFailover || null,
+      errors: [...(draft.contractErrors || [])],
+      warnings: [...(draft.warnings || [])],
+      repair: error?.contractRepair || null,
+      generationRetry: error?.providerRetry || null,
+      providerAttempts: Array.isArray(error?.providerAttempts)
+        ? error.providerAttempts
+        : [],
+      providerBudget: error?.providerBudget || null,
+      parsed: draft.parsed || null,
+      qualityMode: draft.deliveryStyle === "paihuo_markdown" ? "paihuo_markdown" : "strict",
+      ...(draft.deliveryStyle ? { deliveryStyle: draft.deliveryStyle } : {}),
+      reportFirstMarkdown: draft.deliveryStyle === "paihuo_markdown",
+      structuredReportFirst: false,
+      hardDelivery: draft.hardDelivery,
+      artifacts: [],
+    },
+  };
+}
+
 // —— 巡店看板（#161 巡店督导归档统计）——
 // 老板/管理员/运营总监看企业全量；其他角色只看自己派活产生的巡店记录（与任务可见性同口径）。
 r.get("/inspections/summary", (req, res) => {
   const scope = userScopeClause(req.user, "t.created_by");
+  // 多门店：当前门店生效时只看本店巡店归档（未传头=全部，结果与现状一致）
+  const storeScope = storeScopeClause(req.user, "i.store_id");
   const months = Math.min(12, Math.max(1, Number(req.query.months) || 3));
   res.set("Cache-Control", "private, no-store");
   res.json(
     inspectionSummary(curTenant(), {
       months,
-      scopeSql: scope.sql,
-      scopeParams: scope.params,
+      scopeSql: `${scope.sql}${storeScope.sql}`,
+      scopeParams: [...scope.params, ...storeScope.params],
     }),
   );
 });
@@ -1358,7 +1527,15 @@ export async function dispatchMarshalTask(req, res) {
     // 企业中央策略在派活时锁定，在途任务不随后续配置变化。
     // auto 下单纯 high 内部文本仍自动采用；外发、真实付费和不可逆
     // 动作的老板执行授权由领域动作入口另行强制。
-    const lockedApprovalRoutingPolicy = loadApprovalRoutingPolicy(curTenant());
+    // 按分部/岗位例外在此刻解析为最终模式并写入快照（员工例外 > 分部例外 > 企业默认），
+    // 下游审阅链只读 employeeOutput.mode，不再感知例外规则。
+    const lockedApprovalRoutingPolicy = resolveEmployeeOutputPolicy(
+      loadApprovalRoutingPolicy(curTenant()),
+      {
+        departmentCode: m.code,
+        employeeIdx: selectedSpecialist?.employee_idx ?? null,
+      },
+    );
     // 先生成稳定业务 ID，再让 hold 在自己的原子事务里直接绑定该任务。
     // 即使进程恰好在两步之间退出，也只会留下无扣费的“生成中”任务，
     // 启动恢复会把它标失败；不会留下无法关联、永久冻结的积分。
@@ -1475,6 +1652,16 @@ export async function dispatchMarshalTask(req, res) {
     const employeeGenerate = req.app?.locals?.employeeGenerate;
     let employeeResearchWeb = null;
     let employeeReviewDatasetEvidence = null;
+    // P0-1：契约档位在派活时按锁定模型与租户数据模式确定，并留底每一轮完整候选，
+    // 任务墙钟超时时才能落“未达标草稿”而不是空白。
+    const lockedContractTier = employeeExecution
+      ? resolveContractTier({
+          model: holdModel,
+          dataMode,
+          employeeIdx: employeeExecution.workbench?.identity?.idx,
+        })
+      : null;
+    let lastObservedCandidate = null;
     const generationProgressHeartbeat = employeeExecution
       ? createEmployeeGenerationProgressHeartbeat({
           write: (snapshot) => {
@@ -1534,7 +1721,9 @@ export async function dispatchMarshalTask(req, res) {
                   }, EMPLOYEE_TASK_WALL_CLOCK_LIMIT_MS);
                   taskDeadlineTimer.unref?.();
                 });
-                const out = await Promise.race([
+                let out;
+                try {
+                  out = await Promise.race([
                   marshalWork(
                     m,
                     {
@@ -1548,6 +1737,10 @@ export async function dispatchMarshalTask(req, res) {
                     userRole,
                     {
                       employeeExecution,
+                      contractTier: lockedContractTier || undefined,
+                      onCandidateObserved: (candidate) => {
+                        lastObservedCandidate = candidate;
+                      },
                       image: taskImage?.dataUrl || null,
                       attachments: files,
                       webSearchFn: employeeWebSearch,
@@ -1620,9 +1813,30 @@ export async function dispatchMarshalTask(req, res) {
                   ),
                   taskDeadline,
                 ]);
+                } catch (generationError) {
+                  // P0-1 失败不交白卷：非安全类契约失败或任务墙钟超时，只要拿到过
+                  // 一轮完整正文且有真实用量，就转成“未达标草稿”交付；安全类失败与
+                  // 无正文/无用量的失败原样抛出，继续走 executeHeldDelivery 的释放路径。
+                  const draft = employeeExecution
+                    ? employeeDraftFromFailure(generationError, {
+                        lastObservedCandidate,
+                        contractTier: lockedContractTier,
+                      })
+                    : null;
+                  if (!draft) throw generationError;
+                  out = employeeDraftOutput(draft, generationError, {
+                    web: employeeResearchWeb,
+                    kb: null,
+                    reviewDatasetImport: employeeReviewDatasetEvidence,
+                  });
+                }
                 if (taskDeadlineTimer) {
                   clearTimeout(taskDeadlineTimer);
                   taskDeadlineTimer = null;
+                }
+                if (out?.employeeDraft) {
+                  // 草稿不过最终硬门与契约门（它本来就没通过），直接进入落库与结算。
+                  return out;
                 }
                 if (out?.mode !== "api") {
                   throw Object.assign(
@@ -1632,6 +1846,8 @@ export async function dispatchMarshalTask(req, res) {
                     {
                       code: "EMPLOYEE_TEMPLATE_ONLY",
                       status: 503,
+                      // 模板底稿不是真实模型正文：没有可留底的草稿
+                      draftBlockedBy: "not_api",
                       providerMode: out?.mode || null,
                       providerModel: out?.model || null,
                       providerUsage: out?.usage || null,
@@ -1723,6 +1939,95 @@ export async function dispatchMarshalTask(req, res) {
                     title: taskTitle,
                     body: out.text,
                   });
+                  if (out.employeeDraft) {
+                    // P0-1：未达标草稿。正文原样入库、不进审批、不自动采用、不导出正式产物；
+                    // agent_tasks 置“草稿待处理”，失败原因与机器校验报告随任务落库。
+                    const draftContent = q.run(
+                      `INSERT INTO contents(type,title,body,topic,status,risk_flags,risk_level,ai_mode,creator_id,marshal_id,snapshot_json)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+                      "员工产出",
+                      `${m.name}：${taskTitle}`,
+                      out.text,
+                      taskTitle,
+                      CONTENT_DRAFT_STATUS,
+                      JSON.stringify(risk.hits),
+                      risk.level,
+                      out.mode,
+                      userId,
+                      m.id,
+                      JSON.stringify({
+                        schemaVersion: "restaurant-employee-draft.v1",
+                        employeeDraft: out.employeeDraft,
+                        contract: {
+                          status: "draft",
+                          valid: false,
+                          errors: (out.employeeContract?.errors || []).slice(0, 20),
+                        },
+                      }),
+                    );
+                    const draftContentId = Number(draftContent.lastInsertRowid);
+                    recordKbCitations({
+                      targetType: "content",
+                      targetId: draftContentId,
+                      kb: out.kb,
+                    });
+                    const draftEvidence = {
+                      kind: "restaurant_employee_execution_evidence",
+                      generationProgress:
+                        generationProgressHeartbeat?.snapshot?.() || null,
+                      web: out.web || null,
+                      ...(out.reviewDatasetImport
+                        ? { reviewDatasetImport: out.reviewDatasetImport }
+                        : {}),
+                      outputContract: {
+                        ...employeeContractAudit(out),
+                        draft: true,
+                        errors: (out.employeeContract?.errors || []).slice(0, 40),
+                      },
+                      providerAttempt: {
+                        mode: out.mode || null,
+                        model: out.model || null,
+                        requestedModel: out.requestedModel || out.model || null,
+                        effectiveModel: out.effectiveModel || out.model || null,
+                        modelFailover: out.modelFailover || null,
+                        usage: {
+                          inputTokens: Number(out.usage?.inputTokens || 0),
+                          outputTokens: Number(out.usage?.outputTokens || 0),
+                        },
+                      },
+                      internalProfileLeakage: out.internalProfileLeakage || null,
+                      draft: out.employeeDraft,
+                      failure: {
+                        code: out.employeeDraft.failureCode,
+                        category: "quality_rework",
+                        presentationKey: "draft_pending",
+                        phase: out.employeeDraft.failReason === "timeout" ? "timeout" : "quality",
+                        retryable: true,
+                        message: out.employeeDraft.failureMessage,
+                      },
+                    };
+                    q.run(
+                      `UPDATE agent_tasks
+              SET status = ?, output_id = ?, employee_web_snapshot = ?, contract_tier = ?, fail_reason = ?, contract_report = ?
+              WHERE id = ?`,
+                      AGENT_TASK_DRAFT_STATUS,
+                      draftContentId,
+                      JSON.stringify(draftEvidence),
+                      out.employeeDraft.report?.contractTier || lockedContractTier,
+                      out.employeeDraft.failReason,
+                      JSON.stringify(out.employeeDraft.report),
+                      taskId,
+                    );
+                    return {
+                      contentId: draftContentId,
+                      risk,
+                      approvalMode: "draft_pending",
+                      requiresReview: false,
+                      autoAdopt: false,
+                      draft: true,
+                      approvalReason: "quality_gate_failed_draft_kept",
+                    };
+                  }
                   const configuredApproval =
                     employeeExecution?.workbench?.workConfig?.approvalMode ||
                     "auto_draft";
@@ -1827,11 +2132,12 @@ export async function dispatchMarshalTask(req, res) {
                     : out.web || null;
                   q.run(
                     `UPDATE agent_tasks
-              SET status = ?, output_id = ?, employee_web_snapshot = ?
+              SET status = ?, output_id = ?, employee_web_snapshot = ?, contract_tier = ?
               WHERE id = ?`,
                     requiresReview ? "待审阅" : "生成中",
                     contentId,
                     JSON.stringify(executionEvidence),
+                    out.employeeContract?.contractTier || lockedContractTier,
                     taskId,
                   );
                   // 巡店督导（#161）：解析产出末尾的 nanowork-inspection 归档块并写入巡店统计；
@@ -1945,6 +2251,43 @@ export async function dispatchMarshalTask(req, res) {
               delivered.billing.state === "settled"
                 ? `消耗${delivered.billing.chargedCredits}积分`
                 : "积分结算待账务对账";
+            if (delivered.delivery.draft) {
+              // 未达标草稿：不自动采用、不进审批；通知老板去处理（重新派活或就用这份草稿）。
+              const draftLink = selectedSpecialist
+                ? `/employees?employee=${selectedSpecialist.employee_idx}&task=${taskId}`
+                : "/employees";
+              publishRestaurantTaskStatusChanged(tenantId, taskId, {
+                userId,
+                employeeIdx: selectedSpecialist?.employee_idx,
+                title: taskTitle,
+                status: AGENT_TASK_DRAFT_STATUS,
+              });
+              try {
+                notify(
+                  userId,
+                  "marshal",
+                  `${m.name}任务「${taskTitle}」已保留未达标草稿`,
+                  `${delivered.output?.employeeDraft?.failReason === "timeout" ? "执行超时" : "质量门未通过"}，已保留草稿待你处理（${billingText}）`,
+                  draftLink,
+                );
+              } catch (notificationError) {
+                console.error(
+                  `[marshal] 任务#${taskId}草稿已保留，但通知发送失败:`,
+                  notificationError?.message || notificationError,
+                );
+              }
+              try {
+                logOp(
+                  { id: userId, name: userName },
+                  "餐饮数字员工",
+                  "派发任务",
+                  `${m.name}:${taskTitle}`,
+                );
+              } catch {
+                /* task result is already durable */
+              }
+              return;
+            }
             let autoAdoption = null;
             if (delivered.delivery.autoAdopt) {
               if (delivered.billing.state === "settled") {
@@ -1970,6 +2313,11 @@ export async function dispatchMarshalTask(req, res) {
             const taskLink = selectedSpecialist
               ? `/employees?employee=${selectedSpecialist.employee_idx}&task=${taskId}`
               : "/employees";
+            publishRestaurantTaskStatusChanged(tenantId, taskId, {
+              userId,
+              employeeIdx: selectedSpecialist?.employee_idx,
+              title: taskTitle,
+            });
             try {
               notifyRestaurantTaskReady({
                 creatorId: userId,
@@ -2095,6 +2443,10 @@ export async function dispatchMarshalTask(req, res) {
                     phase: failureDisposition.phase,
                     retryable: failureDisposition.retryable,
                     message: String(e.message || "生成失败").slice(0, 300),
+                    // P0-1：为什么没有保留“未达标草稿”（safety / no_text / not_api /
+                    // no_deliverable / no_usage / incomplete）；无候选的执行异常为 null。
+                    draftBlockedBy:
+                      typeof e.draftBlockedBy === "string" ? e.draftBlockedBy : null,
                   },
                 }
               : null;
@@ -2103,6 +2455,12 @@ export async function dispatchMarshalTask(req, res) {
               failureEvidence ? JSON.stringify(failureEvidence) : null,
               taskId,
             );
+            publishRestaurantTaskStatusChanged(tenantId, taskId, {
+              userId,
+              employeeIdx: selectedSpecialist?.employee_idx,
+              title: taskTitle,
+              status: "失败",
+            });
             const billingText =
               e.billing?.state === "released"
                 ? "预扣积分已退回"
@@ -2154,6 +2512,7 @@ export async function dispatchMarshalTask(req, res) {
         curTenant(),
         taskId,
       );
+      publishRestaurantTaskStatusChanged(curTenant(), taskId, { userId: req.user?.id });
     }
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -2251,6 +2610,33 @@ function restaurantTaskProgress(status, adoptionKind = null) {
         failed: false,
         nextAction: "查看并使用安全修订任务的报告与交付文件",
       };
+    case AGENT_TASK_DRAFT_STATUS:
+      return {
+        flow: [
+          "已派发",
+          "AI生成完成",
+          "质量门未通过（已保留草稿）",
+          "待老板处理",
+        ],
+        stepIndex: 2,
+        failed: false,
+        draftFlow: true,
+        nextAction:
+          "先看未通过的检查，再选择“带原要求重新派活”或“就用这份草稿”",
+      };
+    case "草稿已接受":
+      return {
+        flow: [
+          "已派发",
+          "AI生成完成",
+          "质量门未通过（已保留草稿）",
+          BUSINESS_DELIVERY_LABELS.draftAccepted,
+        ],
+        stepIndex: 3,
+        failed: false,
+        draftFlow: true,
+        nextAction: "该稿仅作内部参考；需要正式采用请重新派活生成合格版本",
+      };
     default:
       return {
         flow: ["已派发", status || "待处理"],
@@ -2291,10 +2677,219 @@ r.post("/tasks/:taskId/supersede", (req, res) => {
   }
 });
 
+// P0-1“就用这份草稿”：老板/管理员把未达标草稿接受为内部参考稿。
+// - 不放松质量门：草稿不会变成“已自动采用/可用于业务”，也不沉淀知识库、不导出正式产物；
+// - 含来源类硬错（补造来源）的草稿不可接受，只能带原要求重新派活；
+// - 按任务锁定的审批策略：要求审阅则进审批队列（contents=待审核/agent_tasks=待审阅），
+//   否则任务转为终态“草稿已接受”；两条路径都记 op_logs 与审批快照。
+r.post("/tasks/:taskId/accept-draft", (req, res) => {
+  if (!["boss", "admin"].includes(req.user?.role)) {
+    return res.status(403).json({ error: "只有老板或管理员可以决定就用这份草稿" });
+  }
+  const taskId = Number(req.params.taskId);
+  if (!Number.isSafeInteger(taskId) || taskId <= 0) {
+    return res.status(400).json({ error: "任务编号无效" });
+  }
+  const reason = String(req.body?.reason || "").trim().slice(0, 500);
+  const tenantId = curTenant();
+  try {
+    const result = withImmediateTransaction(db, () => {
+      const task = q.get(
+        `SELECT t.*, s.employee_idx FROM agent_tasks t
+         LEFT JOIN specialists s ON s.id=t.specialist_id
+         WHERE t.tenant_id=? AND t.id=?`,
+        tenantId,
+        taskId,
+      );
+      if (!task || !canAccessOwner(req.user, task.created_by)) {
+        throw Object.assign(new Error("任务不存在或无权处理"), { status: 404 });
+      }
+      if (task.status !== AGENT_TASK_DRAFT_STATUS || !Number(task.output_id)) {
+        throw Object.assign(
+          new Error("当前任务没有待处理的未达标草稿"),
+          { status: 409, code: "DRAFT_NOT_PENDING" },
+        );
+      }
+      if (loadAgentTaskSupersession(taskId, { tenantId })) {
+        throw Object.assign(
+          new Error("该任务已由安全修订任务取代，草稿不能再被接受"),
+          { status: 409, code: "DRAFT_SUPERSEDED" },
+        );
+      }
+      const content = q.get(
+        `SELECT * FROM contents WHERE tenant_id=? AND id=?`,
+        tenantId,
+        task.output_id,
+      );
+      if (!content || content.status !== CONTENT_DRAFT_STATUS) {
+        throw Object.assign(
+          new Error("草稿产物不存在或状态已变化"),
+          { status: 409, code: "DRAFT_CONTENT_MISMATCH" },
+        );
+      }
+      let report = null;
+      try {
+        report = task.contract_report ? JSON.parse(task.contract_report) : null;
+      } catch {
+        report = null;
+      }
+      if (report?.acceptable !== true) {
+        throw Object.assign(
+          new Error("草稿引用了本次未核验的来源，不能直接采用；请带原要求重新派活"),
+          { status: 409, code: "DRAFT_NOT_ACCEPTABLE" },
+        );
+      }
+      let configuredApproval = "auto_draft";
+      try {
+        const config = task.employee_config_snapshot
+          ? JSON.parse(task.employee_config_snapshot)
+          : null;
+        if (typeof config?.approvalMode === "string" && config.approvalMode) {
+          configuredApproval = config.approvalMode;
+        }
+      } catch {
+        /* 配置快照损坏时按默认策略处理 */
+      }
+      let riskHits = [];
+      try {
+        riskHits = JSON.parse(content.risk_flags || "[]");
+      } catch {
+        riskHits = [];
+      }
+      const risk = {
+        level: content.risk_level || "none",
+        hits: Array.isArray(riskHits) ? riskHits : [],
+        needsApproval: (content.risk_level || "none") !== "none",
+      };
+      const approvalPolicy = resolveContentApprovalPolicy(configuredApproval, risk);
+      let lockedPolicy = null;
+      try {
+        lockedPolicy = task.approval_routing_policy_snapshot
+          ? JSON.parse(task.approval_routing_policy_snapshot)
+          : null;
+      } catch {
+        lockedPolicy = null;
+      }
+      const approvalRoute = resolveApprovalRoute({
+        targetType: "content",
+        riskLevel: risk.level,
+        requestedLevel: approvalPolicy.approvalLevel,
+        actorRole: req.user.role,
+        actorUserId: req.user.id,
+        policy: lockedPolicy || loadApprovalRoutingPolicy(tenantId),
+      });
+      // 风控词命中在任何档位都是硬门：有风控命中的草稿一律进人工审阅。
+      const requiresReview =
+        approvalRoute.requiresReview !== false || risk.level !== "none";
+      const acceptedAt = new Date().toISOString();
+      const acceptance = {
+        acceptedAt,
+        acceptedBy: req.user.id,
+        acceptedByName: req.user.name || null,
+        acceptedByRole: req.user.role,
+        reason: reason || null,
+        requiresReview,
+        contractTier: report?.contractTier || task.contract_tier || null,
+        failReason: task.fail_reason || report?.failReason || "contract",
+        failedChecks: report?.failedChecks || [],
+        approvalRouting: approvalRoute.snapshot || null,
+        note: "老板接受未达标草稿为内部参考稿；未通过质量门，不得自动采用、不沉淀知识库、不导出正式产物。",
+      };
+      let contentSnapshot = {};
+      try {
+        contentSnapshot = content.snapshot_json ? JSON.parse(content.snapshot_json) : {};
+      } catch {
+        contentSnapshot = {};
+      }
+      const nextContentStatus = requiresReview ? "待审核" : "草稿";
+      const nextTaskStatus = requiresReview ? "待审阅" : "草稿已接受";
+      q.run(
+        `UPDATE contents SET status=?, snapshot_json=? WHERE tenant_id=? AND id=?`,
+        nextContentStatus,
+        JSON.stringify({ ...contentSnapshot, draftAcceptance: acceptance }),
+        tenantId,
+        content.id,
+      );
+      let evidence = null;
+      try {
+        evidence = task.employee_web_snapshot ? JSON.parse(task.employee_web_snapshot) : null;
+      } catch {
+        evidence = null;
+      }
+      if (evidence && typeof evidence === "object") {
+        evidence.draftAcceptance = acceptance;
+        if (evidence.outputContract && typeof evidence.outputContract === "object") {
+          evidence.outputContract.draftAccepted = true;
+        }
+        if (evidence.failure && typeof evidence.failure === "object") {
+          evidence.failure.presentationKey = "draft_accepted";
+        }
+      }
+      q.run(
+        `UPDATE agent_tasks SET status=?, employee_web_snapshot=? WHERE tenant_id=? AND id=?`,
+        nextTaskStatus,
+        evidence ? JSON.stringify(evidence) : task.employee_web_snapshot,
+        tenantId,
+        taskId,
+      );
+      let approvalId = null;
+      if (requiresReview) {
+        const approval = createApproval({
+          targetType: "content",
+          targetId: content.id,
+          title: content.title,
+          summary: content.body,
+          riskLevel: risk.level,
+          rulesHit: [
+            ...(approvalPolicy.rulesHit || []),
+            "employee_output_review",
+            "employee_draft_accepted",
+            `employee_approval:${configuredApproval}`,
+            `owner_policy:${approvalRoute.mode}`,
+          ],
+          submitterId: req.user.id,
+          approvalLevel: approvalRoute.firstStep?.level,
+          assignedReviewerId: approvalRoute.firstStep?.assignedReviewerId,
+          approvalPolicySnapshot: approvalRoute.snapshot,
+        });
+        approvalId = Number(approval) || null;
+      }
+      return {
+        taskId,
+        contentId: Number(content.id),
+        requiresReview,
+        approvalId,
+        status: nextTaskStatus,
+        contentStatus: nextContentStatus,
+        displayStatus: requiresReview
+          ? BUSINESS_DELIVERY_LABELS.reviewPending
+          : BUSINESS_DELIVERY_LABELS.draftAccepted,
+        acceptance,
+      };
+    });
+    logOp(
+      req.user,
+      "餐饮数字员工",
+      "接受未达标草稿",
+      `task#${taskId} -> content#${result.contentId}${result.requiresReview ? "（进人工审阅）" : "（内部参考稿）"}`,
+    );
+    publishRestaurantTaskStatusChanged(tenantId, taskId, {
+      userId: req.user.id,
+      status: result.status,
+    });
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+});
+
 // 任务状态轮询（流程可视化）
 r.get("/tasks/:taskId/status", (req, res) => {
   const raw = q.get(
-    `SELECT t.*, m.code marshal_code,m.name marshal_name, m.emoji marshal_emoji, m.avatar marshal_avatar,m.online marshal_online, c.body output_body, c.ai_mode, c.risk_level, c.risk_flags, c.status output_status,
+    `SELECT t.*, m.code marshal_code,m.name marshal_name, m.emoji marshal_emoji, m.avatar marshal_avatar,m.online marshal_online, c.body output_body, c.ai_mode, c.risk_level, c.risk_flags, c.status output_status, c.snapshot_json output_snapshot_json,
       EXISTS(
         SELECT 1 FROM approvals a
         WHERE a.tenant_id=t.tenant_id
@@ -2311,6 +2906,9 @@ r.get("/tasks/:taskId/status", (req, res) => {
   if (!t || !canAccessOwner(req.user, t.created_by))
     return res.status(404).json({ error: "任务不存在或无权查看" });
   const publicTask = publicTaskWithExecution(t, req.user);
+  // 产物快照只用于草稿判定，不对外下发
+  delete publicTask.output_snapshot_json;
+  delete publicTask.contract_report;
   const supersededBy = publicTask.supersededBy || null;
   const billing = employeeTaskBilling(Number(t.id));
   const billingGate =
@@ -2324,8 +2922,12 @@ r.get("/tasks/:taskId/status", (req, res) => {
     "DELIVERY_BILLING_UNSETTLED",
   ].includes(billingGate?.state?.code);
   const qualityFailed = t.status === "失败" && taskFailedQualityGate(t);
+  // P0-1：未达标草稿（待处理 / 已被老板接受为内部参考稿）
+  const draftInfo = employeeTaskDraftInfo(t, req.user);
+  const draftPending = !supersededBy && draftInfo?.state === "pending";
+  const draftAccepted = !supersededBy && draftInfo?.state === "accepted";
   const adoptionKind =
-    t.status === "已完成"
+    t.status === "已完成" && !draftAccepted
       ? Number(t.human_adopted) === 1
         ? "human"
         : "auto"
@@ -2334,6 +2936,10 @@ r.get("/tasks/:taskId/status", (req, res) => {
     ? BUSINESS_DELIVERY_LABELS.superseded
     : pendingReconciliation
     ? BUSINESS_DELIVERY_LABELS.businessBlocked
+    : draftPending
+      ? BUSINESS_DELIVERY_LABELS.draftPending
+      : draftAccepted
+        ? BUSINESS_DELIVERY_LABELS.draftAccepted
     : t.status === "待审阅"
       ? BUSINESS_DELIVERY_LABELS.reviewPending
       : t.status === "已完成"
@@ -2351,6 +2957,10 @@ r.get("/tasks/:taskId/status", (req, res) => {
     ? "superseded"
     : pendingReconciliation
     ? "business_blocked"
+    : draftPending
+      ? "draft_pending"
+      : draftAccepted
+        ? "draft_accepted"
     : t.status === "待审阅"
       ? "review_pending"
       : t.status === "已完成"
@@ -2369,6 +2979,7 @@ r.get("/tasks/:taskId/status", (req, res) => {
     adoptionKind,
     reworkRequired: presentationKey === "rework_required",
     displayStatus,
+    ...(draftInfo && !supersededBy ? { draft: draftInfo } : {}),
     reviewReady:
       !supersededBy && t.status === "待审阅" && !pendingReconciliation,
     reviewBlockedReason:
@@ -2396,6 +3007,8 @@ r.get("/tasks/:taskId/status", (req, res) => {
         ? "已取代"
         : pendingReconciliation
         ? "待账务对账"
+        : draftAccepted
+          ? "草稿已接受"
         : qualityFailed
           ? "质检失败"
           : t.status,
@@ -2403,6 +3016,62 @@ r.get("/tasks/:taskId/status", (req, res) => {
     ),
   });
 });
+
+// P0-1：未达标草稿的老板可读信息。failedChecks 只含人话（不出现契约 ID/指纹/字段路径）。
+function employeeTaskDraftInfo(task, user) {
+  if (!task?.output_id) return null;
+  let report = null;
+  try {
+    report = task.contract_report ? JSON.parse(task.contract_report) : null;
+  } catch {
+    report = null;
+  }
+  let acceptance = null;
+  try {
+    const snapshot = task.output_snapshot_json
+      ? JSON.parse(task.output_snapshot_json)
+      : null;
+    acceptance = snapshot?.draftAcceptance || null;
+  } catch {
+    acceptance = null;
+  }
+  const pending = task.status === AGENT_TASK_DRAFT_STATUS;
+  if (!pending && !acceptance) return null;
+  const failedChecks = Array.isArray(report?.failedChecks) && report.failedChecks.length
+    ? report.failedChecks
+    : humanizeContractFailures(report?.failedRules || []);
+  const acceptable = report?.acceptable === true;
+  return {
+    state: pending ? "pending" : "accepted",
+    failReason: task.fail_reason || report?.failReason || "contract",
+    failReasonLabel:
+      (task.fail_reason || report?.failReason) === "timeout"
+        ? "执行超时，已保留最后一轮完整正文"
+        : "质量门未通过，已保留最后一轮完整正文",
+    attempts: Number(report?.attempts || 0),
+    failedChecks,
+    failedCheckCount: failedChecks.reduce(
+      (sum, item) => sum + Number(item?.count || 1),
+      0,
+    ),
+    acceptable,
+    canAccept: pending && acceptable && ["boss", "admin"].includes(user?.role),
+    acceptBlockedReason: pending
+      ? acceptable
+        ? ["boss", "admin"].includes(user?.role)
+          ? null
+          : "只有老板或管理员可以决定就用这份草稿"
+        : "草稿引用了本次未核验的来源，不能直接采用；请带原要求重新派活"
+      : null,
+    ...(acceptance
+      ? {
+          acceptedAt: acceptance.acceptedAt || null,
+          acceptedByName: acceptance.acceptedByName || null,
+          requiresReview: acceptance.requiresReview === true,
+        }
+      : {}),
+  };
+}
 
 // 数字员工对话：会话持久化（左栏历史）+ 技能注入（右栏加载 20 办公技能库）+ 多模态
 // 技能库见 engines/skills.js；前端拿结构化清单（key/name/分类/图标/描述）渲染勾选

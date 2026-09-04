@@ -11,11 +11,43 @@ import {
   reconcileToolboxAutomationRuns,
 } from "./toolbox-automations.js";
 import { recoverStaleSkillLearningRuns } from "./employee-skill-learning.js";
+import { runWeeklyEmployeeIntroCheck } from "./employee-self-intro.js";
+import { runDailyPlanAndBalanceCheck } from "./plan.js";
+import { runKbVectorBackfillSweep } from "./rag.js";
+import {
+  runContentPublishFollowups,
+  runContentPublishScheduleReminders,
+} from "./content-publish-followup.js";
 import {
   contentAutomationEntitlement,
   executeContentAutomationRun,
   nextContentAutomationRun,
 } from "../routes/content.js";
+import { publish } from "./event-bus.js";
+
+// 陈旧任务恢复后的实时推送：COMMIT 之后发出，创建人与管理层据此刷新任务中心。
+function publishRecoveredTaskStatus(kind, row, status) {
+  try {
+    publish({
+      tenantId: curTenant(),
+      userIds: [row?.created_by].filter(Boolean),
+      roles: ["ops_director", "manager"],
+      type: "task.status_changed",
+      payload: {
+        kind,
+        id: Number(row?.id),
+        status,
+        title: row?.title || "",
+        employeeIdx: Number.isInteger(Number(row?.employee_idx))
+          ? Number(row.employee_idx)
+          : null,
+        recovered: true,
+      },
+    });
+  } catch (error) {
+    console.error("[scheduler] 实时事件发布失败:", error?.message || error);
+  }
+}
 
 const SHANGHAI_CLOCK = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
@@ -755,6 +787,7 @@ export function recoverStaleAgentTasks(
         throw new Error(`数字员工任务#${task.id}恢复状态发生并发冲突`);
       }
       db.exec("COMMIT");
+      publishRecoveredTaskStatus("restaurant", task, nextStatus);
       recovered.push({
         tenantId: curTenant(),
         taskId: Number(task.id),
@@ -857,6 +890,7 @@ export function recoverStaleContentEmployeeRuns(
         throw new Error(`内容员工运行#${run.id}恢复状态发生并发冲突`);
       }
       db.exec("COMMIT");
+      publishRecoveredTaskStatus("content", run, nextStatus);
       recovered.push({
         tenantId: curTenant(),
         runId: Number(run.id),
@@ -1596,6 +1630,7 @@ function runTenantJobs(
     tenantId,
     battlePlan: false,
     weeklyReview: false,
+    weeklyEmployeeIntroCheck: false,
     reminderOwners: 0,
     contentAutomationRecovered: 0,
     contentAutomationClaimed: 0,
@@ -1609,6 +1644,9 @@ function runTenantJobs(
     toolboxAutomationsClaimed: 0,
     contentPipelineRecoveryScheduled: false,
     contentPipelineSchedulesScheduled: false,
+    kbVectorBackfill: false,
+    publishFollowup: false,
+    publishScheduleReminders: 0,
   };
   if (clock.hour === "06" && clock.minute === "30") {
     result.battlePlan = runOnce(`battle-plan:${clock.date}`, () =>
@@ -1629,6 +1667,30 @@ function runTenantJobs(
       generateWeeklyReview(clock.date),
     );
   }
+  // 数字员工自我介绍周校验（周一 09:00 上海时间）：零积分确定性对照，
+  // 有 needs_review 的员工汇总成一条通知给 boss/admin，不逐人刷屏。
+  if (clock.weekday === "Mon" && clock.hour === "09" && clock.minute === "00") {
+    result.weeklyEmployeeIntroCheck = runOnce(
+      `weekly_employee_intro_check:${clock.date}`,
+      () => runWeeklyEmployeeIntroCheck({ tenantId, now }),
+    );
+  }
+  // 每日套餐到期 / 积分低余额检查（09:00 上海时间）：30/7/1 天到期各提醒一次、到期置 expired、
+  // 低于阈值且 24h 内未提醒过则通知老板。到期后只提醒、不锁功能（待老板决策，见 engines/plan.js）。
+  if (clock.hour === "09" && clock.minute === "00") {
+    result.dailyPlanAndBalanceCheck = runOnce(
+      `daily_plan_and_balance_check:${clock.date}`,
+      () => runDailyPlanAndBalanceCheck({ tenantId, now }),
+    );
+  }
+  // 每日知识库向量回填扫描（04:00 上海时间，P0-2）：把零向量/未向量化文档按既有配额
+  // 交给后台向量化队列；结果写 sys_config 与 kb_health_events，供系统页红点与口径读取。
+  if (clock.hour === "04" && clock.minute === "00") {
+    result.kbVectorBackfill = runOnce(
+      `kb_vector_backfill:${clock.date}`,
+      () => runKbVectorBackfillSweep({ tenantId, now, source: "scheduler" }),
+    );
+  }
   if (clock.minute === "00") {
     const key = `overdue-follow-up:${clock.date}T${clock.hour}`;
     let owners = 0;
@@ -1636,6 +1698,19 @@ function runTenantJobs(
       owners = sendOverdueFollowUpReminders();
     });
     result.reminderOwners = ran ? owners : 0;
+  }
+  // 合规半自动分发（B6）：每日 10:00 上海时间催 T+1/3/7 回填；排期到期提醒每 tick 检查。
+  // 两者都只发站内通知，不做任何自动发布（宣讲纪要：自动分发已暂停）。
+  if (clock.hour === "10" && clock.minute === "00") {
+    result.publishFollowup = runOnce(`publish_followup:${clock.date}`, () =>
+      runContentPublishFollowups({ tenantId, now }),
+    );
+  }
+  if (tableExists("content_publish_followups")) {
+    result.publishScheduleReminders = runContentPublishScheduleReminders({
+      tenantId,
+      now,
+    }).length;
   }
   const recovered = recoverStaleContentAutomationRuns(now);
   result.contentAutomationRecovered = recovered.length;

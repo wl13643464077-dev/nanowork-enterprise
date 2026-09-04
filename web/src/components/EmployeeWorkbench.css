@@ -516,6 +516,13 @@
   text-decoration: underline;
 }
 
+/* 欢迎气泡里的「TA 的自我介绍」入口 */
+.ewb-self-intro-link {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-size: var(--font-1);
+}
+
 .ewb-status-help {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2327,6 +2334,7 @@
 }
 
 .ewb-chat-composer {
+  box-sizing: border-box;
   position: fixed;
   z-index: 12;
   right: 28px;
@@ -2515,4 +2523,37 @@
 }
 .ewb-adoption-alert {
   margin-bottom: var(--space-4);
+}
+
+.ewb-benchmark-library {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-4);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ewb-xhs-versions,
+.ewb-xhs-version-detail {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ewb-xhs-body {
+  white-space: pre-wrap;
+}
+
+.ewb-content-learning {
+  box-sizing: border-box;
+  display: grid;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ewb-content-learning .ant-select {
+  width: 100%;
 }

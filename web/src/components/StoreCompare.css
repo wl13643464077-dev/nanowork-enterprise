@@ -1,0 +1,91 @@
+/* 总部门店对比：表格 + 柱状图，全部走 theme.css token */
+.store-compare-null {
+  color: var(--ui-muted);
+}
+
+.store-compare-alert {
+  margin-bottom: var(--space-3);
+}
+
+.store-compare-empty {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.store-compare-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+}
+
+.store-compare-unassigned {
+  margin: 0;
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--ui-border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--ui-surface));
+  color: var(--ui-text-2);
+}
+
+.store-compare-chart-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.store-compare-table {
+  margin-top: var(--space-3);
+}
+
+.store-compare-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ui-text);
+  font-weight: 600;
+}
+
+.store-compare-default {
+  margin: 0;
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-accent);
+  font-size: var(--font-1);
+}
+
+.store-compare-code {
+  color: var(--ui-muted);
+  font-weight: 400;
+  font-size: var(--font-1);
+}
+
+.store-compare-change {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.store-compare-change.is-good {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--ui-surface));
+  color: var(--ok);
+}
+
+.store-compare-change.is-bad {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--ui-border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--ui-surface));
+  color: var(--danger);
+}
+
+.store-compare-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.store-compare-note {
+  margin-top: var(--space-3);
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}

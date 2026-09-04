@@ -13,6 +13,11 @@ import {
   canonicalContentEmployeeProfileFor,
 } from './canonical-employee-profile.js';
 import { resolveWriterTitleCountRequirement } from './content-title-count.js';
+import { XHS_SALES_TASK_TYPE, resolveXhsSalesContext, xhsSalesPlaybookLines, xhsSalesVersionInstructionLines } from './content-xhs-playbook.js';
+import {
+  posterTextCapabilityAppliesTo,
+  posterTextCapabilityPromptLines,
+} from './poster-text-capability.js';
 
 const BY_SKILL_IDX = new Map(EMPLOYEE_SKILL_PROFILES.map(profile => [profile.idx, profile]));
 const TASK_FIELDS = new Set(['direction', 'industry', 'material', 'feedback', 'length']);
@@ -26,7 +31,7 @@ export const CONTENT_TASK_TYPES_BY_EMPLOYEE = Object.freeze({
   0: Object.freeze(['趋势简报', '候选选题', '热点扫描']),
   1: Object.freeze(['事实资料包', '核验报告', '来源清单']),
   2: Object.freeze(['爆款拆解', '评论洞察', '用户语言报告']),
-  3: Object.freeze(['文案初稿', '标题方案', '配图建议']),
+  3: Object.freeze(['文案初稿', '标题方案', '配图建议', XHS_SALES_TASK_TYPE]),
   4: Object.freeze(['文风改写', '人设一致性校对', '表达优化稿']),
   5: Object.freeze(['多媒体素材方案', '正文配图方案', 'SVG信息图方案']),
   6: Object.freeze(['封面方案', '封面备选组', '视觉钩子方案']),
@@ -966,6 +971,58 @@ function factGroundingLines(workbench) {
 }
 
 /**
+ * 运行层注入的联网检索真实状态（不虚报，D-055）。本模块保持零 DB 依赖，
+ * 因此状态只能由调用方（路由 / 流水线 registry）传入；未注入时按“未知”处理，
+ * 模型同样不得自称已联网。
+ */
+function normalizeLiveResearchStatus(value) {
+  if (!value || typeof value !== 'object') {
+    return { configured: null, summary: '联网检索状态未由运行层注入', lanes: [] };
+  }
+  const lanes = Array.isArray(value.lanes)
+    ? value.lanes
+      .filter(lane => lane && typeof lane === 'object' && lane.ready === true)
+      .map(lane => String(lane.label || lane.key || '').trim())
+      .filter(Boolean)
+      .slice(0, 6)
+    : [];
+  return {
+    configured: value.configured === true ? true : value.configured === false ? false : null,
+    summary: String(value.summary || '').trim().slice(0, 300)
+      || (value.configured === true ? '联网检索已启用' : value.configured === false ? '联网检索未配置' : '联网检索状态未知'),
+    lanes,
+  };
+}
+
+function liveResearchStatusLines(workbench, liveResearch) {
+  const status = normalizeLiveResearchStatus(liveResearch);
+  const researchStation = workbench.identity.idx >= 0 && workbench.identity.idx <= 2;
+  const lines = ['【联网检索真实状态·运行层注入，不得自行改写】'];
+  if (status.configured === true) {
+    lines.push(
+      `联网检索已启用：${status.summary}${status.lanes.length ? `（可用通道：${status.lanes.join(' → ')}）` : ''}。`,
+      '只有证据区实际出现的检索快照才算“已联网取得”；系统未提供快照时，不得声称已抓榜、已核验最新信息。',
+    );
+  } else if (status.configured === false) {
+    lines.push(
+      `联网检索未启用：${status.summary}。本次没有任何实时来源，不得声称已联网、已抓榜或已核验最新信息；涉及外部事实一律写成含“无可验证事实”的缺证披露，不得用模型记忆冒充实时结果。`,
+    );
+  } else {
+    lines.push(`${status.summary}：不得自称已联网；只能引用证据区实际提供的检索快照。`);
+  }
+  lines.push(
+    '引用信息必须标注来源与抓取时间：每条检索快照来源都带 fetchedAt（抓取时间）与 publishedAt（发布时间，可能未知）；引用时写明来源与抓取时间，publishedAt 未知的来源写“发布时间未核实”。',
+    '过期信息要标注：来源标记 stale=true 或发布时间超出岗位时效窗口（趋势 7 天、情报 30 天）的，引用时必须写明“信息可能过期”，不得当作当前事实。',
+  );
+  if (researchStation && workbench.identity.idx <= 1) {
+    lines.push(
+      '证据区若提供系统渲染的「信息时效」一节，必须原样附在主叙述字段（趋势官 briefing / 情报员 summary）末尾，不得改动其中任何时间、数量或通道名称。',
+    );
+  }
+  return lines;
+}
+
+/**
  * 按派活 build_prompt / solo_prompt 分层编译内容员工消息：
  * system 只放身份、能力逐项运用、技能主动运用、岗位执行模板与输出契约；
  * 完整 canonical JSON 只作为编译器权威源留在 snapshot，不塞进模型指令。
@@ -975,7 +1032,8 @@ export function compileContentEmployeeSoloPrompt(idx, task, options = {}) {
   const workbench = buildContentEmployeeWorkbenchProfile(idx);
   const executionMode = options?.executionMode === 'pipeline' ? 'pipeline' : 'solo';
   const safeTask = validateTask(task);
-  if (workbench.identity.idx === 3) {
+  const xhsSales = resolveXhsSalesContext(workbench.identity.idx, { ...options, task });
+  if (workbench.identity.idx === 3 && !xhsSales.salesMode) {
     const titleCount = resolveWriterTitleCountRequirement({
       requirement: safeTask.material,
       feedback: safeTask.feedback,
@@ -1010,6 +1068,11 @@ export function compileContentEmployeeSoloPrompt(idx, task, options = {}) {
     executableRoleTemplate(workbench, executionMode),
   );
   const connectorBlock = connectorSummary(workbench);
+  // 平台扩展能力（如多媒体师的海报精确叠字）在源能力清单之后追加，
+  // 不改写派活源 capabilities 与其指纹。
+  const platformCapabilityBlock = posterTextCapabilityAppliesTo('content', workbench.identity.idx)
+    ? posterTextCapabilityPromptLines().join('\n')
+    : '';
   const systemPrompt = [
     `你是「老板的内容生产部」数字员工「${workbench.identity.name}」。`,
     `岗位职责：${workbench.identity.duty}。`,
@@ -1024,6 +1087,8 @@ export function compileContentEmployeeSoloPrompt(idx, task, options = {}) {
     '',
     capabilityBlock,
     '',
+    platformCapabilityBlock,
+    '',
     skillBlock,
     '',
     '【内部岗位执行模板】',
@@ -1036,11 +1101,14 @@ export function compileContentEmployeeSoloPrompt(idx, task, options = {}) {
     '',
     ...factGroundingLines(workbench),
     '',
+    ...liveResearchStatusLines(workbench, options?.liveResearch),
+    '',
     '【当前岗位最终输出契约】',
     '来源模板中若仍写有“只输出 Markdown”等通用要求，以本段岗位原生契约为准。',
-    `只输出一个合法 JSON 对象，不要在 JSON 前后添加客套话或 Markdown 围栏；必须完整覆盖字段：${workbench.jobProfile.outputKeys.join('、')}。`,
-    workbench.jobProfile.outputSchema.contract,
-    ...writerTitleCountLines(workbench, safeTask),
+    `只输出一个合法 JSON 对象，不要在 JSON 前后添加客套话或 Markdown 围栏；必须完整覆盖字段：${xhsSales.salesMode ? 'versions、image_plan' : workbench.jobProfile.outputKeys.join('、')}。`,
+    ...(xhsSales.salesMode
+      ? [...xhsSalesPlaybookLines(), ...xhsSalesVersionInstructionLines({ versionCount: xhsSales.versionCount })]
+      : [workbench.jobProfile.outputSchema.contract, ...writerTitleCountLines(workbench, safeTask)]),
     workbench.identity.idx === 7
       ? '演绎师的 html 字段必须是可独立打开的完整 HTML 主产物；PPT 只可作为按需附加连接器，不能替代 HTML。'
       : `主产物类型：${workbench.jobProfile.outputSchema.primaryArtifact}。`,
@@ -1111,6 +1179,7 @@ export function compileContentEmployeeSoloPrompt(idx, task, options = {}) {
     injectedHistoricalSkillCount: workbench.skillLibrary.historical.length,
     sourcePromptFingerprint: workbench.prompts.pipelinePrompt.sourceFingerprint,
     runtimePackageLoad: clone(runtimePackageLoad),
+    liveResearch: normalizeLiveResearchStatus(options?.liveResearch),
   };
   const snapshot = {
     schemaVersion: 'content-employee-solo-snapshot.v1',

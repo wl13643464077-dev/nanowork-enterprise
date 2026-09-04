@@ -17,6 +17,8 @@ import {
   Switch,
   Space,
   DatePicker,
+  Alert,
+  Flex,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -30,7 +32,13 @@ import {
 import { api, clearAuth, exportCsv } from '../api/client';
 
 // 积分流水类型（与企业内一致）
-const KIND_LABEL: Record<string, string> = { text: '文本', image: '生图', video: '生视频', recharge: '充值/调整' };
+const KIND_LABEL: Record<string, string> = {
+  text: '文本',
+  image: '生图',
+  video: '生视频',
+  recharge: '充值/调整',
+  bonus: '套餐赠送',
+};
 const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }));
 import { StatCard, Panel, ErrorState } from '../components/Kit';
 
@@ -67,9 +75,14 @@ export default function Platform() {
   const [orders, setOrders] = useState<any[]>([]);
   const [packages, setPackages] = useState<any[]>([]);
   const [approve, setApprove] = useState<any>(null);
-  const [pkgEdit, setPkgEdit] = useState<any>(null);
+  const [pkgEdit, setPkgEdit] = useState<any>(null); // {id?...}；id 为空 = 新增
+  const [planTarget, setPlanTarget] = useState<any>(null); // 开通年度套餐的目标企业
+  const [planPkgId, setPlanPkgId] = useState<number | undefined>(undefined);
+  const [activating, setActivating] = useState(false);
   const [aForm] = Form.useForm();
   const [pForm] = Form.useForm();
+  const pkgKind = Form.useWatch('kind', pForm);
+  const planPackages = packages.filter(p => p.kind === 'plan' && p.enabled);
 
   const [loadError, setLoadError] = useState(false);
   const loadAll = useCallback(() => {
@@ -147,16 +160,41 @@ export default function Platform() {
     });
   const openPkg = (p: any) => {
     setPkgEdit(p);
-    pForm.setFieldsValue({ ...p, enabled: !!p.enabled });
+    pForm.resetFields();
+    pForm.setFieldsValue({ ...p, kind: p.kind || 'credits', enabled: !!p.enabled });
+  };
+  const openNewPkg = () => {
+    setPkgEdit({});
+    pForm.resetFields();
+    pForm.setFieldsValue({ kind: 'credits', enabled: true, bonus_credits: 0, sort: 99 });
   };
   const submitPkg = () =>
     pForm.validateFields().then(v => {
-      api.put(`/platform/packages/${pkgEdit.id}`, v).then(() => {
+      const req = pkgEdit?.id ? api.put(`/platform/packages/${pkgEdit.id}`, v) : api.post('/platform/packages', v);
+      req.then(() => {
         message.success('已保存');
         setPkgEdit(null);
         loadAll();
       });
     });
+  const openActivatePlan = (t: any) => {
+    setPlanTarget(t);
+    setPlanPkgId(planPackages.find(p => p.code === t.plan_code)?.id ?? planPackages[0]?.id);
+  };
+  const submitActivatePlan = async () => {
+    if (!planTarget || !planPkgId) return;
+    setActivating(true);
+    try {
+      const r = await api.post(`/platform/tenants/${planTarget.id}/plan/activate`, { packageId: planPkgId });
+      message.success(`已开通「${r.name}」，有效期至 ${r.expiresAt}${r.rolledOver ? '（已顺延）' : ''}`);
+      setPlanTarget(null);
+      loadAll();
+    } catch {
+      /* api 层已提示错误 */
+    } finally {
+      setActivating(false);
+    }
+  };
 
   const logout = () => {
     clearAuth();
@@ -567,7 +605,28 @@ export default function Platform() {
                     <Tag color={v === '已开通' ? 'green' : v === '待审核' ? 'gold' : 'red'}>{v}</Tag>
                   ),
                 },
-                { title: '套餐', dataIndex: 'plan', width: 80 },
+                {
+                  title: '套餐',
+                  dataIndex: 'plan',
+                  width: 130,
+                  render: (v: string, r: any) => (
+                    <span>
+                      {v || '-'}
+                      {r.plan_expires_at && (
+                        <>
+                          <br />
+                          <Tag
+                            color={
+                              r.plan_status === 'expired' ? 'red' : r.plan_status === 'expiring' ? 'orange' : 'green'
+                            }
+                          >
+                            至 {String(r.plan_expires_at).slice(0, 10)}
+                          </Tag>
+                        </>
+                      )}
+                    </span>
+                  ),
+                },
                 {
                   title: '账号/席位',
                   width: 80,
@@ -604,6 +663,11 @@ export default function Platform() {
                         <Button size="small" onClick={() => directCredit(r)}>
                           直充
                         </Button>
+                        {r.status === '已开通' && planPackages.length > 0 && (
+                          <Button size="small" onClick={() => openActivatePlan(r)}>
+                            {r.plan_code && r.plan_status !== 'expired' ? '续费套餐' : '开通年度套餐'}
+                          </Button>
+                        )}
                         {r.status === '已开通' ? (
                           <Button size="small" danger onClick={() => setStatus(r, '已停用')}>
                             停用
@@ -692,8 +756,13 @@ export default function Platform() {
           <Panel
             title={
               <>
-                <AppstoreOutlined style={{ color: 'var(--warn)' }} /> 充值套餐
+                <AppstoreOutlined style={{ color: 'var(--warn)' }} /> 套餐管理（年度套餐 / 积分包）
               </>
+            }
+            extra={
+              <Button size="small" type="primary" onClick={openNewPkg}>
+                新增套餐
+              </Button>
             }
           >
             <Table
@@ -709,10 +778,23 @@ export default function Platform() {
                     <span>
                       <b>{v}</b>
                       {r.tag && <Tag style={{ marginLeft: 6 }}>{r.tag}</Tag>}
+                      {r.code && <Tag>{r.code}</Tag>}
                     </span>
                   ),
                 },
+                {
+                  title: '类型',
+                  dataIndex: 'kind',
+                  width: 90,
+                  render: (v: string) => (v === 'plan' ? <Tag color="gold">年度套餐</Tag> : <Tag>积分包</Tag>),
+                },
                 { title: '价格', dataIndex: 'price_yuan', align: 'right', render: (v: number) => `¥${v}` },
+                {
+                  title: '账号 / 有效期',
+                  width: 120,
+                  render: (_: any, r: any) =>
+                    r.kind === 'plan' ? `${r.seat_limit ?? '-'} 个 / ${r.valid_days ?? '-'} 天` : '—',
+                },
                 {
                   title: '基础积分',
                   dataIndex: 'base_credits',
@@ -776,18 +858,32 @@ export default function Platform() {
         </Form>
       </Modal>
 
-      {/* 套餐编辑 */}
+      {/* 套餐编辑 / 新增 */}
       <Modal
         open={!!pkgEdit}
         onCancel={() => setPkgEdit(null)}
         onOk={submitPkg}
         okText="保存"
-        title={pkgEdit ? `编辑套餐 · ${pkgEdit.name}` : ''}
+        title={pkgEdit?.id ? `编辑套餐 · ${pkgEdit.name}` : '新增套餐'}
       >
         <Form form={pForm} layout="vertical">
-          <Form.Item name="name" label="套餐名" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
+          <Row gutter={12}>
+            <Col span={14}>
+              <Form.Item name="name" label="套餐名" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={10}>
+              <Form.Item name="kind" label="类型" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { value: 'credits', label: '积分包（按用量充值）' },
+                    { value: 'plan', label: '年度套餐（账号 + 有效期）' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item name="price_yuan" label="价格(元)" rules={[{ required: true }]}>
@@ -795,27 +891,87 @@ export default function Platform() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="bonus_credits" label="赠送积分">
+              <Form.Item name="bonus_credits" label={pkgKind === 'plan' ? '赠送积分（开通时到账）' : '赠送积分'}>
                 <InputNumber style={{ width: '100%' }} min={0} step={100} />
               </Form.Item>
             </Col>
           </Row>
-          <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginBottom: 12 }}>
-            到账积分 = 价格×100 + 赠送（基础积分按价格自动计算）
-          </div>
+          {pkgKind === 'plan' ? (
+            <Row gutter={12}>
+              <Col span={12}>
+                <Form.Item name="seat_limit" label="含账号数" rules={[{ required: true }]}>
+                  <InputNumber style={{ width: '100%' }} min={1} max={10000} addonAfter="个" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item name="valid_days" label="有效期" rules={[{ required: true }]}>
+                  <InputNumber style={{ width: '100%' }} min={1} max={3650} addonAfter="天" />
+                </Form.Item>
+              </Col>
+            </Row>
+          ) : null}
+          <Form.Item name="code" label="套餐编码（可选，唯一；用于种子/接口幂等）">
+            <Input placeholder="如 restaurant_annual_v1" />
+          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            message={
+              pkgKind === 'plan'
+                ? '年度套餐：开通时写入企业席位与到期日；未到期再次购买按原到期日顺延；赠送积分作为独立"套餐赠送"流水入账，不含购买积分。'
+                : '积分包：到账积分 = 价格×100 + 赠送（基础积分按价格自动计算），支付成功一次入账。'
+            }
+          />
           <Row gutter={12}>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item name="tag" label="标签">
-                <Input placeholder="热门/推荐/旗舰" />
+                <Input placeholder="热门/推荐/年度" />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item name="enabled" label="在售" valuePropName="checked">
+            <Col span={8}>
+              <Form.Item name="sort" label="排序">
+                <InputNumber style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="enabled" label="在售（is_active）" valuePropName="checked">
                 <Switch />
               </Form.Item>
             </Col>
           </Row>
         </Form>
+      </Modal>
+
+      {/* 线下签约后手工开通年度套餐 */}
+      <Modal
+        open={!!planTarget}
+        onCancel={() => setPlanTarget(null)}
+        onOk={submitActivatePlan}
+        okText="确认开通"
+        confirmLoading={activating}
+        okButtonProps={{ disabled: !planPkgId }}
+        title={planTarget ? `开通年度套餐 · ${planTarget.name}` : ''}
+      >
+        <Flex vertical gap={12}>
+          <Select
+            value={planPkgId}
+            onChange={v => setPlanPkgId(v)}
+            options={planPackages.map(p => ({
+              value: p.id,
+              label: `${p.name} · ¥${p.price_yuan} · ${p.seat_limit} 账号 · ${p.valid_days} 天 · 赠 ${Number(p.bonus_credits || 0).toLocaleString()} 积分`,
+            }))}
+            placeholder="选择年度套餐"
+          />
+          <Alert
+            type="warning"
+            showIcon
+            message={
+              planTarget?.plan_expires_at && planTarget?.plan_status !== 'expired'
+                ? `该企业当前套餐至 ${String(planTarget.plan_expires_at).slice(0, 10)}，本次开通将从该日顺延有效期，并再次入账赠送积分。`
+                : '开通后从今天起算有效期，写入账号席位并入账赠送积分；适用于对公转账等线下已收款场景。'
+            }
+          />
+        </Flex>
       </Modal>
     </div>
   );

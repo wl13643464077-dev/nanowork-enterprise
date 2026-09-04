@@ -2491,6 +2491,9 @@ test("v2默认auto：低风险真实API结算后自动可用且不创建审批�
   });
 });
 
+// P0-1 判定依据：草稿只保留给“拿到了真实模型正文、但非安全类质量规则未过”的情形。
+// 本用例中模型对 JSON 契约岗位回了一段非 JSON 的 Markdown，属于“没有可用产物”
+// （输出不是有效JSON），demo 与 live 都必须仍走原“失败 + 全额释放”路径，不落草稿。
 test("demo餐饮纯Markdown不得绕过岗位审计，live同样严格失败退款", async () => {
   await withServer(async (base) => {
     const previousDataMode = String(
@@ -2544,6 +2547,18 @@ test("demo餐饮纯Markdown不得绕过岗位审计，live同样严格失败退�
         String(demoEvidence.failure?.code || ""),
         /RESTAURANT_OUTPUT_CONTRACT_INVALID/u,
       );
+      // 非 JSON 正文没有可用产物：不落“未达标草稿”，失败证据记下原因
+      assert.equal(demoEvidence.failure?.draftBlockedBy, "no_deliverable");
+      assert.equal(
+        Number(
+          q.get(
+            `SELECT COUNT(*) n FROM contents WHERE tenant_id=1 AND status='未达标草稿' AND topic=?`,
+            "模拟演示Markdown报告优先自动采用",
+          ).n,
+        ),
+        0,
+        "非 JSON 输出不得留下未达标草稿产物",
+      );
       const demoHold = q.get(
         `SELECT status,settled_credits FROM credit_holds
         WHERE tenant_id=1 AND ref_type='agent_task' AND ref_id=?
@@ -2588,6 +2603,19 @@ test("demo餐饮纯Markdown不得绕过岗位审计，live同样严格失败退�
       assert.match(
         String(liveEvidence.failure?.code || ""),
         /EMPLOYEE_PUBLIC_RESEARCH_INCOMPLETE|RESTAURANT_OUTPUT_CONTRACT_INVALID/u,
+      );
+      if (liveEvidence.failure?.code === "RESTAURANT_OUTPUT_CONTRACT_INVALID") {
+        assert.equal(liveEvidence.failure?.draftBlockedBy, "no_deliverable");
+      }
+      assert.equal(
+        Number(
+          q.get(
+            `SELECT COUNT(*) n FROM contents WHERE tenant_id=1 AND status='未达标草稿' AND topic=?`,
+            "模拟演示Markdown报告优先自动采用-live",
+          ).n,
+        ),
+        0,
+        "live 非 JSON 输出同样不得留下未达标草稿产物",
       );
       const liveHold = q.get(
         `SELECT status,settled_credits FROM credit_holds
@@ -3226,6 +3254,9 @@ test("v2中央审批策略在派活时锁定：老板/经理策略不可被后�
   });
 });
 
+// P0-1 判定依据：模板底稿（mode=template，零用量）不是真实模型正文；`{"contract_id":"伪造"}`
+// 虽是合法 JSON，但契约身份伪造、顶层骨架全缺，属于“没有可用产物 / 伪造”。两者都
+// 走原“失败 + 全额释放”路径，不落“未达标草稿”；失败证据记下 draftBlockedBy 供追溯。
 test("岗位契约审计状态原子落库：合法API可采纳、模板不可采纳、非法JSON不落库并退款", async () => {
   await withServer(async (base) => {
     const valid = await jsonCall(
@@ -3330,6 +3361,11 @@ test("岗位契约审计状态原子落库：合法API可采纳、模板不可�
     assert.equal(templateEvidence.failure.category, "execution_exception");
     assert.equal(templateEvidence.failure.presentationKey, "execution_failed");
     assert.equal(templateEvidence.failure.retryable, true);
+    assert.equal(
+      templateEvidence.failure.draftBlockedBy,
+      "not_api",
+      "模板底稿不是真实模型正文，不能作为未达标草稿留底",
+    );
     const templateDetail = await jsonCall(
       base,
       `/marshals/tasks/${template.payload.taskId}/status`,
@@ -3387,6 +3423,17 @@ test("岗位契约审计状态原子落库：合法API可采纳、模板不可�
     assert.equal(invalidEvidence.outputContract.valid, false);
     assert.equal(invalidEvidence.failure.category, "quality_rework");
     assert.equal(invalidEvidence.failure.presentationKey, "rework_required");
+    // 伪造契约身份 + 顶层骨架全缺 = 没有可用产物：不落草稿、不留 contents 行
+    assert.equal(invalidEvidence.failure.draftBlockedBy, "no_deliverable");
+    assert.equal(
+      Number(
+        q.get(
+          `SELECT COUNT(*) n FROM contents WHERE tenant_id=1 AND status='未达标草稿' AND topic=?`,
+          "返回非法岗位JSON",
+        ).n,
+      ),
+      0,
+    );
     assert.equal(invalidEvidence.outputContract.repair.attempted, true);
     assert.equal(invalidEvidence.outputContract.repair.succeeded, false);
     assert.equal(invalidEvidence.outputContract.repair.attemptCount, 2);

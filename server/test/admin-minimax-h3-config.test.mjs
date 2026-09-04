@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const nativeFetch = globalThis.fetch;
 const repoRoot = path.resolve(
@@ -215,11 +216,6 @@ test("接口管理把联网分层与H3核验拆成独立面板且保留完整配
   assert.match(h3Panel, /priceBasis/u);
 });
 
-after(() => {
-  for (const file of [
-    databasePath,
-    `${databasePath}-wal`,
-    `${databasePath}-shm`,
-  ])
-    fs.rmSync(file, { force: true });
+after(async () => {
+  await removeTempDbSafely(databasePath);
 });

@@ -1,0 +1,76 @@
+# 纳米Work行业版 · systemd 服务单元
+# 安装：install -m 0644 nanowork.service /etc/systemd/system/ && systemctl daemon-reload
+# 发布结构：/opt/nanowork/releases/<ts>/ + /opt/nanowork/current -> releases/<ts>
+#           （因此 WorkingDirectory 用 current/server 而不是固定的 /opt/nanowork/server，
+#             这样 rollback.sh 只需切换符号链接并重启）
+# 运行数据：/var/lib/nanowork/data（代码目录里的 server/data 是指向它的符号链接，见 deploy.sh）
+[Unit]
+Description=NanoWork Industry Edition (Express + node:sqlite, :3107)
+Documentation=file:///opt/nanowork/current/ops/README.md
+After=network-online.target
+Wants=network-online.target
+# Caddy 是独立单元；后端不依赖它启动，但演示时应两者同时运行
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nanowork
+Group=nanowork
+WorkingDirectory=/opt/nanowork/current/server
+EnvironmentFile=/etc/nanowork/server.env
+# 服务器本地时区决定 today()/打卡/日清/SQLite localtime 归日；必须固定为北京时间
+Environment=TZ=Asia/Shanghai
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+Environment=HOME=/var/lib/nanowork
+# 项目要求 data 0700 / db 0600；db.js 里也会 process.umask(0o077)，这里双保险
+UMask=0077
+
+# 启动前自检：Node 版本、必填 env、JWT_SECRET 强度、TZ、ffmpeg/ffprobe、字体、data 权限、磁盘余量
+ExecStartPre=/usr/bin/node /opt/nanowork/current/scripts/preflight-production.mjs --quiet
+ExecStart=/usr/bin/node --no-warnings src/index.js
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=3s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+KillMode=mixed
+
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# ---- 沙箱：只读根文件系统，只放开数据与备份目录 ----
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nanowork /var/backups/nanowork
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+NoNewPrivileges=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+# 日志走 journald：journalctl -u nanowork -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nanowork
+
+[Install]
+WantedBy=multi-user.target

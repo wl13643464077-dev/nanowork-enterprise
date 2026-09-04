@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import test, { after } from "node:test";
+import { removeTempDbSafely } from "./helpers/temp-db.mjs";
 
 const WORKSPACE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -269,7 +270,5 @@ after(async () => {
     fs.rmSync(row.file_path, { force: true });
   }
   await fsp.rm(tempRoot, { recursive: true, force: true });
-  for (const suffix of ["", "-wal", "-shm"]) {
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
-  }
+  await removeTempDbSafely(dbPath);
 });

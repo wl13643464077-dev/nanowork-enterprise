@@ -21,6 +21,53 @@ import {
 } from './approval-routing-policy.js';
 import { inspectStructuredReportFirstEvidence } from './restaurant-report-first-validation.js';
 import { generationProgressFromSnapshot } from './employee-generation-progress.js';
+import { publish } from './event-bus.js';
+
+// 事务 COMMIT 之后才发布：事件只是刷新信号，绝不能先于权威落库到达浏览器。
+function publishRestaurantTaskStatus(tenantId, task, status, extra = {}) {
+  if (!task?.id) return;
+  try {
+    publish({
+      tenantId,
+      userIds: [task.created_by].filter(Boolean),
+      roles: ['ops_director', 'manager'],
+      type: 'task.status_changed',
+      payload: {
+        kind: 'restaurant',
+        id: Number(task.id),
+        status,
+        title: task.title || '',
+        employeeIdx: null,
+        outputId: Number(task.output_id) || null,
+        ...extra,
+      },
+    });
+  } catch (error) {
+    console.error('[restaurant-output-review] 实时事件发布失败:', error?.message || error);
+  }
+}
+
+function publishApprovalDecided(tenantId, approval, status, actor, content = null) {
+  if (!approval?.id) return;
+  try {
+    publish({
+      tenantId,
+      roles: ['ops_director', 'manager'],
+      userIds: [approval.submitter_id, approval.assigned_reviewer_id, content?.creator_id].filter(Boolean),
+      type: 'approval.decided',
+      payload: {
+        approvalId: Number(approval.id),
+        status,
+        targetType: approval.target_type,
+        targetId: Number(approval.target_id) || null,
+        title: approval.title || content?.title || '',
+        reviewerId: Number(actor?.id) || null,
+      },
+    });
+  } catch (error) {
+    console.error('[restaurant-output-review] 实时事件发布失败:', error?.message || error);
+  }
+}
 
 // Keep the review engine as the public facade used by output-analysis routes.
 export { inspectRestaurantOutputAudit } from './restaurant-output-contract.js';
@@ -626,6 +673,7 @@ export function autoAdoptContentOutput({
       note: `数字员工内部产出按企业锁定策略自动采用；${String(policyReason).slice(0, 120)}；kb#${knowledge.id}；未创建内容审核，未执行对外发布。`,
     });
     db.exec('COMMIT');
+    publishRestaurantTaskStatus(tenantId, currentTask, '已完成', { adoption: 'auto' });
     return {
       ok: true,
       autoAdopted: true,
@@ -775,6 +823,10 @@ export function decideContentOutput({
       });
     }
     db.exec('COMMIT');
+    if (!alreadyReviewed) {
+      publishApprovalDecided(tenantId, approval, expectedApprovalStatus, actor, content);
+      if (task) publishRestaurantTaskStatus(tenantId, task, decision === 'adopt' ? '已完成' : '已驳回', { adoption: decision });
+    }
     return {
       ok: true,
       alreadyReviewed,

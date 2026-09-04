@@ -2571,15 +2571,16 @@ function pipelineReviewCapability(user, state) {
     };
   }
   const role = cleanText(user?.role, 64);
+  const ownerSelection = pipelinePendingStation(state)?.approvalBoundary?.ownerSelectionRequired === true;
   const roles =
-    boundaryCode === "force"
+    boundaryCode === "force" || ownerSelection
       ? PIPELINE_FINAL_REVIEW_ROLES
       : PIPELINE_REVIEW_ROLES;
   if (!roles.has(role)) {
     return {
       canReview: false,
       reason:
-        boundaryCode === "force"
+        ownerSelection ? '小红书发布版本需由老板或管理员选择' : boundaryCode === "force"
           ? "该工位必须由老板或管理员终审"
           : "当前账号没有内容流水线审批权限",
     };
@@ -2596,6 +2597,7 @@ export function contentPipelineReviewAudienceIds({
   users,
   creatorId,
   boundaryCode,
+  ownerSelectionRequired = false,
 } = {}) {
   const activeUsers = (Array.isArray(users) ? users : []).filter(
     (user) =>
@@ -2608,7 +2610,7 @@ export function contentPipelineReviewAudienceIds({
       selected.add(Number(user.id));
     }
   }
-  if (boundaryCode !== "force") {
+  if (boundaryCode !== "force" && !ownerSelectionRequired) {
     const creator = byId.get(Number(creatorId));
     if (creator && PIPELINE_REVIEW_ROLES.has(cleanText(creator.role, 64))) {
       selected.add(Number(creator.id));
@@ -2913,6 +2915,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
       users,
       creatorId: state.createdBy,
       boundaryCode,
+      ownerSelectionRequired: station?.approvalBoundary?.ownerSelectionRequired === true,
     });
     for (const userId of audienceIds) {
       notifyFn(
@@ -3557,6 +3560,10 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
           403,
           "CONTENT_PIPELINE_REVIEW_ROLE_FORBIDDEN",
         );
+      }
+      if (pipelinePendingStation(current)?.approvalBoundary?.ownerSelectionRequired === true
+        && !PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64))) {
+        throw new ContentProductionPipelineRouteError('小红书发布版本需由老板或管理员选择', 403, 'CONTENT_PIPELINE_XHS_OWNER_REQUIRED');
       }
       const tenantId = Number(req.user.tenant_id || curTenant());
       const action = req.body?.action;

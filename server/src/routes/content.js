@@ -84,6 +84,8 @@ import {
   waitForProviderVideo,
 } from '../engines/video-provider-download.js';
 import { recoverAiSalesVideoFromExistingTasks } from '../engines/ai-sales-video-recovery.js';
+import { createVoicedSalesVideoJob, voicedSalesVideoOptions, AI_SALES_VOICED_MODEL } from '../engines/ai-sales-video-native.js';
+import { createVoicedSalesVideoRecovery } from '../engines/ai-sales-video-voiced-recovery.js';
 import {
   contentEmployeeByIdx,
   contentEmployeeMetadata,
@@ -106,6 +108,10 @@ import {
   validateContentEmployeeOutputContract,
 } from '../engines/content-output-contract.js';
 import { rescueContentSpecialContractOutput } from '../engines/content-production-handler-registry.js';
+import {
+  buildContentStoreFactPack,
+  storeFactPackPromptBlock,
+} from '../engines/content-store-facts.js';
 import { refsBlock, webSearch } from '../engines/websearch.js';
 import { realAiOutputViolations } from '../engines/ai-delivery-status.js';
 import { ensureContentAsset } from '../engines/content-assets.js';
@@ -149,6 +155,22 @@ import {
   normalizePaihuoContentBriefInput,
   resolveContentStructuredBrief,
 } from '../engines/content-structured-brief.js';
+import {
+  loadGeneratedImageBytes,
+  normalizePosterTextOverlay,
+  persistPosterTextArtifacts,
+  renderPosterTextOverlay,
+  stripOverlayTextFromPrompt,
+} from '../engines/poster-text-overlay.js';
+import {
+  buildContentPublishPack,
+  captureContentPublishAttribution,
+  loadContentPublishAssistantState,
+  normalizePublishMetrics,
+  normalizePublishSchedule,
+  recordContentPublishMetrics,
+  saveContentPublishSchedule,
+} from '../engines/content-publish-followup.js';
 
 const r = Router();
 const CONTENT_TENANT_PROFILE_STORE = createContentTenantProfileStore({
@@ -1789,13 +1811,23 @@ function automationExecution(employee, rule, trigger, profile, resolveRuntimeSet
     ) || null;
   const revision = Number(configRow?.revision || 0);
   const workConfig = resolveContentEmployeeWorkConfig(employee.idx, safeJsonValue(configRow?.work_config_json, {}));
-  const compiled = compileContentEmployeeSoloPrompt(employee.idx, {
-    direction: paihuoBrief.direction,
-    industry: paihuoBrief.industry,
-    material: paihuoBrief.material,
-    feedback: '本次为自动内容生产；结果只会进入人工审阅或交付门禁，人工采纳前不得用于正式业务，不执行对外发布。',
-    length: workConfig.outputLength,
-  });
+  const compiled = compileContentEmployeeSoloPrompt(
+    employee.idx,
+    {
+      direction: paihuoBrief.direction,
+      industry: paihuoBrief.industry,
+      material: paihuoBrief.material,
+      feedback: '本次为自动内容生产；结果只会进入人工审阅或交付门禁，人工采纳前不得用于正式业务，不执行对外发布。',
+      length: workConfig.outputLength,
+    },
+    {
+      // B5 运行期能力说明：自动化链路不触发真联网检索，明确告知模型，避免自称已抓榜/已核验。
+      liveResearch: {
+        configured: false,
+        summary: '内容自动化不触发联网检索；需要实时来源请在内容员工工作台或流水线派活',
+      },
+    },
+  );
   const customSkillsValue = safeJsonValue(configRow?.skills_json, []);
   const customSkills = Array.isArray(customSkillsValue) ? customSkillsValue : [];
   const enabledCustomSkills = customSkills.filter(
@@ -2731,6 +2763,7 @@ export async function executeContentAutomationRun({
             requirement: rule.requirement || '',
             feedback: '本次为自动内容生产；结果必须通过岗位质检、真实用量结算与企业审批策略，不执行对外发布。',
             web: execution.web,
+            storeFacts: handlerContext?.storeFacts || null,
           });
           if (contract.valid || !isPlainObject(contract.parsed)) return { text, contract };
           // 与流水线同一口径的机械救援：封面数量/样式、配图slot这类
@@ -2742,6 +2775,7 @@ export async function executeContentAutomationRun({
             requirement: rule.requirement || '',
             feedback: '本次为自动内容生产；结果必须通过岗位质检、真实用量结算与企业审批策略，不执行对外发布。',
             web: execution.web,
+            storeFacts: handlerContext?.storeFacts || null,
           });
           return rescuedContract.valid
             ? { text: rescuedText, contract: rescuedContract }
@@ -5059,18 +5093,31 @@ r.post('/generate-image', async (req, res) => {
     const flags = getTenantConfig('feature_flags', {});
     if (flags['content.image'] && !flags['content.image'].includes(req.user.role))
       return res.status(403).json({ error: '您的角色未开通AI图片生成权限，请联系管理员' });
-    const { prompt, size = '1024x1024', employeeIdx } = req.body || {};
+    const { prompt, size = '1024x1024', employeeIdx, textOverlay: textOverlayInput } = req.body || {};
     if (!prompt) return res.status(400).json({ error: '图片描述必填' });
+    // 海报指定汉字：文字由 poster-text-overlay 矢量叠加（不调用模型、不计费），
+    // 用户的文字需求从模型提示词里剥离，避免模型再画一版错字。
+    let textOverlay = null;
+    if (textOverlayInput !== undefined && textOverlayInput !== null) {
+      try {
+        textOverlay = normalizePosterTextOverlay(textOverlayInput);
+      } catch (overlayError) {
+        return res.status(overlayError.status || 400).json({ error: overlayError.message, code: overlayError.code });
+      }
+    }
+    const visualPrompt = textOverlay
+      ? stripOverlayTextFromPrompt(String(prompt), textOverlay.layers)
+      : String(prompt);
     const materialReferences = resolveMaterialReferences(req.user, req.body || {});
     const contentEmployee = selectContentEmployee(employeeIdx, 'image');
     const references = normalizeReferenceImages(req.body || {});
     const images = references.map(reference => reference.dataUrl);
     execution = attachMaterialReferences(
       contentConnectorExecution(contentEmployee, 'image', {
-        direction: `通过图片连接器生成${images.length ? '参考图编辑' : '全新图片'}素材`,
+        direction: `通过图片连接器生成${images.length ? '参考图编辑' : '全新图片'}素材${textOverlay ? '（无字底图，文字后期矢量叠加）' : ''}`,
         industry: '中国餐饮实体门店内容经营',
         material: connectorMaterial(
-          `用户视觉描述：${String(prompt)}\n目标尺寸：${String(size)}\n参考图片数量：${images.length}`,
+          `用户视觉描述：${visualPrompt}\n目标尺寸：${String(size)}\n参考图片数量：${images.length}`,
           materialReferences,
         ),
         feedback: '只生成本次图片素材；品牌、菜品、价格、文字、版权与外发使用必须按多媒体师岗位边界人工核验审批。',
@@ -5091,7 +5138,7 @@ r.post('/generate-image', async (req, res) => {
       req.user.id,
       'image',
       model,
-      String(prompt).slice(0, 500),
+      visualPrompt.slice(0, 500),
       ...employeeDbValues(contentEmployee),
       ...employeeExecutionDbValues(execution),
     );
@@ -5112,7 +5159,7 @@ r.post('/generate-image', async (req, res) => {
     const effectivePrompt = `${execution.prompt}
 
 【本次图片连接器实际生成描述】
-${String(prompt)}
+${visualPrompt}
 目标尺寸：${String(size)}
 平台视觉补充规范：${imgStyle}`;
     hold = holdCredits({
@@ -5157,7 +5204,36 @@ ${String(prompt)}
             });
         const url = out.url || (out.b64 ? `data:image/png;base64,${out.b64}` : null);
         if (!url) throw new Error('图片供应商未返回可交付的URL或图像数据');
-        return { out, url };
+        if (!textOverlay) return { out, url };
+        // 叠字阶段：本地矢量渲染，不调用模型、不额外计费；底图与成品一并落盘。
+        const baseBytes = await loadGeneratedImageBytes(out.b64 ? { b64: out.b64 } : { url }, {
+          signal: req.requestSignal,
+        });
+        const rendered = await renderPosterTextOverlay({
+          imageBuffer: baseBytes,
+          layers: textOverlay.layers,
+        });
+        const persisted = await persistPosterTextArtifacts({
+          tenantId: curTenant(),
+          jobId,
+          basePng: baseBytes,
+          baseFormat: rendered.baseFormat,
+          finalPng: rendered.png,
+        });
+        return {
+          out,
+          url: persisted.url,
+          textOverlay: {
+            applied: true,
+            engine: 'poster-text-overlay',
+            billed: false,
+            layers: rendered.layers,
+            baseImageUrl: persisted.baseImageUrl,
+            providerUrl: /^https:\/\//iu.test(url) ? url : null,
+            width: rendered.width,
+            height: rendered.height,
+          },
+        };
       },
       persist: generated =>
         withImmediateTransaction(db, () => {
@@ -5169,6 +5245,16 @@ ${String(prompt)}
             curTenant(),
             jobId,
           );
+          if (generated.textOverlay) {
+            // 让后续 persistExecutionBilling 写回的快照带上叠字信息（含无字底图地址，供 uploads 门禁放行）。
+            execution = { ...execution, snapshot: { ...execution.snapshot, textOverlay: generated.textOverlay } };
+            q.run(
+              `UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?`,
+              JSON.stringify(employeeExecutionSnapshot(execution, heldBilling)),
+              curTenant(),
+              jobId,
+            );
+          }
           const materialTrace = recordMaterialReferences({
             targetType: 'media_job',
             targetId: jobId,
@@ -5178,6 +5264,9 @@ ${String(prompt)}
           return {
             jobId,
             url: generated.url,
+            ...(generated.textOverlay
+              ? { baseImageUrl: generated.textOverlay.baseImageUrl, textOverlay: generated.textOverlay }
+              : {}),
             materialReferencesUsed: materialTrace.materialIds.length,
           };
         }),
@@ -5212,6 +5301,7 @@ ${String(prompt)}
       model,
       billing: delivered.billing,
       referencesUsed: images.length,
+      ...(textOverlay ? { visualPrompt } : {}),
       contentEmployee: employeeResponse(contentEmployee),
       employeeExecution: employeeExecutionResponse(execution, req.user),
     });
@@ -5260,6 +5350,7 @@ function aiSalesVideoPriceConfigured(model) {
 
 function aiSalesVideoModelAllowed(model) {
   const id = String(model || '').trim();
+  if (id === AI_SALES_VOICED_MODEL) return true;
   if (MINIMAX_HAILUO_MODELS.includes(id)) return true;
   return id === MINIMAX_H3_MODEL && miniMaxH3Enabled();
 }
@@ -5416,7 +5507,24 @@ function aiSalesVideoGroundingEvidence({ brief, kb, web, webTriggered }) {
   };
 }
 
-async function collectAiSalesVideoGrounding({ brief, role, runtime = {}, signal }) {
+async function collectAiSalesVideoGrounding({ brief, role, runtime = {}, signal, storeId = null, dishNames = [] }) {
+  // 门店事实包：真实菜名/价格/地址/评价聚合进 grounding，随后的独白脚本引擎消费 grounding.storeFacts
+  let storeFacts;
+  try {
+    const buildStoreFacts = runtime.storeFacts || buildContentStoreFactPack;
+    storeFacts = buildStoreFacts(curTenant(), { storeId, dishNames, limit: 24 });
+  } catch (error) {
+    storeFacts = {
+      tenantId: curTenant(),
+      storeId: null,
+      storeName: null,
+      facts: [],
+      missing: [],
+      degraded: true,
+      error: sanitizeContentRuntimeErrorMessage(error).slice(0, 160),
+    };
+  }
+  const storeFactsPrompt = storeFactPackPromptBlock(storeFacts, { maxFacts: 12, audience: 'video' }).slice(0, 1600);
   let kb;
   try {
     const search = runtime.kbSearch || kbSearch;
@@ -5448,15 +5556,26 @@ async function collectAiSalesVideoGrounding({ brief, role, runtime = {}, signal 
     }
   }
   const evidence = aiSalesVideoGroundingEvidence({ brief, kb, web, webTriggered });
+  evidence.storeFacts = {
+    storeId: storeFacts?.storeId ?? null,
+    storeName: storeFacts?.storeName ?? null,
+    factCount: Array.isArray(storeFacts?.facts) ? storeFacts.facts.length : 0,
+    factIds: Array.isArray(storeFacts?.facts) ? storeFacts.facts.map(fact => fact.id) : [],
+    missing: Array.isArray(storeFacts?.missing) ? [...storeFacts.missing] : [],
+    degraded: storeFacts?.degraded === true,
+  };
   const webText = evidence.web.verified ? refsBlock(evidence.web.results) : '';
   const promptContext = [
-    kb?.text ? `【当前租户知识库召回】\n${String(kb.text).slice(0, 2200)}` : '',
-    webText ? `【本次已验证联网证据】\n${webText.slice(0, 1800)}` : '',
-    !kb?.text && !webText
-      ? '【事实边界】未取得可引用的知识库或联网证据；不得补造价格、功效、口碑、营业信息或实时热度。'
-      : '',
-  ].filter(Boolean).join('\n\n').slice(0, 4200);
-  return { evidence, promptContext };
+    storeFactsPrompt,
+    [
+      kb?.text ? `【当前租户知识库召回】\n${String(kb.text).slice(0, 2200)}` : '',
+      webText ? `【本次已验证联网证据】\n${webText.slice(0, 1800)}` : '',
+      !kb?.text && !webText
+        ? '【事实边界】未取得可引用的知识库或联网证据；不得补造价格、功效、口碑、营业信息或实时热度。'
+        : '',
+    ].filter(Boolean).join('\n\n').slice(0, 4200),
+  ].filter(Boolean).join('\n\n');
+  return { evidence, promptContext, storeFacts, storeFactsPrompt };
 }
 
 function aiSalesVideoPollUrl(jobId) {
@@ -5828,6 +5947,7 @@ function aiSalesVideoRecoveryRecord(row) {
   const recoverable =
     row?.kind === 'video'
     && snapshot?.workflow === AI_SALES_VIDEO_WORKFLOW
+    && snapshot?.voiceMode !== 'voiced'
     && [2, 3].includes(planSegments.length)
     && segments.length === planSegments.length
     && segments.every(segment => aiSalesVideoSafeProviderTaskId(segment?.taskId));
@@ -6002,6 +6122,14 @@ async function executeAiSalesVideoRecoveryJob({
 
 // AI带货员：H3使用2×15秒，海螺2.3使用3×10秒，服务器合成固定30秒竖版成片。
 // 路由在任何付费调用前校验凭证和后台核价，并一次性预授权全部分段上限。
+r.get('/ai-sales-video/options', async (req, res) => {
+  try {
+    const flags = getTenantConfig('feature_flags', {});
+    if (flags['content.video'] && !flags['content.video'].includes(req.user.role)) return res.status(403).json({ error: '当前角色未开通带货视频' });
+    res.json(await voicedSalesVideoOptions(req.user, req.app?.locals?.aiSalesVideoRuntime || {}));
+  } catch (error) { res.status(error.status || 500).json({ error: '带货视频配置暂不可用，请稍后重试' }); }
+});
+
 r.post('/ai-sales-video', async (req, res) => {
   let jobId = null;
   try {
@@ -6013,7 +6141,7 @@ r.post('/ai-sales-video', async (req, res) => {
     const runtime = req.app?.locals?.aiSalesVideoRuntime || {};
     const brief = String(body.brief ?? body.prompt ?? '').trim();
     const model = String(
-      body.model
+      (body.mode === 'voiced' ? AI_SALES_VOICED_MODEL : body.model)
       || getTenantConfig('ai_sales_video', {})?.model
       || 'MiniMax-Hailuo-2.3',
     ).trim();
@@ -6021,7 +6149,7 @@ r.post('/ai-sales-video', async (req, res) => {
       return res.status(400).json({
         error: model === MINIMAX_H3_MODEL
           ? 'MiniMax H3 尚未完成官方API密钥、供应商能力与价格核验，暂不开放调用'
-          : 'AI带货员仅支持已接入的 MiniMax 海螺 2.3 / 2.3-Fast / 02 模型',
+          : 'AI带货员仅支持已接入的 MiniMax 海螺 2.3 / 2.3-Fast / 02 和 Wan2.6 有声模型',
         model,
       });
     }
@@ -6049,7 +6177,20 @@ r.post('/ai-sales-video', async (req, res) => {
       role: req.user.role,
       runtime,
       signal: req.requestSignal,
+      // 门店由 X-Store-Id（storeScope 已鉴权）→ 默认店决定；body 只允许点名菜品
+      dishNames: Array.isArray(body.dishNames)
+        ? body.dishNames.map(name => String(name || '').trim()).filter(Boolean).slice(0, 8)
+        : [],
     });
+    if (model === AI_SALES_VOICED_MODEL) {
+      const created = await createVoicedSalesVideoJob({
+        actor: req.user, brief, references, grounding, voiceId: body.voiceId, audience: body.audience, quoteFingerprint: body.quoteFingerprint,
+        providerImages: [...attachments.map(aiSalesVideoAttachmentDataUrl), ...inline.map(image => image.dataUrl)], runtime,
+      });
+      res.status(202).json(created.response);
+      if (created.run) setImmediate(() => { created.run().catch(error => console.error('[ai-sales-voiced] worker state unavailable:', error?.code || 'unknown')); });
+      return undefined;
+    }
     const plan = buildAiSalesVideoPlan({ brief, references, model });
     const nativeEmployeeProfile = buildContentEmployeeWorkbenchProfile(AI_SALES_VIDEO_EMPLOYEE.idx);
     const employeeExecution = {
@@ -6217,6 +6358,7 @@ r.post('/ai-sales-video', async (req, res) => {
       res.status(e.status || 500).json({
         error: e.message,
         requestId: req.requestId,
+        ...(/^AI_SALES_VIDEO_[A-Z0-9_]+$/u.test(e.code || '') ? { code: e.code } : {}),
         ...(jobId ? { jobId, pollUrl: aiSalesVideoPollUrl(jobId) } : {}),
       });
     }
@@ -6244,6 +6386,12 @@ r.post('/media-jobs/:id/recover-ai-sales-video', async (req, res) => {
     if (!job || (!canAccessOwner(req.user, job.user_id)
       && String(req.user?.role || '') !== 'platform_super')) {
       return res.status(404).json({ error: '媒体任务不存在或无权访问' });
+    }
+    if (safeJsonValue(job.snapshot_json, {})?.voiceMode === 'voiced') {
+      const created = await createVoicedSalesVideoRecovery({ actor: req.user, jobId, runtime: req.app?.locals?.aiSalesVideoRuntime || {} });
+      res.status(202).json(created.response);
+      setImmediate(() => { created.run().catch(error => console.error('[ai-sales-voiced-recovery] worker unavailable:', error?.code || 'unknown')); });
+      return undefined;
     }
     if (!['失败', '阻塞'].includes(String(job.status || ''))) {
       return res.status(409).json({
@@ -7361,6 +7509,8 @@ r.delete('/:id', (req, res) => {
     approvals: tableRows('approvals', `target_type='content' AND target_id=?`, c.id),
     materials: tableRows('materials', `source_type='content' AND source_id=?`, c.id),
     content_publish_logs: tableRows('content_publish_logs', 'content_id=?', c.id),
+    content_publish_followups: tableRows('content_publish_followups', 'content_id=?', c.id),
+    content_publish_metrics: tableRows('content_publish_metrics', 'content_id=?', c.id),
     biz_assets: assetRows,
     asset_flows: assetIds.length
       ? q.all(
@@ -7403,6 +7553,8 @@ r.delete('/:id', (req, res) => {
       deleteList('approvals', `target_type='content' AND target_id=?`, c.id);
       deleteList('materials', `source_type='content' AND source_id=?`, c.id);
       deleteList('content_publish_logs', 'content_id=?', c.id);
+      deleteList('content_publish_followups', 'content_id=?', c.id);
+      deleteList('content_publish_metrics', 'content_id=?', c.id);
       if (assetIds.length) {
         q.run(
           `DELETE FROM asset_flows WHERE tenant_id=? AND asset_id IN (${assetIds.map(() => '?').join(',')})`,
@@ -7491,14 +7643,15 @@ r.post('/:id/publish-log', (req, res) => {
     });
     const inserted = q.run(
       `INSERT INTO content_publish_logs(
-      content_id,channel,views,leads,idempotency_key,created_by
-    ) VALUES(?,?,?,?,?,?)`,
+      content_id,channel,views,leads,idempotency_key,created_by,attribution_json
+    ) VALUES(?,?,?,?,?,?,?)`,
       fresh.id,
       channel,
       views,
       leads,
       idempotencyKey,
       req.user.id,
+      JSON.stringify(captureContentPublishAttribution(fresh)),
     );
     q.run(
       `UPDATE contents
@@ -7615,6 +7768,90 @@ r.get('/effect-top', (req, res) => {
       ...scope.params,
     ),
   );
+});
+
+// ===== 合规半自动分发（B6）：排期 / 发布包 / 数据回填 / 助手状态。不做任何自动发布。 =====
+function loadOwnedContentForPublishAssistant(req, res, action) {
+  const content = q.get(`SELECT * FROM contents WHERE tenant_id=? AND id=?`, curTenant(), req.params.id);
+  if (!content) {
+    res.status(404).json({ error: '内容不存在' });
+    return null;
+  }
+  if (!canAccessOwner(req.user, content.creator_id)) {
+    res.status(403).json({ error: `无权${action}该内容` });
+    return null;
+  }
+  return content;
+}
+
+r.put('/:id/schedule', (req, res) => {
+  const content = loadOwnedContentForPublishAssistant(req, res, '排期');
+  if (!content) return;
+  try {
+    const schedule = normalizePublishSchedule(req.body);
+    if (!schedule.cleared) {
+      assertContentDeliverable(content.id, { tenantId: curTenant(), action: '发布排期' });
+    }
+    const saved = saveContentPublishSchedule(content, schedule);
+    logOp(
+      req.user,
+      '内容生产仓',
+      schedule.cleared ? '取消发布排期' : '设置发布排期',
+      `content#${content.id}${schedule.cleared ? '' : ` / ${schedule.channel} @ ${schedule.scheduledAt}`}`,
+    );
+    res.json({ ok: true, ...saved });
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ error: error.message, code: error.code || undefined });
+    throw error;
+  }
+});
+
+r.get('/:id/publish-pack', (req, res) => {
+  const content = loadOwnedContentForPublishAssistant(req, res, '复制发布包');
+  if (!content) return;
+  try {
+    assertContentDeliverable(content.id, { tenantId: curTenant(), action: '复制发布包' });
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ error: error.message, code: error.code || undefined });
+    throw error;
+  }
+  res.json(buildContentPublishPack(content));
+});
+
+r.post('/:id/metrics', (req, res) => {
+  const content = loadOwnedContentForPublishAssistant(req, res, '回填发布数据');
+  if (!content) return;
+  try {
+    const values = normalizePublishMetrics(req.body);
+    const hasPublishLog = q.get(
+      `SELECT 1 FROM content_publish_logs WHERE tenant_id=? AND content_id=? LIMIT 1`,
+      curTenant(),
+      content.id,
+    );
+    if (!hasPublishLog && content.status !== '已发布') {
+      return res.status(409).json({
+        error: '该内容还没有发布登记，请先点“我已发布，去登记”再回填平台数据',
+        code: 'CONTENT_PUBLISH_LOG_REQUIRED',
+      });
+    }
+    const result = recordContentPublishMetrics(content, values, req.user);
+    logOp(
+      req.user,
+      '内容生产仓',
+      '回填发布数据',
+      `content#${content.id} / metrics#${result.metricId}；verification=manual_unverified`,
+    );
+    res.json({ ok: true, ...result, verification: 'manual_unverified' });
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ error: error.message, code: error.code || undefined });
+    throw error;
+  }
+});
+
+r.get('/:id/publish-assistant', (req, res) => {
+  const content = loadOwnedContentForPublishAssistant(req, res, '查看发布助手');
+  if (!content) return;
+  res.json(loadContentPublishAssistantState(content));
 });
 
 export default r;

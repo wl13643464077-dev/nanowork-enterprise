@@ -42,12 +42,20 @@ function defaultIsExecutable(candidate) {
 export function mediaBinarySearchDirectories(
   pathEnv,
   fallbackDirectories = MEDIA_BINARY_FALLBACK_DIRECTORIES,
+  pathApi = path,
 ) {
   const directories = String(pathEnv || "")
-    .split(path.delimiter)
+    .split(pathApi.delimiter)
     .map((value) => value.trim())
-    .filter((value) => value && path.isAbsolute(value));
+    .filter((value) => value && pathApi.isAbsolute(value));
   return [...new Set([...directories, ...fallbackDirectories])];
+}
+
+export function mediaBinaryNames(binaryName, platform = process.platform) {
+  // .cmd/.bat require a shell and must never be selected for native media work.
+  return platform === 'win32' && !path.extname(binaryName)
+    ? [`${binaryName}.exe`, binaryName]
+    : [binaryName];
 }
 
 function resolveBinary(binaryName, options = {}) {
@@ -56,13 +64,15 @@ function resolveBinary(binaryName, options = {}) {
     pathEnv,
     directories,
     isExecutable = defaultIsExecutable,
+    platform = process.platform,
+    pathApi = platform === 'win32' ? path.win32 : path.posix,
   } = options;
   // 只有全默认参数的调用才读写缓存；测试注入的 env / 目录列表不能污染进程级结果。
   const usingDefaults =
     env === process.env &&
     pathEnv === undefined &&
     directories === undefined &&
-    isExecutable === defaultIsExecutable;
+    isExecutable === defaultIsExecutable && platform === process.platform;
   if (usingDefaults && resolutionCache.has(binaryName)) {
     return resolutionCache.get(binaryName);
   }
@@ -71,19 +81,22 @@ function resolveBinary(binaryName, options = {}) {
   // 环境变量优先，但必须真实存在且可执行；无效配置继续走目录探测，
   // 最终探测不到返回 null（不抛异常），由调用方转成可操作错误。
   const configured = String(env?.[ENV_VARIABLE_BY_BINARY[binaryName]] || "").trim();
-  if (configured && path.isAbsolute(configured) && isExecutable(configured)) {
-    resolved = path.normalize(configured);
+  if (configured && pathApi.isAbsolute(configured) && isExecutable(configured)) {
+    resolved = pathApi.normalize(configured);
   }
   if (!resolved) {
     const searchList =
       directories ??
-      mediaBinarySearchDirectories(pathEnv === undefined ? env?.PATH : pathEnv);
+      mediaBinarySearchDirectories(pathEnv === undefined ? env?.PATH : pathEnv, undefined, pathApi);
     for (const directory of searchList) {
-      const candidate = path.join(String(directory), binaryName);
-      if (isExecutable(candidate)) {
-        resolved = candidate;
-        break;
+      for (const name of mediaBinaryNames(binaryName, platform)) {
+        const candidate = pathApi.join(String(directory), name);
+        if (isExecutable(candidate)) {
+          resolved = candidate;
+          break;
+        }
       }
+      if (resolved) break;
     }
   }
 

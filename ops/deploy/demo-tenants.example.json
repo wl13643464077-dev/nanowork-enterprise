@@ -1,0 +1,131 @@
+{
+  "_comment": [
+    "2026-09-09 成都招商会演示租户清单示例。复制为 demo-tenants.json 后按需修改；password 为 null 时脚本自动生成 12 位随机密码，只写入账号卡片文件。",
+    "username 规则：老板账号 4~40 位（字母数字开头，可含 . _ -）；子账号 3~64 位（字母数字 . _ @ -）。",
+    "seatLimit 含老板本人；credits 为目标积分（1 积分≈0.01 元，2 万积分≈200 元额度）。",
+    "phone 与 industry/purpose 只用于卡片与联系人展示，可以留空。",
+    "一次新建 6 家会触发 /api/auth/register 的 IP 限流（默认 5/小时）：建租户前把 REGISTER_IP_MAX_ATTEMPTS 临时改为 20 并重启，建完改回。"
+  ],
+  "tenants": [
+    {
+      "key": "sales-a-hotpot",
+      "purpose": "销售 A 演示用",
+      "company": "蜀香里火锅（演示）",
+      "industry": "餐饮·火锅连锁（3 店）",
+      "contactName": "销售A",
+      "phone": "",
+      "plan": "旗舰版",
+      "seatLimit": 10,
+      "credits": 20000,
+      "modules": null,
+      "approve": true,
+      "boss": { "username": "demo-hotpot-boss", "password": null, "name": "火锅老板" },
+      "managers": [
+        { "username": "demo-hotpot-ops", "password": null, "name": "运营总监", "role": "ops_director", "dept": "运营部" }
+      ],
+      "employees": [
+        { "username": "demo-hotpot-staff1", "password": null, "name": "春熙店店员", "role": "sales", "dept": "春熙路店" },
+        { "username": "demo-hotpot-staff2", "password": null, "name": "太古里店员", "role": "sales", "dept": "太古里店" }
+      ]
+    },
+    {
+      "key": "sales-b-bakery",
+      "purpose": "销售 B 演示用",
+      "company": "麦语烘焙（演示）",
+      "industry": "餐饮·烘焙轻食（社区店）",
+      "contactName": "销售B",
+      "phone": "",
+      "plan": "标准版",
+      "seatLimit": 8,
+      "credits": 15000,
+      "modules": null,
+      "approve": true,
+      "boss": { "username": "demo-bakery-boss", "password": null, "name": "烘焙老板" },
+      "managers": [
+        { "username": "demo-bakery-mgr", "password": null, "name": "店长", "role": "manager", "dept": "门店管理" }
+      ],
+      "employees": [
+        { "username": "demo-bakery-staff1", "password": null, "name": "前台店员", "role": "sales", "dept": "门店" }
+      ]
+    },
+    {
+      "key": "sales-c-tea",
+      "purpose": "销售 C 演示用",
+      "company": "青柚茶饮（演示）",
+      "industry": "餐饮·新茶饮（加盟 6 店）",
+      "contactName": "销售C",
+      "phone": "",
+      "plan": "旗舰版",
+      "seatLimit": 10,
+      "credits": 20000,
+      "modules": null,
+      "approve": true,
+      "boss": { "username": "demo-tea-boss", "password": null, "name": "茶饮老板" },
+      "managers": [
+        { "username": "demo-tea-ops", "password": null, "name": "区域运营", "role": "ops_director", "dept": "运营部" },
+        { "username": "demo-tea-admin", "password": null, "name": "系统管理员", "role": "admin", "dept": "总部" }
+      ],
+      "employees": [
+        { "username": "demo-tea-staff1", "password": null, "name": "加盟店店员", "role": "sales", "dept": "加盟店" },
+        { "username": "demo-tea-partner1", "password": null, "name": "协作伙伴", "role": "partner", "dept": "推广" }
+      ]
+    },
+    {
+      "key": "test-1-bbq",
+      "purpose": "测试组 1：全流程回归（登录→引导→派活→报告→充值页）",
+      "company": "夜炙烧烤（测试）",
+      "industry": "餐饮·烧烤夜宵",
+      "contactName": "测试1",
+      "phone": "",
+      "plan": "标准版",
+      "seatLimit": 10,
+      "credits": 10000,
+      "modules": null,
+      "approve": true,
+      "boss": { "username": "test-bbq-boss", "password": null, "name": "烧烤老板" },
+      "managers": [
+        { "username": "test-bbq-ops", "password": null, "name": "运营", "role": "ops_director", "dept": "运营部" }
+      ],
+      "employees": [
+        { "username": "test-bbq-staff1", "password": null, "name": "店员一", "role": "sales", "dept": "门店" },
+        { "username": "test-bbq-staff2", "password": null, "name": "店员二", "role": "sales", "dept": "门店" }
+      ]
+    },
+    {
+      "key": "test-2-fastfood-pending",
+      "purpose": "测试组 2：演示「待审核→平台开通」审批流；保持待审核，不建子账号",
+      "company": "快食记中式快餐（测试）",
+      "industry": "餐饮·中式快餐",
+      "contactName": "测试2",
+      "phone": "",
+      "plan": "标准版",
+      "seatLimit": 5,
+      "credits": 0,
+      "modules": null,
+      "approve": false,
+      "boss": { "username": "test-fastfood-boss", "password": null, "name": "快餐老板" },
+      "managers": [],
+      "employees": []
+    },
+    {
+      "key": "supervisor-sichuan",
+      "purpose": "督战/老板现场演示用：只开核心模块，突出总控台与老板参谋",
+      "company": "锦里川菜集团（督战）",
+      "industry": "餐饮·川菜正餐连锁（12 店）",
+      "contactName": "督战",
+      "phone": "",
+      "plan": "旗舰版",
+      "seatLimit": 10,
+      "credits": 30000,
+      "modules": ["dashboard", "advisor", "marshals", "content", "execution", "analysis", "system"],
+      "approve": true,
+      "boss": { "username": "demo-sichuan-boss", "password": null, "name": "集团老板" },
+      "managers": [
+        { "username": "demo-sichuan-ops", "password": null, "name": "运营总监", "role": "ops_director", "dept": "运营中心" }
+      ],
+      "employees": [
+        { "username": "demo-sichuan-staff1", "password": null, "name": "旗舰店店员", "role": "sales", "dept": "旗舰店" }
+      ]
+    }
+  ]
+}

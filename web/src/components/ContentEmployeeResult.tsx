@@ -30,6 +30,14 @@ const FIELD_LABELS: Record<string, string> = {
   benchmarks: '竞品样本',
   sources: '核验来源',
   versions: '平台发布版本',
+  strategy: '策略',
+  cover_text: '封面文案',
+  comment_prompt: '首评',
+  framework_ref: '结构参考',
+  facts_used: '登记事实',
+  self_score: '模型自评（非发布效果）',
+  source_version_id: '源版本',
+  version_id: '定稿版本',
   images: '图片产物',
   covers: '封面产物',
 };
@@ -285,7 +293,7 @@ function PlatformVersions({ value }: { value: unknown }) {
       <div className="content-result-versions">
         {entries.map(([key, raw]) => {
           const version: StructuredResult = raw && typeof raw === 'object' ? (raw as StructuredResult) : { body: raw };
-          const platform = text(version.platform) || key;
+          const platform = text(version.platform) || text(version.strategy) || key;
           const body = text(version.body) || text(version.content) || text(version.copy);
           const tags = stringItems(version.tags);
           const checklist = stringItems(version.checklist);
@@ -296,7 +304,14 @@ function PlatformVersions({ value }: { value: unknown }) {
                 <strong>{text(version.title) || text(version.headline) || `${platform}发布版`}</strong>
                 {text(version.best_time) && <small>建议时间：{String(version.best_time)}</small>}
               </header>
+              {text(version.cover_text) && <p>封面文案：{String(version.cover_text)}</p>}
               {body && <Markdown content={restoreReadableMarkdown(body)} />}
+              {text(version.comment_prompt) && <p>首评：{String(version.comment_prompt)}</p>}
+              {text(version.framework_ref) && <p>结构参考：{String(version.framework_ref)}</p>}
+              {version.self_score != null && <p>模型自评（非发布效果）：{displayValue(version.self_score)}</p>}
+              {version.facts_used != null && <p>登记事实：{displayValue(version.facts_used) || '无可公开事实'}</p>}
+              {text(version.source_version_id) && <p>源版本：{String(version.source_version_id)}</p>}
+              {text(version.version_id) && <p>定稿版本：{String(version.version_id)}</p>}
               {!!tags.length && (
                 <p className="content-result-tags">
                   {tags.map(tag => (
@@ -317,7 +332,13 @@ function PlatformVersions({ value }: { value: unknown }) {
                   size="small"
                   icon={<CopyOutlined />}
                   onClick={() =>
-                    void navigator.clipboard.writeText(body).then(() => message.success(`${platform}文案已复制`))
+                    void navigator.clipboard
+                      .writeText(
+                        text(version.strategy)
+                          ? contentEmployeeResultDocument(JSON.stringify({ versions: [version] }))
+                          : body,
+                      )
+                      .then(() => message.success(`${platform}文案已复制`))
                   }
                 >
                   复制这一版

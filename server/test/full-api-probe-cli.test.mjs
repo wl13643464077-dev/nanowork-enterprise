@@ -35,7 +35,7 @@ test("CLI 支持 GET/WRITE、环境凭据和显式输出路径", () => {
   assert.equal(get.baseUrl, "http://127.0.0.1:3107");
   assert.equal(get.username, "qa-user");
   assert.equal(get.password, "qa-password");
-  assert.match(get.outJson, /artifacts\/qa-get\.json$/u);
+  assert.equal(get.outJson, path.resolve('artifacts', 'qa-get.json'));
 
   const write = parseArgs([
     "--mode",
