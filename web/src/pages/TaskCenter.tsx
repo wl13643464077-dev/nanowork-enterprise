@@ -1,25 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Alert,
-  Button,
-  Drawer,
-  Empty,
-  Input,
-  Modal,
-  Pagination,
-  Progress,
-  Segmented,
-  Skeleton,
-  Spin,
-  Tag,
-  message,
-} from 'antd';
+import { Alert, Button, Drawer, Empty, Input, Modal, Pagination, Segmented, Skeleton, Spin, Tag, message } from 'antd';
 import {
   ApartmentOutlined,
   CheckSquareOutlined,
   BookOutlined,
   ClockCircleOutlined,
+  CopyOutlined,
   DownloadOutlined,
   EyeOutlined,
   FileTextOutlined,
@@ -32,12 +19,14 @@ import {
   VideoCameraOutlined,
   WalletOutlined,
 } from '@ant-design/icons';
-import { api } from '../api/client';
+import { api, getUser } from '../api/client';
 import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import AvatarStudio from '../components/AvatarStudio';
 import EmployeeDraftCard from '../components/EmployeeDraftCard';
 import EmployeeExecutionTimeline from '../components/EmployeeExecutionTimeline';
 import EmployeeResearchPlan from '../components/EmployeeResearchPlan';
+import TaskFeedback from '../components/TaskFeedback';
+import NativeDeliverableDownloadButton from '../components/NativeDeliverableDownloadButton';
 import { Markdown } from '../components/Markdown';
 import './TaskCenter.css';
 
@@ -48,6 +37,7 @@ const FILTERS = [
   { label: '策略待处理', value: 'review' },
   { label: '受阻', value: 'blocked' },
   { label: '返工', value: 'rework' },
+  { label: '未采纳', value: 'rejected' },
   { label: '异常', value: 'failed' },
   { label: '已完成', value: 'done' },
 ];
@@ -56,6 +46,7 @@ const statusColor: Record<string, string> = {
   review: 'warning',
   blocked: 'error',
   rework: 'warning',
+  rejected: 'default',
   failed: 'error',
   done: 'success',
   pending: 'default',
@@ -64,6 +55,7 @@ const kindIcon: Record<string, JSX.Element> = {
   manual: <CheckSquareOutlined />,
   restaurant: <RobotOutlined />,
   content: <FileTextOutlined />,
+  generated_content: <FileTextOutlined />,
   content_pipeline: <ApartmentOutlined />,
   skill_learning: <BookOutlined />,
   advisor: <MessageOutlined />,
@@ -78,6 +70,7 @@ const taskKinds = new Set([
   'manual',
   'restaurant',
   'content',
+  'generated_content',
   'content_pipeline',
   'skill_learning',
   'advisor',
@@ -109,7 +102,7 @@ const DETAIL_ATTENTION_REFRESH_MS = 12_000;
 
 function detailRefreshInterval(detail: any, realtime = false): number | null {
   if (!detail) return null;
-  if (String(detail.state || '') === 'running')
+  if (String(detail.state || '') === 'running' || ['pending', 'running'].includes(detail.imageGeneration?.status))
     return realtime ? DETAIL_RUNNING_REALTIME_REFRESH_MS : DETAIL_RUNNING_REFRESH_MS;
   const attentionStates = [detail.state, detail.status, detail.billing?.state].map(value =>
     String(value || '').toLowerCase(),
@@ -179,7 +172,8 @@ function EvidenceFacts({ data, rawLabel = '查看原始证据（审计用）' }:
     ([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value),
   );
   return (
-    <div className="task-center-evidence">
+    <details className="task-center-evidence">
+      <summary>查看详情</summary>
       {scalarEntries.length > 0 && (
         <dl className="task-center-evidence-facts">
           {scalarEntries.slice(0, 12).map(([key, value]) => (
@@ -190,12 +184,25 @@ function EvidenceFacts({ data, rawLabel = '查看原始证据（审计用）' }:
           ))}
         </dl>
       )}
-      <details className="task-center-evidence-raw">
-        <summary>{rawLabel}</summary>
-        <pre>{JSON.stringify(data, null, 2)}</pre>
-      </details>
-    </div>
+      {getUser()?.role === 'platform_super' && (
+        <details className="task-center-evidence-raw">
+          <summary>{rawLabel}</summary>
+          <pre>{JSON.stringify(data, null, 2)}</pre>
+        </details>
+      )}
+    </details>
   );
+}
+
+function TaskMediaPreview({ media }: { media: any }) {
+  if (!media.url || !/^(https?:\/\/|\/uploads\/)/i.test(media.url)) return null;
+  if (media.kind === 'image') return <img src={media.url} alt={media.label || '生成配图'} loading="lazy" />;
+  // No caption sidecar is returned by this API; do not fabricate a captions file.
+  // eslint-disable-next-line jsx-a11y/media-has-caption
+  if (media.kind === 'video') return <video src={media.url} controls preload="metadata" />;
+  // eslint-disable-next-line jsx-a11y/media-has-caption
+  if (media.kind === 'audio') return <audio src={media.url} controls preload="metadata" />;
+  return null;
 }
 
 function taskStatusLabel(row: any) {
@@ -220,6 +227,7 @@ function duration(ms: number | null) {
 
 export default function TaskCenter() {
   const nav = useNavigate();
+  const canViewDiagnostics = getUser()?.role === 'platform_super';
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -232,6 +240,8 @@ export default function TaskCenter() {
   const [detailError, setDetailError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailRefreshing, setDetailRefreshing] = useState(false);
+  const activeDetailKey = useRef('');
+  const detailRequestSerial = useRef(0);
   const [pipelineLifecycleMutation, setPipelineLifecycleMutation] = useState('');
   const [wechatMutation, setWechatMutation] = useState('');
 
@@ -252,20 +262,28 @@ export default function TaskCenter() {
   );
 
   const openDetailByRef = useCallback((kind: string, id: number, sourceKey = `${kind}:${id}`, background = false) => {
+    if (background && activeDetailKey.current !== sourceKey) return Promise.resolve();
+    activeDetailKey.current = sourceKey;
+    const serial = ++detailRequestSerial.current;
     setDetailKey(sourceKey);
     if (!background) {
       setDetail(null);
       setDetailError('');
       setDetailLoading(true);
     }
-    api
+    return api
       .get(`/task-center/${kind}/${id}`, { silent: true })
-      .then(setDetail)
+      .then(next => {
+        if (serial === detailRequestSerial.current && activeDetailKey.current === sourceKey) setDetail(next);
+      })
       .catch((e: Error) => {
-        if (!background) setDetailError(e.message);
+        if (!background && serial === detailRequestSerial.current) setDetailError(e.message);
       })
       .finally(() => {
-        if (!background) setDetailLoading(false);
+        if (serial === detailRequestSerial.current) {
+          setDetailLoading(false);
+          setDetailRefreshing(false);
+        }
       });
   }, []);
 
@@ -323,16 +341,18 @@ export default function TaskCenter() {
         ? { kind: String(detail.kind), id: Number(detail.id) }
         : taskRefFromSourceKey(detailKey);
     if (!ref) return;
+    const sourceKey = `${ref.kind}:${ref.id}`;
+    const serial = ++detailRequestSerial.current;
     setDetailRefreshing(true);
     setDetailError('');
     try {
       const latest = await api.get(`/task-center/${ref.kind}/${ref.id}`, { silent: true });
-      setDetail(latest);
+      if (serial === detailRequestSerial.current && activeDetailKey.current === sourceKey) setDetail(latest);
       load(true);
     } catch (e) {
-      setDetailError(e instanceof Error ? e.message : '任务状态刷新失败');
+      if (serial === detailRequestSerial.current) setDetailError(e instanceof Error ? e.message : '任务状态刷新失败');
     } finally {
-      setDetailRefreshing(false);
+      if (serial === detailRequestSerial.current) setDetailRefreshing(false);
     }
   }, [detail, detailKey, load]);
 
@@ -417,6 +437,8 @@ export default function TaskCenter() {
     });
   };
   const closeDetail = () => {
+    activeDetailKey.current = '';
+    detailRequestSerial.current += 1;
     window.history.replaceState(null, '', '/tasks');
     setDetailKey('');
     setDetail(null);
@@ -431,6 +453,7 @@ export default function TaskCenter() {
     ['待执行', s.pending || 0],
     ['执行中', s.running || 0],
     ['策略待处理', s.review || 0],
+    ['未采纳', s.rejected || 0],
     ['受阻 / 异常', (s.blocked || 0) + (s.failed || 0)],
   ];
 
@@ -439,10 +462,7 @@ export default function TaskCenter() {
       <header className="task-center-head">
         <div>
           <h1>任务中心</h1>
-          <p>
-            数字员工、数字人摄影棚、全网进修、老板参谋会诊、10
-            工位内容团队、公众号草稿、工具、媒体与自动化的一张真实执行清单 · 每 15 秒自动刷新
-          </p>
+          <p>查看任务进度、完整结果和需要你处理的事项。</p>
         </div>
         <Button icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>
           刷新
@@ -542,11 +562,26 @@ export default function TaskCenter() {
                   </div>
                   <div className="task-center-task">
                     <strong title={row.title}>{row.title}</strong>
-                    <span>
-                      {row.currentStep} · {row.stepIndex}/{row.stepTotal}
-                    </span>
+                    <span>{row.currentStep}</span>
                   </div>
                   <div className="task-center-progress">
+                    {row.feedback && (
+                      <Tag
+                        color={
+                          row.feedback.currentVersion !== false && row.feedback.decision === 'adopt'
+                            ? 'green'
+                            : 'default'
+                        }
+                      >
+                        {row.feedback.currentVersion === false
+                          ? row.feedback.decision === 'adopt'
+                            ? '旧版本采纳'
+                            : '旧版本不采纳'
+                          : row.feedback.decision === 'adopt'
+                            ? '已采纳'
+                            : '不采纳'}
+                      </Tag>
+                    )}
                     <Tag color={statusColor[row.state]}>
                       {taskStatusLabel(row)}
                       {row.state === 'blocked' ? ' · 受阻' : ''}
@@ -554,12 +589,15 @@ export default function TaskCenter() {
                     {row.policyContext?.kind && row.policyContext.kind !== 'none' && (
                       <Tag color={policyColor(row.policyContext.kind)}>{row.policyContext.label}</Tag>
                     )}
-                    <Progress
-                      percent={row.progress}
-                      size="small"
-                      showInfo={false}
-                      status={row.state === 'failed' ? 'exception' : undefined}
-                    />
+                    {row.state === 'running' && (
+                      <div
+                        className="employee-execution-track"
+                        role="progressbar"
+                        aria-label={row.currentStep || '任务执行中'}
+                      >
+                        <i />
+                      </div>
+                    )}
                   </div>
                   <div className="task-center-cost">
                     <span>
@@ -567,7 +605,7 @@ export default function TaskCenter() {
                     </span>
                     <span>
                       <WalletOutlined /> {row.billing.label}
-                      {row.billing.costYuan != null && row.billing.costYuan > 0
+                      {canViewDiagnostics && row.billing.costYuan != null && row.billing.costYuan > 0
                         ? ` · ¥${row.billing.costYuan.toFixed(4)}`
                         : ''}
                     </span>
@@ -615,7 +653,7 @@ export default function TaskCenter() {
             刷新任务状态
           </Button>
         }
-        width="min(640px, 100vw)"
+        width="min(920px, 100vw)"
         open={Boolean(detailKey)}
         onClose={closeDetail}
         destroyOnHidden
@@ -637,7 +675,7 @@ export default function TaskCenter() {
                 </p>
                 {detail.deepLink && (
                   <Button type="link" size="small" href={detail.deepLink}>
-                    打开稳定任务链接
+                    打开任务页面
                   </Button>
                 )}
                 {detail.conversationDeepLink && (
@@ -683,54 +721,30 @@ export default function TaskCenter() {
                   }
                 />
               )}
-              <dl className="task-center-detail__facts">
-                <div>
-                  <dt>当前步骤</dt>
-                  <dd>
-                    {detail.currentStep}（{detail.stepIndex}/{detail.stepTotal}）
-                  </dd>
-                </div>
-                <div>
-                  <dt>执行耗时</dt>
-                  <dd>{duration(detail.elapsedMs)}</dd>
-                </div>
-                <div>
-                  <dt>费用状态</dt>
-                  <dd>{detail.billing.label}</dd>
-                </div>
-                <div>
-                  <dt>权威账本</dt>
-                  <dd>
-                    {detail.billing.authoritative
-                      ? `已核验 · Hold #${detail.billing.ledger.holdId || '—'} / Log #${detail.billing.ledger.logId || '—'}`
-                      : '暂无完整权威账本证据'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>结果可用性</dt>
-                  <dd>
-                    {detail.businessUsable
-                      ? detail.adoptionContext?.adopted
-                        ? detail.adoptionContext.label
-                        : '业务可采用'
-                      : detail.policyContext?.historical
-                        ? '历史记录 · 旧策略仅供回看'
-                        : taskStatusLabel(detail)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>实际采用结果</dt>
-                  <dd>{detail.adoptionContext?.label || '采用结果待核验'}</dd>
-                </div>
-                <div>
-                  <dt>采用 / 授权策略</dt>
-                  <dd>{detail.policyContext?.label || '当前策略状态待确认'}</dd>
-                </div>
-              </dl>
-              {detail.executionProgress && (
-                <EmployeeExecutionTimeline progress={detail.executionProgress} title="数字员工实时执行链" />
+              {detail.error && <Alert type="error" showIcon message="执行异常" description={detail.error} />}
+              <div className="task-center-detail__summary">
+                <span>
+                  <ClockCircleOutlined /> {duration(detail.elapsedMs)}
+                </span>
+                <span>
+                  <WalletOutlined /> {detail.billing.label}
+                </span>
+              </div>
+              {detail.state === 'running' && (
+                <EmployeeExecutionTimeline
+                  progress={
+                    detail.executionProgress || {
+                      currentLabel: detail.currentStep,
+                      receivedChars: 0,
+                      lastActivityAt: '',
+                      attemptNumber: 0,
+                      phase: 'acquire',
+                    }
+                  }
+                  title="任务进度"
+                  diagnostics={canViewDiagnostics}
+                />
               )}
-              <EmployeeResearchPlan evidence={detail.researchEvidence} />
               {detail.kind === 'restaurant' && detail.draft && (
                 <EmployeeDraftCard
                   taskId={Number(detail.id)}
@@ -751,12 +765,27 @@ export default function TaskCenter() {
                   }}
                 />
               )}
-              <section>
-                <h3>任务输入</h3>
-                <pre>{detail.input || '暂无输入说明'}</pre>
-              </section>
-              <section>
-                <h3>执行结果</h3>
+              <section className="task-center-result">
+                <header>
+                  <h3>结果正文</h3>
+                  <NativeDeliverableDownloadButton url={detail.downloadUrl} name={detail.downloadName} />
+                  {(detail.report?.markdown || detail.output) && (
+                    <Button
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(detail.report?.markdown || detail.output);
+                          message.success('正文已复制');
+                        } catch {
+                          message.error('复制失败，请选择正文手动复制');
+                        }
+                      }}
+                    >
+                      复制正文
+                    </Button>
+                  )}
+                </header>
                 {detail.kind === 'restaurant' && detail.draft ? (
                   <Alert
                     type="warning"
@@ -774,7 +803,7 @@ export default function TaskCenter() {
                       打开媒体结果
                     </a>
                   ) : (
-                    <pre>{detail.output}</pre>
+                    <Markdown content={detail.output} />
                   )
                 ) : (
                   <Empty
@@ -783,6 +812,138 @@ export default function TaskCenter() {
                   />
                 )}
               </section>
+              {Array.isArray(detail.media) && detail.media.length > 0 && (
+                <section className="task-center-media" aria-label="图片与媒体结果">
+                  {detail.media.map((media: any, index: number) => (
+                    <figure key={media.id || media.url || index}>
+                      <TaskMediaPreview media={media} />
+                      <figcaption>{media.label || '生成文件'}</figcaption>
+                      {media.error && <Alert type="warning" showIcon message={media.error} />}
+                      {media.warning && <Alert type="warning" showIcon message={media.warning} />}
+                      {!media.url && ['pending', 'running'].includes(media.status) && <p>正在生成，请稍候</p>}
+                      {media.billing?.label && <p>{media.billing.label}</p>}
+                      {/^(https?:\/\/|\/uploads\/)/i.test(media.downloadUrl || media.url || '') && (
+                        <Button icon={<DownloadOutlined />} href={media.downloadUrl || media.url} download>
+                          下载
+                        </Button>
+                      )}
+                    </figure>
+                  ))}
+                </section>
+              )}
+              <TaskFeedback
+                key={`${detail.sourceKey || `${detail.kind}:${detail.id}`}:${detail.resultVersion?.inputHash || ''}:${detail.resultVersion?.outputHash || ''}`}
+                task={detail}
+                onUpdated={next => {
+                  if (activeDetailKey.current !== `${next.kind}:${next.id}`) return;
+                  detailRequestSerial.current += 1;
+                  setDetail(next);
+                  load(true);
+                }}
+              />
+              <details className="task-center-disclosure task-center-input">
+                <summary>任务输入</summary>
+                <Markdown
+                  content={
+                    detail.inputDisplay ??
+                    (typeof detail.input === 'string'
+                      ? detail.input
+                      : detail.input
+                        ? JSON.stringify(detail.input, null, 2)
+                        : '暂无输入说明')
+                  }
+                />
+                {Array.isArray(detail.inputFiles) && detail.inputFiles.length > 0 && (
+                  <div className="task-center-media">
+                    {detail.inputFiles.map((file: any) => (
+                      <figure key={file.id || file.url}>
+                        {/\.(png|jpe?g|webp|gif)(?:[?#]|$)/i.test(file.url || '') && (
+                          <TaskMediaPreview media={{ kind: 'image', url: file.url, label: file.name }} />
+                        )}
+                        <figcaption>{file.name || '输入文件'}</figcaption>
+                        {/^(https?:\/\/|\/uploads\/)/i.test(file.url || '') && (
+                          <Button href={file.url} download>
+                            下载原始输入
+                          </Button>
+                        )}
+                      </figure>
+                    ))}
+                  </div>
+                )}
+              </details>
+              {detail.originalOutput && detail.originalOutput !== detail.output && (
+                <details className="task-center-disclosure">
+                  <summary>原始生成稿</summary>
+                  <Markdown content={detail.originalOutput} />
+                </details>
+              )}
+              <details className="task-center-disclosure">
+                <summary>查看详情</summary>
+                <dl className="task-center-detail__facts">
+                  <div>
+                    <dt>当前步骤</dt>
+                    <dd>
+                      {detail.currentStep}（{detail.stepIndex}/{detail.stepTotal}）
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>执行耗时</dt>
+                    <dd>{duration(detail.elapsedMs)}</dd>
+                  </div>
+                  <div>
+                    <dt>费用状态</dt>
+                    <dd>{detail.billing.label}</dd>
+                  </div>
+                  {canViewDiagnostics && (
+                    <div>
+                      <dt>权威账本</dt>
+                      <dd>
+                        {detail.billing.authoritative
+                          ? `已核验 · Hold #${detail.billing.ledger.holdId || '—'} / Log #${detail.billing.ledger.logId || '—'}`
+                          : '暂无完整权威账本证据'}
+                      </dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>结果可用性</dt>
+                    <dd>
+                      {detail.businessUsable
+                        ? detail.adoptionContext?.adopted
+                          ? detail.adoptionContext.label
+                          : '业务可采用'
+                        : detail.policyContext?.historical
+                          ? '历史记录 · 旧策略仅供回看'
+                          : taskStatusLabel(detail)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>实际采用结果</dt>
+                    <dd>{detail.adoptionContext?.label || '采用结果待核验'}</dd>
+                  </div>
+                  <div>
+                    <dt>采用 / 授权策略</dt>
+                    <dd>{detail.policyContext?.label || '当前策略状态待确认'}</dd>
+                  </div>
+                </dl>
+                {detail.state !== 'running' && detail.executionProgress && (
+                  <EmployeeExecutionTimeline
+                    progress={detail.executionProgress}
+                    title="执行记录"
+                    diagnostics={canViewDiagnostics}
+                  />
+                )}
+                <section className="task-center-input-raw" aria-label="完整原始输入">
+                  <h3>完整原始输入</h3>
+                  <pre>
+                    {typeof detail.input === 'string'
+                      ? detail.input
+                      : detail.input
+                        ? JSON.stringify(detail.input, null, 2)
+                        : '暂无输入记录'}
+                  </pre>
+                </section>
+              </details>
+              <EmployeeResearchPlan evidence={detail.researchEvidence} />
               {['restaurant', 'content'].includes(String(detail.kind || '')) && (
                 <section className="task-center-pipeline-chain" aria-label="交付文件">
                   <header>
@@ -848,7 +1009,7 @@ export default function TaskCenter() {
               {detail.kind === 'content_pipeline' && detail.pipeline && (
                 <section className="task-center-pipeline-chain">
                   <header>
-                    <h3>10 工位执行链</h3>
+                    <h3>内容任务</h3>
                     <div>
                       {detail.status === 'running' && (
                         <Button
@@ -888,43 +1049,46 @@ export default function TaskCenter() {
                       )}
                     </div>
                   </header>
-                  {(detail.pipeline.stations || []).map((station: any) => (
-                    <article key={station.stationIdx}>
-                      <header>
-                        <strong>
-                          工位 {station.stationIdx} · {station.employeeName}
-                        </strong>
-                        <Tag>{station.status}</Tag>
-                      </header>
-                      {(station.phaseEvents || []).length > 0 ? (
-                        <ol>
-                          {station.phaseEvents.map((event: any) => (
-                            <li key={event.id}>
-                              <span>
-                                <strong>{pipelinePhaseLabels[event.phase] || event.phase}</strong>
-                                <small>
-                                  Attempt {event.attempt} · {event.occurredAt || '时间未返回'}
-                                </small>
-                              </span>
-                              <Tag
-                                color={
-                                  event.state === 'failed'
-                                    ? 'red'
-                                    : event.state === 'started'
-                                      ? 'processing'
-                                      : undefined
-                                }
-                              >
-                                {event.state}
-                              </Tag>
-                            </li>
-                          ))}
-                        </ol>
-                      ) : (
-                        <small>该工位尚无持久化 phase event。</small>
-                      )}
-                    </article>
-                  ))}
+                  <details className="task-center-disclosure">
+                    <summary>查看执行详情</summary>
+                    {(detail.pipeline.stations || []).map((station: any) => (
+                      <article key={station.stationIdx}>
+                        <header>
+                          <strong>
+                            工位 {station.stationIdx} · {station.employeeName}
+                          </strong>
+                          <Tag>{station.status}</Tag>
+                        </header>
+                        {(station.phaseEvents || []).length > 0 ? (
+                          <ol>
+                            {station.phaseEvents.map((event: any) => (
+                              <li key={event.id}>
+                                <span>
+                                  <strong>{pipelinePhaseLabels[event.phase] || event.phase}</strong>
+                                  <small>
+                                    第 {event.attempt} 次执行 · {event.occurredAt || '时间未返回'}
+                                  </small>
+                                </span>
+                                <Tag
+                                  color={
+                                    event.state === 'failed'
+                                      ? 'red'
+                                      : event.state === 'started'
+                                        ? 'processing'
+                                        : undefined
+                                  }
+                                >
+                                  {event.state}
+                                </Tag>
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <small>该工位暂无执行记录。</small>
+                        )}
+                      </article>
+                    ))}
+                  </details>
                   <section className="task-center-pipeline-chain" aria-label="工位交付文件">
                     <header>
                       <h3>工位交付文件</h3>
@@ -1047,13 +1211,13 @@ export default function TaskCenter() {
               )}
               {detail.kind === 'avatar' && detail.avatar && (
                 <section>
-                  <h3>数字人真实链路与成片证据</h3>
+                  <h3>数字人成片资料</h3>
                   <EvidenceFacts data={detail.avatar} />
                 </section>
               )}
               {detail.kind === 'text_video' && detail.textVideo && (
                 <section>
-                  <h3>真实TTS / FFmpeg成片证据</h3>
+                  <h3>视频资料</h3>
                   <p>
                     <Button type="link" href={detail.textVideo.studioDeepLink}>
                       打开成片工作台
@@ -1095,7 +1259,6 @@ export default function TaskCenter() {
                   <EvidenceFacts data={detail.wechat} />
                 </section>
               )}
-              {detail.error && <Alert type="error" showIcon message="执行异常" description={detail.error} />}
             </div>
           )
         )}

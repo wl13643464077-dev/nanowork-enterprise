@@ -13,7 +13,7 @@ delete process.env.RUNNINGHUB_API_KEY;
 delete process.env.RUNNINGHUB_KEY;
 delete process.env.YUNWU_API_KEY;
 
-const { initSchema, migrateV2, q, runWithTenant } = await import(
+const { initSchema, migrateV2, q, db, runWithTenant } = await import(
   "../src/db.js"
 );
 const {
@@ -26,7 +26,12 @@ const {
   createAvatarProviderAssetUrl,
   serveAvatarProviderAsset,
 } = await import("../src/engines/avatar-provider-assets.js");
-const { billing } = await import("../src/engines/credits.js");
+const { billing, getSupplierExpense } = await import("../src/engines/credits.js");
+
+const expenseFor = (refType, id) => {
+  const hold = q.get('SELECT id FROM credit_holds WHERE tenant_id=1 AND ref_type=? AND ref_id=? ORDER BY id DESC LIMIT 1', refType, id);
+  return hold && getSupplierExpense(hold.id, 1);
+};
 
 initSchema();
 migrateV2();
@@ -201,6 +206,8 @@ test("上游失败全额退款，原工单最多三次免费重试且不重复�
   const failed = await service.runJob(created.id, 1);
   assert.equal(failed.status, "failed");
   assert.equal(failed.billing.state, "released");
+  assert.ok(expenseFor('avatar_job', created.id)?.refundedAt);
+  assert.equal(expenseFor('avatar_job', created.id)?.status, 'pending');
   assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, before);
   fail = false;
   const retried = await runWithTenant(1, () => service.retryJob(userA, created.id));
@@ -221,6 +228,8 @@ test("取消 queued/running 工单均收口且全退", async () => {
   const cancelledQueued = runWithTenant(1, () => service.cancelJob(userA, queued.id));
   assert.equal(cancelledQueued.status, "cancelled");
   assert.equal(cancelledQueued.billing.state, "released");
+  assert.equal(expenseFor('avatar_job', queued.id)?.status, 'not_incurred');
+  assert.equal(expenseFor('avatar_job', queued.id)?.refundedAt, null);
   assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, before);
 
   let accepted;
@@ -246,6 +255,7 @@ test("取消 queued/running 工单均收口且全退", async () => {
   const cancelledRunning = runWithTenant(1, () => runningService.cancelJob(userA, running.id));
   assert.equal(cancelledRunning.status, "cancelled");
   assert.equal(cancelledRunning.billing.state, "released");
+  assert.ok(expenseFor('avatar_job', running.id)?.refundedAt);
   assert.equal((await work).status, "cancelled");
   assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, before);
 });
@@ -344,7 +354,7 @@ test("硬超时会主动结束不响应 abort 的上游并全额退款", async (
   assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, before);
 });
 
-test("缺少真实费用证据时保留预授权并转待对账", async () => {
+test("缺少费用证据且未保存成片时积分全退，供应商成本由平台待核对", async () => {
   const provider = successfulProvider({
     async synthesize(payload) {
       const result = await successfulProvider().synthesize(payload);
@@ -359,10 +369,14 @@ test("缺少真实费用证据时保留预授权并转待对账", async () => {
   const failed = await service.runJob(created.id, 1);
   assert.equal(failed.status, "failed");
   assert.equal(failed.errorCode, "AVATAR_BILLING_EVIDENCE_MISSING");
-  assert.equal(failed.billingStatus, "pending_reconciliation");
-  assert.equal(failed.billing.state, "pending_reconciliation");
+  assert.equal(failed.billingStatus, "released");
+  assert.equal(failed.billing.state, "released");
   assert.equal(failed.businessUsable, false);
-  assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, heldBalance);
+  assert.equal(q.get("SELECT credits FROM tenants WHERE id=1").credits, before);
+  assert.ok(expenseFor('avatar_job', created.id)?.refundedAt);
+  assert.equal(expenseFor('avatar_job', created.id)?.costYuan, null);
+  service.recoverAndSchedule({tenantId:1});
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before, '重复恢复不能再次退款');
 });
 
 test("MiniMax 声音克隆失败会持久化失败态并全额退款", async () => {
@@ -782,6 +796,58 @@ test("供应商素材签名只服务绑定租户文件，且拒绝内网公开�
   serveAvatarProviderAsset({ params: { token: `${token}x` } }, response);
   assert.equal(served.statusCode, 404);
   assert.equal(served.ended, true);
+});
+
+test("旧数字人执行器晚返回不能退款或覆盖新执行者", async () => {
+  let resume, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const service = serviceFor(successfulProvider({ async synthesize() {
+    entered(); await new Promise(resolve => { resume = resolve; });
+    throw new Error('old provider failed after takeover');
+  }}));
+  const job = await createJob(service);
+  const work = service.runJob(job.id, 1);
+  await started;
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  q.run("UPDATE avatar_jobs SET retry_count=retry_count+1,started_at='new-owner',error_message='new-owner' WHERE id=? AND tenant_id=1", job.id);
+  resume(); await work;
+  const row = q.get('SELECT status,error_message FROM avatar_jobs WHERE id=? AND tenant_id=1', job.id);
+  assert.equal(row.status, 'running'); assert.equal(row.error_message, 'new-owner');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before);
+  assert.equal(expenseFor('avatar_job', job.id), null);
+  runWithTenant(1, () => service.cancelJob(userA, job.id));
+});
+
+test("已保存成片遇终态写入失败保留成果与实扣，不误退款", async () => {
+  const service = serviceFor(successfulProvider());
+  const job = await createJob(service);
+  db.exec(`CREATE TEMP TRIGGER avatar_final_write_failure BEFORE UPDATE OF status ON avatar_jobs
+    WHEN NEW.id=${job.id} AND NEW.status='done' BEGIN SELECT RAISE(ABORT,'isolated final write failure'); END`);
+  try {
+    await service.runJob(job.id, 1);
+    const row = q.get('SELECT * FROM avatar_jobs WHERE tenant_id=1 AND id=?', job.id);
+    assert.ok(row.output_file_id); assert.ok(row.result_url);
+    assert.equal(row.billing_status, 'pending_reconciliation');
+    assert.equal(expenseFor('avatar_job', job.id)?.refundedAt, null);
+    assert.ok(q.get("SELECT settled_credits FROM credit_holds WHERE ref_type='avatar_job' AND ref_id=?", job.id).settled_credits > 0);
+    assert.throws(() => runWithTenant(1, () => service.cancelJob(userA, job.id)), /成片已经保存/);
+  } finally { db.exec('DROP TRIGGER avatar_final_write_failure'); }
+});
+
+test("声音克隆已ready后结算失败保留音色，不能退款并改成失败", async () => {
+  q.run('UPDATE tenants SET credits=20000 WHERE id=1');
+  const service = serviceFor(successfulProvider(), {voiceClient: {async cloneVoice() {return {voice:{id:'retainedvoicefixture',label:'保留真实音色'},providerAttempt:{provider:'yunwu-minimax',model:'voice_clone',usage:{networkRequests:2,inputBytes:AUDIO.length}}};}}});
+  db.exec(`CREATE TEMP TRIGGER avatar_voice_settle_failure BEFORE UPDATE OF status ON credit_holds
+    WHEN NEW.ref_type='avatar_voice_clone' AND NEW.status='settled'
+    BEGIN SELECT RAISE(ABORT,'isolated clone settle failure'); END`);
+  try {
+    const voice = await runWithTenant(1, () => service.cloneVoice({user:userA,audioFileId:assetsA.audio.id,label:'保留真实音色'}));
+    const row = q.get('SELECT * FROM avatar_voices WHERE tenant_id=1 AND id=?', voice.id);
+    assert.equal(row.status, 'ready'); assert.equal(row.provider_voice_id, 'retainedvoicefixture');
+    assert.equal(row.billing_status, 'pending_reconciliation');
+    assert.equal(expenseFor('avatar_voice_clone', row.id), null);
+    assert.equal(q.get("SELECT status FROM credit_holds WHERE ref_type='avatar_voice_clone' AND ref_id=?", row.id).status, 'held');
+  } finally { db.exec('DROP TRIGGER avatar_voice_settle_failure'); }
 });
 
 after(() => {

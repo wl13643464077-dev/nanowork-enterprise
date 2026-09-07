@@ -5,9 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { removeTempDirSafely } from "./helpers/temp-db.mjs";
 
-const testRoot = fs.mkdtempSync(
+const testRoot = fs.realpathSync(fs.mkdtempSync(
   path.join(os.tmpdir(), `nanowork-agentic-research-test-${process.pid}-`),
-);
+));
 const dbPath = path.join(testRoot, "research.db");
 const fakeCliPath = path.join(testRoot, "fake claude & isolated.mjs");
 const originalEnv = {

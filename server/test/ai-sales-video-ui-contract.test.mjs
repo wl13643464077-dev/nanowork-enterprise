@@ -6,15 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-test('AI带货员恢复历史任务后只启动一条稳定轮询链', () => {
+test('AI带货员仅在面板打开时恢复历史任务，关闭后停止稳定轮询链', () => {
   const panel = fs.readFileSync(
     path.join(root, 'web/src/components/AiSalesVideoPanel.tsx'),
     'utf8',
   );
   assert.match(panel, /pollingActiveRef/u);
-  assert.match(panel, /restoredResultRef/u);
+  assert.match(panel, /panelOpenRef/u);
   assert.match(panel, /initialJobId/u);
-  assert.match(panel, /if \(restoredResultRef\.current\) return/u);
+  assert.match(panel, /if \(!open\) return;[\s\S]{0,300}sessionStorage\.getItem/u);
+  assert.match(panel, /return \(\) => \{\s*panelOpenRef\.current = false;\s*clearPolling\(\);/u);
+  assert.match(panel, /const current = await api\.get\(safePollUrl, \{ silent: true \}\);[\s\S]{0,180}if \(\s*!panelOpenRef\.current/u);
   assert.match(panel, /pollJobRef\.current === safeJobId[\s\S]{0,160}pollingActiveRef\.current/u);
   assert.doesNotMatch(
     panel,

@@ -224,8 +224,8 @@ paihuoSourceTest('能力链源边界与已知 parity red points 明确记录（�
   assert.equal(paihuoRestaurant.employees.length, 60);
   assert.equal(nanoRestaurant.employees.length, 61);
   assert.equal(nanoContent.length, 10);
-  assert.equal(NATIVE_CONTENT_EMPLOYEES.length, 1);
-  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 11);
+  assert.equal(NATIVE_CONTENT_EMPLOYEES.length, 2);
+  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 12);
 
   // These are expected source-boundary differences, not waived contract
   // failures.  The test output is the audit record consumed by the matrix
@@ -453,9 +453,9 @@ test('72档案静态矩阵：61餐饮+11内容全部具备最小执行/产物/�
     assert.equal(profile.canonicalProfile.permissions.mayDisableRequiredCapabilities, false);
     matrix.push({ domain: 'content', idx: employee.idx, ready: true });
   }
-  assert.equal(matrix.length, 72);
+  assert.equal(matrix.length, 73);
   assert.equal(matrix.filter(row => row.domain === 'restaurant').length, 61);
-  assert.equal(matrix.filter(row => row.domain === 'content').length, 11);
+  assert.equal(matrix.filter(row => row.domain === 'content').length, 12);
 
   // Keep source-side shortfalls visible next to the green NanoWork matrix
   // when the optional golden source is available. The Nano matrix remains a

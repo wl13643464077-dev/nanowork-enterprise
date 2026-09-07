@@ -1,0 +1,104 @@
+{
+  "checks": [
+    {
+      "name": "video-3",
+      "open": true,
+      "time": 0.477876,
+      "width": 1920,
+      "height": 1080,
+      "frames": 20,
+      "duration": 45,
+      "fullscreen": "nami-player",
+      "pass": true
+    },
+    {
+      "name": "video-return-3",
+      "pass": true
+    },
+    {
+      "name": "video-8",
+      "open": true,
+      "time": 0.68466,
+      "width": 1080,
+      "height": 1920,
+      "frames": 26,
+      "duration": 30,
+      "fullscreen": "nami-player",
+      "pass": true
+    },
+    {
+      "name": "video-return-8",
+      "pass": true
+    },
+    {
+      "name": "presenter-sync",
+      "state": {
+        "mode": "presenter",
+        "idx": 3,
+        "session": "xdwn5xkj3g",
+        "syncState": "synced",
+        "timerRunning": false,
+        "rehearsalActive": false,
+        "presenterOverviewOn": false,
+        "autoEnabled": false,
+        "autoGlobalSeconds": 0,
+        "autoRemainingMs": 0,
+        "screenMode": "normal",
+        "annotationTool": "none",
+        "circles": [],
+        "audienceCircles": [],
+        "layoutMode": "balanced"
+      }
+    },
+    {
+      "name": "presenter-video-audience",
+      "pass": true
+    },
+    {
+      "name": "sync-next",
+      "pass": true
+    },
+    {
+      "name": "timer-start",
+      "pass": true
+    },
+    {
+      "name": "overview-open",
+      "pass": true
+    },
+    {
+      "name": "last-slide",
+      "pass": true
+    },
+    {
+      "name": "first-slide",
+      "pass": true
+    },
+    {
+      "name": "settings-open",
+      "pass": true
+    },
+    {
+      "name": "preflight-open",
+      "pass": true
+    },
+    {
+      "name": "small-screen-previews",
+      "frames": [
+        {
+          "width": 568.875,
+          "height": 320
+        },
+        {
+          "width": 236.4375,
+          "height": 133
+        }
+      ]
+    },
+    {
+      "name": "presenter-exit",
+      "pass": true
+    }
+  ],
+  "errors": []
+}

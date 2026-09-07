@@ -59,7 +59,8 @@ insertTenant.run(EMPTY, '空白新企业');
 insertTenant.run(FULL, '三石牛腩');
 insertTenant.run(OTHER, '隔壁老王面馆');
 
-const today = new Date().toISOString().slice(0, 10);
+// The schema records local calendar dates; UTC may already be tomorrow.
+const today = db.prepare("SELECT date('now','localtime') AS day").get().day;
 const storeA = Number(db.prepare(
   `INSERT INTO stores(tenant_id,name,code,address,city,area,biz_type,is_default,status)
    VALUES(?,?,?,?,?,?,?,1,'营业中')`,
@@ -525,7 +526,7 @@ test('接入①：内容员工 runtime context 带 storeFacts，handler user pro
   assert.ok(emptyReceived.userMsg.includes(STORE_FACT_EMPTY_PROMPT));
 });
 
-test('接入②：AI 带货员 grounding 带 storeFacts，供应商 prompt 含事实块（video 口播规则）', async () => {
+test('接入②：海螺只接收画面描述，门店事实保存在grounding供口播链使用', async () => {
   const submitCalls = [];
   const runtime = {
     intervalMs: 1,
@@ -578,10 +579,9 @@ test('接入②：AI 带货员 grounding 带 storeFacts，供应商 prompt 含�
     assert.equal(row?.status, '成功', row?.error || '任务未成功');
     assert.equal(submitCalls.length, 3);
     for (const prompt of submitCalls) {
-      assert.match(prompt, /【门店真实事实（只能引用，不得改数、不得编造）】/u);
-      assert.ok(prompt.includes(`- [fact:dishes:${dishTomato}] 招牌菜「番茄牛腩锅」售价 ¥68.00`));
-      assert.match(prompt, /口播与字幕中读出的价格、地址、菜名必须与上述事实逐字一致/u);
-      assert.match(prompt, /企业已确认知识/u, '既有知识库召回仍在');
+      assert.ok(prompt.length <= 900);
+      assert.match(prompt, /番茄牛腩锅/u);
+      assert.doesNotMatch(prompt, /【门店真实事实|企业已确认知识/u, '海螺画面生成不接收整段检索材料');
       assert.doesNotMatch(prompt, /最头疼|等位太久/u, '内部证据与差评不进供应商 prompt');
     }
     const snapshot = JSON.parse(row.snapshot_json);

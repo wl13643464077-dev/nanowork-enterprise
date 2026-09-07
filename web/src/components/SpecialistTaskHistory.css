@@ -1,0 +1,176 @@
+.specialist-task-history {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.specialist-task-history > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.specialist-task-history h3,
+.specialist-task-history h4,
+.specialist-task-history p {
+  margin-top: 0;
+}
+
+.specialist-task-history > header h3 {
+  margin-bottom: 4px;
+  color: var(--ui-text);
+  font-size: 16px;
+}
+
+.specialist-task-history > header p {
+  margin-bottom: 0;
+  color: var(--ui-muted);
+  line-height: 1.6;
+}
+
+.specialist-task-history__list {
+  display: grid;
+  gap: 10px;
+}
+
+.specialist-task-history__item {
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+
+.specialist-task-history__item > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+  color: var(--ui-text);
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.specialist-task-history__item[open] > summary {
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface-2);
+}
+
+.specialist-task-history__summary-main {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.specialist-task-history__summary-main strong,
+.specialist-task-history__summary-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.specialist-task-history__summary-main span,
+.specialist-task-history__summary-meta {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.specialist-task-history__summary-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.specialist-task-history__summary-meta .ant-tag {
+  margin: 0;
+}
+
+.specialist-task-history__body {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+}
+
+.specialist-task-history__body > section {
+  min-width: 0;
+}
+
+.specialist-task-history__body h4 {
+  margin-bottom: 8px;
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.specialist-task-history__result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.specialist-task-history__media {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.specialist-task-history__media figure {
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+}
+
+.specialist-task-history__media img,
+.specialist-task-history__media video {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  border-radius: 6px;
+  background: var(--ui-bg);
+  object-fit: contain;
+}
+
+.specialist-task-history__media audio {
+  width: 100%;
+}
+
+.specialist-task-history__media figcaption {
+  margin: 9px 0;
+  color: var(--ui-text-2);
+}
+
+.specialist-task-history .task-center-feedback {
+  padding-top: 16px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.specialist-task-history .task-center-feedback > p,
+.specialist-task-history .task-center-feedback-record p {
+  color: var(--ui-text-2);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.specialist-task-history .task-center-feedback-actions {
+  margin-top: 14px;
+}
+
+@media (max-width: 640px) {
+  .specialist-task-history > header,
+  .specialist-task-history__item > summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .specialist-task-history__summary-meta {
+    flex-wrap: wrap;
+  }
+}

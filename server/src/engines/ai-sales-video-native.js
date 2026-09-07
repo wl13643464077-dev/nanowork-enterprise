@@ -2,15 +2,16 @@ import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { q, curTenant, getTenantConfig, runWithTenant } from '../db.js';
+import { db, q, curTenant, runWithTenant } from '../db.js';
 import { generate } from './ai.js';
 import { scanText } from './risk.js';
 import { canAccessOwner, isManagerRole } from './access.js';
-import { billing, holdCredits, settleHold, releaseHold, estimateCallCredits } from './credits.js';
+import { billing, holdCredits, settleHold, releaseHold, refundHold, estimateCallCredits } from './credits.js';
 import { AI_SALES_VIDEO_EMPLOYEE, AI_SALES_VIDEO_WORKFLOW, normalizeAiSalesVideoBrief } from './ai-sales-video.js';
-import { generateAiSalesVideoScript, condenseAiSalesVideoShot } from './ai-sales-video-script.js';
+import { generateAiSalesVideoScript, validateAiSalesVideoScript, wanNativeAudioPrompt, AI_SALES_NATIVE_NARRATION_STYLE, AI_SALES_NATIVE_NARRATION_TIMING } from './ai-sales-video-script.js';
+import { approvedNativeChatPlan } from './native-creative-chat-store.js';
+import { withImmediateTransaction } from './two-phase-delivery.js';
 import {
-  synthesizeAiSalesVideoVoiceTracks,
   buildAiSalesVideoSubtitleCues,
   AI_SALES_VIDEO_SYSTEM_VOICES,
   safeAiSalesVideoVoiceId,
@@ -18,29 +19,26 @@ import {
 } from './ai-sales-video-voice.js';
 import { assertAiSalesVoicedComposerReady, composeAiSalesVideo, runAiSalesMediaCommand } from './video-composer.js';
 import { downloadProviderVideoClip, waitForProviderVideo } from './video-provider-download.js';
-import { createMiniMaxVoiceClient } from './minimax-voice.js';
-import {
-  aiSalesVideoProviderPublicBaseUrl,
-  createAiSalesVideoAssetPublisher,
-} from './ai-sales-video-provider-assets.js';
-import {
-  yunwuAvailable,
-  yunwuApiKey,
-  yunwuMediaBaseUrl,
-  textModelFor,
-  submitAliBailianVideoSegment,
-  queryAliBailianVideoSegment,
-} from './yunwu.js';
+import { yunwuAvailable, textModelFor, submitAliBailianVideoSegment, queryAliBailianVideoSegment, supplierRequestCost, provider360Active } from './yunwu.js';
+import { selectedProviderId, withTaskProvider } from './ai-provider-selection.js';
+import { PROVIDER_360_VIDEO_MODEL } from './provider-360.js';
 import { listBenchmarkCards } from './content-benchmark-cards.js';
 import { activeContentEvolutionNotes } from './employee-evolution.js';
-import { buildContentEmployeeWorkbenchProfile } from './content-employee-workbench.js';
+import { buildNativeContentSkillContext } from './native-content-skill-context.js';
 import { publicVoicedSalesProgress, voicedSalesDeliveryVerified } from './ai-sales-video-presentation.js';
+import { preserveSalesVideoClip } from './ai-sales-video-partials.js';
+import { resolveAiSalesVideoDuration } from './ai-sales-video-duration.js';
+import { aggregateSupplierCosts } from './provider-cost-receipts.js';
 
 export const AI_SALES_VOICED_MODEL = 'wan2.6-i2v';
+const videoModel = () => provider360Active() ? PROVIDER_360_VIDEO_MODEL : AI_SALES_VOICED_MODEL;
+export const aiSalesVoicedModel = videoModel;
+const nativeSegmentCount = (duration, model = videoModel()) => model === PROVIDER_360_VIDEO_MODEL ? 1 : duration / 15;
+const supportedSalesModel = model => ['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(model);
 const fail = (message, code = 'AI_SALES_VOICED_BLOCKED', status = 409) =>
   Object.assign(new Error(message), { code, status });
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const taskId = value => (/^[\p{L}\p{N}_.+-]{1,240}$/u.test(String(value || '')) ? String(value) : null);
+const taskId = value => (/^[\p{L}\p{N}_.+^:/-]{1,500}$/u.test(String(value || '')) ? String(value) : null);
 
 export function resolveSalesVoice(user, value) {
   const id = safeAiSalesVideoVoiceId(value);
@@ -55,58 +53,66 @@ export function resolveSalesVoice(user, value) {
   return id;
 }
 
-export async function voicedSalesVideoOptions(actor, runtime = {}) {
+export async function voicedSalesVideoOptions(actor, runtime = {}, { durationSeconds = 15 } = {}) {
+  const duration = resolveAiSalesVideoDuration(durationSeconds), segmentCount = nativeSegmentCount(duration);
   if (Number(actor.tenant_id) !== Number(curTenant()))
     throw fail('企业上下文不一致', 'AI_SALES_VIDEO_TENANT_CONTEXT_INVALID', 403);
   const blockers = [];
   if ((!runtime.generateFn || !runtime.submitSegment) && !yunwuAvailable()) blockers.push('未配置文本与Wan生成通道');
-  if (!runtime.publishAsset && !aiSalesVideoProviderPublicBaseUrl())
-    blockers.push('未配置供应商可拉取音轨的公网HTTPS地址');
-  const voiceConfig = getTenantConfig('avatar_minimax_voice', {});
-  if (!runtime.voiceClient && !(voiceConfig?.apiKey || voiceConfig?.key || yunwuApiKey()))
-    blockers.push('未配置配音通道');
   let estimatedMaxCredits = null,
-    quoteFingerprint = null;
+    quoteFingerprint = null, durationOptions = [];
   try {
-    const quote = salesVideoPriceQuote(textModelFor(actor.role));
+    durationOptions = [15, 30].map(seconds => {
+      const quote = salesVideoPriceQuote(textModelFor(actor.role), { durationSeconds: seconds });
+      return { durationSeconds: seconds, segmentCount: nativeSegmentCount(seconds), estimatedMaxCredits: quote.maxCredits,
+        quoteFingerprint: quote.fingerprint, limits: { text: 2, tts: 0, video: nativeSegmentCount(seconds) } };
+    });
+    const quote = salesVideoPriceQuote(textModelFor(actor.role), { durationSeconds: duration });
     estimatedMaxCredits = quote.maxCredits;
     quoteFingerprint = quote.fingerprint;
   } catch {
     blockers.push('组合任务价目尚未配置完整');
   }
   try {
-    await (runtime.mediaReady ? runtime.mediaReady() : assertAiSalesVoicedComposerReady());
+    await (runtime.mediaReady
+      ? runtime.mediaReady()
+      : assertAiSalesVoicedComposerReady({ audioMode: 'provider_native', durationSeconds: duration }));
   } catch {
     blockers.push('本机音视频工具尚未就绪');
   }
-  const cloned = q
-    .all(
-      "SELECT provider_voice_id,label,created_by FROM avatar_voices WHERE tenant_id=? AND status='ready' AND billing_status='settled' ORDER BY id DESC",
-      curTenant(),
-    )
-    .filter(row => canAccessOwner(actor, row.created_by))
-    .filter(row => /^[a-z0-9_-]{3,64}$/iu.test(String(row.provider_voice_id || '')))
-    .map(row => ({ id: row.provider_voice_id, label: `${row.label}（已授权克隆）`, cloned: true }));
   return {
-    model: AI_SALES_VOICED_MODEL,
-    voices: [...AI_SALES_VIDEO_SYSTEM_VOICES, ...cloned],
+    model: videoModel(),
+    audioMode: 'provider_native',
+    voices: [],
+    subtitleTiming: 'script_estimated',
+    narrationStyle: AI_SALES_NATIVE_NARRATION_STYLE,
+    narrationTiming: AI_SALES_NATIVE_NARRATION_TIMING,
+    subtitleNotice: '保留模型原生成声音；字幕按脚本分句估时，未经过逐字语音识别，请预览核对。',
     blockers,
     ready: blockers.length === 0,
     estimatedMaxCredits,
     quoteFingerprint,
-    durationSeconds: 30,
-    segmentCount: 2,
-    limits: { text: 3, tts: 3, video: 2 },
+    durationSeconds: duration,
+    segmentCount,
+    durationOptions,
+    limits: { text: 2, tts: 0, video: segmentCount },
     canRecover: isManagerRole(actor),
-    note: '先占扣上限，再按配置价目和实际调用用量结算；未用额度退回，调用结果不明时保留待对账。',
+    note: '先预占参考费用，按上游实际扣款结算，多退少补；费用待核时保留生成结果。',
   };
 }
 
-export function salesVideoPriceQuote(textModel) {
-  const b = billing(),
+export function salesVideoPriceQuote(textModel, options = {}) {
+  return buildSalesVideoPriceQuote(textModel, { ...options, durationSeconds: resolveAiSalesVideoDuration(options.durationSeconds) });
+}
+function buildSalesVideoPriceQuote(textModel, { audioMode = 'provider_native', confirmedChat = false, durationSeconds = 30, legacy = false, priceBilling = null, model = videoModel() } = {}) {
+  const duration = resolveAiSalesVideoDuration(durationSeconds), segmentCount = nativeSegmentCount(duration, model);
+  const externalTts = audioMode === 'external_tts';
+  if (externalTts && duration !== 30) throw fail('历史独立配音只恢复原30秒任务');
+  if (!externalTts && audioMode !== 'provider_native') throw fail('音频模式不正确');
+  const b = priceBilling || billing(),
     textPrice = b.text[textModel],
-    video = Number(b.video[AI_SALES_VOICED_MODEL]),
-    tts = Number(b.tts[AI_SALES_VIDEO_TTS_MODEL]);
+    video = Number(b.video[model]) * (model === PROVIDER_360_VIDEO_MODEL ? duration / 15 : 1),
+    tts = externalTts ? Number(b.tts[AI_SALES_VIDEO_TTS_MODEL]) : 0;
   if (
     !textPrice ||
     ![Number(textPrice.in), Number(textPrice.out), video, tts, b.marginMultiplier, b.creditYuan].every(
@@ -115,12 +121,15 @@ export function salesVideoPriceQuote(textModel) {
     Number(textPrice.in) < 0 ||
     !(Number(textPrice.out) > 0) ||
     !(video > 0) ||
-    !(tts > 0) ||
+    (externalTts && !(tts > 0)) ||
     !(b.marginMultiplier > 0) ||
     !(b.creditYuan > 0)
   )
-    throw fail('文本、配音或Wan模型尚未配置有效价格');
+    throw fail(externalTts ? '文本、配音或Wan模型尚未配置有效价格' : '文本或Wan模型尚未配置有效价格');
   const prices = {
+    ...(!legacy ? { durationSeconds: duration, segmentCount } : {}),
+    ...(confirmedChat ? { confirmedChat: true } : {}),
+    ...(!externalTts ? { audioMode } : {}),
     textModel,
     text: { in: Number(textPrice.in), out: Number(textPrice.out) },
     video,
@@ -138,23 +147,47 @@ export function salesVideoPriceQuote(textModel) {
   return {
     ...prices,
     fingerprint: digest(prices),
-    maxCredits: textMax * 3 + Math.ceil(((video * 2 + tts * 3) * b.marginMultiplier) / b.creditYuan),
+    maxCredits:
+      textMax * (confirmedChat ? 0 : externalTts ? 3 : 2) + Math.ceil(((video * segmentCount + tts * 3) * b.marginMultiplier) / b.creditYuan),
   };
 }
 
 export function voicedSalesSettlement(plan) {
+  const duration = resolveAiSalesVideoDuration(plan?.durationSeconds, 30), segmentCount = nativeSegmentCount(duration, plan?.model);
+  const audioMode = plan?.audioMode ?? 'external_tts';
+  const externalTts = audioMode === 'external_tts';
+  const confirmedChat = !!plan?.approvedChat;
+  if (confirmedChat) {
+    const approval = approvedNativeChatPlan({ actor: { id: plan.approvedChat.userId, tenant_id: plan.approvedChat.tenantId },
+      sessionId: plan.approvedChat.sessionId, planVersion: plan.approvedChat.planVersion, employeeIdx: 10 });
+    if (externalTts || (approval.plan.options?.durationSeconds ?? 30) !== duration || digest(approval.plan.script) !== digest(plan.script) || approval.provenance.planHash !== plan.approvedChat.planHash)
+      throw fail('已确认脚本与执行版本不一致', 'AI_SALES_VIDEO_CONFIRMED_SCRIPT_MISMATCH');
+  }
+  if (!externalTts && audioMode !== 'provider_native') throw fail('原任务音频模式不正确');
   const price = plan?.priceQuote,
     events = plan?.paidExecution;
+  const legacy = price?.durationSeconds === undefined;
+  if (legacy && duration !== 30) throw fail('旧报价只能用于原30秒任务', 'AI_SALES_VIDEO_RECOVERY_PRICE_CHANGED');
+  // Compare against the price accepted when this hold was created. An admin
+  // changing tomorrow's rates must not invalidate today's completed video.
+  const heldPrice = plan.billing?.holdId ? q.get("SELECT pricing_snapshot_json FROM credit_holds WHERE tenant_id=? AND id=? AND kind='video' AND model=?", curTenant(), plan.billing.holdId, plan.model) : null;
+  let priceBilling = null;
+  if (heldPrice?.pricing_snapshot_json) {
+    try { priceBilling = JSON.parse(heldPrice.pricing_snapshot_json); } catch { throw fail('原预授权价格快照无法核验'); }
+    if (priceBilling?.version !== 1) throw fail('原预授权价格版本无法核验');
+  }
+  const currentQuote = price ? buildSalesVideoPriceQuote(price.textModel, { audioMode, confirmedChat, durationSeconds: duration, legacy, priceBilling, model: plan.model }) : null;
   if (
     !price ||
     !Array.isArray(events) ||
-    plan.model !== AI_SALES_VOICED_MODEL ||
-    salesVideoPriceQuote(price.textModel).fingerprint !== price.fingerprint
+    !supportedSalesModel(plan.model) ||
+    currentQuote.fingerprint !== price.fingerprint
   )
     throw fail('原任务报价不完整或价目已变化，需人工对账', 'AI_SALES_VIDEO_RECOVERY_PRICE_CHANGED');
-  const currentQuote = salesVideoPriceQuote(price.textModel);
   if (
-    ['textModel', 'video', 'tts', 'margin', 'creditYuan', 'maxCredits'].some(key => price[key] !== currentQuote[key]) ||
+    ['durationSeconds', 'segmentCount', 'audioMode', 'textModel', 'video', 'tts', 'margin', 'creditYuan', 'maxCredits'].some(
+      key => price[key] !== currentQuote[key],
+    ) ||
     price.text?.in !== currentQuote.text.in ||
     price.text?.out !== currentQuote.text.out
   )
@@ -164,11 +197,11 @@ export function voicedSalesSettlement(plan) {
     ttsEvents = byKind('tts'),
     videoEvents = byKind('video');
   if (
-    textEvents.length < 1 ||
-    textEvents.length > 3 ||
-    ttsEvents.length < 2 ||
-    ttsEvents.length > 3 ||
-    videoEvents.length !== 2 ||
+    (confirmedChat ? textEvents.length !== 0 : textEvents.length < 1) ||
+    textEvents.length > (externalTts ? 3 : 2) ||
+    (externalTts ? ttsEvents.length < 2 || ttsEvents.length > 3 : ttsEvents.length !== 0) ||
+    videoEvents.length !== segmentCount ||
+    plan.providerExecution?.segments?.length !== segmentCount ||
     events.length !== textEvents.length + ttsEvents.length + videoEvents.length ||
     events.some((event, i) => event.id !== i + 1 || event.status !== 'returned') ||
     textEvents.some(
@@ -182,17 +215,25 @@ export function voicedSalesSettlement(plan) {
     ttsEvents.some(event => event.model !== AI_SALES_VIDEO_TTS_MODEL) ||
     videoEvents.some(
       (event, i) =>
-        event.model !== AI_SALES_VOICED_MODEL ||
+        event.model !== plan.model ||
         event.index !== i + 1 ||
         !taskId(event.taskId) ||
         event.taskId !== plan.providerExecution?.segments?.[i]?.taskId,
     ) ||
-    new Set(videoEvents.map(event => event.taskId)).size !== 2
+    new Set(videoEvents.map(event => event.taskId)).size !== segmentCount
   )
     throw fail('原任务调用/用量证据不完整，不能自动对账', 'AI_SALES_VIDEO_RECOVERY_BILLING_UNVERIFIED');
-  const yuan = actualCost(events, price),
-    credits = Math.ceil((yuan * price.margin) / price.creditYuan);
-  if (!Number.isSafeInteger(credits) || credits <= 0 || credits > price.maxCredits)
+  const requiresReceipts = priceBilling?.supplierCostPolicy?.enabled === true
+    || events.some(event => event.supplierCosts?.length);
+  const supplierCosts = requiresReceipts ? events.flatMap(event => event.supplierCosts?.length
+    ? event.supplierCosts : [{ status: 'pending', requestId: event.providerRequestId || null, model: event.model }]) : [];
+  const actual = aggregateSupplierCosts(supplierCosts);
+  const referencePricing = priceBilling?.salePolicy?.basis === 'reference_360';
+  const referenceYuan = actualCost(events, price);
+  const yuan = actual?.status === 'known' ? actual.costYuanOverride : referencePricing ? undefined : referenceYuan;
+  const credits = Math.ceil(((referencePricing ? referenceYuan : yuan) * price.margin) / price.creditYuan);
+  const walletPricing = priceBilling?.supplierCostPolicy?.basis === 'upstream_debit';
+  if (!Number.isSafeInteger(credits) || credits < 0 || (credits > price.maxCredits && !walletPricing))
     throw fail('实际费用不在原预授权范围内', 'AI_SALES_VIDEO_RECOVERY_BILLING_UNVERIFIED');
   const usage = textEvents.reduce(
     (a, event) => ({
@@ -201,13 +242,32 @@ export function voicedSalesSettlement(plan) {
     }),
     { inputTokens: 0, outputTokens: 0 },
   );
+  if (supplierCosts.length) usage.supplierCosts = supplierCosts;
   return {
     credits,
-    costYuanOverride: yuan,
+    ...(yuan !== undefined ? { costYuanOverride: yuan } : {}),
+    ...(actual?.status === 'known' ? { costSource: actual.costSource } : {}),
     usage,
     model: plan.model,
-    note: '独白/配音/Wan实际调用组合结算，未使用的授权差额退回',
+    note: externalTts
+      ? '独白/配音/Wan实际调用组合结算，未使用的授权差额退回'
+      : '脚本与Wan原生有声视频实际调用结算，无独立TTS费用，未使用的授权差额退回',
   };
+}
+
+// Recheck only saved request IDs. This never submits another paid generation.
+export async function refreshVoicedSalesReceipts(plan, readCost = supplierRequestCost) {
+  const hold = plan.billing?.holdId ? q.get('SELECT pricing_snapshot_json FROM credit_holds WHERE tenant_id=? AND id=?', curTenant(), plan.billing.holdId) : null;
+  let required = false;
+  try { required = JSON.parse(hold?.pricing_snapshot_json || '{}').supplierCostPolicy?.enabled === true; } catch { return; }
+  for (const event of plan.paidExecution || []) {
+    if (event.status !== 'returned' || (!required && !event.supplierCosts?.length)) continue;
+    if (event.supplierCosts?.length && event.supplierCosts.every(cost => cost.status === 'known')) continue;
+    const requestId = event.providerRequestId || event.supplierCosts?.find(cost => cost.requestId)?.requestId;
+    if (!requestId) continue;
+    const receipt = await readCost({ requestId, model: event.model, providerId: event.providerId || plan.providerId });
+    if (receipt) event.supplierCosts = [receipt];
+  }
 }
 
 function actualCost(events, price) {
@@ -275,66 +335,101 @@ async function prepareImages(images, workDir, binaries, runner) {
 /** The caller supplies resolved attachments and tenant-scoped grounding, never
  * body-provided facts/cards/notes. Runtime seams exist only on app.locals. */
 export async function createVoicedSalesVideoJob({
+  durationSeconds = 15,
   actor,
   brief,
   references,
   providerImages,
   grounding,
-  voiceId,
   audience = '',
   quoteFingerprint,
+  approvedChat = null,
   runtime = {},
 }) {
+  const duration = resolveAiSalesVideoDuration(durationSeconds), segmentCount = nativeSegmentCount(duration);
+  const segmentDuration = duration / segmentCount;
   const tenantId = curTenant(),
-    selectedVoice = resolveSalesVoice(actor, voiceId),
     textModel = textModelFor(actor.role);
   if (Number(actor.tenant_id) !== Number(tenantId))
     throw fail('视频租户上下文不一致', 'AI_SALES_VIDEO_TENANT_CONTEXT_INVALID', 403);
+  const approval = approvedChat ? approvedNativeChatPlan({ actor, sessionId: approvedChat.sessionId, planVersion: approvedChat.planVersion, employeeIdx: 10 }) : null;
+  if (approval) {
+    if ((approval.plan.options?.durationSeconds ?? 30) !== duration) throw fail('所选时长与已确认方案不一致', 'AI_SALES_VIDEO_CONFIRMED_SCRIPT_MISMATCH');
+    const checked = validateAiSalesVideoScript(approval.plan.script, { pack: approval.plan.grounding?.storeFacts, scanText: runtime.scanText || scanText, durationSeconds: duration });
+    if (!checked.ok || digest(checked.script) !== digest(approval.plan.script)) throw fail('已确认脚本未通过事实与安全核验', 'AI_SALES_VIDEO_CONFIRMED_SCRIPT_INVALID');
+    if (brief !== approval.plan.brief || digest(references.map(ref => Number(ref.id))) !== digest(approval.plan.fileIds)) throw fail('素材或需求与确认版本不一致', 'AI_SALES_VIDEO_CONFIRMED_SCRIPT_MISMATCH');
+    grounding = approval.plan.grounding;
+    const existing = q.get("SELECT id,snapshot_json FROM media_jobs WHERE tenant_id=? AND user_id=? AND json_extract(snapshot_json,'$.approvedChat.sessionId')=? AND json_extract(snapshot_json,'$.approvedChat.planVersion')=?", tenantId, actor.id, approval.provenance.sessionId, approval.provenance.planVersion);
+    if (existing) return { response: { jobId: existing.id, pollUrl: `/content/media-jobs/${existing.id}`, salesVideo: publicVoicedSalesProgress(JSON.parse(existing.snapshot_json), tenantId) }, run: null };
+  }
   const cleanBrief = normalizeAiSalesVideoBrief(brief);
   if (!providerImages.length || providerImages.length > 6)
     throw fail('请提供1–6张参考图', 'AI_SALES_VIDEO_FRAME_INVALID', 400);
-  if (quoteFingerprint !== undefined && quoteFingerprint !== salesVideoPriceQuote(textModel).fingerprint)
+  if (quoteFingerprint !== undefined && quoteFingerprint !== salesVideoPriceQuote(textModel, { confirmedChat: !!approval, durationSeconds: duration }).fingerprint)
     throw fail('报价已变化，请关闭并重新打开面板确认预授权上限；未占扣', 'AI_SALES_VIDEO_QUOTE_CHANGED');
+  const skillContext = buildNativeContentSkillContext(10, { tenantId, userId: actor.id });
   const plan = {
     workflow: AI_SALES_VIDEO_WORKFLOW,
     voiceMode: 'voiced',
+    audioMode: 'provider_native',
+    subtitleTiming: 'script_estimated',
     employee: { ...AI_SALES_VIDEO_EMPLOYEE },
-    model: AI_SALES_VOICED_MODEL,
-    durationSeconds: 30,
-    segmentDurationSeconds: 15,
-    segmentCount: 2,
+    narrationStyle: AI_SALES_NATIVE_NARRATION_STYLE,
+    narrationTiming: AI_SALES_NATIVE_NARRATION_TIMING,
+    model: videoModel(),
+    providerId: selectedProviderId(),
+    durationSeconds: duration,
+    segmentDurationSeconds: segmentDuration,
+    segmentCount,
     brief: cleanBrief,
-    voiceId: selectedVoice,
     phase: 'preflight',
     scriptMode: 'pending',
     script: null,
-    segments: [1, 2].map(index => ({ index, durationSeconds: 15, status: 'planned' })),
+    segments: Array.from({ length: segmentCount }, (_, i) => i + 1).map(index => ({
+      index,
+      durationSeconds: segmentDuration,
+      status: 'planned',
+    })),
     references: references.map((ref, i) => ({
       id: Number(ref.id) || null,
       name: String(ref.name || `参考图${i + 1}`).slice(0, 200),
       contentSha256: digest(providerImages[i]),
     })),
     employeeExecution: {
-      ...buildContentEmployeeWorkbenchProfile(10),
+      ...skillContext.profile,
+      appliedSkills: skillContext.evidence,
       selectedRuntime: {
         workflow: AI_SALES_VIDEO_WORKFLOW,
-        model: AI_SALES_VOICED_MODEL,
+        model: videoModel(),
         textModel,
-        ttsModel: AI_SALES_VIDEO_TTS_MODEL,
+        audioMode: 'provider_native',
+        subtitleTiming: 'script_estimated',
         automaticPublishing: false,
       },
     },
     grounding: grounding.evidence,
     storeFactSnapshot: grounding.storeFacts || { facts: [] },
     paidExecution: [],
+    ...(approval ? { approvedChat: approval.provenance } : {}),
     providerExecution: {
       invocationStarted: false,
       invocationCount: 0,
-      segments: [1, 2].map(index => ({ index, durationSeconds: 15, status: 'planned', taskId: null })),
+      segments: Array.from({ length: segmentCount }, (_, i) => i + 1).map(index => ({
+        index,
+        durationSeconds: segmentDuration,
+        status: 'planned',
+        taskId: null,
+      })),
     },
-    billing: { state: 'not_held', heldCredits: 0, chargedCredits: 0, pendingReconciliation: false },
+    billing: {
+      state: 'not_held',
+      heldCredits: 0,
+      chargedCredits: 0,
+      pendingReconciliation: false,
+    },
   };
-  const inserted = q.run(
+  const inserted = withImmediateTransaction(db, () => {
+    const result = q.run(
     `INSERT INTO media_jobs(user_id,kind,model,prompt,status,content_employee_idx,content_employee_key,content_employee_name,content_employee_group,content_run_mode,profile_version,prompt_hash,snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     actor.id,
     'video',
@@ -346,10 +441,15 @@ export async function createVoicedSalesVideoJob({
     'AI带货员',
     '商业视频工坊',
     AI_SALES_VIDEO_WORKFLOW,
-    'ai_sales_video.voiced.v1',
+    'ai_sales_video.native_audio.v4',
     digest(cleanBrief),
     JSON.stringify(plan),
   );
+    if (approval) q.run('UPDATE native_chat_plans SET generation_json=? WHERE tenant_id=? AND session_id=? AND version=?',
+      JSON.stringify({ kind: 'video', planVersion: approval.provenance.planVersion, jobId: Number(result.lastInsertRowid), pollUrl: `/content/media-jobs/${result.lastInsertRowid}` }),
+      tenantId, approval.provenance.sessionId, approval.provenance.planVersion);
+    return result;
+  });
   const jobId = Number(inserted.lastInsertRowid),
     pollUrl = `/content/media-jobs/${jobId}`;
   let workDir, binaries, images, quote, hold;
@@ -377,30 +477,40 @@ export async function createVoicedSalesVideoJob({
   try {
     if ((!runtime.generateFn || !runtime.submitSegment) && !yunwuAvailable())
       throw fail('未配置真实文本/Wan通道，未调用收费服务');
-    const publicBaseUrl = aiSalesVideoProviderPublicBaseUrl();
-    if (!runtime.publishAsset && !publicBaseUrl) throw fail('配音需要供应商可拉取的HTTPS公网地址，尚未配置');
-    const voiceConfig = getTenantConfig('avatar_minimax_voice', {}, tenantId);
-    if (!runtime.voiceClient && !(voiceConfig?.apiKey || voiceConfig?.key || yunwuApiKey()))
-      throw fail('未配置配音服务凭据');
-    quote = salesVideoPriceQuote(textModel);
-    binaries = runtime.mediaReady ? await runtime.mediaReady() : await assertAiSalesVoicedComposerReady();
+    quote = salesVideoPriceQuote(textModel, { confirmedChat: !!approval, durationSeconds: duration });
+    binaries = runtime.mediaReady
+      ? await runtime.mediaReady()
+      : await assertAiSalesVoicedComposerReady({
+          audioMode: 'provider_native',
+          durationSeconds: duration,
+        });
     workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nw-voiced-sales-'));
     images = await (runtime.prepareImages || prepareImages)(providerImages, workDir, binaries, runner);
-    if (salesVideoPriceQuote(textModel).fingerprint !== quote.fingerprint)
+    if (salesVideoPriceQuote(textModel, { confirmedChat: !!approval, durationSeconds: duration }).fingerprint !== quote.fingerprint)
       throw fail('检查期间报价发生变化，请重新确认预授权上限；未占扣', 'AI_SALES_VIDEO_QUOTE_CHANGED');
-    const cards = listBenchmarkCards(tenantId, { verifiedOnly: true, limit: 3 });
+    const cards = listBenchmarkCards(tenantId, {
+      verifiedOnly: true,
+      limit: 3,
+    });
     const notes = activeContentEvolutionNotes(10, { tenantId });
-    plan.learning = { benchmarkCardIds: cards.map(card => card.id), evolutionNoteIds: notes.map(note => note.id) };
+    plan.learning = {
+      benchmarkCardIds: cards.map(card => card.id),
+      evolutionNoteIds: notes.map(note => note.id),
+      skillRevision: skillContext.evidence.revision,
+      learnedSkillIds: skillContext.evidence.learnedSkillIds,
+      customSkillIds: skillContext.evidence.customSkillIds,
+      skillPromptHash: skillContext.evidence.promptHash,
+    };
     plan.priceQuote = quote;
     hold = holdCredits({
       userId: actor.id,
-      feature: 'AI带货员·有声30秒成片',
+      feature: `AI带货员·有声${duration}秒成片`,
       kind: 'video',
       model: plan.model,
       credits: quote.maxCredits,
       refType: 'media_job',
       refId: jobId,
-      note: '文本最多3次、配音最多3次、Wan15秒最多2段的组合预授权',
+      note: approval ? `复用已确认且已结算脚本，仅生成原生有声${segmentDuration}秒${segmentCount}段，不重复收取文字费` : `文本最多2次、原生有声${segmentDuration}秒最多${segmentCount}段的预授权，无独立TTS`,
     });
     plan.billing = {
       state: 'held',
@@ -412,7 +522,7 @@ export async function createVoicedSalesVideoJob({
     plan.phase = 'queued';
     persist('处理中', null, null, null, '阻塞');
     const run = () =>
-      runWithTenant(tenantId, async () => {
+      runWithTenant(tenantId, () => withTaskProvider(plan, async () => {
         // Claim once before any external action. Repeated/late invocations cannot
         // submit duplicate paid jobs, including a restarted browser poll.
         const current = q.get(
@@ -426,18 +536,19 @@ export async function createVoicedSalesVideoJob({
         try {
           persist('处理中');
           const begin = (kind, model, index) => {
-            const limit = kind === 'video' ? 2 : 3;
+            if (!['text', 'video'].includes(kind)) throw fail('原生音画同生不调用独立TTS');
+            const limit = kind === 'video' ? segmentCount : 2;
             if (plan.paidExecution.filter(e => e.kind === kind).length >= limit) throw fail('供应商调用超过授权次数');
             const event = {
               id: plan.paidExecution.length + 1,
               kind,
-              model,
+              model, providerId: plan.providerId,
               index,
               status: 'started',
               startedAt: new Date().toISOString(),
             };
             plan.paidExecution.push(event);
-            plan.phase = kind === 'text' ? 'script' : kind === 'tts' ? 'voice' : 'video';
+            plan.phase = kind === 'text' ? 'script' : 'video';
             plan.providerExecution.invocationStarted = true;
             persist('处理中'); // durable intent BEFORE invocation
             return event;
@@ -465,102 +576,79 @@ export async function createVoicedSalesVideoJob({
               status: 'returned',
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
+              ...(usage.supplierCosts ? { supplierCosts: usage.supplierCosts } : {}),
             });
             persist('处理中');
             return result;
           };
           const context = {
+            durationSeconds: duration,
             brief: cleanBrief,
             storeFacts: grounding.storeFacts,
             storeFactsPrompt: grounding.storeFactsPrompt,
             promptContext: grounding.promptContext,
             benchmarkCards: cards,
             evolutionNotes: notes,
+            skillPrompt: skillContext.prompt,
             audience: String(audience).slice(0, 120),
             model: textModel,
             role: actor.role,
             generateFn: textFn,
             scanText: runtime.scanText || scanText,
           };
-          const generated = await generateAiSalesVideoScript(context);
+          const generated = approval ? { script: approval.plan.script, warnings: approval.plan.warnings || [] } : await generateAiSalesVideoScript(context);
           plan.scriptMode = 'model';
           plan.script = generated.script;
+          plan.scriptWarnings = generated.warnings || [];
           persist('处理中');
-          const client =
-            runtime.voiceClient ||
-            createMiniMaxVoiceClient({
-              apiKey: voiceConfig?.apiKey || voiceConfig?.key || yunwuApiKey(),
-              baseUrl: voiceConfig?.baseUrl || yunwuMediaBaseUrl(),
-            });
-          const trackedClient = {
-            synthesize: async params => {
-              const event = begin(
-                'tts',
-                AI_SALES_VIDEO_TTS_MODEL,
-                plan.paidExecution.filter(e => e.kind === 'tts').length + 1,
-              );
-              const output = await client.synthesize(params);
-              if (!output?.audioUrl) throw fail('配音调用未返回音轨');
-              event.status = 'returned';
-              persist('处理中');
-              return output;
-            },
-          };
-          const voiced = await synthesizeAiSalesVideoVoiceTracks({
-            ...binaries,
-            runner,
-            script: plan.script,
-            voiceId: selectedVoice,
-            voiceClient: trackedClient,
-            workDir,
-            fetchImpl: runtime.fetchImpl,
-            publishAsset:
-              runtime.publishAsset ||
-              createAiSalesVideoAssetPublisher({ tenantId, userId: actor.id, publicBaseUrl, includeMetadata: true }),
-            condenseShot: request => condenseAiSalesVideoShot({ ...context, ...request }),
-            onTrackReady: (track, script) => {
-              plan.script = script;
-              const { index, fileId, sha256, durationSeconds, measuredSeconds, speechSeconds, tempo, condensed } =
-                track;
-              plan.voiceTracks = [
-                ...(plan.voiceTracks || []),
-                { index, fileId, sha256, durationSeconds, measuredSeconds, speechSeconds, tempo, condensed },
-              ];
-              plan.voiceScriptSha256 = digest(script);
-              persist('处理中');
-            },
-          });
-          plan.script = voiced.script;
+          plan.voiceScriptSha256 = digest(plan.script);
+          persist('处理中');
           const clips = [],
             submittedSegments = [];
-          for (const [i, shot] of plan.script.shots.entries()) {
+          let providerError = null;
+          const providerShots = plan.model === PROVIDER_360_VIDEO_MODEL ? [{
+            ...plan.script.shots[0],
+            visual: plan.script.shots.map(shot => `${shot.start}–${shot.end}秒：${shot.visual}`).join('\n'),
+            voiceover: plan.script.shots.map(shot => shot.voiceover).join(''),
+          }] : plan.script.shots;
+          for (const [i, shot] of providerShots.entries()) {
             const segment = plan.providerExecution.segments[i];
             segment.status = 'submitting';
             const event = begin('video', plan.model, i + 1);
+            try {
             const submitted = await (runtime.submitSegment || submitAliBailianVideoSegment)({
               model: plan.model,
-              duration: 15,
+              duration: segmentDuration,
               resolution: '720P',
               promptExtend: false,
-              images: [images[i % images.length]],
-              audioUrl: voiced.tracks[i].publicUrl,
-              prompt:
-                `${shot.visual}\n中文独白：${shot.voiceover}\n参考图保持产品及人物身份；使用给定音轨，不生成新口播或字幕。`.slice(
-                  0,
-                  1500,
-                ),
+              images: plan.model === PROVIDER_360_VIDEO_MODEL ? images : [images[i % images.length]],
+              // Omit audio_url: Wan generates its own speech and sound with the video.
+              prompt: wanNativeAudioPrompt(shot, { durationSeconds: duration, segmentDurationSeconds: segmentDuration, singleGeneration: plan.model === PROVIDER_360_VIDEO_MODEL }),
             });
             segment.taskId = taskId(submitted.taskId);
             if (!segment.taskId) throw fail('Wan未返回可持久化任务ID');
             event.taskId = segment.taskId;
+            event.providerRequestId = submitted.providerRequestId || null;
+            event.durationSeconds = segmentDuration;
+            if (submitted.supplierCosts?.length) event.supplierCosts = submitted.supplierCosts;
             event.status = 'returned';
             segment.status = 'provider_submitted';
             plan.providerExecution.invocationCount += 1;
             persist('处理中');
             submittedSegments.push(submitted);
+            } catch (error) {
+              event.failure = { code: String(error?.code || 'PROVIDER_SUBMISSION_UNKNOWN'),
+                phase: error?.providerResponsePhase || 'request', responseStatus: error?.responseStatus || null,
+                requestId: error?.providerRequestId || null };
+              providerError = error;
+              persist('处理中');
+              break; // Never repeat an uncertain paid POST. Retrieve known tasks below.
+            }
           }
           for (const [i, segment] of plan.providerExecution.segments.entries()) {
             const submitted = submittedSegments[i];
+            if (!segment.taskId || !submitted) continue;
+            try {
             const ready = submitted.url
               ? submitted
               : await waitForProviderVideo({
@@ -575,6 +663,11 @@ export async function createVoicedSalesVideoJob({
                   intervalMs: runtime.intervalMs || 5000,
                   sleep: runtime.sleep,
                 });
+            const paidEvent = plan.paidExecution.find(event => event.kind === 'video' && event.index === i + 1);
+            if (paidEvent && ready.supplierCosts?.some(cost => cost.status === 'known')) {
+              paidEvent.supplierCosts = ready.supplierCosts;
+              persist('处理中');
+            }
             const clip = await (runtime.downloadSegment || downloadProviderVideoClip)({
               url: ready.url,
               outputDir: workDir,
@@ -582,21 +675,40 @@ export async function createVoicedSalesVideoJob({
               fetchImpl: runtime.fetchImpl,
             });
             clips.push(clip.path || clip.absolutePath);
+            const supplierCost = ready.supplierCosts?.find(cost => cost.status === 'known')
+              || paidEvent?.supplierCosts?.find(cost => cost.status === 'known')
+              || await (runtime.supplierRequestCost || supplierRequestCost)({ requestId: paidEvent?.providerRequestId, model: plan.model });
+            if (supplierCost && paidEvent) paidEvent.supplierCosts = [supplierCost];
             segment.status = 'downloaded';
+            try {
+              const partial = await preserveSalesVideoClip({ clip, tenantId, jobId, index: i + 1, binaries, runner });
+              plan.partialResults = [...(plan.partialResults || []).filter(item => item.index !== i + 1), partial];
+            } catch {
+              // A failed optional preview must not discard footage still usable by the composer.
+              segment.partialSaveFailed = true;
+            }
             persist('处理中');
+            } catch (error) { providerError ||= error; }
           }
-          const subtitleCues = buildAiSalesVideoSubtitleCues({ script: plan.script, tracks: voiced.tracks });
+          if (providerError) throw providerError;
+          const subtitleCues = buildAiSalesVideoSubtitleCues({
+            script: plan.script,
+            timing: plan.narrationTiming,
+            durationSeconds: duration,
+          });
           plan.phase = 'compose';
           persist('处理中');
           delivered = await (runtime.compose || composeAiSalesVideo)({
             ...binaries,
             tenantId,
             segments: clips,
-            voiceTracks: voiced.tracks.map(track => track.localPath),
+            audioMode: 'provider_native',
+            targetDurationSeconds: duration,
             subtitleCues,
             requireAudio: true,
           });
-          if (!voicedSalesDeliveryVerified(delivered, tenantId)) throw fail('合成器未返回可核验的30秒有声字幕成片');
+          if (!voicedSalesDeliveryVerified(delivered, tenantId, plan.audioMode, duration))
+            throw fail(`合成器未返回可核验的${duration}秒有声字幕成片`);
           plan.result = {
             url: delivered.url,
             durationSeconds: delivered.durationSeconds,
@@ -605,6 +717,9 @@ export async function createVoicedSalesVideoJob({
             subtitlesBurnedIn: true,
             subtitleCount: subtitleCues.length,
             audioVerification: delivered.audioVerification || [],
+            audioSource: delivered.audioSource,
+            subtitleTiming: 'script_estimated',
+            ...(delivered.transition ? { transition: delivered.transition } : {}),
           };
           plan.segments = plan.script.shots.map(shot => ({
             index: shot.index,
@@ -614,6 +729,8 @@ export async function createVoicedSalesVideoJob({
             status: 'composed',
           }));
           persist('成功', null, delivered.url);
+          await refreshVoicedSalesReceipts(plan, runtime.supplierRequestCost || supplierRequestCost);
+          persist('成功', null, delivered.url, null, '成功');
           const settlement = voicedSalesSettlement(plan);
           const settled = settleHold(hold, settlement);
           if (!settled) throw fail('组合账务未成功结算');
@@ -622,16 +739,28 @@ export async function createVoicedSalesVideoJob({
             state: 'settled',
             chargedCredits: settled.credits,
             pendingReconciliation: false,
-            costYuan: settlement.costYuanOverride,
+            costYuan: settled.costYuan,
+            supplierCostStatus: settled.supplierCostStatus,
           };
           plan.phase = 'complete';
           persist('成功', null, delivered.url, settled.credits, '成功');
         } catch (error) {
           const hasPaid = plan.paidExecution.length > 0;
           let released = false;
-          if (!hasPaid) {
+          const row = q.get('SELECT status,url,snapshot_json FROM media_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+          // A late worker cannot refund a replacement worker's active task.
+          if (!row || row.snapshot_json !== savedSnapshot) return;
+          const hasDeliverable = row?.status === '成功' && !!row.url;
+          if (!hasDeliverable) {
             try {
-              released = Boolean(releaseHold(hold, '供应商调用前失败，全额退回'));
+              released = Boolean(hasPaid
+                ? refundHold(hold, { note: '带货视频最终失败且无完整成片，积分全退，供应商成本由平台承担',
+                    assertRefundable: () => {
+                      const owned = q.get('SELECT snapshot_json FROM media_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+                      if (owned?.snapshot_json !== savedSnapshot) throw fail('任务已由其他执行者接管，不调整账本', 'AI_SALES_VIDEO_STATE_CONFLICT');
+                      return true;
+                    } })
+                : releaseHold(hold, '供应商调用前失败，全额退回'));
             } catch {
               /* reconciliation */
             }
@@ -642,15 +771,14 @@ export async function createVoicedSalesVideoJob({
             chargedCredits: released ? 0 : null,
             pendingReconciliation: !released,
             providerInvocationStarted: hasPaid,
-            releaseSuppressed: hasPaid,
+            releaseSuppressed: !released,
           };
           plan.failureCode = String(error?.code || 'AI_SALES_VOICED_FAILED');
-          const row = q.get('SELECT status,url FROM media_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
           if (['处理中', '成功'].includes(row?.status)) {
             try {
               persist(
                 row.status === '成功' ? '成功' : '失败',
-                '有声带货未完整交付或账务待核验；请查看执行阶段，不要重复提交收费任务',
+                released ? '本次未生成完整成片，积分已全额退回。' : '成片或费用待核验；请查看任务结果。',
                 row.url,
                 released ? 0 : null,
                 row.status,
@@ -662,7 +790,7 @@ export async function createVoicedSalesVideoJob({
         } finally {
           if (workDir) await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
         }
-      });
+      }));
     const publicPlan = publicVoicedSalesProgress(plan, tenantId);
     return {
       response: {
@@ -670,7 +798,7 @@ export async function createVoicedSalesVideoJob({
         pollUrl,
         status: 'processing',
         workflow: plan.workflow,
-        durationSeconds: 30,
+        durationSeconds: duration,
         providerCalls: 0,
         billing: plan.billing,
         plan: publicPlan,
@@ -707,7 +835,7 @@ export async function createVoicedSalesVideoJob({
         pollUrl,
         status: 'blocked',
         workflow: plan.workflow,
-        durationSeconds: 30,
+        durationSeconds: duration,
         providerCalls: 0,
         reason,
         billing: plan.billing,

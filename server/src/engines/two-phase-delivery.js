@@ -5,8 +5,8 @@
 // 2. generate 只负责调用供应商；
 // 3. persist 负责把完整业务产物原子落库；
 // 4. 只有 persist 成功后才允许 settle；
-// 5. generate / persist 失败时，只有能证明外部调用尚未开始才 release；
-// 6. 外调已开始或状态不确定时保留 hold 待对账，禁止猜测退款后重复调用；
+// 5. 调用方提供成果探针和 refund 时，最终失败且没有成果就全额退回用户积分；
+// 6. 供应商成本单独留账；已保存成果不因结算异常被删除或重新生成；
 // 7. settle 失败不回滚已经交付的业务产物，也不虚构实扣金额，而是保留 hold 待对账。
 
 const text = (value) => String(value ?? "").slice(0, 500);
@@ -40,6 +40,12 @@ export function twoPhaseBillingSummary({
     pendingReconciliation: state === "pending_reconciliation",
     note: text(note),
     error: error ? text(error?.message || error) : null,
+    ...(error?.code === 'BILLING_SETTLEMENT_BALANCE_INSUFFICIENT' ? {
+      code: error.code,
+      shortfallCredits: error.shortfallCredits,
+      additionalCredits: error.additionalCredits,
+      requiredCredits: error.requiredCredits,
+    } : {}),
   };
 }
 
@@ -80,7 +86,7 @@ function attachBilling(error, billing, phase) {
 function billingUsageMissing() {
   return Object.assign(
     new Error(
-      "真实 API 文本交付缺少可结算的有效 token 用量，已在业务落库前停止交付",
+      "正文已保存，供应商尚未返回有效计费用量，费用待核对",
     ),
     { status: 409, code: "BILLING_USAGE_MISSING", retryable: false },
   );
@@ -91,7 +97,7 @@ function assertPositiveApiUsage(settleArgs) {
   const aiMode = args.aiMode ?? "api";
   // 固定单价的图片/视频/向量任务以 credits 作为权威结算证据，
   // 模板或失败退款也不应被 token 门禁误伤。
-  if (aiMode !== "api" || args.credits != null) return;
+  if (aiMode !== "api" || args.credits != null || args.costSource || args.usage?.supplierCosts?.length) return;
   const usage =
     args.usage && typeof args.usage === "object" ? args.usage : null;
   const hasInput =
@@ -125,6 +131,8 @@ export async function executeHeldDelivery({
   persist,
   settle,
   release,
+  refund = null,
+  hasDeliverable = null,
   settlement,
   externalInvocationStarted = null,
   releaseNote = "生成或业务落库失败，预授权全额退回",
@@ -153,18 +161,9 @@ export async function executeHeldDelivery({
 
   let output;
   let delivery;
-  let prevalidatedSettlementArgs;
   let phase = "generate";
   try {
     output = await generate();
-    if (requirePositiveApiUsage) {
-      phase = "validate_billing";
-      prevalidatedSettlementArgs =
-        typeof settlement === "function"
-          ? settlement(output, null)
-          : settlement || {};
-      assertPositiveApiUsage(prevalidatedSettlementArgs);
-    }
     phase = "persist";
     delivery = await persist(output);
   } catch (error) {
@@ -185,7 +184,29 @@ export async function executeHeldDelivery({
         invocationStateUncertain = true;
       }
     }
-    if (invocationStarted || invocationStateUncertain) {
+    // A terminal failure may refund the customer even if the supplier charged.
+    // The caller must check its durable artifacts: a saved result still needs
+    // settlement, while supplier-cost reconciliation must not retain a failed
+    // customer's balance. This never retries the external invocation.
+    let delivered = false;
+    try { delivered = hasDeliverable ? Boolean(await hasDeliverable()) : phase === 'persist'; }
+    catch { delivered = true; }
+    if (hasDeliverable && delivered) {
+      billing = twoPhaseBillingSummary({ state: 'pending_reconciliation', hold,
+        note: '已保留生成结果，费用待核对，不会重复生成。' });
+    } else if (typeof refund === 'function' && !delivered && (invocationStarted || invocationStateUncertain || externalInvocationStarted === null)) {
+      try {
+        const failureNote = typeof releaseNote === 'function' ? releaseNote(error, phase) : releaseNote;
+        const refunded = refund(hold, { note: `${failureNote}；最终失败且无可交付成果，积分全额退回；供应商成本由平台承担` });
+        if (!refunded) throw new Error('退款未返回权威账务结果');
+        billing = twoPhaseBillingSummary({ state: 'released', hold, settled: refunded,
+          note: '本次未形成可交付成果，积分已全额退回。' });
+        billing.refundedCredits = refunded.refundedCredits;
+      } catch (refundError) {
+        billing = twoPhaseBillingSummary({ state: 'pending_reconciliation', hold, error: refundError,
+          note: '本次未形成可交付成果，退款入账异常，待平台处理。' });
+      }
+    } else if (invocationStarted || invocationStateUncertain) {
       billing = twoPhaseBillingSummary({
         state: "pending_reconciliation",
         hold,
@@ -228,11 +249,10 @@ export async function executeHeldDelivery({
 
   let billing;
   try {
-    const settleArgs = requirePositiveApiUsage
-      ? prevalidatedSettlementArgs
-      : typeof settlement === "function"
+    const settleArgs = typeof settlement === "function"
         ? settlement(output, delivery)
         : settlement || {};
+    if (requirePositiveApiUsage) assertPositiveApiUsage(settleArgs);
     const settled = settle(hold, {
       ...settleArgs,
       note: settleArgs?.note || settlementNote,
@@ -250,7 +270,9 @@ export async function executeHeldDelivery({
       state: "pending_reconciliation",
       hold,
       error: settleError,
-      note: "业务产物已交付；预授权仍保留，尚未确认实扣，需人工对账。",
+      note: settleError?.code === 'BILLING_SETTLEMENT_BALANCE_INSUFFICIENT'
+        ? '成果已保留，算力余额不足以结算实际费用；补足余额后核对原任务，无需重新生成。'
+        : "业务产物已交付；预授权仍保留，尚未确认实扣，需核对上游扣费记录。",
     });
     if (typeof onPendingReconciliation === "function") {
       try {

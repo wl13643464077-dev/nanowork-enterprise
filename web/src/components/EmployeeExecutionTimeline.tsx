@@ -5,6 +5,7 @@ type Props = {
   progress?: EmployeeExecutionProgress | null;
   title?: string;
   compact?: boolean;
+  diagnostics?: boolean;
 };
 
 const ICONS: Record<string, string> = {
@@ -65,89 +66,78 @@ function elapsedSinceCurrentAttempt(progress?: EmployeeExecutionProgress | null)
   return `已用时约 ${minutes} 分 ${seconds} 秒`;
 }
 
-export default function EmployeeExecutionTimeline({ progress, title = '实时执行过程', compact = false }: Props) {
+const STAGE_LABELS: Record<string, string> = {
+  boot: '正在准备任务',
+  dataset: '正在读取资料',
+  knowledge: '正在查找资料',
+  search: '正在查找资料',
+  location: '正在核对资料',
+  fetch: '正在阅读资料',
+  tool: '正在生成附件',
+  generate: '正在生成内容',
+  validate: '正在检查结果',
+  repair: '正在完善内容',
+  persist: '正在保存结果',
+  settle: '正在核对费用',
+  done: '任务已完成',
+  error: '执行已中断',
+};
+
+export function executionStageLabel(progress?: EmployeeExecutionProgress | null) {
+  return STAGE_LABELS[String(progress?.currentStage || '')] || progress?.currentLabel || '正在等待任务进度';
+}
+
+export default function EmployeeExecutionTimeline({
+  progress,
+  title = '任务进度',
+  compact = false,
+  diagnostics = false,
+}: Props) {
   const steps = Array.isArray(progress?.steps) ? progress.steps : [];
-  const percent = Math.max(0, Math.min(100, Number(progress?.percent) || (steps.length ? 10 : 4)));
-  const currentLabel = progress?.currentLabel || '数字员工已接单，正在建立安全执行环境';
+  const currentLabel = executionStageLabel(progress);
+  const running = !['done', 'error'].includes(String(progress?.currentStage || ''));
   const receivedChars = normalizeReceivedChars(progress?.receivedChars);
-  const currentStage = String(progress?.currentStage || '');
-  const isModelResponseStage =
-    MODEL_RESPONSE_STAGES.has(currentStage) || (Boolean(progress) && !currentStage && receivedChars != null);
-  const waitingForFirstCharacter = receivedChars === 0 && isModelResponseStage;
-  const isReceivingResponse = receivedChars != null && receivedChars > 0;
-  const visibleCurrentLabel = waitingForFirstCharacter
-    ? '模型正在推理，等待首字返回'
-    : isReceivingResponse && isModelResponseStage
-      ? '模型正在实时返回岗位交付'
-      : currentLabel;
   const attemptNumber = Number(progress?.attemptNumber);
-  const attemptLabel =
-    Number.isInteger(attemptNumber) && attemptNumber > 0
-      ? `第 ${attemptNumber} 次${progress?.phase === 'repair' ? '定向修复' : '生成'}`
-      : '';
-  const elapsedLabel = elapsedSinceCurrentAttempt(progress);
-  const activityLabel = formatTime(progress?.lastActivityAt);
-  const progressDetails = [
-    attemptLabel,
-    waitingForFirstCharacter ? `当前阶段：${currentLabel}` : '',
-    isReceivingResponse ? `已接收约 ${receivedChars.toLocaleString('zh-CN')} 个响应字符（流式进度，不是质检阈值）` : '',
-    elapsedLabel || (activityLabel ? `最近活动 ${activityLabel}` : ''),
+  const diagnosticDetails = [
+    Number.isInteger(attemptNumber) && attemptNumber > 0 ? `第 ${attemptNumber} 次生成` : '',
+    receivedChars != null ? `已接收 ${receivedChars.toLocaleString('zh-CN')} 个响应字符` : '',
+    elapsedSinceCurrentAttempt(progress),
   ].filter(Boolean);
 
   return (
     <section className={`employee-execution${compact ? ' is-compact' : ''}`} aria-label={title}>
-      <header className="employee-execution-head">
-        <div>
-          <span className="employee-execution-kicker">LIVE · 真实运行记录</span>
-          <strong>{title}</strong>
+      <div className="employee-execution-current" role="status" aria-live="polite">
+        <strong>{currentLabel}</strong>
+        {running && <span>可稍后回来查看结果</span>}
+      </div>
+      {running && (
+        <div className="employee-execution-track" role="progressbar" aria-label={currentLabel}>
+          <i />
         </div>
-        <span className="employee-execution-percent">{percent}%</span>
-      </header>
-      <div
-        className="employee-execution-track"
-        role="progressbar"
-        aria-label={visibleCurrentLabel}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-      >
-        <i style={{ width: `${percent}%` }} />
-      </div>
-      <div className="employee-execution-current">
-        <span className="employee-execution-pulse" aria-hidden="true" />
-        <span>{visibleCurrentLabel}</span>
-        {progressDetails.length > 0 && <small>{progressDetails.join(' · ')}</small>}
-      </div>
-      <div className="employee-execution-steps">
-        {steps.length ? (
-          steps.map((step, index) => {
-            const meta = stepMeta(step.stage, step.count, step.attemptNumber);
-            return (
-              <div className={`employee-execution-step is-${step.status}`} key={`${step.stage}-${step.at}-${index}`}>
-                <span className="employee-execution-icon" aria-hidden="true">
-                  {ICONS[step.kind] || '•'}
-                </span>
-                <span className="employee-execution-copy">
-                  <strong>{step.label}</strong>
-                  {meta && <small>{meta}</small>}
-                </span>
-                <time>{formatTime(step.at)}</time>
-              </div>
-            );
-          })
-        ) : (
-          <div className="employee-execution-step is-active">
-            <span className="employee-execution-icon" aria-hidden="true">
-              ●
-            </span>
-            <span className="employee-execution-copy">
-              <strong>{currentLabel}</strong>
-            </span>
-            <time>{formatTime(progress?.lastActivityAt)}</time>
+      )}
+      {(steps.length > 0 || diagnostics) && (
+        <details className="employee-execution-details">
+          <summary>查看详情</summary>
+          {diagnostics && diagnosticDetails.length > 0 && <p>{diagnosticDetails.join(' · ')}</p>}
+          <div className="employee-execution-steps">
+            {steps.map((step, index) => {
+              const meta = diagnostics ? stepMeta(step.stage, step.count, step.attemptNumber) : '';
+              return (
+                <div className={`employee-execution-step is-${step.status}`} key={`${step.stage}-${step.at}-${index}`}>
+                  <span className="employee-execution-icon" aria-hidden="true">
+                    {ICONS[step.kind] || '•'}
+                  </span>
+                  <span className="employee-execution-copy">
+                    <strong>{step.label}</strong>
+                    {meta && <small>{meta}</small>}
+                  </span>
+                  <time>{formatTime(step.at)}</time>
+                </div>
+              );
+            })}
           </div>
-        )}
-      </div>
-      <footer>只展示经过脱敏的阶段事实；搜索词、原始候选网址、提示词和私有材料不会出现在运行日志中。</footer>
+        </details>
+      )}
     </section>
   );
 }

@@ -67,10 +67,11 @@ test("cancel billing callback仅释放未交付held，已settled账本历史原�
       refType: "content_production_pipeline_station",
       refId,
     });
+    // Text settles from real usage: 600 tokens × ¥30/M × 2 ÷ 0.01 = 3.6 → 4 credits.
     settleHold(settled, {
-      credits: 4,
       aiMode: "api",
       model: "offline-model",
+      usage: { inputTokens: 400, outputTokens: 200 },
       note: "historical delivery settled",
     });
     const held = holdCredits({

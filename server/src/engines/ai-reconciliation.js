@@ -1055,6 +1055,16 @@ function refreshPipelineStationBillingEvidence({
   };
 }
 
+function assertReferencePriceReconciliationAllowed(holdRow) {
+  const snapshot = jsonObject(holdRow.pricing_snapshot_json);
+  if (snapshot.supplierCostPolicy?.basis === 'upstream_debit') {
+    throw Object.assign(reconciliationError(
+      '已生成结果已保留；本任务需核验上游实际扣费回执，不能按参考价结算',
+      'BILLING_SUPPLIER_COST_PENDING',
+    ), { billingPending: true, retryable: false });
+  }
+}
+
 function pipelineSettlementAmount(holdRow, business, action) {
   const heldCredits = Number(holdRow.held_credits || 0);
   if (!Number.isSafeInteger(heldCredits) || heldCredits <= 0) {
@@ -1067,6 +1077,7 @@ function pipelineSettlementAmount(holdRow, business, action) {
   if (action === 'release') {
     return { credits: 0, costYuan: 0, inputTokens: 0, outputTokens: 0, model };
   }
+  assertReferencePriceReconciliationAllowed(holdRow);
   if (String(holdRow.kind || '') !== 'text'
     || blockedModel(model)
     || business.usage?.valid !== true) {
@@ -1416,6 +1427,7 @@ function specialProviderSettlementAmount(holdRow, business, action) {
   if (action === 'release') {
     return { credits: 0, costYuan: 0, inputTokens: 0, outputTokens: 0, model };
   }
+  assertReferencePriceReconciliationAllowed(holdRow);
   if (business.providerKind !== 'image'
     || String(holdRow.kind || '') !== 'image'
     || blockedModel(model)

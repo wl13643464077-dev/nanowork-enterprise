@@ -1,6 +1,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -45,6 +46,7 @@ const department = db.prepare("SELECT id FROM marshals WHERE code='M-01'").get()
 assert.ok(department?.id);
 
 const heldAtProvider = [];
+const generatedFixtureFiles = [];
 const providerApp = express();
 providerApp.use(express.json({ limit: '20mb' }));
 providerApp.post('/v1/embeddings', (_req, res) => {
@@ -97,6 +99,7 @@ async function post(route, payload) {
   return { response, payload: await response.json() };
 }
 
+let expectedPendingHolds = 0;
 const heldRows = () => db.prepare(
   `SELECT * FROM credit_holds WHERE tenant_id=? AND status='held' ORDER BY id`,
 ).all(tenantId);
@@ -119,11 +122,11 @@ test('员工对话在供应商调用前预授权，助手消息、风控、引�
     1,
   );
   assert.ok(heldAtProvider.at(-1) > 0, '供应商调用发生时必须已存在预授权');
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
 });
 
-test('员工对话 API 返回正文但 usage 为0时，不落库助手消息且全额退回', async () => {
+test('员工对话 API 返回正文但 usage 为0时，保留助手消息并等待账务核对', async () => {
   const before = balanceOfTenant(tenantId);
   const assistantBefore = db.prepare(
     `SELECT COUNT(*) n FROM marshal_chat_msgs WHERE tenant_id=? AND role='assistant'`,
@@ -132,17 +135,22 @@ test('员工对话 API 返回正文但 usage 为0时，不落库助手消息且�
     message: '强制员工对话零token',
   });
 
-  assert.equal(result.response.status, 409, JSON.stringify(result.payload));
-  assert.equal(result.payload.billing.state, 'released');
-  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'pending_reconciliation');
+  assert.equal(result.payload.billing.chargedCredits, null);
+  assert.ok(result.payload.billing.heldCredits > 0);
+  assert.match(result.payload.billing.error, /计费用量/);
+  expectedPendingHolds += 1;
+  assert.ok(heldRows().some(row => Number(row.id) === Number(result.payload.billing.holdId)));
   assert.equal(db.prepare(
     `SELECT COUNT(*) n FROM marshal_chat_msgs WHERE tenant_id=? AND role='assistant'`,
-  ).get(tenantId).n, assistantBefore);
-  assert.equal(heldRows().length, 0);
-  assert.equal(balanceOfTenant(tenantId), before);
+  ).get(tenantId).n, assistantBefore + 1);
+  assert.match(result.payload.reply, /完整/);
+  assert.equal(heldRows().length, expectedPendingHolds);
+  assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.heldCredits);
 });
 
-test('技能文件 API 返回正文但 usage 为0时，不落制品记录且全额退回', async () => {
+test('技能文件 API 返回正文但 usage 为0时，保留文件制品并等待账务核对', async () => {
   const before = balanceOfTenant(tenantId);
   const artifactsBefore = db.prepare(
     'SELECT COUNT(*) n FROM generated_artifacts WHERE tenant_id=?',
@@ -152,14 +160,21 @@ test('技能文件 API 返回正文但 usage 为0时，不落制品记录且全�
     format: 'docx',
   });
 
-  assert.equal(result.response.status, 409, JSON.stringify(result.payload));
-  assert.equal(result.payload.billing.state, 'released');
-  assert.equal(result.payload.billing.chargedCredits, 0);
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.billing.state, 'pending_reconciliation');
+  assert.equal(result.payload.billing.chargedCredits, null);
+  assert.ok(result.payload.billing.heldCredits > 0);
+  assert.match(result.payload.billing.error, /计费用量/);
+  expectedPendingHolds += 1;
+  assert.ok(heldRows().some(row => Number(row.id) === Number(result.payload.billing.holdId)));
   assert.equal(db.prepare(
     'SELECT COUNT(*) n FROM generated_artifacts WHERE tenant_id=?',
-  ).get(tenantId).n, artifactsBefore);
-  assert.equal(heldRows().length, 0);
-  assert.equal(balanceOfTenant(tenantId), before);
+  ).get(tenantId).n, artifactsBefore + 1);
+  assert.ok(result.payload.artifactId > 0);
+  assert.ok(result.payload.size > 0);
+  generatedFixtureFiles.push(path.join(fileURLToPath(new URL('../data/', import.meta.url)), result.payload.fileUrl.replace(/^\//, '')));
+  assert.equal(heldRows().length, expectedPendingHolds);
+  assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.heldCredits);
 });
 
 test('员工对话助手消息落库失败时释放预授权，SSE 不提前泄露模型正文', async () => {
@@ -188,7 +203,7 @@ test('员工对话助手消息落库失败时释放预授权，SSE 不提前泄�
       0,
     );
     assert.equal(balanceOfTenant(tenantId), before);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_marshal_chat_persist_failure');
   }
@@ -234,7 +249,7 @@ test('异步员工任务产出落库失败时释放预授权并标记任务失�
       0,
     );
     assert.equal(balanceOfTenant(tenantId), before);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_marshal_task_persist_failure');
   }
@@ -264,7 +279,7 @@ test('技能文件制品记录落库失败时删除文件并释放预授权', as
       0,
     );
     assert.equal(balanceOfTenant(tenantId), before);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_marshal_artifact_persist_failure');
   }
@@ -274,6 +289,7 @@ after(async () => {
   await new Promise(resolve => server.close(resolve));
   await new Promise(resolve => providerServer.close(resolve));
   delete process.env.YUNWU_API_KEY;
+  for (const fixture of generatedFixtureFiles) fs.rmSync(fixture, { force: true });
   try { db.close(); } catch { /* already closed */ }
   for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) {
     try { fs.rmSync(file, { force: true }); } catch { /* clean test database */ }

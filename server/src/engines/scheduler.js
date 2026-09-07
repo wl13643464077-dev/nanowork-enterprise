@@ -3,6 +3,7 @@ import { generateBattlePlan, generateWeeklyReview } from "./plans.js";
 import { sendDailyDigest } from "./daily-digest.js";
 import { notify, safeJsonParse } from "../util.js";
 import { twoPhaseBillingSummary } from "./two-phase-delivery.js";
+import { refundHold } from "./credits.js";
 import { inspectRestaurantOutputAudit } from "./restaurant-output-contract.js";
 import { generationProgressFromSnapshot } from "./employee-generation-progress.js";
 import { mergeContentSpecialProviderBillingEvidence } from "./content-special-provider-bridge.js";
@@ -345,7 +346,7 @@ function holdForRef(refType, refId) {
     holdId: Number(row.id),
     logId: Number(row.log_id),
     tenantId: Number(row.tenant_id),
-    userId: Number(row.user_id),
+    userId: row.user_id == null ? null : Number(row.user_id),
     feature: row.feature,
     kind: row.kind,
     model: row.model,
@@ -406,12 +407,16 @@ function recoverAutomationSpecialProviderAttempts(run, { releaseUnpersisted }) {
   const released = [];
   const pending = [];
   for (const row of rows) {
-    const hasDelivery = Boolean(row.output_json && row.delivery_json);
+    const hasDelivery = Boolean(row.output_json || row.delivery_json);
     const hold = holdForRef(row.billing_ref_type, row.billing_ref_id);
     if (hold && releaseUnpersisted && !hasDelivery) {
       const result = releaseHeldCreditInCurrentTransaction(
         hold,
         `内容自动化运行#${run.id}超时且专项provider无持久化产物，恢复时全额退回`,
+        {assertRefundable: () => {
+          const current = q.get('SELECT status,output_json,delivery_json FROM content_automation_special_provider_attempts WHERE tenant_id=? AND id=?', curTenant(), row.id);
+          return current?.status === row.status && !current.output_json && !current.delivery_json;
+        }},
       );
       if (!result)
         throw new Error(`专项provider预授权#${hold.holdId}无法原子释放`);
@@ -471,10 +476,11 @@ function recoverAutomationSpecialProviderAttempts(run, { releaseUnpersisted }) {
 // 恢复逻辑已经持有 BEGIN IMMEDIATE，不能调用会自行开启事务的 releaseHold。
 // 这里在同一事务内认领 hold、退回积分并改写原流水，确保“任务终止”和“占扣释放”
 // 要么一起提交，要么一起回滚；服务再次崩溃也不会留下永久冻结的积分。
-function releaseHeldCreditInCurrentTransaction(hold, note) {
+function releaseHeldCreditInCurrentTransaction(hold, note, {invoked = true, assertRefundable} = {}) {
   if (!hold?.holdId) return null;
+  if (invoked) return refundHold(hold, {note, assertRefundable, manageTransaction: false});
   const authoritative = q.get(
-    `SELECT id,tenant_id,log_id,held_credits,status
+    `SELECT id,tenant_id,user_id,kind,model,log_id,held_credits,status
     FROM credit_holds WHERE tenant_id=? AND id=?`,
     hold.tenantId,
     hold.holdId,
@@ -482,6 +488,8 @@ function releaseHeldCreditInCurrentTransaction(hold, note) {
   if (
     !authoritative ||
     authoritative.status !== "held" ||
+    authoritative.user_id !== hold.userId ||
+    authoritative.kind !== hold.kind || authoritative.model !== hold.model ||
     Number(authoritative.log_id) !== Number(hold.logId) ||
     Number(authoritative.held_credits) !== Number(hold.credits)
   ) {
@@ -601,6 +609,7 @@ export function recoverStaleContentAutomationRuns(
         const released = releaseHeldCreditInCurrentTransaction(
           hold,
           `内容自动化运行#${run.id}超时且无业务产物，恢复时全额退回`,
+          {assertRefundable: () => Boolean(q.get("SELECT id FROM content_automation_runs WHERE tenant_id=? AND id=? AND status='运行中' AND started_at=? AND content_id IS NULL", curTenant(), run.id, run.started_at))},
         );
         if (!released)
           throw new Error(`内容自动化运行#${run.id}的预授权无法原子释放`);
@@ -759,6 +768,7 @@ export function recoverStaleAgentTasks(
         const released = releaseHeldCreditInCurrentTransaction(
           hold,
           `数字员工任务#${task.id}超时且无业务产物，恢复时全额退回`,
+          {assertRefundable: () => Boolean(q.get("SELECT id FROM agent_tasks WHERE tenant_id=? AND id=? AND status='生成中' AND created_at=? AND output_id IS NULL AND employee_web_snapshot IS ?", curTenant(), task.id, task.created_at, task.employee_web_snapshot))},
         );
         if (!released)
           throw new Error(`数字员工任务#${task.id}的预授权无法原子释放`);
@@ -859,6 +869,7 @@ export function recoverStaleContentEmployeeRuns(
         const released = releaseHeldCreditInCurrentTransaction(
           hold,
           `内容员工运行#${run.id}超时且无业务产物，恢复时全额退回`,
+          {assertRefundable: () => Boolean(q.get("SELECT id FROM content_employee_runs WHERE tenant_id=? AND id=? AND status='生成中' AND updated_at IS ? AND snapshot_json IS ? AND COALESCE(trim(result_md),'')=''", curTenant(), run.id, run.updated_at, run.snapshot_json))},
         );
         if (!released)
           throw new Error(`内容员工运行#${run.id}的预授权无法原子释放`);
@@ -990,6 +1001,18 @@ export function recoverStaleMediaJobs(
         db.exec("COMMIT");
         continue;
       }
+      const providerSegments = Array.isArray(snapshot.providerExecution?.segments) ? snapshot.providerExecution.segments : [];
+      const completedProviderResult = Boolean(
+        snapshot.providerResult?.url || snapshot.providerExecution?.resultUrl || snapshot.result?.url
+        || (providerSegments.length && providerSegments.every(segment =>
+          ['success', 'succeeded', 'completed'].includes(segment.status) && (segment.url || segment.resultUrl))),
+      );
+      if (completedProviderResult && job.result_id == null && !String(job.url || '').trim()) {
+        // A completed receipt waiting for download is not an abandoned generation.
+        db.exec("COMMIT");
+        recovered.push({tenantId:curTenant(),jobId:Number(job.id),action:'preserve_completed_provider_result'});
+        continue;
+      }
       const hold = holdForRef("media_job", job.id);
       const hasDelivery =
         job.result_id != null || Boolean(String(job.url || "").trim());
@@ -997,50 +1020,37 @@ export function recoverStaleMediaJobs(
         providerEvidence.invocationStarted || providerEvidence.hasProviderTaskId;
       let billing = snapshot.billing || null;
       if (hasProviderWork && !hasDelivery) {
-        // An invocation marker is persisted before the paid call. A provider
-        // may have accepted work even when its task id never reached SQLite,
-        // so both that marker and nested segment task ids suppress refunds.
+        // This stale owner is now terminal. Preserve task IDs for free retrieval,
+        // while customer refunds are independent of the supplier's final charge.
+        const settled = hold ? releaseHeldCreditInCurrentTransaction(hold,
+          `媒体任务#${job.id}已终止且无本地成片，用户积分全退`, {
+            assertRefundable: () => Boolean(q.get("SELECT id FROM media_jobs WHERE tenant_id=? AND id=? AND status='处理中' AND snapshot_json IS ? AND result_id IS NULL AND COALESCE(trim(url),'')=''", curTenant(), job.id, job.snapshot_json)),
+          }) : null;
         billing = twoPhaseBillingSummary({
-          state: "pending_reconciliation",
-          hold,
-          note:
-            "已存在供应商调用证据；恢复器不重放外部调用、不假称正在轮询，预授权保留待现有任务恢复或人工对账。",
+          state: "released", hold, settled,
+          note: "任务已终止且无本地成片，用户积分已退回；供应商费用由平台核对，仅可免费取回原任务结果。",
         });
         const updated = q.run(
           `UPDATE media_jobs SET status='失败',error=?,snapshot_json=?
           WHERE tenant_id=? AND id=? AND status='处理中'`,
-          "服务恢复发现已有供应商任务；已停止旧执行，可在AI带货员中复用原任务恢复合成，不会重复生成",
-          JSON.stringify({
-            ...snapshot,
-            billing,
-            providerRecovery: {
-              state: "pending_reconciliation",
-              action: "continue_existing_provider_work",
-              invocationStarted: providerEvidence.invocationStarted,
-              providerTaskEvidenceCount:
-                providerEvidence.segmentTaskCount +
-                (String(job.task_id || "").trim() ? 1 : 0),
-            },
-          }),
-          curTenant(),
-          job.id,
+          "旧执行已终止且积分已退回，原供应商任务号保留供免费取回；不会自动重新付费生成",
+          JSON.stringify({...snapshot, billing, providerRecovery: {
+            state: "released", action: "retrieve_existing_results_only",
+            invocationStarted: providerEvidence.invocationStarted,
+            providerTaskEvidenceCount: providerEvidence.segmentTaskCount + (String(job.task_id || "").trim() ? 1 : 0),
+          }}), curTenant(), job.id,
         );
-        if (!updated.changes)
-          throw new Error(`媒体任务#${job.id}恢复状态发生并发冲突`);
+        if (!updated.changes) throw new Error(`媒体任务#${job.id}恢复状态发生并发冲突`);
         db.exec("COMMIT");
-        recovered.push({
-          tenantId: curTenant(),
-          jobId: Number(job.id),
-          status: "失败",
-          billingState: "pending_reconciliation",
-          action: "continue_existing_provider_work",
-        });
+        recovered.push({tenantId: curTenant(),jobId: Number(job.id),status: "失败",
+          billingState: "released",action: "retrieve_existing_results_only"});
         continue;
       }
       if (hold && !hasDelivery) {
         const released = releaseHeldCreditInCurrentTransaction(
           hold,
           `媒体任务#${job.id}超时且无业务产物/供应商调用证据，恢复时全额退回`,
+          {invoked: false},
         );
         if (!released)
           throw new Error(`媒体任务#${job.id}的预授权无法原子释放`);
@@ -1107,116 +1117,102 @@ export function recoverStaleMediaJobs(
 export function recoverStaleToolboxRuns(now = new Date()) {
   if (!tableExists("tool_runs")) return [];
   const recoveryLocal = databaseLocalTimestamp(now);
-  const candidates = q.all(
-    `SELECT id FROM tool_runs
-    WHERE tenant_id=? AND status='running'
-      AND COALESCE(execution_state,'running') IN ('queued','running','retrying')
-      AND (
-        (timeout_at IS NOT NULL AND datetime(timeout_at)<=datetime(?))
-        OR (timeout_at IS NULL AND updated_at<=datetime(?,'-${TOOLBOX_RUN_STALE_MINUTES} minutes'))
-      ) ORDER BY id`,
-    curTenant(),
-    recoveryLocal,
-    recoveryLocal,
-  );
+  const staleSql = `tenant_id=? AND status='running'
+    AND COALESCE(execution_state,'running') IN ('queued','running','retrying')
+    AND ((timeout_at IS NOT NULL AND datetime(timeout_at)<=datetime(?))
+      OR (timeout_at IS NULL AND updated_at<=datetime(?,'-${TOOLBOX_RUN_STALE_MINUTES} minutes')))`;
+  const candidates = q.all(`SELECT * FROM tool_runs WHERE ${staleSql} ORDER BY id`, curTenant(), recoveryLocal, recoveryLocal);
   const recovered = [];
+  const hasOutput = run => {
+    const provenance = safeJsonParse(run.provenance_json, {}) || {};
+    const text = String(run.result_md || '').trim();
+    return (provenance.persisted === true && !!text) || (text && !text.startsWith('# 工具运行中'));
+  };
+  const owned = candidate => {
+    const current = q.get(`SELECT * FROM tool_runs WHERE ${staleSql} AND id=?`, curTenant(), recoveryLocal, recoveryLocal, candidate.id);
+    return current && current.updated_at === candidate.updated_at && current.provenance_json === candidate.provenance_json
+      && current.retry_count === candidate.retry_count && !hasOutput(current) ? current : null;
+  };
+  const finish = (run, billing) => {
+    const provenance = safeJsonParse(run.provenance_json, {}) || {};
+    provenance.completionState = "timeout_recovery_failed";
+    provenance.billing = billing;
+    provenance.persisted = true;
+    provenance.contract = {
+      validator: "toolbox-delivery-contract",
+      status: "invalid",
+      valid: false,
+      requiresManualRepair: true,
+      errors: ["后台任务超时，未形成业务产物"],
+    };
+    const progress = safeJsonParse(run.progress_json, []);
+    const safeProgress = Array.isArray(progress) ? progress : [];
+    safeProgress.push({
+      phase: "failed",
+      message: "服务恢复已终止超时任务并处理预授权",
+      at: now.toISOString(),
+    });
+    q.run(
+      `UPDATE tool_runs SET status='failed',execution_state='failed',result_md='',
+        assumptions_json='[]',evidence_json='[]',provenance_json=?,progress_json=?,error_json=?,
+        last_heartbeat_at=?,updated_at=?
+      WHERE tenant_id=? AND id=? AND status='running'`,
+      JSON.stringify(provenance),
+      JSON.stringify(safeProgress.slice(-100)),
+      JSON.stringify({
+        code: "TOOLBOX_TIMEOUT_RECOVERY",
+        message:
+          "后台任务超过执行时限，已安全终止；可在任务中心使用免费重试。",
+      }),
+      recoveryLocal,
+      recoveryLocal,
+      curTenant(),
+      run.id,
+    );
+    q.run(
+      `INSERT OR REPLACE INTO tool_run_events(
+      run_id,event_type,tool_key,employee_idx,user_id,status,source_system,metadata_json
+    ) VALUES(?,?,?,?,?,'failed','nanowork',?)`,
+      run.id,
+      "generated",
+      run.tool_key,
+      run.employee_idx,
+      run.created_by,
+      JSON.stringify({
+        mode: "timeout_recovery",
+        retryCount: Number(run.retry_count || 0),
+      }),
+    );
+  };
   for (const candidate of candidates) {
-    db.exec("BEGIN IMMEDIATE");
     try {
-      const run = q.get(
-        `SELECT * FROM tool_runs
-        WHERE tenant_id=? AND id=? AND status='running'
-          AND COALESCE(execution_state,'running') IN ('queued','running','retrying')`,
-        curTenant(),
-        candidate.id,
-      );
-      if (!run) {
-        db.exec("COMMIT");
+      if (hasOutput(candidate)) {
+        recovered.push({ tenantId: curTenant(), runId: Number(candidate.id), action: 'preserve_existing_output' });
         continue;
       }
-      const hold = holdForRef("tool_run", run.id);
+      const hold = holdForRef('tool_run', candidate.id);
+      const progress = safeJsonParse(candidate.progress_json, []);
+      const called = (Array.isArray(progress) ? progress : []).some(step =>
+        ['provider', 'provider_retry', 'link_provider', 'link_provider_retry', 'vision_provider', 'media_provider', 'media_poll'].includes(step.phase));
+      // Historical running records without progress are unknown, not proof of zero supplier cost.
+      const invoked = called || (!progress?.length && candidate.execution_state !== 'queued');
+      db.exec('BEGIN IMMEDIATE');
+      const run = owned(candidate);
+      if (!run) { db.exec('COMMIT'); continue; }
       let billing = safeJsonParse(run.provenance_json, {})?.billing || null;
       if (hold) {
-        const settled = releaseHeldCreditInCurrentTransaction(
-          hold,
-          `工具后台任务#${run.id}超过执行时限且无正式产物，服务恢复时全额退回`,
-        );
-        if (!settled)
-          throw new Error(`工具后台任务#${run.id}预授权无法原子释放`);
-        billing = twoPhaseBillingSummary({
-          state: "released",
-          hold,
-          settled,
-          note: "服务恢复确认后台任务超时且没有正式业务产物，预授权已全额退回。",
-        });
+        const settled = releaseHeldCreditInCurrentTransaction(hold,
+          invoked ? '工具任务最终无成果，积分已退回；平台核对供应商成本。' : '工具任务尚未发起供应商调用，过期后预授权退回',
+          {invoked, assertRefundable: () => Boolean(owned(candidate))});
+        if (!settled) throw new Error('工具预授权无法原子释放');
+        billing = twoPhaseBillingSummary({state:'released',hold,settled});
       }
-      const provenance = safeJsonParse(run.provenance_json, {}) || {};
-      provenance.completionState = "timeout_recovery_failed";
-      provenance.billing = billing;
-      provenance.persisted = true;
-      provenance.contract = {
-        validator: "toolbox-delivery-contract",
-        status: "invalid",
-        valid: false,
-        requiresManualRepair: true,
-        errors: ["后台任务超时，未形成业务产物"],
-      };
-      const progress = safeJsonParse(run.progress_json, []);
-      const safeProgress = Array.isArray(progress) ? progress : [];
-      safeProgress.push({
-        phase: "failed",
-        message: "服务恢复已终止超时任务并处理预授权",
-        at: now.toISOString(),
-      });
-      q.run(
-        `UPDATE tool_runs SET status='failed',execution_state='failed',result_md='',
-          assumptions_json='[]',evidence_json='[]',provenance_json=?,progress_json=?,error_json=?,
-          last_heartbeat_at=?,updated_at=?
-        WHERE tenant_id=? AND id=? AND status='running'`,
-        JSON.stringify(provenance),
-        JSON.stringify(safeProgress.slice(-100)),
-        JSON.stringify({
-          code: "TOOLBOX_TIMEOUT_RECOVERY",
-          message:
-            "后台任务超过执行时限，已安全终止；可在任务中心使用免费重试。",
-        }),
-        recoveryLocal,
-        recoveryLocal,
-        curTenant(),
-        run.id,
-      );
-      q.run(
-        `INSERT OR REPLACE INTO tool_run_events(
-        run_id,event_type,tool_key,employee_idx,user_id,status,source_system,metadata_json
-      ) VALUES(?,?,?,?,?,'failed','nanowork',?)`,
-        run.id,
-        "generated",
-        run.tool_key,
-        run.employee_idx,
-        run.created_by,
-        JSON.stringify({
-          mode: "timeout_recovery",
-          retryCount: Number(run.retry_count || 0),
-        }),
-      );
-      db.exec("COMMIT");
-      recovered.push({
-        tenantId: curTenant(),
-        runId: Number(run.id),
-        action: "timeout_recovery_released",
-      });
+      finish(run, billing);
+      db.exec('COMMIT');
+      recovered.push({tenantId:curTenant(),runId:Number(candidate.id),action:'timeout_recovery_released'});
     } catch (error) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* no active transaction */
-      }
-      recovered.push(
-        recoveryRecordError(error, {
-          runId: Number(candidate.id),
-          action: "toolbox_timeout_recovery_failed",
-        }),
-      );
+      try { db.exec('ROLLBACK'); } catch { /* refundHold already rolled back */ }
+      recovered.push(recoveryRecordError(error,{runId:Number(candidate.id),action:'toolbox_timeout_recovery_failed'}));
     }
   }
   return recovered;

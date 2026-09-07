@@ -63,7 +63,23 @@ export function backupDatabase(destination) {
   return output;
 }
 
+// A provider debit belongs to one customer hold forever, including after refund.
+// No historical balances or invoices are rewritten by this additive schema.
+export function ensureCreditSupplierReceiptSchema() {
+  db.exec(`CREATE TABLE IF NOT EXISTS credit_supplier_receipts (
+    provider TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    hold_id INTEGER NOT NULL,
+    tenant_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(provider,request_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_credit_supplier_receipts_hold ON credit_supplier_receipts(hold_id);`);
+}
+
 export function initSchema() {
+  ensureCreditSupplierReceiptSchema();
   db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -466,6 +482,7 @@ export function initSchema() {
     credits_per_call INTEGER NOT NULL,
     attempted_calls INTEGER NOT NULL DEFAULT 0,
     persisted_calls INTEGER NOT NULL DEFAULT 0,
+    billing_evidence_json TEXT,
     last_error TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     started_at TEXT,
@@ -704,6 +721,7 @@ const ISOLATED = new Set([
   "goals",
   "tasks",
   "task_submissions",
+  "task_feedback",
   "employee_point_logs",
   "employee_awards",
   "biz_assets",
@@ -714,6 +732,9 @@ const ISOLATED = new Set([
   "ai_messages",
   "marshal_chat_sessions",
   "marshal_chat_msgs",
+  "native_chat_sessions",
+  "native_chat_messages",
+  "native_chat_plans",
   "media_jobs",
   "op_logs",
   "custom_agents",
@@ -910,8 +931,85 @@ export const q = {
 // 跨租户写入（平台超管/迁移用）：绕过自动注入，显式指定 tenant_id
 export const qRaw = { run: (sql, ...p) => db.prepare(sql).run(...p) };
 
+// SQLite 不支持直接扩大 CHECK 范围。只重建技能配置表，完整保留列、数据与自定义索引/触发器；
+// 内容任务、连接器和自动任务仍沿用原先支持范围，不把原生媒体任务伪装成普通 JSON 任务。
+export function migrateContentEmployeeSkillConfigs() {
+  const table = 'content_employee_workbench_configs';
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table);
+  const oldCheck = /CHECK\s*\(\s*employee_idx\s+BETWEEN\s+0\s+AND\s+9\s*\)/iu;
+  if (!row?.sql || !oldCheck.test(row.sql)) return false;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table);
+    const create = row.sql.replace(/\bcontent_employee_workbench_configs\b/u, 'content_employee_workbench_configs_v12')
+      .replace(oldCheck, 'CHECK(employee_idx BETWEEN 0 AND 11)');
+    db.exec(create);
+    db.exec(`INSERT INTO content_employee_workbench_configs_v12 SELECT * FROM content_employee_workbench_configs;
+      DROP TABLE content_employee_workbench_configs;
+      ALTER TABLE content_employee_workbench_configs_v12 RENAME TO content_employee_workbench_configs;`);
+    for (const object of objects) db.exec(object.sql);
+    db.exec('COMMIT');
+    return true;
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
 // ===== V2 增量迁移：积分体系 / 菜单级权限 / 数字员工提示词 / 媒体生成任务 =====
 export function migrateV2() {
+  ensureCreditSupplierReceiptSchema();
+  db.exec(`CREATE TABLE IF NOT EXISTS native_chat_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL, employee_idx INTEGER NOT NULL CHECK(employee_idx IN (10,11)),
+    status TEXT NOT NULL DEFAULT 'draft', file_ids_json TEXT NOT NULL DEFAULT '[]',
+    options_json TEXT NOT NULL DEFAULT '{}', latest_plan_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_native_chat_owner ON native_chat_sessions(tenant_id,user_id,employee_idx,id DESC);
+  CREATE TABLE IF NOT EXISTS native_chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+    session_id INTEGER NOT NULL, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+    content TEXT NOT NULL DEFAULT '', file_ids_json TEXT NOT NULL DEFAULT '[]',
+    request_key TEXT NOT NULL, input_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT NOT NULL DEFAULT '{}', billing_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,session_id,role,request_key)
+  );
+  CREATE TABLE IF NOT EXISTS native_chat_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+    session_id INTEGER NOT NULL, version INTEGER NOT NULL, message_id INTEGER NOT NULL,
+    plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'draft',
+    generation_json TEXT NOT NULL DEFAULT '{}', confirmation_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,session_id,version)
+  );`);
+  // Human choices are preference evidence, separate from delivery, billing and
+  // verified knowledge. One immutable decision per result version prevents
+  // duplicate learning entries; edits can receive new feedback without rerunning.
+  db.exec(`CREATE TABLE IF NOT EXISTS task_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL,
+    reviewer_id INTEGER NOT NULL,
+    employee_domain TEXT NOT NULL,
+    employee_idx INTEGER,
+    specialist_id INTEGER,
+    tool_key TEXT,
+    employee_name TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('adopt','reject')),
+    note TEXT NOT NULL DEFAULT '' CHECK(length(note)<=2000),
+    input_hash TEXT NOT NULL,
+    output_hash TEXT NOT NULL,
+    output_features_json TEXT NOT NULL DEFAULT '{}',
+    task_title TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,source_kind,source_id,input_hash,output_hash),
+    UNIQUE(tenant_id,reviewer_id,request_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_feedback_employee
+    ON task_feedback(tenant_id,owner_id,employee_domain,employee_idx,id DESC);`);
   const addCol = (table, col, def) => {
     if (
       !/^[a-z_][a-z0-9_]*$/i.test(table) ||
@@ -930,6 +1028,22 @@ export function migrateV2() {
       .some((item) => item.name === col);
     if (!exists) db.exec(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${def}`);
   };
+  addCol('task_feedback', 'output_features_json', "TEXT NOT NULL DEFAULT '{}'");
+  addCol('kb_embedding_jobs', 'billing_evidence_json', 'TEXT');
+  const feedbackSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_feedback'").get()?.sql || '';
+  const unversionedFeedback = /UNIQUE\s*\(\s*tenant_id\s*,\s*source_kind\s*,\s*source_id\s*\)/iu;
+  if (unversionedFeedback.test(feedbackSchema)) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(feedbackSchema.replace(/\btask_feedback\b/u, 'task_feedback_versioned')
+        .replace(unversionedFeedback, 'UNIQUE(tenant_id,source_kind,source_id,input_hash,output_hash)'));
+      db.exec(`INSERT INTO task_feedback_versioned SELECT * FROM task_feedback;
+        DROP TABLE task_feedback;
+        ALTER TABLE task_feedback_versioned RENAME TO task_feedback;
+        CREATE INDEX idx_task_feedback_employee ON task_feedback(tenant_id,owner_id,employee_domain,employee_idx,id DESC);`);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
   const migrateAvatarJobsMultiEngineInput = () => {
     const columns = db.prepare(`PRAGMA table_info("avatar_jobs")`).all();
     if (!columns.length) return;
@@ -1543,6 +1657,7 @@ export function migrateV2() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_no TEXT UNIQUE NOT NULL,
     tenant_id INTEGER NOT NULL, package_id INTEGER, package_name TEXT,
+    package_snapshot_json TEXT,
     price_yuan REAL NOT NULL, credits INTEGER NOT NULL,
     status TEXT DEFAULT '待支付',          -- 待支付 / 已支付 / 已取消
     pay_method TEXT DEFAULT '对公转账/收款码',
@@ -1551,6 +1666,7 @@ export function migrateV2() {
   );
   CREATE INDEX IF NOT EXISTS idx_recharge_tenant ON recharge_orders(tenant_id);
   `);
+  addCol('recharge_orders', 'package_snapshot_json', 'TEXT');
   addCol(
     "tenants",
     "data_mode",
@@ -1696,7 +1812,88 @@ export function migrateV2() {
 
   // ===== V7：多租户数据隔离 + 账号配额（FR-SAAS-06）=====
   addCol("tenants", "seat_limit", "INTEGER DEFAULT 5"); // 企业账号席位上限
-  db.prepare(`UPDATE tenants SET seat_limit = 999 WHERE id = 1`).run(); // 总部不限
+  // 保留存量额度；不能在每次启动时给企业 1 重新增发席位。
+  addCol("tenants", "primary_user_id", "INTEGER REFERENCES users(id)");
+  // 只有唯一启用老板时才能确认存量主账号；多个老板权限角色不代表多个主账号。
+  db.exec(`UPDATE tenants SET primary_user_id=(SELECT MIN(u.id) FROM users u
+    WHERE u.tenant_id=tenants.id AND u.role='boss' AND u.status='启用')
+    WHERE primary_user_id IS NULL AND (SELECT COUNT(*) FROM users u
+      WHERE u.tenant_id=tenants.id AND u.role='boss' AND u.status='启用')=1;
+    CREATE TABLE IF NOT EXISTS seat_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+      requested_by INTEGER NOT NULL REFERENCES users(id),
+      additional_seats INTEGER NOT NULL CHECK(additional_seats BETWEEN 1 AND 1000),
+      reason TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'requested' CHECK(status IN ('requested','quoted','applied','rejected','cancelled')),
+      amount_fen INTEGER CHECK(amount_fen > 0),
+      quote_note TEXT NOT NULL DEFAULT '',
+      quoted_by INTEGER REFERENCES users(id), quoted_at TEXT,
+      order_id INTEGER UNIQUE REFERENCES recharge_orders(id),
+      payment_reference TEXT, confirmed_by INTEGER REFERENCES users(id),
+      applied_at TEXT, closed_at TEXT, closed_by INTEGER REFERENCES users(id),
+      close_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_requests_one_open ON seat_requests(tenant_id)
+      WHERE status IN ('requested','quoted');
+    CREATE INDEX IF NOT EXISTS idx_seat_requests_tenant ON seat_requests(tenant_id,id DESC);
+  `);
+  // 旧版本每次启动将企业 1 写成 999，并非购买凭据。一次性收回未使用的自动名额，
+  // 保留全部启用业务账号；如已有可定位的购买证据则保留并交由平台核对。
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const marker = 'migration.primary_seats_v1';
+    if (!db.prepare('SELECT key FROM sys_config WHERE key=?').get(marker)) {
+      const legacy = db.prepare('SELECT seat_limit FROM tenants WHERE id=1').get();
+      const paidEvidence = db.prepare(`SELECT 1 FROM recharge_orders o JOIN recharge_packages p ON p.id=o.package_id
+        WHERE o.tenant_id=1 AND o.status='已支付' AND p.kind='plan' AND p.seat_limit>=999 LIMIT 1`).get()
+        || db.prepare("SELECT 1 FROM seat_requests WHERE tenant_id=1 AND status='applied' LIMIT 1").get();
+      let retained = legacy?.seat_limit ?? null;
+      if (legacy?.seat_limit === 999 && !paidEvidence) {
+        const enabled = db.prepare("SELECT COUNT(*) n FROM users WHERE tenant_id=1 AND status='启用' AND role!='platform_super'").get().n;
+        retained = Math.max(5, Number(enabled));
+        db.prepare('UPDATE tenants SET seat_limit=? WHERE id=1 AND seat_limit=999').run(retained);
+      }
+      db.prepare('INSERT INTO sys_config(key,value) VALUES(?,?)').run(marker,
+        JSON.stringify({ previousLimit: legacy?.seat_limit ?? null, retainedLimit: retained, paidEvidence: Boolean(paidEvidence) }));
+    }
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  // 邀请码只存高熵原码的哈希；注册、使用次数与审计在同一事务中提交。
+  // 不生成任何种子邀请码，也不改变既有账号或积分。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code_hash TEXT NOT NULL UNIQUE,
+      code_masked TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('new_tenant','existing_tenant')),
+      tenant_id INTEGER REFERENCES tenants(id),
+      role TEXT NOT NULL CHECK(role IN ('boss','admin','ops_director','manager','sales','partner')),
+      store_id INTEGER REFERENCES stores(id),
+      creator_scope TEXT NOT NULL CHECK(creator_scope IN ('platform','tenant')),
+      issuer_tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+      created_by INTEGER NOT NULL REFERENCES users(id),
+      max_uses INTEGER NOT NULL DEFAULT 1 CHECK(max_uses BETWEEN 1 AND 50),
+      used_count INTEGER NOT NULL DEFAULT 0 CHECK(used_count >= 0 AND used_count <= max_uses),
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      CHECK((type='new_tenant' AND tenant_id IS NULL AND role='boss' AND store_id IS NULL AND creator_scope='platform')
+        OR (type='existing_tenant' AND tenant_id IS NOT NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_invitations_tenant_created ON invitations(tenant_id,id DESC);
+    CREATE TABLE IF NOT EXISTS invitation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invitation_id INTEGER NOT NULL REFERENCES invitations(id),
+      event TEXT NOT NULL CHECK(event IN ('created','revoked','redeemed')),
+      actor_id INTEGER REFERENCES users(id),
+      tenant_id INTEGER REFERENCES tenants(id),
+      user_id INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_invitation_events_invitation ON invitation_events(invitation_id,id);
+  `);
   // 业务表统一加 tenant_id（默认1=总部历史数据归属）
   for (const t of [
     "leads",
@@ -2115,7 +2312,7 @@ export function migrateV2() {
     ON employee_evolution_proposals(tenant_id, specialist_id, status, id DESC);
   CREATE TABLE IF NOT EXISTS content_employee_workbench_configs (
     tenant_id INTEGER NOT NULL,
-    employee_idx INTEGER NOT NULL CHECK(employee_idx BETWEEN 0 AND 9),
+    employee_idx INTEGER NOT NULL CHECK(employee_idx BETWEEN 0 AND 11),
     prompt_override TEXT,
     work_config_json TEXT NOT NULL DEFAULT '{}',
     skills_json TEXT NOT NULL DEFAULT '[]',
@@ -2700,6 +2897,7 @@ export function migrateV2() {
   CREATE INDEX IF NOT EXISTS idx_toolbox_automation_runs_tool
     ON toolbox_automation_runs(tenant_id,tool_run_id);
   `);
+  migrateContentEmployeeSkillConfigs();
   addCol("tenant_marshal_overrides", "online", "INTEGER");
   addCol("tenant_marshal_overrides", "synced_at", "TEXT");
   // 数字员工自我介绍（老板叮嘱 + 每周校验状态）：按 (tenant_id, specialist_id) 追加在既有覆盖行上，

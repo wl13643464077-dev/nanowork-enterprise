@@ -39,7 +39,7 @@ q.run(`INSERT INTO tenants(id,name,status,credits)
   ON CONFLICT(id) DO UPDATE SET name=excluded.name,status=excluded.status`);
 const bossId = Number(
   q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
-  VALUES('h3-config-boss','unused','H3配置负责人','boss','启用',1)`)
+  VALUES('h3-config-boss','unused','H3配置负责人','platform_super','启用',1)`)
     .lastInsertRowid,
 );
 const boss = q.get(
@@ -184,9 +184,34 @@ test("H3管理配置只暴露密钥存在性，并强制供应商与计价双核
   });
 });
 
+test("钱包实际扣费配置固定保存与展示两倍，旧客户端不能写入其他售价倍数", async () => {
+  await withServer(async base => {
+    let result = await request(base, "/admin/api-config", "PUT", {
+      supplierCost: { enabled: true, basis: "upstream_debit" },
+      billing: { ...billing(), marginMultiplier: 3 },
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(getConfig("billing", {}).marginMultiplier, 2);
+    result = await request(base, "/admin/api-config");
+    assert.equal(result.json.billing.marginMultiplier, 2);
+    assert.equal(result.json.supplierCost.basis, "upstream_debit");
+    result = await request(base, "/admin/api-config", "PUT", {
+      billing: { ...billing(), marginMultiplier: 4 },
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(getConfig("billing", {}).marginMultiplier, 2);
+    result = await request(base, "/admin/api-config", "PUT", {
+      supplierCost: { enabled: false, basis: "upstream_debit" },
+      billing: { ...billing(), marginMultiplier: 1.5 },
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(getConfig("billing", {}).marginMultiplier, 1.5);
+  });
+});
+
 test("接口管理把联网分层与H3核验拆成独立面板且保留完整配置契约", () => {
   const admin = fs.readFileSync(
-    path.join(repoRoot, "web/src/pages/Admin.tsx"),
+    path.join(repoRoot, "web/src/components/PlatformApiConfig.tsx"),
     "utf8",
   );
   const searchPanel = fs.readFileSync(

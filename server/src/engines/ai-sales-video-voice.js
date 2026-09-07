@@ -410,15 +410,20 @@ export function buildAiSalesVideoSubtitleCues({
   script,
   tracks,
   segmentSeconds = AI_SALES_VIDEO_VOICE_SEGMENT_SECONDS,
+  timing = null,
+  durationSeconds,
 } = {}) {
   const cues = [];
   const shots = Array.isArray(script?.shots) ? script.shots : [];
+  if (durationSeconds !== undefined && (![15, 30].includes(durationSeconds) || shots.length * segmentSeconds !== durationSeconds))
+    throw fail('字幕分段与所选视频时长不一致', { code: 'AI_SALES_VIDEO_INVALID_INPUT', status: 400 });
   for (const [offset, shot] of shots.entries()) {
     const track = (Array.isArray(tracks) ? tracks : []).find(item => Number(item.index) === Number(shot.index));
-    const base = offset * segmentSeconds;
+    const nativePauses = !track && timing === 'native_pause_v1';
+    const base = offset * segmentSeconds + (nativePauses ? 0.3 : 0);
     const speech = Math.min(
-      segmentSeconds,
-      Math.max(1, Number(track?.speechSeconds || track?.durationSeconds || segmentSeconds)),
+      nativePauses ? segmentSeconds - 1.3 : segmentSeconds,
+      Math.max(1, Number(track?.speechSeconds || track?.durationSeconds || (nativePauses ? countSpeechChars(shot.voiceover) / 3.5 : segmentSeconds))),
     );
     const sentences = splitSpeechSentences(shot.voiceover, { maxChars: 18 });
     const total = sentences.reduce((sum, sentence) => sum + Math.max(1, countSpeechChars(sentence)), 0) || 1;

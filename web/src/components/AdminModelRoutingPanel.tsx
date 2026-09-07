@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Select, Space, Tag, message } from 'antd';
 import { api } from '../api/client';
 import { Panel } from './Kit';
@@ -17,7 +17,13 @@ type CatalogItem = {
 };
 type RoutingText = Record<string, string>;
 type RoutingShape = { text?: RoutingText; image?: string; vision?: string; video?: string[]; videoDefault?: string };
+type ProviderItem = { id: string; label: string; available: boolean };
 type RoutingPayload = {
+  providerId: string;
+  effectiveProvider: string;
+  providerOverride: string | null;
+  defaultProvider: string;
+  providers: ProviderItem[];
   effective: { text: RoutingText; image: string; vision: string; video: string[]; videoDefault: string };
   sources: {
     text: Record<string, string>;
@@ -32,20 +38,22 @@ type RoutingPayload = {
   catalog: { text: CatalogItem[]; image: CatalogItem[]; vision: CatalogItem[]; video: CatalogItem[] };
 };
 
-// 面向老板的三档分组：老板 / 管理层 / 员工。存储仍按服务端 DEFAULT_ROUTING 的逐角色键。
+// 每个岗位独立保存，店长与管理层不会相互覆盖。
 export const TEXT_ROUTING_GROUPS: { key: string; label: string; roles: string[]; hint: string }[] = [
-  { key: 'boss', label: '老板', roles: ['boss'], hint: '老板参谋、经营诊断等决策类任务' },
-  {
-    key: 'manager',
-    label: '管理层',
-    roles: ['ops_director', 'manager', 'admin'],
-    hint: '运营总监 / 门店经理 / 系统管理员',
-  },
-  { key: 'staff', label: '员工', roles: ['sales', 'partner'], hint: '门店员工 / 合伙人日常问答与文案' },
+  { key: 'boss', label: '老板', roles: ['boss'], hint: '经营建议与决策' },
+  { key: 'manager', label: '店长', roles: ['manager'], hint: '门店经营与日常安排' },
+  { key: 'ops_director', label: '管理层', roles: ['ops_director'], hint: '运营分析与跨店管理' },
+  { key: 'sales', label: '员工', roles: ['sales'], hint: '日常问答与文案' },
+  { key: 'admin', label: '企业管理员', roles: ['admin'], hint: '企业管理工作' },
+  { key: 'partner', label: '合伙人', roles: ['partner'], hint: '合作经营与分析' },
 ];
 
 const SOURCE_LABEL: Record<string, string> = { tenant: '企业自定义', global: '平台全局', default: '平台默认' };
 const SOURCE_COLOR: Record<string, string> = { tenant: 'blue', global: 'gold', default: 'default' };
+const FALLBACK_PROVIDERS: ProviderItem[] = [
+  { id: 'openlux', label: 'OpenLux', available: true },
+  { id: '360', label: '360 智脑开放平台', available: true },
+];
 
 export function routingOptionLabel(item: CatalogItem) {
   const price = item.pricing?.label ? ` · ${item.pricing.label}` : '';
@@ -58,20 +66,21 @@ export function groupValue(text: RoutingText | undefined, roles: string[]) {
   return values.length ? values[0] : undefined;
 }
 
-// platformConfig：同页签下方的平台级配置区（Admin.tsx 的 ApiConfig），由本面板托管渲染，
-// 让 Admin.tsx 的挂载保持一行、不再增长。
-export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: ReactNode } = {}) {
+export function AdminModelRoutingPanel() {
   const [data, setData] = useState<RoutingPayload | null>(null);
   const [draft, setDraft] = useState<RoutingShape>({});
+  const [previewProvider, setPreviewProvider] = useState('');
   const [saving, setSaving] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [loadError, setLoadError] = useState('');
 
-  const load = () =>
+  const load = (provider?: string) =>
     api
-      .get('/admin/model-routing', { silent: true })
+      .get(`/admin/model-routing${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`, { silent: true })
       .then((d: RoutingPayload) => {
         setData(d);
         setDraft(d.override || {});
+        setPreviewProvider(d.providerId || provider || d.effectiveProvider || d.defaultProvider || 'openlux');
         setLoadError('');
       })
       .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : '加载失败'));
@@ -99,21 +108,22 @@ export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: Re
     return (
       <>
         <div className="admin-routing-wrap">
-          <Alert type="warning" showIcon message="企业模型路由暂不可用" description={loadError} />
+          <Alert type="warning" showIcon message="企业模型设置暂不可用" description={loadError} />
         </div>
-        {platformConfig}
       </>
     );
   if (!data)
     return (
       <>
         <div className="admin-panel-hint">加载中…</div>
-        {platformConfig}
       </>
     );
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify(data.override || {});
+  const dirty =
+    JSON.stringify(draft) !== JSON.stringify(data.override || {}) || previewProvider !== data.effectiveProvider;
   const effective = data.effective;
+  const providers = data.providers?.length ? data.providers : FALLBACK_PROVIDERS;
+  const providerLabel = (id?: string | null) => providers.find(item => item.id === id)?.label || id || '未配置';
   const currentText = (roles: string[]) => groupValue(draft.text, roles) ?? effective.text[roles[0]];
   const setGroup = (roles: string[], value?: string) =>
     setDraft(prev => {
@@ -135,11 +145,12 @@ export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: Re
   const save = () => {
     setSaving(true);
     api
-      .put('/admin/model-routing', { routing: draft })
+      .put('/admin/model-routing', { provider: previewProvider, routing: draft })
       .then((d: RoutingPayload) => {
-        message.success('企业模型路由已保存，立即生效');
+        message.success('企业模型设置已保存，立即生效');
         setData(d);
         setDraft(d.override || {});
+        setPreviewProvider(d.providerId || d.effectiveProvider || previewProvider);
       })
       .finally(() => setSaving(false));
   };
@@ -148,9 +159,10 @@ export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: Re
     api
       .put('/admin/model-routing', { reset: true })
       .then((d: RoutingPayload) => {
-        message.success('已恢复平台默认路由');
+        message.success('已恢复平台推荐设置');
         setData(d);
         setDraft({});
+        setPreviewProvider(d.providerId || d.effectiveProvider || d.defaultProvider || 'openlux');
       })
       .finally(() => setSaving(false));
   };
@@ -168,31 +180,73 @@ export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: Re
     <>
       <div className="admin-routing-wrap">
         <Panel
-          title="企业模型路由（本企业）"
+          title="企业模型设置（本企业）"
           extra={
             <Space size={8} wrap>
-              <Button size="small" onClick={reset} disabled={saving || !data.sources.hasTenantOverride}>
+              <Button
+                size="small"
+                onClick={reset}
+                disabled={saving || (!data.sources.hasTenantOverride && !data.providerOverride)}
+              >
                 恢复平台默认
               </Button>
               <Button size="small" type="primary" loading={saving} disabled={!dirty} onClick={save}>
-                保存路由
+                保存设置
               </Button>
             </Space>
           }
         >
           <Alert
-            type={data.sources.hasTenantOverride ? 'info' : 'success'}
+            type={
+              previewProvider !== data.effectiveProvider
+                ? 'warning'
+                : data.sources.hasTenantOverride
+                  ? 'info'
+                  : 'success'
+            }
             showIcon
             className="admin-routing-summary"
             message={
-              data.sources.hasTenantOverride
-                ? `当前生效来源：企业自定义 ${overrideCount} 项，其余沿用平台配置${
-                    data.overrideUpdatedAt ? `（最近修改 ${String(data.overrideUpdatedAt).slice(0, 16)}）` : ''
-                  }`
-                : '当前生效来源：平台配置（本企业未自定义）'
+              previewProvider !== data.effectiveProvider
+                ? `正在预览 ${providerLabel(previewProvider)}，企业当前仍使用 ${providerLabel(data.effectiveProvider)}`
+                : data.sources.hasTenantOverride || data.providerOverride
+                  ? `当前生效来源：企业自定义 ${overrideCount} 项，其余沿用平台配置${
+                      data.overrideUpdatedAt ? `（最近修改 ${String(data.overrideUpdatedAt).slice(0, 16)}）` : ''
+                    }`
+                  : '当前生效来源：平台配置（本企业未自定义）'
             }
-            description="按岗位给不同任务分配模型：决策类用旗舰模型，日常文案用经济模型可明显降低积分消耗。下拉项标注的积分为按价目表折算的参考值，实际按 token 用量结算。"
+            description={
+              previewProvider !== data.effectiveProvider
+                ? '切换仅用于预览该家的可用模型；点击“保存设置”后才会切换企业的实际调用通道。'
+                : '分别选择老板、店长、管理层和员工使用的模型。用户定价统一按360基准价×2，与本企业选择哪家供应商无关。'
+            }
           />
+          <div className="admin-routing-row">
+            <div className="admin-routing-label">
+              <span>AI 供应商</span>
+              <span className="admin-routing-hint">仅显示平台已配置的通道，不会向企业下发 Key</span>
+            </div>
+            <div className="admin-routing-control">
+              <Select
+                className="admin-routing-select"
+                value={previewProvider}
+                loading={switching}
+                options={providers.map(item => ({
+                  value: item.id,
+                  label: `${item.label}${item.id === data.defaultProvider ? '（平台默认）' : ''}`,
+                  disabled: item.available === false,
+                }))}
+                onChange={(provider: string) => {
+                  setSwitching(true);
+                  void load(provider).finally(() => setSwitching(false));
+                }}
+                aria-label="AI 供应商"
+              />
+              <Tag color={providers.find(item => item.id === previewProvider)?.available === false ? 'red' : 'green'}>
+                {providers.find(item => item.id === previewProvider)?.available === false ? '平台未就绪' : '平台已配置'}
+              </Tag>
+            </div>
+          </div>
           <div className="admin-routing-grid">
             {TEXT_ROUTING_GROUPS.map(group => (
               <div key={group.key} className="admin-routing-row">
@@ -262,11 +316,10 @@ export function AdminModelRoutingPanel({ platformConfig }: { platformConfig?: Re
             </div>
           </div>
           <div className="admin-search-security-note">
-            可选模型由平台白名单统一维护（含定位说明与参考价目），企业不能填写清单外的模型名；平台总部修改全局路由不会覆盖本企业已保存的自定义项。
+            设置仅对本企业生效；其他企业不受影响。企业只能选择平台已开放的供应商和模型，接口密钥始终由平台统一维护。
           </div>
         </Panel>
       </div>
-      {platformConfig}
     </>
   );
 }

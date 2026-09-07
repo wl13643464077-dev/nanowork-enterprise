@@ -78,3 +78,76 @@ test('MIME/声明长度/跳数/预取消和错误脱敏', async () => {
   await assert.rejects(fetchProviderMediaBytes('https://cdn.example/a', { signal: AbortSignal.abort(), fetchImpl: async () => { throw new Error('not reached'); } }), /取消/u);
   await assert.rejects(fetchProviderMediaBytes('https://cdn.example/a?token=secret', { fetchImpl: async () => { throw new Error('https://cdn.example/a?token=secret'); } }), error => !error.message.includes('secret'));
 });
+
+async function withProxyConfig(env, callback) {
+  const keys = ['PROVIDER_MEDIA_TRUSTED_PROXY', 'PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS', 'NANOWORK_ACCEPTANCE_PROVIDER_PROXY'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  const fetch = globalThis.fetch;
+  try {
+    for (const key of keys) {
+      if (env[key] === undefined) delete process.env[key];
+      else process.env[key] = env[key];
+    }
+    await callback();
+  } finally {
+    globalThis.fetch = fetch;
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
+test('正式可信系统代理仅限精确CDN名单，兼容fake-IP且逐跳限制HTTPS下载', async () => {
+  await withProxyConfig({ PROVIDER_MEDIA_TRUSTED_PROXY: '1', PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS: 'a.cdn.example,b.cdn.example' }, async () => {
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push(url.hostname);
+      assert.equal(options.redirect, 'manual');
+      assert.equal(options.headers['Accept-Encoding'], 'identity');
+      return url.hostname === 'a.cdn.example'
+        ? new Response(null, { status: 302, headers: { location: 'https://b.cdn.example/final?signature=private' } })
+        : new Response('real-media', { headers: { 'content-type': 'video/mp4' } });
+    };
+    const result = await fetchProviderMediaBytes('https://a.cdn.example/start', {
+      lookupFn: async () => assert.fail('可信系统代理自行解析域名，不能预先钉住fake-IP'),
+      requestFactory: () => assert.fail('已授权代理不使用默认钉住连接'),
+    });
+    assert.equal(result.bytes.toString(), 'real-media');
+    assert.deepEqual(calls, ['a.cdn.example', 'b.cdn.example']);
+    globalThis.fetch = async () => new Response('too large', { headers: { 'content-type': 'video/mp4' } });
+    await assert.rejects(fetchProviderMediaBytes('https://a.cdn.example/a', { maxBytes: 3 }), error => error.code === 'PROVIDER_MEDIA_TOO_LARGE');
+  });
+});
+
+test('代理CDN的任意跨域/降级/私网跳转均在请求前拒绝，非名单域名仍检查公网DNS', async () => {
+  await withProxyConfig({ PROVIDER_MEDIA_TRUSTED_PROXY: '1', PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS: 'a.cdn.example' }, async () => {
+    for (const destination of ['https://b.cdn.example/a', 'https://a.cdn.example.evil.test/a', 'https://127.0.0.1/a', 'https://[::1]/a', 'http://a.cdn.example/a', 'https://a.cdn.example:8443/a', 'https://user:pass@a.cdn.example/a']) {
+      let calls = 0;
+      globalThis.fetch = async () => { calls++; return new Response(null, { status: 302, headers: { location: destination } }); };
+      await assert.rejects(fetchProviderMediaBytes('https://a.cdn.example/start?token=private'), error => error.code === 'PROVIDER_MEDIA_URL_UNSAFE' && !error.message.includes('private'));
+      assert.equal(calls, 1, destination);
+    }
+    globalThis.fetch = async () => assert.fail('不在名单内不能走代理');
+    for (const host of ['other.example', 'sub.a.cdn.example', 'a.cdn.example.evil.test']) {
+      await assert.rejects(fetchProviderMediaBytes(`https://${host}/a`, {
+        lookupFn: async () => [{ address: '198.18.0.1' }], requestFactory: () => assert.fail('保留地址不能发起连接'),
+      }), error => error.code === 'PROVIDER_MEDIA_URL_UNSAFE');
+    }
+  });
+});
+
+test('代理必须显式开启和配置有效精确域名，旧验收开关不能绕过默认公网防护', async () => {
+  for (const hosts of ['', '*.aliyuncs.com', 'https://cdn.example', '127.0.0.1', 'cdn.example:443', 'cdn.example,', 'cdn.local', 'cdn.example/path']) {
+    await withProxyConfig({ PROVIDER_MEDIA_TRUSTED_PROXY: '1', PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS: hosts }, async () => {
+      globalThis.fetch = async () => assert.fail('无效配置不能联网');
+      await assert.rejects(fetchProviderMediaBytes('https://cdn.example/a'), error => error.code === 'PROVIDER_MEDIA_PROXY_CONFIG_INVALID');
+    });
+  }
+  await withProxyConfig({ PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS: 'a.aliyuncs.com', NANOWORK_ACCEPTANCE_PROVIDER_PROXY: '1' }, async () => {
+    globalThis.fetch = async () => assert.fail('旧验收标志不是生产下载授权');
+    await assert.rejects(fetchProviderMediaBytes('https://a.aliyuncs.com/a', {
+      lookupFn: async () => [{ address: '198.18.0.1' }], requestFactory: () => assert.fail('默认拒绝保留地址'),
+    }), error => error.code === 'PROVIDER_MEDIA_URL_UNSAFE');
+  });
+});

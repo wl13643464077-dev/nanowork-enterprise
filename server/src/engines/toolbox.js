@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { buildTaskFeedbackContext } from "./task-feedback.js";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { generate, aiAvailable } from "./ai.js";
@@ -13,10 +14,7 @@ import {
 } from "./yunwu.js";
 import { agenticWebResearch } from "./agentic-web-research.js";
 import { prepareRestaurantOutputForExport } from "./restaurant-output-export.js";
-import {
-  toolboxQualityReworkInstruction,
-  toolboxResultQuality,
-} from "./toolbox-quality.js";
+import { toolboxResultQuality } from "./toolbox-quality.js";
 import {
   fetchControlledWebEvidence,
   fetchPublicPageEvidence,
@@ -1214,6 +1212,7 @@ export function toolboxEmployeeSnapshot(employeeExecution) {
     profileVersion: workbench.provenance.profileVersion,
     promptHash: employeeExecution.promptHash,
     systemContext: employeeExecution.systemContext,
+    feedbackIds: employeeExecution.feedbackExperience?.feedbackIds || [],
   };
 }
 
@@ -2566,11 +2565,23 @@ function mediaArtifactUrl(value, mimeType = "application/octet-stream") {
 export function shotTextOverlayLayers(inputs) {
   const layers = [];
   if (inputs?.overlayTitle)
-    layers.push({ text: String(inputs.overlayTitle), role: "title", position: "top" });
+    layers.push({
+      text: String(inputs.overlayTitle),
+      role: "title",
+      position: "top",
+    });
   if (inputs?.overlayPrice)
-    layers.push({ text: String(inputs.overlayPrice), role: "price", position: "center" });
+    layers.push({
+      text: String(inputs.overlayPrice),
+      role: "price",
+      position: "center",
+    });
   if (inputs?.overlayStore)
-    layers.push({ text: String(inputs.overlayStore), role: "store", position: "bottom" });
+    layers.push({
+      text: String(inputs.overlayStore),
+      role: "store",
+      position: "bottom",
+    });
   return layers;
 }
 
@@ -2588,6 +2599,7 @@ function mediaPrompt(definition, inputs, employeeExecution) {
       "只呈现用户明确提供的产品事实；不得添加未提供的配料、份量、品牌或经营数据。",
       overlay.length ? POSTER_TEXT_NO_TEXT_DIRECTIVE : "",
       boundary,
+      employeeExecution?.feedbackExperience?.prompt || '',
     ]
       .filter(Boolean)
       .join("\n");
@@ -2599,6 +2611,7 @@ function mediaPrompt(definition, inputs, employeeExecution) {
     `成片目的：${display(inputs.goal)}`,
     "镜头按“结果钩子→真实过程→产品/场景→低压力行动入口”推进；画面不得出现虚构价格、排名、顾客证言或未经提供的门店信息，不在画面内生成文字。",
     boundary,
+    employeeExecution?.feedbackExperience?.prompt || '',
   ]
     .filter(Boolean)
     .join("\n");
@@ -2620,7 +2633,9 @@ ${
   artifact.textOverlay?.applied
     ? `- **精确叠字：** 画面文字（${artifact.textOverlay.layers
         .map((layer) => `${md(layer.role)}=“${md(layer.text)}”`)
-        .join("、")}）由系统矢量叠加，与输入逐字一致，不经图像模型；无字底图见 ${artifact.textOverlay.baseImageUrl ? `[底图](${artifact.textOverlay.baseImageUrl})` : "产物快照"}。\n`
+        .join(
+          "、",
+        )}）由系统矢量叠加，与输入逐字一致，不经图像模型；无字底图见 ${artifact.textOverlay.baseImageUrl ? `[底图](${artifact.textOverlay.baseImageUrl})` : "产物快照"}。\n`
     : ""
 }
 ## 渠道标题与文案
@@ -2785,7 +2800,8 @@ async function generateToolboxMediaRun(
           message: "正在把菜名/价格/门店名精确叠加到主图",
           attempt: 1,
         });
-        const overlayRender = options.renderTextOverlayFn || renderPosterTextOverlay;
+        const overlayRender =
+          options.renderTextOverlayFn || renderPosterTextOverlay;
         const baseBytes = await loadGeneratedImageBytes(
           output?.b64 ? { b64: output.b64 } : { url },
           { signal: options.signal || null, fetchFn: options.fetchFn },
@@ -2901,7 +2917,15 @@ async function generateToolboxMediaRun(
 // 可预览图片/视频文件后才进入交付门。
 export async function generateToolboxRun(definition, inputs, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
-  const employeeExecution = options.employeeExecution || null;
+  const feedbackExperience = buildTaskFeedbackContext({
+    tenantId: options.tenantId, userId: options.userId,
+    taskKind: 'tool', toolKey: definition.key, employeeIdx: definition.employeeIdx,
+  });
+  const employeeExecution = options.employeeExecution || feedbackExperience.prompt ? {
+    ...options.employeeExecution,
+    systemContext: [options.employeeExecution?.systemContext || '', feedbackExperience.prompt].filter(Boolean).join('\n\n'),
+    feedbackExperience,
+  } : null;
   const employeeSnapshot = toolboxEmployeeSnapshot(employeeExecution);
   const template = generateToolboxDraft(definition, inputs, now);
   const draft = {
@@ -3003,29 +3027,14 @@ export async function generateToolboxRun(definition, inputs, options = {}) {
   let acceptedResult = null;
   let acceptedResultMd = null;
   let lastResult = null;
-  let lastQualityIssues = [];
   for (let index = 1; index <= TOOLBOX_AI_MAX_ATTEMPTS; index++) {
     options.onProgress?.({
-      phase:
-        index === 1
-          ? "provider"
-          : lastQualityIssues.length
-            ? "provider_quality_rework"
-            : "provider_retry",
+      phase: index === 1 ? "provider" : "provider_retry",
       message:
-        index === 1
-          ? "正在生成工具业务结果"
-          : lastQualityIssues.length
-            ? `首轮草案有 ${lastQualityIssues.length} 项质检缺项，正在按缺项定向返工`
-            : "正在重新生成完整业务结果",
+        index === 1 ? "正在生成工具业务结果" : "正在重新生成完整业务结果",
       attempt: index,
     });
-    const retryInstruction =
-      index === 1
-        ? ""
-        : lastQualityIssues.length
-          ? toolboxQualityReworkInstruction(lastQualityIssues)
-          : TOOLBOX_AI_RETRY_INSTRUCTION;
+    const retryInstruction = index === 1 ? "" : TOOLBOX_AI_RETRY_INSTRUCTION;
     const result = await generateFn({
       kind: `toolbox:${definition.key}:attempt-${index}`,
       system,
@@ -3043,7 +3052,7 @@ export async function generateToolboxRun(definition, inputs, options = {}) {
     });
     lastResult = result;
     totalUsage = addUsage(totalUsage, result.usage);
-    let verdict = classifyToolboxAttempt(result, template.resultMd);
+    const verdict = classifyToolboxAttempt(result, template.resultMd);
     let candidateMd = null;
     if (verdict.accepted) {
       // 安全网：员工执行档案带餐饮契约惯性，个别模型仍可能回整段契约JSON。
@@ -3054,22 +3063,6 @@ export async function generateToolboxRun(definition, inputs, options = {}) {
         requirement: template.inputSummary,
       });
       candidateMd = exportReady.transformed ? exportReady.body : result.text;
-      // 质检提前进生成环：缺项在这里定向返工，而不是等最终验收才整单判失败。
-      // 只有本轮是可计费的真实调用（正 token）才值得再花一轮返工；
-      // 无用量证据的调用交给最终验收 fail closed，不再追加供应商费用。
-      const usage = normalizedUsage(result.usage);
-      const billableAttempt = usage.inputTokens > 0 && usage.outputTokens > 0;
-      const quality = toolboxResultQuality(definition.key, inputs, candidateMd, {
-        strictActions: true,
-      });
-      if (
-        !quality.valid &&
-        billableAttempt &&
-        index < TOOLBOX_AI_MAX_ATTEMPTS
-      ) {
-        lastQualityIssues = quality.errors;
-        verdict = { accepted: false, reason: "quality_gate" };
-      }
     }
     attempts.push(sanitizedAttempt(index, result, verdict));
     if (verdict.accepted) {
@@ -3095,10 +3088,17 @@ export async function generateToolboxRun(definition, inputs, options = {}) {
     );
   }
   const deliveredResultMd = acceptedResultMd ?? acceptedResult.text;
+  const reviewSuggestions = toolboxResultQuality(
+    definition.key,
+    inputs,
+    deliveredResultMd,
+    { strictActions: true },
+  ).errors;
   return {
     ...template,
     resultMd: deliveredResultMd,
     assumptions: [
+      ...reviewSuggestions.map((message) => `可选优化：${message}`),
       research.required
         ? `本次由AI基于表单输入和${research.sources.length}条受控网页正文生成；公开事实仅以所列原始来源为准。`
         : "本次由AI基于表单输入生成；本工具未触发公开联网研究。",

@@ -702,7 +702,8 @@ test('合规低风险输出结算后仍停待人工审阅，审阅前不进资�
 
 test('自动与定时共用的执行器采用员工模型、输出长度和超时配置', async () => {
   setEmployeeConfig(1, 3, {
-    textModel: 'employee-contract-model',
+    textModel: 'deepseek-v4-flash',
+    imageModel: 'gpt-image-2',
     outputLength: 'lite',
     timeoutSeconds: 47,
   }, bossA);
@@ -730,7 +731,7 @@ test('自动与定时共用的执行器采用员工模型、输出长度和超�
   }));
 
   assert.equal(result.status, '成功');
-  assert.equal(captured.model, 'employee-contract-model');
+  assert.equal(captured.model, 'deepseek-v4-flash');
   assert.equal(captured.maxTokens, 3200);
   assert.equal(captured.timeoutMs, 47000);
   assert.match(captured.userMsg, /精简：保留关键结论与行动项/u);
@@ -739,8 +740,8 @@ test('自动与定时共用的执行器采用员工模型、输出长度和超�
     runId,
   )).snapshot_json);
   assert.deepEqual(snapshot.enterpriseOverlay.workConfig, {
-    textModel: 'employee-contract-model',
-    imageModel: 'inherit',
+    textModel: 'deepseek-v4-flash',
+    imageModel: 'gpt-image-2',
     outputLength: 'lite',
     approvalMode: '岗位默认',
     timeoutSeconds: 47,

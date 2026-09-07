@@ -1,0 +1,84 @@
+.invitation-manager {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.invitation-manager > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.invitation-manager h2,
+.invitation-manager h3 {
+  margin: 0 0 8px;
+}
+.invitation-manager p {
+  margin: 4px 0 12px;
+  color: var(--ui-text-2);
+  line-height: 1.7;
+}
+.invitation-create,
+.invitation-created,
+.invitation-list {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+.invitation-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 700px;
+}
+.invitation-create .ant-alert {
+  margin-bottom: 16px;
+}
+.invitation-options {
+  margin-bottom: 20px;
+}
+.invitation-options summary {
+  cursor: pointer;
+  color: var(--ui-text-2);
+  margin-bottom: 12px;
+}
+.invitation-created > code {
+  display: block;
+  padding: 14px 0;
+  font-size: 18px;
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.invitation-list > article {
+  padding: 16px 0;
+  border-top: 1px solid var(--ui-border);
+}
+.invitation-list > article > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.invitation-list code {
+  overflow-wrap: anywhere;
+}
+.invitation-hint {
+  font-size: 13px;
+}
+@media (max-width: 600px) {
+  .invitation-fields {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .invitation-create,
+  .invitation-created,
+  .invitation-list {
+    padding: 16px;
+  }
+  .invitation-manager > header {
+    align-items: flex-start;
+  }
+}

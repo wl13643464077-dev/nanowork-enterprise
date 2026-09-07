@@ -833,12 +833,22 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
     assert.ok(Number.isSafeInteger(taskId) && taskId > 0);
     if (firstRestaurantTaskId === null) firstRestaurantTaskId = taskId;
 
-    const pending = await pollJson(
+    let pending = await pollJson(
       `/api/marshals/tasks/${taskId}/status`,
       token,
       (payload) => payload?.status !== "生成中",
       `restaurant employee ${idx}`,
     );
+    const manuallyReviewed = pending.payload.status === '待审阅';
+    if (manuallyReviewed) {
+      const awaitingTask = q.get('SELECT output_id,employee_web_snapshot FROM agent_tasks WHERE tenant_id=? AND id=?', PRIMARY_TENANT, taskId);
+      assert.equal(JSON.parse(awaitingTask.employee_web_snapshot).outputContract.qualityReview.requiresUserDecision, true);
+      const reviewed = await http(`/api/marshals/outputs/${awaitingTask.output_id}/review`, {
+        token, method: 'POST', body: { decision: 'adopt', reason: '已阅读完整结果和优化建议，确认采纳。' },
+      });
+      assert.equal(reviewed.response.status, 200, JSON.stringify(reviewed.payload));
+      pending = await http(`/api/marshals/tasks/${taskId}/status`, { token });
+    }
     assert.equal(
       pending.payload.status,
       "已完成",
@@ -991,11 +1001,8 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
       PRIMARY_TENANT,
       outputRow.id,
     );
-    assert.equal(
-      approval,
-      undefined,
-      `restaurant ${idx} Boss auto policy must not create approval`,
-    );
+    if (manuallyReviewed) assert.equal(approval?.status, '已通过');
+    else assert.equal(approval, undefined, `restaurant ${idx} clean output keeps the automatic policy`);
     const billingDebug = q.all(
       `SELECT h.id,h.status,h.user_id,h.feature,h.kind,h.model,
         h.settled_credits,h.ref_type,h.ref_id,l.user_id log_user_id,l.feature log_feature,
@@ -1032,7 +1039,8 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
     );
     assert.equal(finalTask.status, "已完成");
     assert.equal(finalOutput.status, "可使用");
-    assert.equal(finalApproval, undefined);
+    if (manuallyReviewed) assert.equal(finalApproval?.status, '已通过');
+    else assert.equal(finalApproval, undefined);
     const asset = q.get(
       `SELECT * FROM biz_assets
       WHERE tenant_id=? AND source_type='content' AND source_id=?`,
@@ -1072,7 +1080,7 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
       outputSummary: String(finalOutput.body)
         .replace(/\s+/gu, " ")
         .slice(0, 180),
-      reviewState: "auto_adopt",
+      reviewState: manuallyReviewed ? "adopt" : "auto_adopt",
       billingState: billing.row.status,
       heldRemaining: billing.heldRemaining,
       webRequired: restaurantWebRequired,
@@ -1085,7 +1093,7 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
       database: {
         task: { id: taskId, status: finalTask.status },
         output: { id: Number(finalOutput.id), status: finalOutput.status },
-        approval: null,
+        approval: finalApproval ? { id: finalApproval.id, status: finalApproval.status } : null,
         asset: { id: Number(asset.id), status: asset.status },
       },
       resultHash: sha256(finalOutput.body),
@@ -1172,9 +1180,9 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
       `content ${idx} artifact should be available after automatic adoption`,
     );
     const contentApproval = q.get(
-      `SELECT * FROM approvals
-      WHERE tenant_id=? AND target_type='content' AND target_id=?
-      ORDER BY id DESC LIMIT 1`,
+      `SELECT a.* FROM approvals a JOIN contents c ON c.tenant_id=a.tenant_id AND c.id=a.target_id
+      WHERE a.tenant_id=? AND a.target_type='content' AND c.source_type='content_employee_run' AND c.source_id=?
+      ORDER BY a.id DESC LIMIT 1`,
       PRIMARY_TENANT,
       runId,
     );
@@ -1355,6 +1363,7 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
   assert.ok(nativeProfile.capabilities?.length >= 3);
   assert.equal(nativeProfile.permissions?.canViewCapabilities, true);
   const salesBrief = `用上传的门店和招牌菜图片做一支30秒带货视频：毛血旺太原吾悦广场 ${crypto.randomUUID()}`;
+  const approvalsBeforeSales = Number(q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id=?`, PRIMARY_TENANT)?.n || 0);
   const salesDispatch = await http("/api/content/ai-sales-video", {
     token,
     method: "POST",
@@ -1411,7 +1420,7 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
   const salesApprovalCount =
     q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id=?`, PRIMARY_TENANT)
       ?.n || 0;
-  assert.equal(Number(salesApprovalCount), 0, "Boss AI带货员不得创建内容审批");
+  assert.equal(Number(salesApprovalCount), approvalsBeforeSales, "Boss AI带货员不得新增内容审批");
   rows.push({
     domain: "content",
     idx: 10,
@@ -1504,8 +1513,8 @@ test("[employee-output-matrix] 72名数字员工通过生产中间件、正式HT
         PRIMARY_TENANT,
       )?.n || 0,
     ),
-    0,
-    "Boss全量验收阶段不得创建任何内容审批单",
+    rows.filter(row => row.database?.approval).length,
+    "只有用户实际确认的待审阅结果应创建审批单",
   );
 
   // Give fire-and-forget local post-approval bookkeeping one event-loop turn;

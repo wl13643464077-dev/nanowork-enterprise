@@ -1195,30 +1195,42 @@ function outlineTextLine({ text, fontSize, baseline, borderWidth, signal }) {
     );
   }
   const centered = (TEXT_OVERLAY_WIDTH - cursor) / 2;
-  return paths
-    .map(
-      (item) =>
-        `<path d="${item.d}" transform="translate(${svgNumber(
-          centered + item.x,
-        )} ${svgNumber(item.y)}) scale(${svgNumber(item.scale)} ${svgNumber(
-          -item.scale,
-        )})" fill="#fff" stroke="#000" stroke-opacity="0.9" stroke-width="${svgNumber(
-          item.strokeWidth,
-        )}" stroke-linejoin="round"/>`,
-    )
-    .join("");
+  const glyphs = paths.map((item) => ({
+    geometry: `d="${item.d}" transform="translate(${svgNumber(
+      centered + item.x,
+    )} ${svgNumber(item.y)}) scale(${svgNumber(item.scale)} ${svgNumber(
+      -item.scale,
+    )})"`,
+    strokeWidth: svgNumber(item.strokeWidth),
+  }));
+  // SVG's default paint order puts the stroke over the fill and eats narrow
+  // Chinese strokes. Paint every outline first, then full white glyphs. Two
+  // explicit path layers work in resvg without relying on SVG2 paint-order.
+  return (
+    glyphs
+      .map(
+        (glyph) =>
+          `<path ${glyph.geometry} fill="none" stroke="#000" stroke-opacity="0.9" stroke-width="${glyph.strokeWidth}" stroke-linejoin="round"/>`,
+      )
+      .join("") +
+    glyphs.map((glyph) => `<path ${glyph.geometry} fill="#fff"/>`).join("")
+  );
 }
 
-function textOverlaySvg({ title, subtitle, signal }) {
+function textOverlaySvg({ title, subtitle, signal, subtitleOnly = false }) {
   const titleRows = wrapSubtitle(title, 14, 2).split("\n").filter(Boolean);
-  const subtitleRows = wrapSubtitle(subtitle, 13, 2)
+  const subtitleRows = wrapSubtitle(
+    subtitle,
+    13,
+    subtitleOnly ? Math.ceil(codepointLength(subtitle) / 13) : 2,
+  )
     .split("\n")
     .filter(Boolean);
-  if (!titleRows.length || !subtitleRows.length) {
+  if ((!subtitleOnly && !titleRows.length) || !subtitleRows.length) {
     throw failure("标题或字幕为空", 400, "TEXT_VIDEO_SUBTITLE_LAYOUT_INVALID");
   }
   const paths = [];
-  for (const [index, row] of titleRows.entries()) {
+  for (const [index, row] of (subtitleOnly ? [] : titleRows).entries()) {
     paths.push(
       outlineTextLine({
         text: row,
@@ -1234,8 +1246,10 @@ function textOverlaySvg({ title, subtitle, signal }) {
       outlineTextLine({
         text: row,
         fontSize: 62,
-        baseline: 1560 + index * 86,
-        borderWidth: 5,
+        baseline: subtitleOnly
+          ? 1646 - (subtitleRows.length - 1 - index) * 86
+          : 1560 + index * 86,
+        borderWidth: 3,
         signal,
       }),
     );
@@ -1293,21 +1307,24 @@ function validateTextOverlayPng(bytes) {
   return bytes;
 }
 
-async function renderTextOverlayPng({ title, subtitle, destination, signal }) {
+async function renderTextOverlayPng({
+  title,
+  subtitle,
+  destination,
+  signal,
+  subtitleOnly = false,
+}) {
   throwIfAborted(signal);
-  const svg = textOverlaySvg({ title, subtitle, signal });
+  const svg = textOverlaySvg({ title, subtitle, signal, subtitleOnly });
   const resvg = await loadResvgModule();
   let rendered;
   try {
-    rendered = await resvg.renderAsync(
-      svg,
-      {
-        fitTo: { mode: "original" },
-        shapeRendering: 2,
-        textRendering: 2,
-        logLevel: "error",
-      },
-    );
+    rendered = await resvg.renderAsync(svg, {
+      fitTo: { mode: "original" },
+      shapeRendering: 2,
+      textRendering: 2,
+      logLevel: "error",
+    });
   } catch (error) {
     if (signal?.aborted || error?.name === "AbortError") {
       throw failure("成片任务已取消", 499, "TEXT_VIDEO_CANCELLED");
@@ -1345,6 +1362,32 @@ async function renderTextOverlayPng({ title, subtitle, destination, signal }) {
     await writePrivateArtifactAsync(destination, bytes);
   }
   return bytes;
+}
+
+// 复用图文成片的内置中文字体、字形轮廓与PNG校验，供无libass的FFmpeg烧录字幕。
+// 每条字幕全部换行绘制，不截断为图文成片的两行短标题。
+export async function renderPlainSubtitleOverlayPng({
+  text,
+  destination,
+  signal,
+} = {}) {
+  const subtitle = String(text || "")
+    .replace(/[\r\n\u0000-\u001f]/gu, " ")
+    .trim();
+  if (!subtitle || subtitle.length > 100) {
+    throw failure(
+      "字幕文本为空或超过100字符",
+      400,
+      "TEXT_VIDEO_SUBTITLE_LAYOUT_INVALID",
+    );
+  }
+  return renderTextOverlayPng({
+    title: "",
+    subtitle,
+    subtitleOnly: true,
+    destination,
+    signal,
+  });
 }
 
 function motionFilter(index, frames) {
@@ -1582,6 +1625,8 @@ async function defaultCompression({ title, body, signal }) {
 }
 
 async function defaultTts({ tenantId, text, voiceId, signal }) {
+  const { provider360Active } = await import('./yunwu.js');
+  if (provider360Active()) throw Object.assign(new Error('当前360供应商尚未开放独立配音接口，请使用AI带货员生成原生有声视频'), { status: 503, code: 'PROVIDER_360_CAPABILITY_UNAVAILABLE' });
   const config =
     getTenantConfig("text_video_minimax_voice", {}, tenantId) || {};
   const client = createMiniMaxVoiceClient({
@@ -1890,6 +1935,8 @@ export function createTextVideoRenderer(options = {}) {
       );
     }
     if (!options.ttsFn) {
+      const { provider360Active } = await import('./yunwu.js');
+      if (provider360Active()) throw Object.assign(new Error('当前360供应商尚未开放独立配音接口，请使用AI带货员生成原生有声视频'), { status: 503, code: 'PROVIDER_360_CAPABILITY_UNAVAILABLE' });
       const config =
         getTenantConfig("text_video_minimax_voice", {}, tenantId) || {};
       if (!(config.apiKey || config.key || process.env.YUNWU_API_KEY)) {

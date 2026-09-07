@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import { lookup } from 'node:dns/promises';
 import net from 'node:net';
-import { db, q, getConfig, setConfig, getTenantConfig, setTenantConfig, modulesFor, curTenant, mergeMarshal, tenantOf } from '../db.js';
+import { db, q, getConfig, setConfig, getTenantConfig, setTenantConfig, modulesFor, curTenant, mergeMarshal } from '../db.js';
 import { hashPassword, logOp, requireRole, pageParams, safeJsonParse } from '../util.js';
 import { loadRestaurantCatalog } from '../catalog/restaurant.js';
 import { dispatchPolicy, saveDispatchPolicy } from '../engines/employee-dispatch-policy.js';
 import { billing } from '../engines/credits.js';
-import { adjust, balanceOfTenant } from '../engines/credits.js';
-import { assertSeatAvailable } from '../engines/plan.js';
+import { OPENLUX_COST_CONFIG, supplierCostSettings, validateSupplierCostConfig } from '../engines/provider-cost-receipts.js';
+import { balanceOfTenant } from '../engines/credits.js';
+import { assertSeatAvailable, primaryUserIdFor } from '../engines/plan.js';
+import { assertUserSeatMutation, disableUserAutomations } from '../engines/user-seat-policy.js';
 import {
   routing,
   maskedKey,
@@ -16,7 +18,9 @@ import {
   yunwuApiKey,
   yunwuKeySource,
   miniMaxH3Availability,
+  provider360Active,
 } from '../engines/yunwu.js';
+import { is360BaseUrl, resolve360Model, describe360ModelDirectory, describe360ImageAvailability } from '../engines/provider-360.js';
 import { providerResponseError, sanitizeProviderError } from '../engines/provider-errors.js';
 import {
   agenticWebResearch,
@@ -33,12 +37,24 @@ import {
 } from '../engines/runtime-readiness.js';
 import { verifyAmapConnection } from '../engines/amap.js';
 import adminModelBudgetRoutes from './admin-model-budget.js';
+import {
+  platformDefaultProviderId, platformProviderAvailability, providerDefinition, selectedProviderCredentials,
+  withPlatformProvider,
+} from '../engines/ai-provider-selection.js';
+import { createInvitationsRouter } from './invitations.js';
+import { createSeatRequestsRouter } from './seat-requests.js';
 
 // ===== 管理后台 API（仅 boss/admin；PRD V2 §20-21 管理后台）=====
 const r = Router();
-r.use(requireRole('boss', 'admin'));
+r.use((req, res, next) => {
+  const platformEndpoint = /^\/(?:api-config(?:\/|$)|web-search\/test$|runtime-readiness$)/u.test(req.path);
+  if (req.user?.role === 'platform_super' && platformEndpoint) return next();
+  return requireRole('boss', 'admin')(req, res, next);
+});
 // 租户级模型路由 / 月度 AI 预算 / 用量报表 / 按人配额预留（独立文件，避免本文件继续膨胀）
 r.use(adminModelBudgetRoutes);
+r.use('/invitations', createInvitationsRouter('tenant'));
+r.use('/seat-requests', createSeatRequestsRouter('tenant'));
 
 const ALL_MODULES = [
   { key: 'dashboard', name: '总控台' }, { key: 'advisor', name: '老板参谋' },
@@ -61,7 +77,7 @@ function catalogEmployeesForDepartment(marshalId) {
 }
 
 function requirePlatformConfigOwner(req, res, next) {
-  if (curTenant() !== 1) return res.status(403).json({ error: '模型通道、平台计费和API密钥仅平台总部可配置' });
+  if (req.user?.role !== 'platform_super') return res.status(403).json({ error: '模型通道、平台计费和API密钥仅平台超级管理员可管理', code: 'PLATFORM_SUPER_REQUIRED' });
   next();
 }
 
@@ -390,8 +406,8 @@ r.get('/overview', (req, res) => {
     todayCalls: todayUse.n || 0,
     aiCalls: q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id = ${T} AND ai_mode NOT IN ('recharge','bonus')`)?.n || 0,
     pendingApprovals: q.get(`SELECT COUNT(*) n FROM approvals WHERE tenant_id = ${T} AND status='待审核'`)?.n || 0,
-    channel: yunwuAvailable() ? 'yunwu' : 'template',
-    readiness: buildRuntimeReadiness({ tenantId: T }),
+    channel: yunwuAvailable() ? 'available' : 'unavailable',
+    readiness: buildRuntimeReadiness({ tenantId: T, viewerRole: req.user.role }),
     usage,
   });
 });
@@ -399,7 +415,7 @@ r.get('/overview', (req, res) => {
 // 本接口只聚合本地配置、进程状态与最近一次显式测试记录，严禁在 GET 中探测外部服务。
 r.get('/runtime-readiness', (req, res) => {
   res.set('Cache-Control', 'no-store');
-  res.json(buildRuntimeReadiness({ tenantId: curTenant() }));
+  res.json(buildRuntimeReadiness({ tenantId: curTenant(), viewerRole: req.user.role }));
 });
 
 // —— 用户与组织 ——
@@ -412,12 +428,14 @@ function normalizedStoreId(body) {
   return q.get('SELECT id FROM stores WHERE tenant_id = ? AND id = ?', curTenant(), id) ? id : NaN;
 }
 r.get('/users', (req, res) => {
+  const primaryId = primaryUserIdFor(curTenant());
   const rows = q.all(`SELECT u.id,u.username,u.name,u.role,u.dept,u.phone,u.status,u.modules,u.last_login_at,u.created_at,u.store_id,
     (SELECT s.name FROM stores s WHERE s.tenant_id=u.tenant_id AND s.id=u.store_id) store_name,
     (SELECT COALESCE(SUM(l.credits),0) FROM credit_logs l WHERE l.tenant_id=u.tenant_id AND l.user_id=u.id
       AND l.credits>0 AND l.created_at>=date('now','start of month')) ai_spent_month
     FROM users u WHERE u.tenant_id = ${curTenant()} AND u.role != 'platform_super' ORDER BY u.id`);
-  res.json(rows.map(u => ({ ...u, modules: safeJsonParse(u.modules, null), effectiveModules: modulesFor(u) })));
+  res.json(rows.map(u => ({ ...u, accountType: Number(u.id) === Number(primaryId) ? 'primary' : 'sub',
+    modules: safeJsonParse(u.modules, null), effectiveModules: modulesFor(u) })));
 });
 r.post('/users', (req, res) => {
   const { username, password, name, role, dept, phone, credits = 0 } = req.body || {};
@@ -431,34 +449,34 @@ r.post('/users', (req, res) => {
   try { displayName = normalizedUserText(name, '姓名', 60); } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
   const initialCredits = Number(credits);
   if (!Number.isSafeInteger(initialCredits) || initialCredits < 0 || initialCredits > 100000000) return res.status(400).json({ error: '增发积分必须是0到1亿之间的整数' });
+  if (initialCredits !== 0) return res.status(403).json({ error: '创建企业账号不能增发共享积分，请通过充值或平台账务处理', code: 'PLATFORM_CREDITS_ONLY' });
   const userRole = role || 'sales';
   if (!USER_ROLES.has(userRole)) return res.status(400).json({ error: '账号角色无效' });
   // 安全：必须显式落到本企业（users 非自动注入表，缺 tenant_id 会落到总部租户1 → 跨租户建号/接管）
   const tid = curTenant();
-  // 席位校验：只统计启用中的用户端账号（停用不占席位；平台超管不计），超限 409 + 可读提示
-  try { assertSeatAvailable(tid); } catch (error) {
-    return res.status(error.status || 409).json({ error: error.message, code: error.code, seatLimit: error.seatLimit, seatsUsed: error.seatsUsed });
-  }
   let transactionOpen = false;
   try {
     db.exec('BEGIN IMMEDIATE');
     transactionOpen = true;
+    assertSeatAvailable(tid);
     const result = q.run('INSERT INTO users(username,password_hash,name,role,dept,phone,credits,tenant_id,store_id) VALUES(?,?,?,?,?,?,0,?,?)',
       account, hashPassword(password), displayName, userRole, String(dept || '').trim().slice(0, 80), String(phone || '').trim().slice(0, 40), tid, storeId ?? null);
-    if (initialCredits > 0) adjust({ userId: result.lastInsertRowid, delta: initialCredits, operatorId: req.user.id, note: '新增账号时增发企业共享积分', manageTransaction: false });
+    logOp(req.user, '管理后台', '新增用户', username);
     db.exec('COMMIT');
     transactionOpen = false;
-    logOp(req.user, '管理后台', '新增用户', username);
     res.json({ id: result.lastInsertRowid });
   } catch (error) {
     if (transactionOpen) { try { db.exec('ROLLBACK'); } catch { /* no active transaction */ } }
     const duplicate = String(error?.message || '').includes('UNIQUE constraint failed: users.username');
-    res.status(error?.status || 400).json({ error: duplicate ? '用户名已存在' : (error?.message || '新增账号失败') });
+    res.status(error?.status || 400).json({ error: duplicate ? '用户名已存在' : (error?.message || '新增账号失败'),
+      code: error.code, seatLimit: error.seatLimit, seatsUsed: error.seatsUsed });
   }
 });
 r.put('/users/:id', (req, res) => {
   // 租户归属守卫：管理后台只能改本企业用户，杜绝按裸 id 改到别家账号的密码/角色（越权提权/接管）
-  if (!q.get(`SELECT id FROM users WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id)) return res.status(404).json({ error: '用户不存在' });
+  const target = q.get(`SELECT id,role FROM users WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id);
+  if (!target) return res.status(404).json({ error: '用户不存在' });
+  if (target.role === 'platform_super') return res.status(403).json({ error: '企业账号管理不可修改平台账号' });
   const { name, role, dept, status, password, modules } = req.body || {};
   const storeId = normalizedStoreId(req.body);
   if (Number.isNaN(storeId)) return res.status(400).json({ error: '所属门店不存在或不属于当前企业' });
@@ -483,9 +501,25 @@ r.put('/users/:id', (req, res) => {
     updates.push('auth_version=COALESCE(auth_version,0)+1');
   }
   if (modules !== undefined) add('modules', normalizedModuleList === null ? null : JSON.stringify(normalizedModuleList));
-  if (updates.length) q.run(`UPDATE users SET ${updates.join(',')} WHERE tenant_id=? AND id=?`, ...values, curTenant(), req.params.id);
-  logOp(req.user, '管理后台', '修改用户', `user#${req.params.id}`);
-  res.json({ ok: true });
+  let transactionOpen = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionOpen = true;
+    const fresh = q.get('SELECT id,role,status FROM users WHERE tenant_id=? AND id=?', curTenant(), req.params.id);
+    assertUserSeatMutation({ tenantId: curTenant(), actorId: req.user.id, target: fresh, changes: req.body });
+    if (status === '停用' && fresh.status !== '停用' && !password)
+      updates.push('auth_version=COALESCE(auth_version,0)+1');
+    if (updates.length) q.run(`UPDATE users SET ${updates.join(',')} WHERE tenant_id=? AND id=?`, ...values, curTenant(), req.params.id);
+    const disabledAutomationRules = status === '停用' ? disableUserAutomations(curTenant(), fresh.id) : 0;
+    logOp(req.user, '管理后台', '修改用户', `user#${req.params.id}`);
+    db.exec('COMMIT');
+    transactionOpen = false;
+    res.json({ ok: true, ...(status === '停用' ? { disabledAutomationRules, historyPreserved: true } : {}) });
+  } catch (error) {
+    if (transactionOpen) db.exec('ROLLBACK');
+    res.status(error.status || 400).json({ error: error.message || '修改账号失败', code: error.code,
+      seatLimit: error.seatLimit, seatsUsed: error.seatsUsed });
+  }
 });
 r.get('/org', (req, res) => {
   res.json(q.all(`SELECT dept, COUNT(*) n, GROUP_CONCAT(name) members FROM users WHERE tenant_id = ${curTenant()} GROUP BY dept`));
@@ -578,36 +612,107 @@ r.post('/marshals/:id/sync', (req, res) => {
 });
 
 // —— 接口管理：通道/模型路由/价格（PRD V2 §15）——
-r.get('/api-config', requirePlatformConfigOwner, (req, res) => {
-  const readiness = buildRuntimeReadiness({ tenantId: curTenant() });
-  const aiReadiness = readiness.channels.find(item => item.key === 'ai');
-  res.json({
-    channel: {
-      provider: '云雾API (yunwu.ai)',
-      baseUrl: getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1',
-      key: maskedKey(),
-      keySource: yunwuKeySource(),
-      keyPersistence: 'environment_only',
-      available: yunwuAvailable(),
-      readiness: aiReadiness,
-    },
-    routing: routing(),
-    billing: billing(),
-    h3: h3AdminConfig(),
-    riskRules: getRules(),
-    usage: yunwuUsage(),
-    readiness,
+// 双供应商：平台分别查看、测试、保存 OpenLux 与 360；?provider= / body.provider 指定编辑哪家，
+// 缺省为平台默认。所有读取都在该供应商上下文里计算，不受当前企业或环境残留影响。
+const PUBLIC_PROVIDER_IDS = new Set(['openlux', '360']);
+function platformProviderParam(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const id = String(value).trim();
+  if (!PUBLIC_PROVIDER_IDS.has(id)) throw Object.assign(new Error('不支持的 AI 供应商，只能选择 OpenLux 或 360 智脑'), { status: 400, code: 'AI_PROVIDER_INVALID' });
+  return id;
+}
+function providerDisplayName(providerId) {
+  return providerId === '360' ? '360 智脑开放平台' : providerId === 'openlux' ? 'OpenLux (api.openlux.ai)' : '云雾API (yunwu.ai)';
+}
+function platformApiConfigView(providerId) {
+  return withPlatformProvider(providerId, () => {
+    const readiness = buildRuntimeReadiness({ tenantId: curTenant() });
+    const aiReadiness = readiness.channels.find(item => item.key === 'ai');
+    const credentials = selectedProviderCredentials();
+    return {
+      providers: platformProviderAvailability().map(item => ({ id: item.id, label: item.label, available: item.available === true, keySource: item.keySource })),
+      defaultProvider: platformDefaultProviderId(),
+      selectedProvider: providerId,
+      channel: {
+        provider: providerDisplayName(providerId),
+        providerId,
+        baseUrl: credentials.baseUrl,
+        key: maskedKey(),
+        keySource: yunwuKeySource(),
+        keyPersistence: 'environment_only',
+        available: yunwuAvailable(),
+        readiness: aiReadiness,
+      },
+      // 平台默认必须排除当前企业偏好，否则原样保存会污染其他企业。
+      routing: routing(null),
+      billing: billing(),
+      supplierCost: supplierCostSettings(),
+      h3: h3AdminConfig(),
+      riskRules: getRules(),
+      usage: yunwuUsage(),
+      readiness,
+    };
   });
+}
+r.get('/api-config', requirePlatformConfigOwner, (req, res) => {
+  let providerId;
+  try { providerId = platformProviderParam(req.query?.provider) || platformDefaultProviderId(); }
+  catch (error) { return res.status(error.status || 400).json({ error: error.message, code: error.code }); }
+  res.json(platformApiConfigView(providerId));
 });
 r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
-  const { routing: rt, billing: bl, baseUrl, apiKey, h3 } = req.body || {};
+  let providerId;
+  try { providerId = platformProviderParam(req.body?.provider) || platformDefaultProviderId(); }
+  catch (error) { return res.status(error.status || 400).json({ error: error.message, code: error.code }); }
+  // 改平台默认是独立动作：只接受已配置 Key 的一家；不能顺带改其他配置时静默切换。
+  if (req.body?.defaultProvider !== undefined) {
+    let nextDefault;
+    try { nextDefault = platformProviderParam(req.body.defaultProvider); }
+    catch (error) { return res.status(error.status || 400).json({ error: error.message, code: error.code }); }
+    if (!nextDefault) return res.status(400).json({ error: '请指定要设为平台默认的供应商' });
+    const item = platformProviderAvailability().find(entry => entry.id === nextDefault);
+    if (!item?.available) return res.status(409).json({ error: `平台尚未配置 ${item?.label || nextDefault} 的 API Key，不能设为默认供应商`, code: 'AI_PROVIDER_UNAVAILABLE' });
+    const previous = platformDefaultProviderId();
+    setConfig('ai_provider_default', nextDefault);
+    logOp(req.user, '管理后台', '修改平台默认AI供应商', `${previous}→${nextDefault}`);
+    const rest = Object.keys(req.body).filter(key => !['provider', 'defaultProvider'].includes(key));
+    if (!rest.length) return res.json({ ok: true, defaultProvider: nextDefault, h3: h3AdminConfig() });
+  }
+  return withPlatformProvider(providerId, () => savePlatformApiConfig(req, res, providerId));
+});
+async function savePlatformApiConfig(req, res, providerId) {
+  const { routing: rt, billing: bl, baseUrl, apiKey, h3, supplierCost } = req.body || {};
+  const active360 = providerId === '360';
+  if (active360) {
+    if (baseUrl && !is360BaseUrl(baseUrl)) return res.status(400).json({ error: '当前使用360供应商，接口地址固定为 https://api.360.cn/v1' });
+    if (supplierCost && supplierCost.enabled !== true) return res.status(400).json({ error: '360必须按实际人民币扣款的2倍结算，不能关闭实际费用核对' });
+    if (h3 !== undefined) return res.status(400).json({ error: '360模式不支持旧供应商MiniMax H3配置' });
+    if (rt) {
+      try {
+        for (const model of Object.values(rt.text || {})) resolve360Model('text', model);
+        for (const [kind, value] of [['image', rt.image], ['vision', rt.vision], ['text', rt.deepThink], ['video', rt.videoDefault]]) if (value) resolve360Model(kind, value);
+        for (const model of rt.video || []) resolve360Model('video', model);
+      } catch (error) { return res.status(400).json({ error: error.message }); }
+    }
+  }
+  let nextSupplierCost;
+  if (supplierCost !== undefined && !active360) {
+    try { nextSupplierCost = validateSupplierCostConfig(supplierCost); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
+  }
   if (apiKey !== undefined && String(apiKey || '').trim()) {
     return res.status(400).json({
-      error: 'API Key 仅支持通过服务端 YUNWU_API_KEY 环境变量配置，本次输入未保存',
+      error: `API Key 仅支持通过服务端 ${active360 ? 'AI360_API_KEY' : 'OPENLUX_API_KEY'} 环境变量配置，本次输入未保存`,
     });
   }
+  if (baseUrl && !active360 && providerId === 'openlux') {
+    let origin;
+    try { origin = new URL(String(baseUrl)).origin; } catch { origin = ''; }
+    if (origin !== new URL(providerDefinition('openlux').baseUrl).origin)
+      return res.status(400).json({ error: '当前编辑OpenLux供应商，接口地址固定为 https://api.openlux.ai/v1' });
+  }
   let h3Update = null;
-  let nextBilling = bl;
+  let nextBilling = active360 && bl ? { ...billing(), creditYuan: billing().creditYuan } : bl;
   const genericH3Price = bl && typeof bl === 'object' && !Array.isArray(bl)
     && bl.video && typeof bl.video === 'object' && !Array.isArray(bl.video)
     && Object.prototype.hasOwnProperty.call(bl.video, MINIMAX_H3_MODEL_ID)
@@ -636,22 +741,33 @@ r.put('/api-config', requirePlatformConfigOwner, async (req, res) => {
       return res.status(error.status || 400).json({ error: error.message });
     }
   }
-  if (baseUrl) {
+  // 钱包实际扣费模式的售价固定为两倍，保存值与有效计价保持一致。
+  if ((nextSupplierCost ?? supplierCostSettings()).enabled === true) {
+    nextBilling = {
+      ...(nextBilling && typeof nextBilling === 'object' && !Array.isArray(nextBilling) ? nextBilling : billing()),
+      marginMultiplier: 2,
+    };
+  }
+  if (baseUrl && providerId === 'yunwu') {
     // 先做 DNS 解析校验（BE-M5），任何失败都不落库
     try { setConfig('yunwu_base_url', await validatedProviderBase(baseUrl)); }
     catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
   }
-  if (rt) setConfig('model_routing', rt);
+  // 两家的平台模型偏好分开保存；旧的 model_routing 只作为未保存过那一家的兼容回退。
+  if (rt) setConfig(PUBLIC_PROVIDER_IDS.has(providerId) ? `model_routing_${providerId}` : 'model_routing', rt);
   if (nextBilling) setConfig('billing', nextBilling);
+  if (nextSupplierCost) setConfig(OPENLUX_COST_CONFIG, nextSupplierCost);
   if (h3Update) setConfig(MINIMAX_H3_CAPABILITY_KEY, h3Update.capability);
   logOp(req.user, '管理后台', '修改接口配置', [
+    `供应商 ${providerId}`,
     rt && '模型路由',
     nextBilling && '计费',
+    nextSupplierCost && '上游钱包实际扣费',
     baseUrl && 'BaseURL',
     h3Update && `MiniMax H3（供应商${h3Update.capability.providerVerified ? '已核验' : '未核验'}、计价${h3Update.capability.billingVerified ? '已核验' : '未核验'}）`,
   ].filter(Boolean).join('+'));
-  res.json({ ok: true, h3: h3AdminConfig() });
-});
+  res.json({ ok: true, provider: providerId, h3: h3AdminConfig() });
+}
 
 // 存量版本曾把云雾 Key 明文写入 sys_config。升级后仅兼容读取，绝不自动删除；
 // 只有环境变量已接管且总部管理员二次确认时，才允许显式清除旧值。
@@ -669,13 +785,19 @@ r.delete('/api-config/legacy-key', requirePlatformConfigOwner, (req, res) => {
   return res.json({ ok: true, removed, keySource: yunwuKeySource() });
 });
 
-// 测试连接：校验 Key/BaseURL 是否可用（拉模型清单）
+// 测试连接：只验证 body.provider 指定的那一家（缺省平台默认）；拉模型清单，不产生生成费用。
 r.post('/api-config/test', requirePlatformConfigOwner, async (req, res) => {
+  let providerId;
+  try { providerId = platformProviderParam(req.body?.provider) || platformDefaultProviderId(); }
+  catch (error) { return res.status(error.status || 400).json({ ok: false, error: error.message, code: error.code }); }
+  return withPlatformProvider(providerId, () => testPlatformApiConnection(req, res, providerId));
+});
+async function testPlatformApiConnection(req, res, providerId) {
   const tenantId = curTenant();
   let timer;
   try {
     // 测试连接前重新解析校验一次（防存量配置或 DNS rebinding 把已保存域名指回内网）
-    const base = await validatedProviderBase(getConfig('yunwu_base_url', null) || process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1');
+    const base = await validatedProviderBase(selectedProviderCredentials().baseUrl);
     const key = yunwuApiKey();
     if (!key) {
       recordRuntimeReadinessCheck('ai', {
@@ -693,23 +815,31 @@ r.post('/api-config/test', requirePlatformConfigOwner, async (req, res) => {
     const ctrl = new AbortController(); timer = setTimeout(() => ctrl.abort(), 10000);
     const resp = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: ctrl.signal });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw providerResponseError(resp.status, data, { service: '云雾AI服务' });
+    if (!resp.ok) throw providerResponseError(resp.status, data, { service: providerServiceLabel(providerId) });
     const n = Array.isArray(data?.data) ? data.data.length : 0;
+    if (!n) throw providerResponseError(502, {}, { service: 'AI模型目录' });
+    const modelChecks = provider360Active() ? describe360ModelDirectory(data.data, routing(null)) : [];
+    const imageAvailability = provider360Active() ? describe360ImageAvailability(data.data, routing(null)) : null;
     recordRuntimeReadinessCheck('ai', {
       tenantId,
       outcome: 'passed',
       checkedBy: req.user.id,
-      evidence: { provider: 'yunwu', models: n, baseUrl: base },
+      evidence: { provider: providerId, models: n, baseUrl: base, modelChecks,
+        ...(imageAvailability ? { imageAvailability: imageAvailability.verdict } : {}), scope: 'connection_and_directory' },
     });
-    logOp(req.user, '管理后台', '测试API连接', `成功，${n}个模型`);
+    logOp(req.user, '管理后台', '测试API连接', `成功，${n}个模型${imageAvailability ? `，图片模型${imageAvailability.imageModels.length}个` : ''}`);
     res.json({
       ok: true,
+      provider: providerId,
       models: n,
+      modelChecks,
+      imageAvailability,
+      generationVerified: false,
       base,
       readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'ai'),
     });
   } catch (error) {
-    const safe = sanitizeProviderError(error, { service: '云雾AI服务' });
+    const safe = sanitizeProviderError(error, { service: providerServiceLabel(providerId) });
     recordRuntimeReadinessCheck('ai', {
       tenantId,
       outcome: 'failed',
@@ -718,13 +848,17 @@ r.post('/api-config/test', requirePlatformConfigOwner, async (req, res) => {
     });
     res.json({
       ok: false,
+      provider: providerId,
       error: safe.message,
       readiness: buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'ai'),
     });
   } finally {
     if (timer) clearTimeout(timer);
   }
-});
+}
+function providerServiceLabel(providerId) {
+  return providerId === '360' ? '360 AI服务' : providerId === 'openlux' ? 'OpenLux AI服务' : '云雾AI服务';
+}
 
 // 联网主备链显式验收：固定使用无敏感数据的公开餐饮查询，避免把该接口
 // 变成任意搜索代理。只有通过候选与正文质量门才记录为已连接。
@@ -881,17 +1015,7 @@ r.get('/credits', (req, res) => {
   res.json({ shared: true, balance: balanceOfTenant(curTenant()), users });
 });
 r.post('/credits/adjust', (req, res) => {
-  const { userId, delta, note } = req.body || {};
-  const amount = Number(delta);
-  if (!Number.isInteger(Number(userId)) || !Number.isInteger(amount) || amount === 0) return res.status(400).json({ error: '用户与整数调整额度必填' });
-  // 老板/管理员可为公司积分池增发或扣减（积分池为租户级共享，加分即充入公司池、全员可用）；防误操作设单次上限
-  if (Math.abs(amount) > 100000000) return res.status(400).json({ error: '单次调整额度过大（上限 1 亿分）' });
-  // 目标用户必须属于本企业（杜绝跨租户调他人积分）
-  if (tenantOf(userId) !== curTenant()) return res.status(404).json({ error: '用户不存在' });
-  if (balanceOfTenant(curTenant()) + amount < 0) return res.status(400).json({ error: '扣减后企业积分池不能为负数' });
-  const out = adjust({ userId, delta: amount, operatorId: req.user.id, note });
-  logOp(req.user, '管理后台', '积分调整', `user#${userId} ${amount > 0 ? '+' : ''}${amount}`);
-  res.json({ ...out, message: `${amount > 0 ? '已增发' : '已扣减'} ${Math.abs(amount)} 分，公司积分池当前 ${out.balance} 分` });
+  res.status(403).json({ error: '企业不能增发或扣减共享积分池；请充值或联系平台处理账务', code: 'PLATFORM_CREDITS_ONLY' });
 });
 r.get('/credits/logs', (req, res) => {
   const { userId, kind, mode, from, to, export: exp } = req.query;

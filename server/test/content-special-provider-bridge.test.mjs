@@ -94,6 +94,10 @@ function billingDependencies(overrides = {}) {
       events.push(`settle:${hold.holdId}:${input.credits}`);
       return { credits: input.credits, balance: 9_900, costYuan: 1 };
     },
+    refundHoldFn(hold) {
+      events.push(`refund:${hold.holdId}`);
+      return { credits: 0, refundedCredits: hold.credits, balance: 10_000, costYuan: null, supplierCostStatus: "pending" };
+    },
     releaseHoldFn(hold) {
       events.push(`release:${hold.holdId}`);
       return { credits: 0, balance: 10_000, costYuan: 0 };
@@ -618,7 +622,7 @@ test("文本与专项provider账务统一汇总，全部结算计入总实扣，
   assert.equal(released.chargedCredits, 12);
 });
 
-test("工位5图片供应商已外调但返回空结果时保留hold待对账，AI配图fail closed不进SVG回退", async () => {
+test("工位5图片供应商已外调但最终空结果全额退款，AI配图不进SVG回退", async () => {
   const secret = "sk-provider-failure-secret-123456";
   const { events, dependencies } = billingDependencies({
     async generateImageFn(input) {
@@ -681,7 +685,7 @@ test("工位5图片供应商已外调但返回空结果时保留hold待对账，
     runtimeError = error;
   }
 
-  // AI配图必须真图：图片供应商空结果时整体失败并留扣待对账，不调用文本SVG回退。
+  // AI配图必须真图：图片供应商空结果时整体失败并退回用户积分，不调用文本SVG回退。
   assert.ok(runtimeError, "AI配图空结果必须fail closed");
   assert.equal(runtimeError.code, "CONTENT_SPECIAL_HANDLER_RUNTIME_FAILED");
   assert.match(runtimeError.message, /不会用SVG、HTML或不足张数冒充完整交付/u);
@@ -691,16 +695,14 @@ test("工位5图片供应商已外调但返回空结果时保留hold待对账，
     "estimate:image:gpt-image-2",
     "hold:image:75",
     "generate:empty",
+    "refund:1",
   ]);
   const evidence = bridge.evidence();
-  assert.equal(evidence.attempts[0].status, "pending_reconciliation");
-  assert.equal(evidence.attempts[0].billing.chargedCredits, null);
-  assert.equal(evidence.attempts[0].billing.heldCredits, 75);
-  assert.equal(evidence.attempts[0].billing.releaseSuppressed, true);
-  assert.equal(
-    evidence.attempts[0].billing.reconciliationReason,
-    "external_invocation_started",
-  );
+  assert.equal(evidence.attempts[0].status, "released");
+  assert.equal(evidence.attempts[0].billing.chargedCredits, 0);
+  assert.equal(evidence.attempts[0].billing.heldCredits, 0);
+  assert.equal(evidence.attempts[0].billing.automaticRetryAllowed, false);
+  assert.equal(evidence.attempts[0].billing.supplierCostStatus, "pending");
   assert.equal(evidence.attempts[0].delivery, null);
   assert.equal(evidence.request.imageCount, 1);
   assert.equal(evidence.request.imageCountMode, "explicit");
@@ -709,7 +711,7 @@ test("工位5图片供应商已外调但返回空结果时保留hold待对账，
     "dy_style",
   ]);
   assert.equal(evidence.attempts[0].requestedCount, 1);
-  assert.equal(evidence.attempts[0].settlement.action, "hold_retained");
+  assert.equal(evidence.attempts[0].settlement.action, "release");
   assert.doesNotMatch(
     JSON.stringify({ error: runtimeError.evidence, evidence }),
     /provider-failure-secret/u,
@@ -720,7 +722,7 @@ test("工位5图片供应商已外调但返回空结果时保留hold待对账，
   );
 });
 
-test("多图生成部分成功后上游失败时保留全部hold待对账，不落库也不自动退款", async () => {
+test("多图调用最终失败且没有可读成果时全额退款，不自动重发或伪造交付", async () => {
   const secret = "sk-partial-image-secret-123456";
   let generated = 0;
   const { events, dependencies } = billingDependencies({
@@ -740,18 +742,14 @@ test("多图生成部分成功后上游失败时保留全部hold待对账，不�
     bridge.providers.image({ count: 2, purpose: "content_images" }),
     (error) => {
       assert.equal(error.deliveryPhase, "generate");
-      assert.equal(error.billing.state, "pending_reconciliation");
-      assert.equal(error.billing.heldCredits, 150);
-      assert.equal(error.billing.chargedCredits, null);
-      assert.equal(error.billing.externalInvocationStarted, true);
-      assert.equal(error.billing.releaseSuppressed, true);
-      assert.equal(
-        error.billing.reconciliationReason,
-        "external_invocation_started",
-      );
+      assert.equal(error.billing.state, "released");
+      assert.equal(error.billing.heldCredits, 0);
+      assert.equal(error.billing.chargedCredits, 0);
+      assert.equal(error.billing.automaticRetryAllowed, false);
+      assert.equal(error.billing.supplierCostStatus, "pending");
       const evidence = error.contentSpecialProviderBridgeEvidence;
-      assert.equal(evidence.attempts[0].status, "pending_reconciliation");
-      assert.equal(evidence.attempts[0].settlement.action, "hold_retained");
+      assert.equal(evidence.attempts[0].status, "released");
+      assert.equal(evidence.attempts[0].settlement.action, "release");
       assert.doesNotMatch(
         JSON.stringify({ error, evidence }),
         /partial-image-secret/u,
@@ -764,6 +762,7 @@ test("多图生成部分成功后上游失败时保留全部hold待对账，不�
     "hold:image:150",
     "generate:partial:1",
     "generate:partial:2",
+    "refund:1",
   ]);
 });
 
@@ -894,7 +893,7 @@ test("供应商已返回后业务持久化失败时保留hold待对账，不允�
       assert.equal(error.billing.state, "pending_reconciliation");
       assert.equal(error.billing.heldCredits, 75);
       assert.equal(error.billing.chargedCredits, null);
-      assert.equal(error.billing.releaseSuppressed, true);
+      assert.equal(events.some(item => item.startsWith("refund:")), false, "缺少持久化探针时不能推测已经回滚");
       assert.equal(
         error.contentSpecialProviderBridgeEvidence.attempts[0].status,
         "pending_reconciliation",
@@ -950,7 +949,7 @@ test("素材provider也独立预授权，只有素材持久化成功才结算", 
   ]);
 });
 
-test("混合模式未知素材provider为空时留扣待对账，禁止叠加GPT Image 2付费调用", async () => {
+test("混合模式外部素材provider最终空结果退款，仍禁止自动叠加GPT Image 2付费调用", async () => {
   const { events, dependencies } = billingDependencies({
     async materialSearchFn(input) {
       events.push(`material:${input.count}:empty`);
@@ -1006,9 +1005,9 @@ test("混合模式未知素材provider为空时留扣待对账，禁止叠加GPT
     }),
     (error) => {
       assert.equal(error.status, 409);
-      assert.match(error.message, /账务尚未终结/u);
-      assert.equal(error.billing.state, "pending_reconciliation");
-      assert.equal(error.billing.heldCredits, 75);
+      assert.match(error.message, /用户积分已退回/u);
+      assert.equal(error.billing.state, "released");
+      assert.equal(error.billing.heldCredits, 0);
       return true;
     },
   );
@@ -1019,11 +1018,12 @@ test("混合模式未知素材provider为空时留扣待对账，禁止叠加GPT
   const attempts = bridge.evidence().attempts;
   assert.deepEqual(
     attempts.map((attempt) => [attempt.kind, attempt.status]),
-    [["material", "pending_reconciliation"]],
+    [["material", "released"]],
   );
-  assert.equal(attempts[0].billing.chargedCredits, null);
-  assert.equal(attempts[0].billing.heldCredits, 75);
-  assert.equal(attempts[0].billing.releaseSuppressed, true);
+  assert.equal(attempts[0].billing.chargedCredits, 0);
+  assert.equal(attempts[0].billing.heldCredits, 0);
+  assert.equal(attempts[0].billing.automaticRetryAllowed, false);
+  assert.equal(events.filter(item => item.startsWith("refund:")).length, 1);
 });
 
 test("混合模式本地零成本授权素材为空时安全释放，并继续GPT Image 2补齐", async () => {

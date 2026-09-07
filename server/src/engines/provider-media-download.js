@@ -65,8 +65,25 @@ function nodeResponse(url, address, { requestFactory, signal }) {
   });
 }
 
-/** Production uses a pinned HTTPS connection. fetchImpl/requestFactory are
- * trusted internal test adapters, never derived from HTTP request input. */
+function trustedProxyHosts() {
+  if (process.env.PROVIDER_MEDIA_TRUSTED_PROXY !== '1') return new Set();
+  const hosts = String(process.env.PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS || '').split(',').map(value => value.trim().toLowerCase());
+  // An operator may trust an existing system/TUN proxy to resolve specific
+  // provider CDN names (including fake-IP DNS). Never accept wildcard domains,
+  // IP literals, URLs or a client-supplied bypass. TLS verification stays on.
+  if (!hosts.length || hosts.length > 32 || hosts.some(host =>
+    host.length > 253 || !host.includes('.') || isIP(host)
+    || !host.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label))
+    || /\.(?:localhost|local|internal|home|arpa)$/u.test(host))) {
+    throw failure('可信媒体代理必须配置精确的公网 CDN 域名列表', 'PROVIDER_MEDIA_PROXY_CONFIG_INVALID', 503);
+  }
+  return new Set(hosts);
+}
+
+/** Production defaults to DNS-validated, pinned HTTPS. Operators can explicitly
+ * trust their system/TUN proxy for exact CDN hosts via PROVIDER_MEDIA_TRUSTED_PROXY
+ * and PROVIDER_MEDIA_TRUSTED_PROXY_HOSTS. Every redirect stays in that allowlist.
+ * fetchImpl/requestFactory are internal test adapters, never HTTP request input. */
 export async function fetchProviderMediaBytes(rawUrl, {
   kind = 'video', maxBytes = kind === 'audio' ? 15 * 1024 * 1024 : 180 * 1024 * 1024,
   timeoutMs = 120_000, signal, lookupFn = lookup, requestFactory = request, fetchImpl,
@@ -77,14 +94,20 @@ export async function fetchProviderMediaBytes(rawUrl, {
   const timeout = AbortSignal.timeout(Math.max(1, Math.min(300_000, Number(timeoutMs) || 120_000)));
   const boundedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let current = parseProviderMediaUrl(rawUrl);
+  const proxyHosts = trustedProxyHosts();
+  const useTrustedProxy = proxyHosts.has(current.hostname.toLowerCase());
   try {
     for (let hop = 0; hop <= 3; hop += 1) {
       boundedSignal.throwIfAborted();
       const host = current.hostname.replace(/^\[|\]$/gu, '');
-      // Injected fetch must not silently follow redirects. Production never
-      // uses global fetch: checking DNS without pinning would permit rebinding.
-      const response = fetchImpl
-        ? await fetchImpl(current, { method: 'GET', redirect: 'manual', signal: boundedSignal, headers: { 'Accept-Encoding': 'identity' } })
+      if (useTrustedProxy && !proxyHosts.has(host.toLowerCase())) {
+        throw failure('供应商媒体重定向离开可信 CDN 域名列表', 'PROVIDER_MEDIA_URL_UNSAFE', 400);
+      }
+      // Proxy mode deliberately delegates DNS to the explicitly trusted local
+      // network proxy, and only for these operator-approved hostnames. All other
+      // production requests keep address pinning against DNS rebinding.
+      const response = fetchImpl || useTrustedProxy
+        ? await (fetchImpl || globalThis.fetch)(current, { method: 'GET', redirect: 'manual', signal: boundedSignal, headers: { 'Accept-Encoding': 'identity' } })
         : await nodeResponse(current, await publicAddress(host, lookupFn, boundedSignal), { requestFactory, signal: boundedSignal });
       const cancel = async () => {
         if (response.cancel) response.cancel();

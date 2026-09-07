@@ -28,6 +28,7 @@ import {
 import { api, getUser } from '../api/client';
 import { StatCard, Panel, ErrorState } from '../components/Kit';
 import { Result } from 'antd';
+import { planSeatDescription } from '../components/seatRequestModel';
 import './Recharge.css';
 
 const TAG_COLOR: Record<string, string> = {
@@ -95,7 +96,7 @@ const validDaysLabel = (days: any) => {
 // 套餐卡上的权益文案：全部来自接口字段，不写死数字
 function planTerms(p: any) {
   const terms: string[] = [];
-  if (p.seat_limit) terms.push(`含 ${p.seat_limit} 个账号`);
+  if (p.seat_limit) terms.push(planSeatDescription(p.seat_limit));
   if (p.valid_days) terms.push(`有效期 ${validDaysLabel(p.valid_days)}`);
   if (p.bonus_credits > 0) terms.push(`赠 ${fmt(p.bonus_credits)} 积分`);
   terms.push(p.total_credits > 0 ? `含 ${fmt(p.total_credits)} 积分` : '不含积分（按用量充值）');
@@ -317,10 +318,15 @@ export default function Recharge() {
         <div className="rc-plan-cell">
           <span className="rc-plan-label">账号席位</span>
           <span className="rc-plan-value">
-            {plan?.seatsUsed ?? 0}
-            <small>/ {plan?.seatLimit ?? '不限'}</small>
+            {bal.seatSummary?.seatsUsed ?? plan?.seatsUsed ?? '待读取'}
+            <small>
+              / {bal.seatSummary ? (bal.seatSummary.seatLimit ?? '存量不限额') : (plan?.seatLimit ?? '待读取')}
+            </small>
           </span>
-          <span className="rc-plan-hint">停用的账号不占席位</span>
+          <span className="rc-plan-hint">基础 1 主 + 4 副，存量及已购追加名额保留</span>
+          <Button size="small" href="/admin?tab=users&seatRequest=1">
+            查看额度 / 申请增加副账号
+          </Button>
         </div>
         <div className="rc-plan-cell">
           <span className="rc-plan-label">到期日</span>
@@ -483,11 +489,17 @@ export default function Recharge() {
               { title: '套餐', dataIndex: 'package_name' },
               { title: '金额', dataIndex: 'price_yuan', align: 'right', render: (v: number) => `¥${v}` },
               {
-                title: '积分',
+                title: '权益',
                 dataIndex: 'credits',
                 align: 'right',
-                render: (v: number) =>
-                  v > 0 ? <b style={{ color: 'var(--ui-accent)' }}>{v.toLocaleString()}</b> : <span>套餐</span>,
+                render: (v: number, r: any) =>
+                  r.kind === 'seat_addon' ? (
+                    `增加 ${r.additionalSeats} 个副账号`
+                  ) : v > 0 ? (
+                    <b style={{ color: 'var(--ui-accent)' }}>{v.toLocaleString()} 积分</b>
+                  ) : (
+                    <span>套餐</span>
+                  ),
               },
               {
                 title: '状态',
@@ -507,7 +519,11 @@ export default function Recharge() {
                 title: '操作',
                 width: 70,
                 render: (_: any, r: any) =>
-                  r.status === '待支付' ? (
+                  r.kind === 'seat_addon' ? (
+                    <Button type="link" href="/admin?tab=users&seatRequest=1">
+                      查看扩容
+                    </Button>
+                  ) : r.status === '待支付' ? (
                     <button
                       type="button"
                       className="ui-link-button"

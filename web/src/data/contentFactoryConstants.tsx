@@ -47,7 +47,7 @@ export const STATUS_COLOR: Record<string, string> = {
   待审核: 'gold',
   可使用: 'green',
   已发布: 'blue',
-  已驳回: 'red',
+  已驳回: 'default',
 };
 export const CONTENT_FLOW_STATUSES = new Set(['可使用', '已发布']);
 export const PUBLISH_VIEWS_MAX = 100_000_000;
@@ -59,7 +59,7 @@ const PUBLIC_CONTENT_STATUS: Record<string, string> = {
   // 缺少 delivery 权威投影时不猜结论，避免把未采纳内容误报成可用于业务。
   可使用: '可使用状态待权威核验',
   已发布: '已发布',
-  已驳回: '失败需返工（历史策略未通过）',
+  已驳回: '未采纳（原稿已保留）',
 };
 export const contentStatusLabel = (rec: any) =>
   String(rec?.delivery?.displayStatus || PUBLIC_CONTENT_STATUS[String(rec?.status || '')] || '状态未知');
@@ -68,6 +68,7 @@ export const contentStatusColor = (rec: any) => {
   if (['published', 'adopted'].includes(presentationKey)) return presentationKey === 'published' ? 'blue' : 'green';
   if (['review_pending', 'review_ready'].includes(presentationKey)) return 'gold';
   if (presentationKey === 'business_blocked') return 'orange';
+  if (presentationKey === 'rejected') return 'default';
   if (presentationKey === 'rework_required') return 'red';
   if (String(rec?.status || '') === '可使用' && !rec?.delivery) return 'gold';
   return STATUS_COLOR[String(rec?.status || '')] || 'default';
@@ -89,7 +90,7 @@ export const contentFlowReady = (rec: any) =>
   rec?.delivery?.canUse === true && CONTENT_FLOW_STATUSES.has(String(rec?.status || '')) && hasUsableContentMode(rec);
 export const canSubmitApproval = (rec: any) => rec?.delivery?.canSubmitApproval === true;
 export const approvalBlockedReason = (rec: any) => {
-  if (rec?.status === '已驳回') return '当前稿件人工审阅未通过，不能原样重提；请按意见返工并生成新修订稿';
+  if (rec?.status === '已驳回') return '本稿未采纳，原稿和审阅意见已保留；如需调整，可另存修订稿';
   if (rec?.status === '已发布' && rec?.delivery?.canUse !== false) {
     return '已发布记录不能退回审阅；如需调整请新建修订稿';
   }
@@ -115,7 +116,7 @@ export const contentFlowBlockedReason = (rec: any) => {
     );
   }
   if (rec?.status === '待审核') return '内容正在等待人工审阅；采纳后才能导入素材或登记发布';
-  if (rec?.status === '已驳回') return '人工审阅未通过；请按意见返工并提交新修订稿';
+  if (rec?.status === '已驳回') return '本稿未采纳；原稿仍可查看，需要使用时请提交修订稿审阅';
   const mode = contentDeliveryMode(rec);
   if (!hasUsableContentMode(rec))
     return mode

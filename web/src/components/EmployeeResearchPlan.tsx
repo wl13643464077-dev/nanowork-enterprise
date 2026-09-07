@@ -11,14 +11,8 @@ export default function EmployeeResearchPlan({ evidence, compact = false }: Prop
   const lanes = Array.isArray(plan?.lanes) ? plan.lanes : [];
   if (!lanes.length && !quality) return null;
   return (
-    <section className={`employee-research-plan${compact ? ' is-compact' : ''}`} aria-label="员工技能取证计划">
-      <header>
-        <div>
-          <span>SKILLS → TOOLS → EVIDENCE</span>
-          <strong>本员工技能正在这样执行</strong>
-        </div>
-        {plan?.skillCount > 0 && <em>{plan.skillCount} 项技能已装载</em>}
-      </header>
+    <details className={`employee-research-plan${compact ? ' is-compact' : ''}`}>
+      <summary>来源资料与检索详情</summary>
       {lanes.length > 0 && (
         <div className="employee-research-lanes">
           {lanes.map((lane: any, index: number) => (
@@ -40,6 +34,6 @@ export default function EmployeeResearchPlan({ evidence, compact = false }: Prop
           </b>
         </footer>
       )}
-    </section>
+    </details>
   );
 }

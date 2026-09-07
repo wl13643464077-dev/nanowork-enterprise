@@ -15,7 +15,7 @@ import {
 } from "./helpers/content-output-fixtures.mjs";
 
 const DB_PATH = path.join(
-  os.tmpdir(),
+  fs.realpathSync(os.tmpdir()),
   `nanowork-content-workbench-route-${process.pid}.db`,
 );
 for (const target of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
@@ -28,8 +28,9 @@ process.env.YUNWU_API_KEY = "";
 process.env.OPENAI_API_KEY = "";
 process.env.ANTHROPIC_API_KEY = "";
 
-const { db, initSchema, migrateV2, q, runWithTenant, setTenantConfig } =
+const { db, initSchema, migrateV2, q, runWithTenant, setTenantConfig, setConfig } =
   await import("../src/db.js");
+const TEXT_TEST_PRICE = 140; // ¥ per 1M tokens, input and output alike
 assert.equal(path.resolve(db.prepare('PRAGMA database_list').get().file), path.resolve(DB_PATH), '路由测试必须使用本进程独立临时库');
 const { buildContentHandlerRuntimeContext } = await import('../src/engines/content-handler-runtime-context.js');
 const { buildContentPublishPack } = await import('../src/engines/content-publish-followup.js');
@@ -76,6 +77,10 @@ function setCentralEmployeeApprovalMode(tenantId, mode) {
 
 initSchema();
 migrateV2();
+// Text settles from real usage only (no caller-fixed credits). A 140/M test
+// price makes the fixture usages (101+51 and 100+60 tokens) settle to the
+// 5 credits this suite's ledgers and snapshots were written against.
+setConfig("billing", { text: { default: { in: TEXT_TEST_PRICE, out: TEXT_TEST_PRICE } } });
 db.exec(`
   CREATE TABLE IF NOT EXISTS content_employee_workbench_configs (
     tenant_id INTEGER NOT NULL,
@@ -161,6 +166,11 @@ const EXPECTED_TREND_CHANNELS = Object.freeze([
   "Product Hunt/HackerNews",
 ]);
 
+// LLM text settles from real usage at the configured price table, ×2 margin,
+// 1 credit = ¥0.01. Fixed caller figures are rejected (BILLING_FIXED_PRICE_MISMATCH).
+const textCredits = ({ inputTokens = 0, outputTokens = 0 } = {}) =>
+  Math.ceil((((inputTokens + outputTokens) * TEXT_TEST_PRICE) / 1e6) * 2 / 0.01);
+
 function recordContentRunLedger({
   tenantId,
   runId,
@@ -169,7 +179,7 @@ function recordContentRunLedger({
   model = "real-model",
   inputTokens = 101,
   outputTokens = 51,
-  credits = 5,
+  credits = textCredits({ inputTokens, outputTokens }),
   released = false,
 }) {
   db.prepare(
@@ -206,7 +216,6 @@ function recordContentRunLedger({
   return settleHold(hold, {
     model,
     usage: { inputTokens, outputTokens },
-    credits,
     aiMode: "api",
     note: "内容员工路由测试真实结算",
   });
@@ -306,6 +315,20 @@ function expectedRoutedArtifactContent(idx) {
 const generateStub = async (args) => {
   generated.push(args);
   dispatchLifecycleEvents.push({ action: "model", args });
+  if (args.userMsg.includes('复盘返工只使用真实输入')) {
+    const output = validContentEmployeeOutput(9);
+    if (args.kind === 'content-employee-workbench-quality-retry') {
+      assert.match(args.userMsg, /阅读量1200，收藏数86，评论数12/u);
+      assert.doesNotMatch(args.userMsg, /842\/700|37\/30|12\/10|4\/3/u);
+    } else output.report = '';
+    return { text: JSON.stringify(output), mode: 'api', model: 'test-model', usage: { inputTokens: 150, outputTokens: 120 } };
+  }
+  if (args.userMsg.includes('超长结果先交付回归')) {
+    const output = validContentEmployeeOutput(9);
+    output.report += `\n\n${'保留原始资料，逐项记录尚需核验的依据，由负责人确认后继续完善。'.repeat(400)}\n完整结果末尾标记`;
+    // Real-usage settlement must stay within the 12-credit hold for this run to settle.
+    return { text: JSON.stringify(output), mode: 'api', model: 'test-model', usage: { inputTokens: 150, outputTokens: 200 } };
+  }
   if (args.userMsg.includes('M5真实回填闭环验收')) {
     assert.ok(args.responseSchema.schema.required.includes('next_draft_changes'));
     assert.ok(!args.responseSchema.schema.required.includes('winning_strategy'));
@@ -802,7 +825,8 @@ const router = createContentEmployeeWorkbenchRouter({
     db.prepare(
       "UPDATE credit_holds SET model=? WHERE id=? AND status='held'",
     ).run(args.model, hold.holdId);
-    return settleHold({ ...hold, model: args.model }, { ...args, credits: 5 });
+    // LLM text settles from real usage only; a fixed credit figure is rejected as tampering.
+    return settleHold({ ...hold, model: args.model }, args);
   },
   releaseHoldFn: (hold, note) => {
     billingEvents.push({ action: "release", hold, note });
@@ -1116,7 +1140,7 @@ test("趋势官预授权后只走一次隔离Agentic WebSearch→受控WebFetch�
   });
 });
 
-test("15项内容连接器都有可调用业务入口，8项本地执行会持久化完整handler证据", async () => {
+test("16项内容连接器都有可调用业务入口，8项本地执行会持久化完整handler证据", async () => {
   await withServer(async (base) => {
     const tenant = 97;
     const registry = await jsonCall(
@@ -1129,10 +1153,10 @@ test("15项内容连接器都有可调用业务入口，8项本地执行会持�
       200,
       JSON.stringify(registry.payload),
     );
-    assert.equal(registry.payload.connectors.length, 15);
+    assert.equal(registry.payload.connectors.length, 16);
     assert.equal(
       new Set(registry.payload.connectors.map((item) => item.kind)).size,
-      15,
+      16,
     );
     assert.ok(
       registry.payload.connectors.every((item) => item.businessEndpoint),
@@ -1145,7 +1169,7 @@ test("15项内容连接器都有可调用业务入口，8项本地执行会持�
       (item) => item.executionType === "employee_generation",
     );
     assert.equal(local.length, 8);
-    assert.equal(generated.length, 7);
+    assert.equal(generated.length, 8);
 
     const executed = await jsonCall(
       base,
@@ -1305,6 +1329,7 @@ test("15项内容连接器都有可调用业务入口，8项本地执行会持�
       ppt: "/api/content/generate-ppt",
       sales_video_plan: "/api/content/ai-sales-video",
       sales_video_generation: "/api/content/ai-sales-video",
+      xhs_note_generation: "/api/content/ai-xhs-note",
     };
     for (const descriptor of generated) {
       const generationRoute = await jsonCall(
@@ -1349,7 +1374,7 @@ test("普通员工可运行和回看本地连接器，但所有handler与统一�
       200,
       JSON.stringify(registry.payload),
     );
-    assert.equal(registry.payload.connectors.length, 15);
+    assert.equal(registry.payload.connectors.length, 16);
     const registryText = JSON.stringify(registry.payload);
     assert.doesNotMatch(
       registryText,
@@ -1444,6 +1469,102 @@ async function drainScheduled() {
     await task();
   }
 }
+
+test('复盘返工只引用本轮真实指标，不注入固定验收数字', async () => {
+  await withServer(async base => {
+    const beforeCalls = generated.length;
+    const dispatched = await jsonCall(base, '/employee-workbench/content/9/dispatch', {
+      method: 'POST', tenant: 905, role: 'boss',
+      body: { title: '复盘返工只使用真实输入', type: '复盘报告', requirement: withRequiredContentInputs(9, '只使用本次发布记录与真实效果指标。') },
+    });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    await drainScheduled();
+    const calls = generated.slice(beforeCalls);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].kind, 'content-employee-workbench-quality-retry');
+    const detail = await jsonCall(base, `/employee-workbench/content/9/runs/${dispatched.payload.runId}`, { tenant: 905, role: 'boss' });
+    assert.equal(detail.payload.run.contract.valid, true);
+  });
+});
+
+test('9000字内容方向全文送入provider，超过32000字明确拒绝且不截断', async () => {
+  const tenant = 903;
+  const direction = `${'请按现有素材整理可用正文并保留仍需核验的资料。'.repeat(400)}方向全文末尾标记`;
+  assert.ok(direction.length > 9000 && direction.length < 32000);
+  await withServer(async base => {
+    const beforeCalls = generated.length;
+    const dispatched = await jsonCall(base, '/employee-workbench/content/9/dispatch', {
+      method: 'POST', tenant, role: 'boss',
+      body: { title: '9000字内容任务方向', type: '复盘报告',
+        brief: { direction, material: withRequiredContentInputs(9, '请依照资料完成复盘。') } },
+    });
+    assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+    await drainScheduled();
+    assert.equal(generated.length - beforeCalls, 1);
+    assert.ok(generated.at(-1).userMsg.includes(direction), 'provider应收到完整9000字方向');
+    const rejected = await jsonCall(base, '/employee-workbench/content/9/dispatch', {
+      method: 'POST', tenant, role: 'boss',
+      body: { title: '超过方向上限', brief: { direction: '字'.repeat(32001) } },
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.match(rejected.payload.error, /32000/u);
+    assert.equal(generated.length - beforeCalls, 1);
+  });
+});
+
+test('超过8000字的完整结果只生成结算一次，保留全文和建议，由用户采纳或不采纳', async () => {
+  for (const [index, decision] of ['adopt', 'reject'].entries()) {
+    const tenant = 901 + index;
+    setCentralEmployeeApprovalMode(tenant, 'auto');
+    await withServer(async base => {
+      const beforeCalls = generated.length;
+      const beforeBilling = billingEvents.length;
+      const dispatched = await jsonCall(base, '/employee-workbench/content/9/dispatch', {
+        method: 'POST', tenant, role: 'boss',
+        body: { title: `超长结果先交付回归${decision}`, type: '复盘报告',
+          requirement: withRequiredContentInputs(9, '请按已有记录写复盘，字数与排版可在交付后由我决定是否优化。') },
+      });
+      assert.equal(dispatched.response.status, 200, JSON.stringify(dispatched.payload));
+      await drainScheduled();
+      const runId = dispatched.payload.runId;
+      const row = q.get('SELECT * FROM content_employee_runs WHERE tenant_id=? AND id=?', tenant, runId);
+      const snapshot = JSON.parse(row.snapshot_json);
+      assert.equal(row.status, '待审阅');
+      assert.equal(snapshot.contractValid, true);
+      assert.equal(snapshot.contractStrictValid, false);
+      assert.equal(snapshot.qualityReview.requiresUserDecision, true);
+      assert.equal(snapshot.billing.state, 'settled');
+      assert.equal(snapshot.qualityRetry, null);
+      assert.ok(row.result_md.length > 8000);
+      assert.match(row.result_md, /完整结果末尾标记/u);
+      assert.match(snapshot.artifacts[0].content, /完整结果末尾标记/u);
+      assert.equal(generated.length - beforeCalls, 1);
+      assert.equal(billingEvents.slice(beforeBilling).filter(event => event.action === 'settle').length, 1);
+      const detail = await jsonCall(base, `/employee-workbench/content/9/runs/${runId}`, { tenant, role: 'boss' });
+      assert.equal(detail.response.status, 200);
+      assert.equal(detail.payload.run.resultMd, row.result_md);
+      assert.equal(detail.payload.run.contract.qualityReview.requiresUserDecision, true);
+      assert.ok(detail.payload.run.contract.warnings.some(warning => warning.includes('最多允许1200')));
+      const reviewed = await jsonCall(base, `/employee-workbench/content/9/runs/${runId}/review`, {
+        method: 'POST', tenant, role: 'boss', body: { decision, opinion: decision === 'adopt' ? '已查看全文，先采纳这份结果。' : '保留本轮结果，暂不采纳。' },
+      });
+      assert.equal(reviewed.response.status, 200, JSON.stringify(reviewed.payload));
+      assert.equal(generated.length - beforeCalls, 1, '用户决定不能再次触发付费生成');
+      if (decision === 'reject') {
+        const declined = await jsonCall(base, `/employee-workbench/content/9/runs/${runId}`, { tenant, role: 'boss' });
+        assert.equal(declined.payload.run.presentationKey, 'rejected');
+        assert.equal(declined.payload.run.displayStatus, '未采纳（原稿已保留）');
+        assert.match(declined.payload.run.resultMd, /完整结果末尾标记/u);
+        assert.doesNotMatch(declined.payload.run.nextAction, /返工|重新派活/u);
+        const queue = await jsonCall(base, '/employee-workbench/content/runs', { tenant, role: 'boss' });
+        assert.equal(queue.payload.presentationCounts.rejected, 1);
+        assert.equal(queue.payload.presentationCounts.rework_required, 0);
+      }
+      const reviewedSnapshot = JSON.parse(q.get('SELECT snapshot_json FROM content_employee_runs WHERE tenant_id=? AND id=?', tenant, runId).snapshot_json);
+      assert.ok(reviewedSnapshot.contractWarnings.length > 0, '采纳后仍保留优化建议与审计证据');
+    });
+  }
+});
 
 function insertUploadedFile({
   tenant,
@@ -1733,7 +1854,7 @@ test("原生AI带货员idx=10返回完整岗位档案，泛用派活明确转入
       "/api/employee-workbench/content/10/dispatch",
     );
     assert.deepEqual(profile.payload.dispatch.taskTypes, [
-      "30秒带货视频",
+      "15秒带货视频",
       "菜品口播视频",
       "门店探店转化视频",
     ]);
@@ -1757,8 +1878,8 @@ test("原生AI带货员idx=10返回完整岗位档案，泛用派活明确转入
       409,
       JSON.stringify(dispatched.payload),
     );
-    assert.match(dispatched.payload.error, /\/api\/content\/ai-sales-video/u);
-    assert.match(dispatched.payload.error, /泛用内容 JSON 契约不适用/u);
+    assert.match(dispatched.payload.error, /AI带货员对话/u);
+    assert.match(dispatched.payload.error, /专用视频流程/u);
     assert.equal(
       Number(
         q.get(
@@ -2051,7 +2172,13 @@ test("普通员工和运营负责人的工作台与运行快照均不泄露唯�
         body: { values: { imageModel: secretMarker } },
       },
     );
-    assert.equal(config.response.status, 200);
+    assert.equal(config.response.status, 400, '内部标记也不能作为任意模型标识写入');
+    const allowedConfig = await jsonCall(
+      base,
+      "/employee-workbench/content/0/config",
+      { method: "PUT", tenant, body: { values: { imageModel: "gpt-image-2" } } },
+    );
+    assert.equal(allowedConfig.response.status, 200);
     const skills = await jsonCall(
       base,
       "/employee-workbench/content/0/skills",
@@ -3248,7 +3375,7 @@ test("v2默认auto低风险合格结算后自动完成并沉淀素材，不创�
   });
 });
 
-test("demo真实Markdown报告即使未通过岗位JSON深层质检也保存、结算并内部自动采用", async () => {
+test("demo真实Markdown报告保留全文和建议，结算后由用户决定是否采纳", async () => {
   const tenant = 1306;
   await withServer(async (base) => {
     await jsonCall(base, "/employee-workbench/content/3", {
@@ -3281,13 +3408,13 @@ test("demo真实Markdown报告即使未通过岗位JSON深层质检也保存、�
       { tenant, role: "boss" },
     );
     assert.equal(detail.response.status, 200, JSON.stringify(detail.payload));
-    assert.equal(detail.payload.run.status, "已完成");
-    assert.equal(detail.payload.run.review.decision, "auto_adopt");
+    assert.equal(detail.payload.run.status, "待审阅");
+    assert.notEqual(detail.payload.run.review?.decision, "auto_adopt");
     assert.match(detail.payload.run.resultMd, /^# 演示报告优先闭环/mu);
     assert.equal(detail.payload.run.contract.valid, true);
     assert.equal(detail.payload.run.contract.warnings.length > 0, true);
     assert.equal(detail.payload.run.contract.artifacts[0].kind, "markdown");
-    assert.equal(detail.payload.run.downloadReady, true);
+    assert.equal(detail.payload.run.contract.qualityReview.requiresUserDecision, true);
 
     const snapshot = JSON.parse(
       q.get(
@@ -3300,7 +3427,7 @@ test("demo真实Markdown报告即使未通过岗位JSON深层质检也保存、�
     assert.equal(snapshot.deliveryMode.dataMode, "demo");
     assert.equal(snapshot.contract.strictValid, false);
     assert.equal(snapshot.contract.advisory, true);
-    assert.equal(snapshot.approvalRouting.reason, "demo_internal_report_auto_adopt");
+    assert.equal(snapshot.approvalRouting.requiresReview, true);
     assert.equal(snapshot.billing.state, "settled");
   });
 });
@@ -3338,7 +3465,8 @@ test("demo联网工具超时记录warning后继续真实模型报告，live仍�
       `/employee-workbench/content/0/runs/${demoDispatch.payload.runId}`,
       { tenant: demoTenant, role: "boss" },
     );
-    assert.equal(demoDetail.payload.run.status, "已完成");
+    assert.equal(demoDetail.payload.run.status, "待审阅");
+    assert.equal(demoDetail.payload.run.contract.qualityReview.requiresUserDecision, true);
     assert.match(demoDetail.payload.run.resultMd, /^# /mu);
     assert.equal(
       demoDetail.payload.run.snapshot.web.researchGate.advisory,
@@ -5389,7 +5517,7 @@ test("中央任务队列跨十名内容员工聚合，并按租户、角色与�
             : {
                 mode: "api",
                 model: "test-model",
-                usage: { inputTokens: 41, outputTokens: 29 },
+                usage: { inputTokens: 100, outputTokens: 60 },
               },
         internalProfileLeakage: { detected: false },
         review: status === "已完成" ? { decision: "adopt" } : null,
@@ -5441,8 +5569,8 @@ test("中央任务队列跨十名内容员工聚合，并按租户、角色与�
           userId: createdBy,
           employeeName: employee.name,
           model: "test-model",
-          inputTokens: 41,
-          outputTokens: 29,
+          inputTokens: 100,
+          outputTokens: 60,
         });
       }
       return runId;

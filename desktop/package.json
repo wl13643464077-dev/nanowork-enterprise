@@ -1,6 +1,6 @@
 {
   "name": "@nanowork/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "纳米Work行业版 Windows / macOS 安全桌面客户端",
   "main": "src/main.cjs",

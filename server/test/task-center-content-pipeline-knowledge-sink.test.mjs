@@ -313,10 +313,11 @@ test("TaskCenter列表与详情同时聚合流水线文本hold与专项provider�
     refType: "content_production_pipeline_station",
     refId: stationRefId,
   });
+  // 文本按真实用量结算：600 token × ¥30/M × 2 ÷ 0.01 = 3.6 → 4 积分。
   settleHold(stationHold, {
-    credits: 4,
     aiMode: "api",
     model: "offline-task-center-model",
+    usage: { inputTokens: 400, outputTokens: 200 },
     note: "离线契约文本结算",
   });
 

@@ -6,7 +6,7 @@
 //
 // 两个员工域共用同一张心得/提案表，靠 domain 列区分：
 //   restaurant：specialist_id = specialists.id，信号来自 agent_tasks + approvals(target_type='content')
-//   content   ：specialist_id = 内容员工 idx(0-10)，信号来自 content_employee_runs 的审阅结论、
+//   content   ：specialist_id = 内容员工 idx(0-11)，现有反馈信号来自 content_employee_runs 的审阅结论、
 //               经 contents 关联的 approvals，以及 content_publish_metrics 的分策略效果
 import { curTenant, q } from '../db.js';
 import { contentStrategyMetricsSummary } from './content-publish-followup.js';
@@ -56,8 +56,8 @@ export function resolveEvolutionTarget(input) {
     if (!Number.isInteger(id) || id < 0) {
       throw Object.assign(new Error('进化目标员工编号无效'), { status: 400 });
     }
-    if (domain === 'content' && id > 10) {
-      throw Object.assign(new Error('内容员工编号必须在0-10之间'), { status: 400 });
+    if (domain === 'content' && id > 11) {
+      throw Object.assign(new Error('内容员工编号必须在0-11之间'), { status: 400 });
     }
     return { domain, id };
   }

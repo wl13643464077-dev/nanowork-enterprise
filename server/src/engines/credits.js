@@ -1,12 +1,17 @@
-import { q, getConfig, setConfig, tenantOf, db, getTenant, runWithTenant, curTenant } from '../db.js';
+import { q, getConfig, setConfig, tenantOf, db, getTenant, runWithTenant, curTenant, ensureCreditSupplierReceiptSchema } from '../db.js';
 import { textModelFor, routing } from './yunwu.js';
 import { notify } from '../util.js';
 import {
   AI_SALES_VIDEO_DURATION_SECONDS,
   AI_SALES_VIDEO_SEGMENT_COUNT,
   AI_SALES_VIDEO_SEGMENT_SECONDS,
+  AI_SALES_VIDEO_H3_SEGMENT_COUNT,
+  AI_SALES_VIDEO_H3_SEGMENT_SECONDS,
 } from './ai-sales-video.js';
 import { publish } from './event-bus.js';
+import { aggregateSupplierCosts, upstreamDebitCostApplies, provider360CostApplies } from './provider-cost-receipts.js';
+import { PROVIDER_360_RESERVATION_RATES, valid360Receipt } from './provider-360-cost.js';
+import { unifiedSalesPricing, usesUnifiedSalesPricing } from './unified-sales-pricing.js';
 
 // 余额变动后推送（与前端顶栏 credits-updated 同语义）；发布失败绝不影响账务结果。
 function publishCreditsUpdated(tenantId, balance, reason) {
@@ -120,6 +125,20 @@ const DEFAULT_BILLING = {
 };
 export function billing() {
   const cfg = getConfig('billing', {}) || {};
+  const creditYuan = Object.hasOwn(cfg,'creditYuan') ? cfg.creditYuan : DEFAULT_CREDIT_YUAN;
+  const configuredMargin = Object.hasOwn(cfg,'marginMultiplier') ? cfg.marginMultiplier : CREDIT_MARGIN_FACTOR;
+  if (![creditYuan, configuredMargin].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0))
+    throw Object.assign(new Error('积分兑换比例与销售倍数必须是有效正数'), { status: 409, code: 'BILLING_PRICE_INVALID' });
+  const unified = unifiedSalesPricing(creditYuan);
+  if (unified) return unified;
+  // Quotes, budget prechecks and new holds share the same effective sales
+  // multiplier. Procurement discounts never change the wallet-debit sale rule.
+  const marginMultiplier = upstreamDebitCostApplies('') ? CREDIT_MARGIN_FACTOR : configuredMargin;
+  if (provider360CostApplies()) return {
+    creditYuan, marginMultiplier, ...PROVIDER_360_RESERVATION_RATES,
+    minBalance: { text: 1, image: Math.ceil(2 * marginMultiplier / creditYuan), video: Math.ceil(PROVIDER_360_RESERVATION_RATES.video.default * marginMultiplier / creditYuan) },
+    supplier: '360', rateBasis: 'reservation_only', settlementBasis: 'upstream_debit',
+  };
   return {
     ...DEFAULT_BILLING,
     ...cfg,
@@ -127,8 +146,34 @@ export function billing() {
     image: { ...DEFAULT_BILLING.image, ...(cfg.image || {}) },
     video: { ...DEFAULT_BILLING.video, ...(cfg.video || {}) },
     tts: { ...DEFAULT_BILLING.tts, ...(cfg.tts || {}) },
-    minBalance: { ...DEFAULT_BILLING.minBalance, ...(cfg.minBalance || {}) },
+    creditYuan,
+    marginMultiplier,
+    minBalance: { ...minBalanceFrom(marginMultiplier, creditYuan), ...(cfg.minBalance || {}) },
   };
+}
+
+function validCreditAmount(value, { zero = false } = {}) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < (zero ? 0 : 1) || value > 1_000_000_000)
+    throw Object.assign(new Error('积分金额必须是有效范围内的整数'), { status: 400, code: 'BILLING_AMOUNT_INVALID' });
+  return value;
+}
+
+function priceSnapshot(b, model) {
+  const upstreamDebit = upstreamDebitCostApplies(model);
+  return JSON.stringify({ version: 1, creditYuan: b.creditYuan, marginMultiplier: b.marginMultiplier,
+    text: b.text, image: b.image, video: b.video, tts: b.tts,
+    ...(b.salePolicy ? { salePolicy: b.salePolicy } : {}),
+    supplierCostPolicy: usesUnifiedSalesPricing(b) ? { enabled: true, basis: 'reference_360' }
+      : upstreamDebit ? { enabled: true, basis: 'upstream_debit' } : { enabled: false } });
+}
+
+function billingForHold(row) {
+  if (!row.pricing_snapshot_json) return billing(); // Historical holds retain their existing policy.
+  let value;
+  try { value = JSON.parse(row.pricing_snapshot_json); } catch { /* fail closed below */ }
+  if (value?.version !== 1 || ![value.creditYuan, value.marginMultiplier].every(n => typeof n === 'number' && Number.isFinite(n) && n > 0))
+    throw Object.assign(new Error('预授权价格快照无效，保留待核对'), { status: 409, code: 'BILLING_PRICE_SNAPSHOT_INVALID' });
+  return value;
 }
 
 // ===== TTS（元/次）计价：AI带货员独白配音；hold 时按最多调用次数占扣，settle 按实际调用次数实扣 =====
@@ -168,21 +213,20 @@ export function estimateMaxCredits(kind, model, b = billing()) {
 
 // ===== 积分权益可视化（A3）：从价目表反算"N 积分约等于多少产出"，销售话术必须与此同源 =====
 // 典型文本任务口径：一次调用 = 输入 2k + 输出 1k token（员工日常问答/文案量级）。
-// 视频口径：沿用 AI 带货员 30 秒成片 = 3 段 × 10 秒真实供应商任务（ai-sales-video.js 常量）。
+// 视频默认口径：当前 AI 带货员 Wan2.6 原生15秒，一次视频调用；文字费用另计。
 export const EQUIVALENT_TEXT_INPUT_TOKENS = 2000;
 export const EQUIVALENT_TEXT_OUTPUT_TOKENS = 1000;
 // AI 带货员路由未配置时的默认视频模型（与 routes/content.js /ai-sales-video 的回退值一致）
-export const EQUIVALENT_DEFAULT_VIDEO_MODEL = 'MiniMax-Hailuo-2.3';
+export const EQUIVALENT_DEFAULT_VIDEO_MODEL = 'wan2.6-i2v';
 
 // 默认换算模型：文本取员工级路由模型（日常调用量最大的角色），图片取路由默认图模型，
 // 视频取 AI 带货员当前配置/默认模型。可通过 models 参数覆盖，便于测试与"按老板模型"对比。
 export function defaultEquivalentModels() {
   const r = routing();
-  const salesVideo = getConfig('ai_sales_video', {}) || {};
   return {
     text: r.text?.sales || r.text?.default || 'default',
     image: r.image || 'default',
-    video: String(salesVideo.model || EQUIVALENT_DEFAULT_VIDEO_MODEL),
+    video: provider360CostApplies() ? 'alibaba/wan3.0-video' : EQUIVALENT_DEFAULT_VIDEO_MODEL,
   };
 }
 
@@ -229,7 +273,10 @@ export function estimateCreditEquivalents(credits, {
   const textYuan = (textInputTokens * textPrice.in + textOutputTokens * textPrice.out) / 1e6;
   const imageYuan = b.image[models.image] ?? b.image.default;
   const segmentYuan = b.video[models.video] ?? b.video.default;
-  const videoYuan = segmentYuan * AI_SALES_VIDEO_SEGMENT_COUNT;
+  const videoShape = ['wan2.6-i2v','alibaba/wan3.0-video'].includes(models.video) ? {durationSeconds:15,segmentCount:1,segmentSeconds:15}
+    : models.video === 'MiniMax-H3' ? {durationSeconds:30,segmentCount:AI_SALES_VIDEO_H3_SEGMENT_COUNT,segmentSeconds:AI_SALES_VIDEO_H3_SEGMENT_SECONDS}
+      : {durationSeconds:AI_SALES_VIDEO_DURATION_SECONDS,segmentCount:AI_SALES_VIDEO_SEGMENT_COUNT,segmentSeconds:AI_SALES_VIDEO_SEGMENT_SECONDS};
+  const videoYuan = segmentYuan * videoShape.segmentCount;
   const unit = {
     textTaskCredits: toCredits(textYuan),
     imageCredits: toCredits(imageYuan),
@@ -276,12 +323,10 @@ export function estimateCreditEquivalents(credits, {
       },
       video: {
         model: models.video,
-        durationSeconds: AI_SALES_VIDEO_DURATION_SECONDS,
-        segmentCount: AI_SALES_VIDEO_SEGMENT_COUNT,
-        segmentSeconds: AI_SALES_VIDEO_SEGMENT_SECONDS,
+        ...videoShape,
         segmentCostYuan: segmentYuan,
         costYuan: Math.round(videoYuan * 100) / 100,
-        label: `一条 ${AI_SALES_VIDEO_DURATION_SECONDS} 秒视频 = ${AI_SALES_VIDEO_SEGMENT_COUNT} 段 × ${AI_SALES_VIDEO_SEGMENT_SECONDS} 秒（${models.video}，每段 ¥${segmentYuan}）`,
+        label: `一条 ${videoShape.durationSeconds} 秒视频 = ${videoShape.segmentCount} 段 × ${videoShape.segmentSeconds} 秒（${models.video}，每段估算 ¥${segmentYuan}，文字费用另计）`,
       },
     },
   };
@@ -293,7 +338,7 @@ export function estimateCreditEquivalents(credits, {
 // 只拦 AI 消耗（precheck / holdCredits 的 text|image|video）；执行授权等安全动作不经此处，不受预算影响。
 export const BUDGET_EXCEEDED_CODE = 'BUDGET_EXCEEDED';
 export const DEFAULT_BUDGET_ALERT_RATIO = 0.8;
-const aiConsumptionSql = (alias = '') => `${alias}credits > 0 AND COALESCE(${alias}ai_mode,'') NOT IN ('recharge','bonus')`;
+const aiConsumptionSql = (alias = '') => `((${alias}credits > 0 AND COALESCE(${alias}ai_mode,'') NOT IN ('recharge','bonus')) OR (${alias}credits < 0 AND ${alias}kind='refund' AND ${alias}ai_mode='refund'))`;
 const AI_CONSUMPTION_SQL = aiConsumptionSql();
 const SHANGHAI_TZ = 'Asia/Shanghai';
 
@@ -327,11 +372,11 @@ export function tenantMonthlyUsage(tenantId, now = new Date()) {
   const row = q.get(`SELECT
       COALESCE(SUM(CASE WHEN ai_mode = 'hold' THEN 0 ELSE credits END),0) settled,
       COALESCE(SUM(CASE WHEN ai_mode = 'hold' THEN credits ELSE 0 END),0) held,
-      COUNT(*) calls
+      SUM(CASE WHEN credits>0 THEN 1 ELSE 0 END) calls
     FROM credit_logs
     WHERE tenant_id = ? AND ${AI_CONSUMPTION_SQL} AND created_at >= ? AND created_at < ?`,
   tid, range.from, range.to) || {};
-  const settled = Number(row.settled || 0);
+  const settled = Math.max(0,Number(row.settled || 0));
   const held = Number(row.held || 0);
   return { month: range.month, settled, held, used: settled + held, calls: Number(row.calls || 0), range };
 }
@@ -451,11 +496,11 @@ export function getUserMonthlyUsage(userId, now = new Date()) {
   const u = q.get('SELECT id, tenant_id, monthly_credit_quota FROM users WHERE id = ?', uid);
   if (!u) return null;
   const range = shanghaiMonthRange(now);
-  const row = q.get(`SELECT COALESCE(SUM(credits),0) used, COUNT(*) calls FROM credit_logs
+  const row = q.get(`SELECT COALESCE(SUM(credits),0) used, SUM(CASE WHEN credits>0 THEN 1 ELSE 0 END) calls FROM credit_logs
     WHERE tenant_id = ? AND user_id = ? AND ${AI_CONSUMPTION_SQL} AND created_at >= ? AND created_at < ?`,
   u.tenant_id, uid, range.from, range.to) || {};
   const quota = u.monthly_credit_quota == null ? null : Math.max(0, Math.floor(Number(u.monthly_credit_quota) || 0));
-  const used = Number(row.used || 0);
+  const used = Math.max(0,Number(row.used || 0));
   return {
     userId: uid,
     month: range.month,
@@ -494,7 +539,7 @@ export function usageReport({ tenantId, from, to, groupBy = 'day', now = new Dat
   const params = [tid, fromDate, toDate];
   const cy = billing().creditYuan;
   const rows = q.all(`SELECT ${groupExpr} g,
-      COUNT(*) n,
+      SUM(CASE WHEN l.credits>0 THEN 1 ELSE 0 END) n,
       COALESCE(SUM(l.credits),0) credits,
       COALESCE(SUM(CASE WHEN l.ai_mode = 'hold' THEN l.credits ELSE 0 END),0) held_credits,
       COALESCE(SUM(l.input_tokens),0) input_tokens,
@@ -503,7 +548,7 @@ export function usageReport({ tenantId, from, to, groupBy = 'day', now = new Dat
       ${key === 'user' ? ', (SELECT u.name FROM users u WHERE u.id = l.user_id) user_name' : ''}
     FROM credit_logs l WHERE l.tenant_id = ? AND ${where}
     GROUP BY g ORDER BY ${key === 'day' ? 'g ASC' : 'credits DESC'} LIMIT ?`, ...params, Math.max(1, Math.min(1000, Number(limit) || 200)));
-  const total = q.get(`SELECT COUNT(*) n, COALESCE(SUM(l.credits),0) credits,
+  const total = q.get(`SELECT SUM(CASE WHEN l.credits>0 THEN 1 ELSE 0 END) n, COALESCE(SUM(l.credits),0) credits,
       COALESCE(SUM(CASE WHEN l.ai_mode = 'hold' THEN l.credits ELSE 0 END),0) held_credits,
       COALESCE(SUM(l.input_tokens),0) input_tokens, COALESCE(SUM(l.output_tokens),0) output_tokens,
       COALESCE(SUM(l.cost_yuan),0) cost_yuan
@@ -558,36 +603,77 @@ export function precheckByRole(userId, kind, role) {
 }
 
 function costYuan(kind, model, usage, b = billing()) {
+  let amount;
   if (kind === 'text') {
     const p = b.text[model] || b.text.default;
-    return ((usage.inputTokens || 0) * p.in + (usage.outputTokens || 0) * p.out) / 1e6;
+    if (!p || ![p.in,p.out].every(n=>typeof n==='number' && Number.isFinite(n) && n>=0))
+      throw Object.assign(new Error('模型成本价目无效'), { status:409,code:'BILLING_PRICE_INVALID' });
+    amount = ((usage.inputTokens || 0) * p.in + (usage.outputTokens || 0) * p.out) / 1e6;
   }
-  if (kind === 'image') return b.image[model] ?? b.image.default;
-  if (kind === 'video') return b.video[model] ?? b.video.default;
-  return 0;
+  else if (kind === 'image') amount = b.image[model] ?? b.image.default;
+  else if (kind === 'video') amount = b.video[model] ?? b.video.default;
+  else amount = 0;
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0)
+    throw Object.assign(new Error('模型成本价目无效'), { status:409,code:'BILLING_PRICE_INVALID' });
+  return amount;
 }
 
 // 实扣 + 流水（aiMode='template' 时记0分流水，保留审计）
 // 原子扣减：余额条件与扣减放在同一条 UPDATE 中，避免并发请求把企业积分池扣成负数。
 export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api', note = '', manageTransaction = true }) {
-  const b = billing();
+  const pricing = priceSnapshot(billing(),model);
+  const b = JSON.parse(pricing);
   const tid = tenantOf(userId);
   if (!tid) throw Object.assign(new Error('计费账号不存在'), { status: 404 });
-  const yuan = aiMode === 'api' ? costYuan(kind, model, usage, b) : 0;
-  const credits = aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
+  const unified = usesUnifiedSalesPricing(b);
+  const supplier = aiMode === 'api' ? supplierCostForUsage(usage,upstreamDebitCostApplies(model),unified) : null;
+  if (aiMode === 'api') assertDebitReceipt(b,supplier?.costSource);
+  assertPositiveApiTextUsage({kind}, {usage,aiMode,verifiedCost:!!supplier && !unified});
+  const referenceYuan = aiMode === 'api' ? costYuan(kind, model, usage, b) : 0;
+  const yuan = supplier ? supplier.costYuanOverride : aiMode === 'api' ? (unified ? null : referenceYuan) : 0;
+  const credits = aiMode === 'api' ? Math.ceil(((unified ? referenceYuan : yuan) * b.marginMultiplier) / b.creditYuan) : 0;
+  validCreditAmount(credits, {zero:true});
+  ensureHoldTable();
   if (manageTransaction) db.exec('BEGIN IMMEDIATE');
+  else if (!db.isTransaction) throw holdIntegrityMismatch('charge requires active transaction');
   let after;
   try {
+    if(supplier) {
+      const owners=[...receiptOwners(supplier.costSource)];
+      if(owners.length) {
+        const old=owners.length===1 ? q.get('SELECT * FROM credit_holds WHERE id=?',owners[0]) : null;
+        const expense=old && q.get('SELECT * FROM credit_supplier_expenses WHERE hold_id=?',old.id);
+        let previousSource;
+        try {previousSource=JSON.parse(expense?.source_json || '{}');} catch {previousSource=null;}
+        const invoice=old && q.get('SELECT * FROM credit_logs WHERE id=? AND tenant_id=?',old.log_id,tid);
+        if(!old || old.ref_type!=='direct_charge' || old.status!=='settled' || old.tenant_id!==tid || old.user_id!==userId
+          || old.kind!==kind || old.model!==(model||'') || old.feature!==feature || expense?.refunded_at
+          || expense?.status!=='known' || !sameReceiptAmount(previousSource,supplier.costSource)
+          || !invoice || invoice.ai_mode!=='api' || invoice.user_id!==userId || invoice.credits!==old.settled_credits)
+          throw receiptReused();
+        claimSupplierReceipts(old,supplier.costSource);
+        if(manageTransaction) db.exec('COMMIT');
+        return {credits:old.settled_credits,balance:balanceOfTenant(tid),costYuan:expense.cost_yuan,
+          supplierCostStatus:'known',duplicate:true,holdId:old.id,logId:old.log_id};
+      }
+    }
     const changed = q.run('UPDATE tenants SET credits = credits - ? WHERE id = ? AND credits >= ?', credits, tid, credits);
     if (!changed.changes) {
       const balance = balanceOfTenant(tid);
       throw Object.assign(new Error(`积分余额不足：当前 ${balance} 分，本次实际需 ${credits} 分。请联系管理员充值。`), { status: 402 });
     }
     after = q.get('SELECT credits FROM tenants WHERE id = ?', tid)?.credits ?? 0;
-    q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
+    const log = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       tid, userId, feature, kind, model || '', usage.inputTokens || 0, usage.outputTokens || 0,
-      Math.round(yuan * 10000) / 10000, credits, after, aiMode, note);
+      yuan == null ? null : Math.round(yuan * 10000) / 10000, credits, after, aiMode, note);
+    const linked = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,settled_credits,status,ref_type,ref_id,pricing_snapshot_json,settled_at)
+      VALUES(?,?,?,?,?,?,?,?,'settled','direct_charge',?,?,datetime('now','localtime'))`,
+      tid,userId,log.lastInsertRowid,feature,kind,model||'',credits,credits,log.lastInsertRowid,pricing);
+    writeSupplierExpense({id:linked.lastInsertRowid,tenant_id:tid,user_id:userId,log_id:log.lastInsertRowid}, {
+      status:supplier ? 'known' : aiMode === 'api' ? (unified ? 'pending' : 'estimated') : 'not_incurred', costYuan:yuan,
+      source:supplier?.costSource || {type:aiMode === 'api' ? (unified ? 'supplier_cost_pending' : 'configured_rates') : aiMode,model,pricingSnapshot:true},
+    });
     if (manageTransaction) db.exec('COMMIT');
   } catch (e) {
     if (manageTransaction) {
@@ -595,8 +681,9 @@ export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api
     }
     throw e;
   }
-  publishCreditsUpdated(tid, after, 'charge');
-  return { credits, balance: after, costYuan: Math.round(yuan * 100) / 100 };
+  if(manageTransaction) publishCreditsUpdated(tid, after, 'charge');
+  return { credits, balance: after, costYuan: yuan == null ? null : Math.round(yuan * 10000) / 10000,
+    supplierCostStatus:supplier ? 'known' : aiMode === 'api' ? (unified ? 'pending' : 'estimated') : 'not_incurred' };
 }
 
 // 租户积分池入账/调整（充值确认、管理员补偿）：正数入账，负数扣减；统一记流水保证对账
@@ -637,7 +724,9 @@ export function creditTenant({ tenantId, delta, userId = null, feature, note = '
 // 调用返回后按真实用量结算：把"同一条"流水改写为实扣金额并退回差额（估算偏低时补扣），对账口径不重复。
 let holdTableReady = false;
 function ensureHoldTable() {
-  if (holdTableReady) return;
+  if (holdTableReady && q.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_supplier_expenses'")
+    && q.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_supplier_receipts'")) return;
+  ensureCreditSupplierReceiptSchema();
   db.exec(`
   CREATE TABLE IF NOT EXISTS credit_holds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -653,7 +742,28 @@ function ensureHoldTable() {
     settled_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_credit_holds_ref ON credit_holds(ref_type, ref_id, status);
+  CREATE TABLE IF NOT EXISTS credit_supplier_expenses (
+    hold_id INTEGER PRIMARY KEY,
+    tenant_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    log_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('known','estimated','pending','not_incurred')),
+    cost_yuan REAL,
+    source_json TEXT NOT NULL DEFAULT '{}',
+    refunded_credits INTEGER,
+    refund_log_id INTEGER,
+    refund_note TEXT,
+    refunded_at TEXT,
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_credit_supplier_expenses_tenant ON credit_supplier_expenses(tenant_id,status);
   `);
+  if (!db.prepare('PRAGMA table_info(credit_holds)').all().some(column => column.name === 'pricing_snapshot_json')) {
+    try { db.exec('ALTER TABLE credit_holds ADD COLUMN pricing_snapshot_json TEXT'); }
+    catch(error) {
+      if(!db.prepare('PRAGMA table_info(credit_holds)').all().some(column => column.name === 'pricing_snapshot_json')) throw error;
+    }
+  }
   holdTableReady = true;
 }
 
@@ -888,13 +998,21 @@ export function holdCredits({
   if (!billingUserId) {
     throw Object.assign(new Error('租户没有可用于后台计费归属的启用账号'), { status: 409 });
   }
-  const amount = Math.max(1, Math.ceil(Number(credits) || 0));
+  const amount = validCreditAmount(credits);
+  const pricing = priceSnapshot(billing(),model);
   // 租户月度预算门（只拦 AI 消耗；未设预算/平台超管放行）。放在事务外：预警通知与幂等占位不随占扣回滚。
   if (kind === 'text' || kind === 'image' || kind === 'video') {
     assertWithinBudget({ tenantId: tid, userId: userId ?? billingUserId, estimate: amount });
   }
   db.exec('BEGIN IMMEDIATE');
   try {
+    if (['text','image','video'].includes(kind) && !isBudgetExempt(userId ?? billingUserId)) {
+      const tenant = getTenant(tid);
+      if (tenant?.monthly_credit_budget != null) {
+        const currentBudget = budgetSummary(tenant);
+        if(currentBudget.used + amount > currentBudget.budget) throw budgetExceededError(currentBudget,amount);
+      }
+    }
     const changed = q.run('UPDATE tenants SET credits = credits - ? WHERE id = ? AND credits >= ?', amount, tid, amount);
     if (!changed.changes) {
       const balance = balanceOfTenant(tid);
@@ -904,8 +1022,8 @@ export function holdCredits({
     const logR = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       tid, billingUserId, feature, kind, model || '', 0, 0, 0, amount, after, 'hold', note || '预授权占扣，结算时多退少补');
-    const holdR = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,ref_type,ref_id)
-           VALUES(?,?,?,?,?,?,?,?,?)`, tid, billingUserId, logR.lastInsertRowid, feature, kind, model || '', amount, refType, refId);
+    const holdR = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,ref_type,ref_id,pricing_snapshot_json)
+           VALUES(?,?,?,?,?,?,?,?,?,?)`, tid, billingUserId, logR.lastInsertRowid, feature, kind, model || '', amount, refType, refId, pricing);
     db.exec('COMMIT');
     publishCreditsUpdated(tid, after, 'hold');
     return { holdId: holdR.lastInsertRowid, logId: logR.lastInsertRowid, tenantId: tid, userId: billingUserId, feature, kind, model: model || '', credits: amount, balance: after };
@@ -919,7 +1037,7 @@ export function holdCredits({
 // - aiMode='template' → 全额退回（保留 0 分流水审计）
 // - 真实 API 文本无有效 token 证据 → 失败关闭，hold 保持 held 待查，不得落成“实扣0分”
 // - credits 显式传入时按传入值实扣（视频按提交时报价结算，防止结算窗口内价格变动）
-// - 实扣 > 占扣（估算偏低）→ 失败关闭：hold 保持 held，由业务层转待对账，不追加未授权扣款
+// - 旧报价实扣 > 占扣 → 保持 held；新 upstream_debit 按真实回执原子补扣，余额不足保留成果待结算
 // - 幂等：同一笔占扣只能结算一次，重复结算/释放返回 null 不动账
 function holdIntegrityMismatch(field) {
   return Object.assign(
@@ -935,6 +1053,15 @@ function holdExceeded() {
   );
 }
 
+function settlementBalanceInsufficient(row, actual, balance) {
+  const additionalCredits = actual - Number(row.held_credits);
+  return Object.assign(new Error(`成果已保留，实际费用为${actual}积分，需补扣${additionalCredits}积分；余额${balance}积分不足，请充值后核对原账单`), {
+    status: 402, code: 'BILLING_SETTLEMENT_BALANCE_INSUFFICIENT', retryable: false, billingPending: true,
+    requiredCredits: actual, heldCredits: Number(row.held_credits), additionalCredits,
+    balance, shortfallCredits: Math.max(0, additionalCredits - balance),
+  });
+}
+
 function billingUsageMissing() {
   return Object.assign(
     new Error('真实 API 文本交付缺少可结算的有效 token 用量，未完成结算，已保留预授权待核对'),
@@ -942,9 +1069,30 @@ function billingUsageMissing() {
   );
 }
 
-function assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits }) {
-  if (String(row?.kind || '') !== 'text' || aiMode !== 'api' || fixedCredits != null) return;
+function fixedServiceSettlement(row, fixedCredits) {
+  if (['content_connector_live_research','wechat_draft_delivery'].includes(row?.ref_type)) return true;
+  if (row?.ref_type !== 'kb_embedding' || fixedCredits == null || fixedCredits === 0) return false;
+  const job=q.get('SELECT * FROM kb_embedding_jobs WHERE tenant_id=? AND id=? AND hold_id=?',row.tenant_id,row.ref_id,row.id);
+  if (!job || !Number.isSafeInteger(job.persisted_calls) || job.persisted_calls <= 0
+    || job.persisted_calls > job.attempted_calls || job.attempted_calls > job.planned_calls
+    || !Number.isSafeInteger(job.credits_per_call) || job.credits_per_call <= 0
+    || fixedCredits !== job.persisted_calls * job.credits_per_call)
+    throw Object.assign(new Error('向量结算必须与后台任务实际持久化数量一致'),{status:409,code:'BILLING_FIXED_PRICE_MISMATCH'});
+  return true;
+}
+
+function assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits, verifiedCost = false }) {
+  // These existing integrations are fixed-price service calls, not LLM text.
+  const fixedService = fixedServiceSettlement(row,fixedCredits);
+  if (String(row?.kind || '') !== 'text' || aiMode !== 'api' || fixedCredits === 0) return;
   const source = usage && typeof usage === 'object' ? usage : null;
+  if (verifiedCost || (fixedService && fixedCredits != null)) {
+    // Receipts independently prove the cost, but explicit corrupt usage is never accepted.
+    for (const key of ['inputTokens','outputTokens']) {
+      if (source && Object.hasOwn(source,key) && (typeof source[key] !== 'number' || !Number.isSafeInteger(source[key]) || source[key] < 0)) throw billingUsageMissing();
+    }
+    return;
+  }
   const hasInput = source
     && Object.prototype.hasOwnProperty.call(source, 'inputTokens')
     && source.inputTokens !== null
@@ -956,11 +1104,28 @@ function assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits }) {
   const inputTokens = Number(source?.inputTokens);
   const outputTokens = Number(source?.outputTokens);
   if (!hasInput || !hasOutput
-    || !Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)
+    || typeof source.inputTokens !== 'number' || typeof source.outputTokens !== 'number'
+    || !Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens)
     || inputTokens < 0 || outputTokens < 0
     || inputTokens + outputTokens <= 0) {
     throw billingUsageMissing();
   }
+}
+
+function supplierCostForUsage(usage, required = false, allowPending = false) {
+  const entries = usage?.supplierCosts;
+  // Known evidence must remain valid even when another receipt is delayed.
+  if (Array.isArray(entries)) entries.filter(entry => entry?.status === 'known')
+    .forEach(entry => verifiedSupplierSource(entry.costYuanOverride, entry.costSource));
+  const aggregated = aggregateSupplierCosts(entries);
+  if (aggregated?.status === 'known') {
+    // Validate each receipt before aggregation; opposite corrupt amounts cannot cancel out.
+    entries.forEach(entry => verifiedSupplierSource(entry.costYuanOverride, entry.costSource));
+    return { ...aggregated, costSource: verifiedSupplierSource(aggregated.costYuanOverride, aggregated.costSource) };
+  }
+  if (!allowPending && (aggregated?.status === 'pending' || required || entries !== undefined))
+    throw Object.assign(new Error('供应商实际费用尚未核验，产物已保留，暂不按估价结算'), {status:409,code:'BILLING_SUPPLIER_COST_PENDING',retryable:false});
+  return null;
 }
 
 function assertSuppliedHoldMatches(row, supplied) {
@@ -985,10 +1150,117 @@ function assertSuppliedHoldMatches(row, supplied) {
   }
 }
 
-export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: fixedCredits, costYuanOverride, note = '' } = {}) {
+function verifiedSupplierSource(costYuan, source) {
+  const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:+-]{1,240}$/.test(value);
+  const ids = source?.requestIds || (source?.requestId ? [source.requestId] : []);
+  if (typeof costYuan !== 'number' || !Number.isFinite(costYuan) || costYuan < 0
+    || !['provider_receipt','provider_usage'].includes(source?.type)
+    || !safeId(source?.provider) || !Array.isArray(ids) || !ids.length || ids.length > 1000 || !ids.every(safeId) || new Set(ids).size!==ids.length
+    || !['CNY','USD'].includes(source?.currency)
+    || typeof source?.amount !== 'number' || !Number.isFinite(source.amount) || source.amount < 0
+    || typeof source?.exchangeRate !== 'number' || !Number.isFinite(source.exchangeRate) || source.exchangeRate <= 0
+    || (source.currency === 'CNY' && source.exchangeRate !== 1)
+    || Math.abs(source.amount * source.exchangeRate - costYuan) > 1e-9 * Math.max(1,costYuan))
+    throw Object.assign(new Error('供应商成本必须有匹配币种、汇率、请求编号与金额的真实回执证据'), {status:409,code:'BILLING_SUPPLIER_COST_UNVERIFIED'});
+  const result = {type:source.type,provider:source.provider,requestIds:[...new Set(ids)].sort(),currency:source.currency,amount:source.amount,exchangeRate:source.exchangeRate};
+  if (source.basis !== undefined) {
+    const invalid=()=>Object.assign(new Error('钱包实际扣费必须保留匹配的逐请求额度、金额与公开汇率来源'),{status:409,code:'BILLING_SUPPLIER_COST_UNVERIFIED'});
+    if(source.basis!=='upstream_debit') throw invalid();
+    result.basis=source.basis;
+    if(Array.isArray(source.receipts)) {
+      if(source.currency!=='CNY' || source.exchangeRate!==1 || source.receipts.length!==ids.length
+        || source.receipts.some(receipt=>!receipt || receipt.receipts!==undefined || receipt.basis!=='upstream_debit'
+          || receipt.provider!==source.provider || !safeId(receipt.requestId) || !ids.includes(receipt.requestId))
+        || new Set(source.receipts.map(receipt=>receipt.requestId)).size!==ids.length) throw invalid();
+      const total=source.receipts.reduce((sum,receipt)=>sum+receipt.amount*receipt.exchangeRate,0);
+      if(!Number.isFinite(total) || Math.abs(total-costYuan)>1e-9*Math.max(1,costYuan)) throw invalid();
+      result.receipts=source.receipts.map(receipt=>{
+        const verified=verifiedSupplierSource(receipt.amount*receipt.exchangeRate,receipt);
+        return {...verified,requestIds:undefined,requestId:receipt.requestId};
+      }).sort((a,b)=>a.requestId.localeCompare(b.requestId));
+      return result;
+    }
+    if (source.provider === '360') {
+      if (ids.length !== 1 || !valid360Receipt({ ...source, requestId: ids[0] })) throw invalid();
+      Object.assign(result, {rawRequestId: source.rawRequestId, model: source.model, actualModel: source.actualModel,
+        amountField: source.amountField, reportedAmount: source.reportedAmount, responseOrigin: source.responseOrigin});
+      return result;
+    }
+    if (ids.length!==1 || !Number.isSafeInteger(source.quota) || source.quota < 0
+      || !Number.isSafeInteger(source.quotaPerUnit) || source.quotaPerUnit <= 0
+      || Math.abs(source.quota / source.quotaPerUnit - source.amount) > 1e-9 * Math.max(1,source.amount)
+      || source.exchangeRateSource !== 'https://api.openlux.ai/api/status'
+      || typeof source.statusRetrievedAt !== 'string' || !Number.isFinite(Date.parse(source.statusRetrievedAt)))
+      throw invalid();
+    Object.assign(result,{basis:source.basis,quota:source.quota,quotaPerUnit:source.quotaPerUnit,
+      exchangeRateSource:source.exchangeRateSource,statusRetrievedAt:source.statusRetrievedAt});
+    if (['USD','CNY'].includes(source.statusDisplayCurrency)) result.statusDisplayCurrency=source.statusDisplayCurrency;
+  }
+  return result;
+}
+
+function receiptReused() {
+  return Object.assign(new Error('该供应商扣费回执已归属另一笔账单，未重复扣费，请核对原任务'),
+    {status:409,code:'BILLING_SUPPLIER_RECEIPT_REUSED',retryable:false,billingPending:true});
+}
+
+function assertDebitReceipt(b, source) {
+  if(b.supplierCostPolicy?.basis==='upstream_debit' && source?.basis!=='upstream_debit')
+    throw Object.assign(new Error('本次需按上游钱包实际扣费结算，采购成本或估算价不能替代回执'),
+      {status:409,code:'BILLING_SUPPLIER_COST_PENDING',retryable:false,billingPending:true});
+}
+
+function sameReceiptAmount(left,right) {
+  const identity=source=>source && (source.receipts || [source]).map(receipt=>
+    [receipt.provider,receipt.requestIds || [receipt.requestId],receipt.currency,receipt.amount,receipt.exchangeRate,
+      receipt.basis,receipt.quota,receipt.quotaPerUnit]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify(identity(left))===JSON.stringify(identity(right));
+}
+
+function receiptOwners(source) {
+  const owners = new Set();
+  for (const id of source.requestIds) {
+    const claimed=q.get('SELECT hold_id FROM credit_supplier_receipts WHERE provider=? AND request_id=?',source.provider,id);
+    if(claimed) owners.add(Number(claimed.hold_id));
+    // Protect receipts recorded before this registry existed, without rewriting
+    // any historical invoice. Invalid old JSON cannot become payment authority.
+    for(const row of q.all(`SELECT hold_id FROM credit_supplier_expenses
+      WHERE json_valid(source_json) AND json_extract(source_json,'$.provider')=?
+      AND (json_extract(source_json,'$.requestId')=? OR EXISTS
+        (SELECT 1 FROM json_each(credit_supplier_expenses.source_json,'$.requestIds') WHERE value=?))`,source.provider,id,id))
+      owners.add(Number(row.hold_id));
+  }
+  return owners;
+}
+
+function claimSupplierReceipts(row, source) {
+  if (!db.isTransaction) throw holdIntegrityMismatch('receipt requires transaction');
+  if ([...receiptOwners(source)].some(id=>id!==Number(row.id))) throw receiptReused();
+  for(const id of source.requestIds) q.run(`INSERT INTO credit_supplier_receipts(provider,request_id,hold_id,tenant_id,user_id)
+    VALUES(?,?,?,?,?) ON CONFLICT(provider,request_id) DO NOTHING`,source.provider,id,row.id,row.tenant_id,row.user_id);
+}
+
+function writeSupplierExpense(row, {status,costYuan=null,source={}}) {
+  if(status==='known') claimSupplierReceipts(row,source);
+  q.run(`INSERT INTO credit_supplier_expenses(hold_id,tenant_id,user_id,log_id,status,cost_yuan,source_json)
+    VALUES(?,?,?,?,?,?,?) ON CONFLICT(hold_id) DO UPDATE SET status=excluded.status,cost_yuan=excluded.cost_yuan,
+      source_json=excluded.source_json,updated_at=datetime('now','localtime')
+    WHERE credit_supplier_expenses.refunded_at IS NULL`,
+  row.id,row.tenant_id,row.user_id,row.log_id,status,costYuan,JSON.stringify(source));
+}
+
+export function getSupplierExpense(holdId, tenantId = curTenant()) {
+  ensureHoldTable();
+  const row = q.get('SELECT * FROM credit_supplier_expenses WHERE tenant_id=? AND hold_id=?',Number(tenantId),Number(holdId));
+  if (!row) return null;
+  return { holdId:Number(row.hold_id),tenantId:Number(row.tenant_id),userId:Number(row.user_id),status:row.status,
+    costYuan:row.cost_yuan,costSource:JSON.parse(row.source_json || '{}'),refundedCredits:row.refunded_credits,
+    refundLogId:row.refund_log_id,refundedAt:row.refunded_at,updatedAt:row.updated_at };
+}
+
+export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: fixedCredits, costYuanOverride, costSource, note = '' } = {}) {
   if (!hold?.holdId) return null;
   ensureHoldTable();
-  const b = billing();
   db.exec('BEGIN IMMEDIATE');
   try {
     // 只把 holdId 当作定位键；租户、流水、占扣金额和计费种类都从事务内
@@ -999,20 +1271,61 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       return null; // 不存在或已经终结：保持历史幂等语义
     }
     assertSuppliedHoldMatches(row, hold);
+    const recordedExpense=q.get('SELECT * FROM credit_supplier_expenses WHERE tenant_id=? AND hold_id=?',row.tenant_id,row.id);
+    if(recordedExpense?.refunded_at) {
+      db.exec('COMMIT');return null;
+    }
+    if(costYuanOverride===undefined && fixedCredits!==0 && recordedExpense?.status==='known') {
+      costYuanOverride=recordedExpense.cost_yuan;
+      costSource=JSON.parse(recordedExpense.source_json);
+    }
+    const b = billingForHold(row);
     const log = q.get(
-      'SELECT id,tenant_id FROM credit_logs WHERE tenant_id=? AND id=?',
+      'SELECT id,tenant_id,user_id,kind,credits,ai_mode FROM credit_logs WHERE tenant_id=? AND id=?',
       row.tenant_id,
       row.log_id,
     );
     if (!log) throw holdIntegrityMismatch('logId');
+    if (Number(log.user_id) !== Number(row.user_id) || log.kind !== row.kind) throw holdIntegrityMismatch('log owner/kind');
+    if (Number(log.credits) !== Number(row.held_credits) || log.ai_mode !== 'hold') throw holdIntegrityMismatch('log held amount');
     if (!q.get('SELECT id FROM tenants WHERE id=?', row.tenant_id)) {
       throw holdIntegrityMismatch('tenantId');
     }
 
-    assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits });
+    if (fixedCredits != null) validCreditAmount(fixedCredits, {zero:true});
+    // Unified retail pricing (salePolicy reference_360, frozen in the hold's
+    // snapshot): the customer pays the reference schedule ×2 regardless of
+    // which supplier ran the call. A missing or late receipt only leaves the
+    // platform cost pending; it never blocks delivery or changes the sale price.
+    const unified = usesUnifiedSalesPricing(b);
+    const supplier = aiMode === 'api' && fixedCredits !== 0
+      ? supplierCostForUsage(usage, b.supplierCostPolicy?.enabled === true && recordedExpense?.status !== 'known' && !costSource, unified) : null;
+    if (supplier) { costYuanOverride=supplier.costYuanOverride;costSource=supplier.costSource; }
+    const verifiedCost=costSource ? verifiedSupplierSource(costYuanOverride,costSource) : null;
+    if(aiMode==='api' && fixedCredits!==0 && !unified) assertDebitReceipt(b,verifiedCost);
+    // Text still needs real token usage even when a receipt or reference price exists.
+    assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits, verifiedCost:!!verifiedCost && !unified });
 
     const finalModel = model || row.model || '';
-    let yuan = aiMode === 'api' ? costYuan(row.kind, finalModel, usage, b) : 0;
+    const referenceYuan = aiMode === 'api' ? costYuan(row.kind, finalModel, usage, b) : 0;
+    let yuan = verifiedCost ? costYuanOverride : aiMode === 'api' ? (unified ? null : referenceYuan) : 0;
+    let expenseSource = unified && !verifiedCost
+      ? {type:'supplier_cost_pending',model:finalModel,pricingSnapshot:!!row.pricing_snapshot_json}
+      : {type:'configured_rates',model:finalModel,pricingSnapshot:!!row.pricing_snapshot_json};
+    let expenseStatus = unified && !verifiedCost ? 'pending' : 'estimated';
+    if (unified) {
+      // Retail credits come from the frozen reference schedule; composite jobs pass
+      // their reference-priced total as fixedCredits. Receipts only fill the cost side.
+      const referenceCredits = aiMode === 'api' ? Math.ceil((referenceYuan * b.marginMultiplier) / b.creditYuan) : 0;
+      const actual = fixedCredits != null ? fixedCredits : referenceCredits;
+      validCreditAmount(actual,{zero:true});
+      if (row.kind==='text' && actual>0 && !fixedServiceSettlement(row,fixedCredits) && actual!==referenceCredits)
+        throw Object.assign(new Error('文本固定积分与统一参考价不一致'),{status:409,code:'BILLING_FIXED_PRICE_MISMATCH'});
+      if (actual - Number(row.held_credits) > 0) throw holdExceeded();
+      if (verifiedCost) { yuan = costYuanOverride; expenseStatus = 'known'; expenseSource = verifiedCost; }
+      if (actual === 0 && !verifiedCost) { yuan = 0; expenseStatus = 'not_incurred'; expenseSource = {type:aiMode === 'template' ? 'template' : 'explicit_release'}; }
+      return finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, finalModel, usage, aiMode, note });
+    }
     if (costYuanOverride !== undefined) {
       // Internal composite-video settlement only. Keep the ledger's CNY cost
       // consistent with the exact authorized customer credits, not one clip's price.
@@ -1020,51 +1333,165 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       let snapshot;
       try { snapshot = JSON.parse(job?.snapshot_json || '{}'); } catch { snapshot = {}; }
       const amount = Number(costYuanOverride);
-      if (row.kind !== 'video' || snapshot.voiceMode !== 'voiced' || snapshot.workflow !== 'ai_sales_video'
+      const providerSource = costSource ? verifiedSupplierSource(amount,costSource) : null;
+      if ((!providerSource && (row.kind !== 'video' || snapshot.voiceMode !== 'voiced' || snapshot.workflow !== 'ai_sales_video'))
         || aiMode !== 'api' || typeof costYuanOverride !== 'number' || !Number.isFinite(amount) || amount < 0
-        || !Number.isSafeInteger(fixedCredits) || fixedCredits !== Math.ceil(amount * b.marginMultiplier / b.creditYuan)) {
+        || (!providerSource && !Number.isSafeInteger(fixedCredits))
+        || (!providerSource && fixedCredits !== Math.ceil(amount * b.marginMultiplier / b.creditYuan))) {
         throw Object.assign(new Error('组合媒体结算成本与授权积分不一致'), { status: 409, code: 'BILLING_COMPOSITE_COST_INVALID' });
       }
       yuan = amount;
+      expenseSource = providerSource || {type:'configured_composite_rates',model:finalModel,pricingSnapshot:!!row.pricing_snapshot_json};
+      expenseStatus = providerSource ? 'known' : 'estimated';
     }
-    const actual = fixedCredits != null
-      ? Math.max(0, Math.ceil(Number(fixedCredits) || 0))
+    const actual = expenseStatus === 'known' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : fixedCredits != null
+      ? fixedCredits
       : aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
-    if (actual > Number(row.held_credits)) throw holdExceeded();
-    const claimed = q.run(`UPDATE credit_holds
-      SET status='settled',settled_credits=?,settled_at=datetime('now','localtime')
-      WHERE tenant_id=? AND id=? AND status='held'`,
-    actual, row.tenant_id, row.id);
-    if (!claimed.changes) {
-      db.exec('COMMIT');
-      return null;
+    validCreditAmount(actual,{zero:true});
+    const additional = actual - Number(row.held_credits);
+    if (additional > 0 && !(b.supplierCostPolicy?.basis==='upstream_debit' && verifiedCost?.basis==='upstream_debit')) throw holdExceeded();
+    if(row.kind==='text' && actual>0 && expenseStatus!=='known'
+      && !fixedServiceSettlement(row,fixedCredits)
+      && actual!==Math.ceil(yuan*b.marginMultiplier/b.creditYuan))
+      throw Object.assign(new Error('文本固定积分与真实用量成本不一致'),{status:409,code:'BILLING_FIXED_PRICE_MISMATCH'});
+    if (actual === 0 && costYuanOverride === undefined) {
+      yuan = 0; expenseStatus = 'not_incurred'; expenseSource = {type:aiMode === 'template' ? 'template' : 'explicit_release'};
+    } else if (fixedCredits != null && costYuanOverride === undefined
+      && (row.ref_type==='kb_embedding' || actual !== Math.ceil(yuan * b.marginMultiplier / b.creditYuan))) {
+      // A fixed service/aggregate quote is not evidence of one model call's cost.
+      yuan = null; expenseStatus = 'pending'; expenseSource = {type:'fixed_service_cost_pending',model:finalModel};
     }
-    const tenantUpdated = q.run(
-      'UPDATE tenants SET credits=credits+? WHERE id=?',
-      Number(row.held_credits) - actual,
-      row.tenant_id,
-    );
-    if (tenantUpdated.changes !== 1) throw holdIntegrityMismatch('tenantId');
-    const after = q.get('SELECT credits FROM tenants WHERE id=?', row.tenant_id)?.credits ?? 0;
-    const logUpdated = q.run(`UPDATE credit_logs
-      SET credits=?,model=?,input_tokens=?,output_tokens=?,cost_yuan=?,balance_after=?,ai_mode=?,note=?
-      WHERE tenant_id=? AND id=?`,
-      actual, finalModel, usage.inputTokens || 0, usage.outputTokens || 0, Math.round(yuan * 10000) / 10000, after, aiMode,
-      `${note ? `${note}；` : ''}预授权${row.held_credits}分→实扣${actual}分`,
-      row.tenant_id, row.log_id);
-    if (logUpdated.changes !== 1) throw holdIntegrityMismatch('logId');
-    db.exec('COMMIT');
-    publishCreditsUpdated(row.tenant_id, after, actual === 0 ? 'release' : 'settle');
-    return { credits: actual, balance: after, costYuan: Math.round(yuan * 100) / 100 };
+    return finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, finalModel, usage, aiMode, note });
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw e;
   }
 }
 
+// Shared tail of settleHold inside its open transaction: claim the hold once,
+// move the difference on the tenant balance, finalize the invoice line and
+// record the supplier expense. Returns null when another settlement won.
+function finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, finalModel, usage, aiMode, note }) {
+  const additional = actual - Number(row.held_credits);
+  const claimed = q.run(`UPDATE credit_holds
+    SET status='settled',settled_credits=?,settled_at=datetime('now','localtime')
+    WHERE tenant_id=? AND id=? AND status='held'`,
+  actual, row.tenant_id, row.id);
+  if (!claimed.changes) {
+    db.exec('COMMIT');
+    return null;
+  }
+  const tenantUpdated = q.run(
+    'UPDATE tenants SET credits=credits+? WHERE id=? AND credits>=?',
+    Number(row.held_credits) - actual,
+    row.tenant_id,
+    Math.max(0,additional),
+  );
+  if (tenantUpdated.changes !== 1) {
+    if(additional>0) throw settlementBalanceInsufficient(row,actual,balanceOfTenant(row.tenant_id));
+    throw holdIntegrityMismatch('tenantId');
+  }
+  const after = q.get('SELECT credits FROM tenants WHERE id=?', row.tenant_id)?.credits ?? 0;
+  const logUpdated = q.run(`UPDATE credit_logs
+    SET credits=?,model=?,input_tokens=?,output_tokens=?,cost_yuan=?,balance_after=?,ai_mode=?,note=?
+    WHERE tenant_id=? AND id=?`,
+    actual, finalModel, usage.inputTokens || 0, usage.outputTokens || 0, yuan == null ? null : Math.round(yuan * 10000) / 10000, after, aiMode,
+    `${note ? `${note}；` : ''}预授权${row.held_credits}分→实扣${actual}分`,
+    row.tenant_id, row.log_id);
+  if (logUpdated.changes !== 1) throw holdIntegrityMismatch('logId');
+  writeSupplierExpense(row,{status:expenseStatus,costYuan:yuan,source:expenseSource});
+  db.exec('COMMIT');
+  publishCreditsUpdated(row.tenant_id, after, actual === 0 ? 'release' : 'settle');
+  return { credits: actual, balance: after, costYuan: yuan == null ? null : Math.round(yuan * 10000) / 10000, supplierCostStatus:expenseStatus };
+}
+
 // 释放占扣（调用失败/上游任务失败，未交付任何产出）：全额退回，保留 0 分流水审计
 export function releaseHold(hold, note = '调用失败，预授权全额退回') {
+  if(hold?.tenantId && getSupplierExpense(hold.holdId,hold.tenantId)
+    && q.get('SELECT status FROM credit_holds WHERE id=?',hold.holdId)?.status === 'held') return refundHold(hold,{note});
   return settleHold(hold, { credits: 0, aiMode: 'api', note });
+}
+
+function refundAuthority(hold) {
+  const row = q.get('SELECT * FROM credit_holds WHERE id=?', Number(hold?.holdId));
+  if (!row) throw Object.assign(new Error('预授权不存在'), {status:404,code:'CREDIT_HOLD_NOT_FOUND'});
+  assertSuppliedHoldMatches(row,hold);
+  if (Number(hold?.tenantId) !== Number(row.tenant_id) || Number(hold?.userId) !== Number(row.user_id))
+    throw holdIntegrityMismatch('refund tenant/user');
+  const log=q.get('SELECT * FROM credit_logs WHERE tenant_id=? AND id=?',row.tenant_id,row.log_id);
+  if (!log || Number(log.user_id)!==Number(row.user_id) || log.kind!==row.kind) throw holdIntegrityMismatch('refund log owner/kind');
+  return {row,log};
+}
+
+// Final failure without any deliverable refunds the customer independently of
+// whether the supplier charged. This internal API requires the authoritative
+// tenant/user hold handle; HTTP callers must authorize the original task first.
+export function refundHold(hold, {note='最终失败且没有可交付成果，用户积分全退',supplierCostYuan,costSource,assertRefundable,manageTransaction=true} = {}) {
+  ensureHoldTable();
+  const source = supplierCostYuan !== undefined ? verifiedSupplierSource(supplierCostYuan,costSource) : null;
+  if (manageTransaction) db.exec('BEGIN IMMEDIATE');
+  else if (!db.isTransaction) throw holdIntegrityMismatch('refund requires active transaction');
+  try {
+    const {row,log}=refundAuthority(hold);
+    if (assertRefundable !== undefined) {
+      if (typeof assertRefundable !== 'function') throw holdIntegrityMismatch('refund guard');
+      const checked=assertRefundable(row);
+      if (checked === false || checked?.then) throw holdIntegrityMismatch('refund guard must complete synchronously');
+    }
+    const existing=q.get('SELECT * FROM credit_supplier_expenses WHERE hold_id=?',row.id);
+    if (existing?.refunded_at) {
+      const result={credits:0,refundedCredits:Number(existing.refunded_credits||0),balance:balanceOfTenant(row.tenant_id),
+        costYuan:existing.cost_yuan,supplierCostStatus:existing.status,duplicate:true};
+      if (manageTransaction) db.exec('COMMIT'); return result;
+    }
+    if (!['held','settled'].includes(row.status)) throw holdIntegrityMismatch('refund status');
+    const refund = validCreditAmount(Number(row.status==='held' ? row.held_credits : row.settled_credits),{zero:true});
+    if (Number(log.credits) !== refund) throw holdIntegrityMismatch('refund amount');
+    const updated=q.run('UPDATE tenants SET credits=credits+? WHERE id=?',refund,row.tenant_id);
+    if(updated.changes!==1) throw holdIntegrityMismatch('refund tenant');
+    const balance=balanceOfTenant(row.tenant_id);
+    let refundLogId=null;
+    if(row.status==='held') {
+      q.run("UPDATE credit_holds SET status='settled',settled_credits=0,settled_at=datetime('now','localtime') WHERE tenant_id=? AND id=? AND status='held'",row.tenant_id,row.id);
+      q.run("UPDATE credit_logs SET credits=0,input_tokens=0,output_tokens=0,cost_yuan=?,balance_after=?,ai_mode='failed',note=? WHERE tenant_id=? AND id=?",
+        source ? supplierCostYuan : existing?.cost_yuan ?? null,balance,`${String(note).slice(0,800)}；预授权${row.held_credits}分→用户实扣0分`,row.tenant_id,row.log_id);
+    } else if(refund>0) {
+      // Keep the already settled invoice immutable; append its compensating entry.
+      refundLogId=Number(q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
+        VALUES(?,?,?,'refund',?,0,0,0,?,?,'refund',?)`,row.tenant_id,row.user_id,'最终无成果退款',row.model||'',-refund,balance,
+      `${String(note).slice(0,800)}；原预授权#${row.id}，原流水#${row.log_id}`).lastInsertRowid);
+    }
+    const cost = source ? supplierCostYuan : existing?.cost_yuan ?? (row.status==='settled' && Number(log.cost_yuan)>0 ? Number(log.cost_yuan) : null);
+    const status = source ? 'known' : existing?.status || (cost == null ? 'pending' : 'estimated');
+    const evidence = source || (existing ? JSON.parse(existing.source_json||'{}') : {type:cost == null ? 'supplier_outcome_unknown' : 'legacy_settlement_estimate'});
+    writeSupplierExpense(row,{status,costYuan:cost,source:evidence});
+    q.run("UPDATE credit_supplier_expenses SET refunded_credits=?,refund_log_id=?,refund_note=?,refunded_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE tenant_id=? AND hold_id=?",
+      refund,refundLogId,String(note).slice(0,1000),row.tenant_id,row.id);
+    if (manageTransaction) {
+      db.exec('COMMIT');
+      publishCreditsUpdated(row.tenant_id,balance,'refund');
+    }
+    return {credits:0,refundedCredits:refund,balance,costYuan:cost,supplierCostStatus:status,duplicate:false};
+  } catch(error) { if(manageTransaction) {try {db.exec('ROLLBACK');} catch {}} throw error; }
+}
+
+// A later supplier receipt settles platform expenditure only. It must never
+// reopen a refunded customer hold or cause a second customer charge.
+export function reconcileSupplierExpense(hold,{supplierCostYuan,costSource}={}) {
+  ensureHoldTable();
+  const source=verifiedSupplierSource(supplierCostYuan,costSource);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const {row}=refundAuthority(hold);
+    const current=q.get('SELECT * FROM credit_supplier_expenses WHERE tenant_id=? AND hold_id=?',row.tenant_id,row.id);
+    if(current?.status==='known' && (Math.abs(Number(current.cost_yuan)-supplierCostYuan)>1e-9 || !sameReceiptAmount(JSON.parse(current.source_json),source)))
+      throw Object.assign(new Error('已核实供应商费用不能被不同回执覆盖'),{status:409,code:'BILLING_SUPPLIER_COST_CONFLICT'});
+    claimSupplierReceipts(row,source);
+    if(!current) writeSupplierExpense(row,{status:'known',costYuan:supplierCostYuan,source});
+    else q.run("UPDATE credit_supplier_expenses SET status='known',cost_yuan=?,source_json=?,updated_at=datetime('now','localtime') WHERE tenant_id=? AND hold_id=?",supplierCostYuan,JSON.stringify(source),row.tenant_id,row.id);
+    db.exec('COMMIT');
+    return getSupplierExpense(row.id,row.tenant_id);
+  } catch(error) {try {db.exec('ROLLBACK');} catch {} throw error;}
 }
 
 /**

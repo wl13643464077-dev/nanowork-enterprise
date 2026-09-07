@@ -30,6 +30,8 @@ export type MediaJobView = {
   reviewRequired?: boolean;
   businessUsable?: boolean;
   canExport?: boolean;
+  downloadAvailable?: boolean;
+  downloadUrl?: string | null;
   isImported?: boolean;
   importedMaterialId?: number | null;
   reviewedBy?: string | null;
@@ -60,6 +62,8 @@ function safePreviewUrl(job: MediaJobView) {
 }
 
 function safeExportUrl(job: MediaJobView) {
+  // 服务端可单独授权下载已生成的文件；这不等于已结算或已获准对外采用。
+  if (job.downloadAvailable === true && job.canExport === true) return safeMediaUrl(job.downloadUrl);
   if (!job.businessUsable || job.canExport === false) return '';
   return safeMediaUrl(job.url);
 }
@@ -326,7 +330,7 @@ export default function MediaJobCard({
           rel="noreferrer"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, marginTop: 5 }}
         >
-          <LinkOutlined /> 打开源文件
+          <LinkOutlined /> {job.downloadAvailable === true ? '下载文件' : '打开源文件'}
         </a>
       )}
       <div style={{ marginTop: 8 }}>

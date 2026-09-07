@@ -76,7 +76,7 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   '已人工采纳（可用于业务）': 'green',
   '失败需处理（执行异常）': 'red',
   '失败需返工（质检未通过）': 'red',
-  '失败需返工（人工审阅未通过）': 'red',
+  '未采纳（原稿已保留）': 'default',
   '未达标草稿（待老板处理）': 'orange',
   '已接受草稿（内部参考，未通过质量门）': 'orange',
 };

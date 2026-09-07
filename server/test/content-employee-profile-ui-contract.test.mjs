@@ -11,13 +11,13 @@ const ROOT = path.resolve(
 );
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), "utf8");
 
-test("登录落地页宣传权威72位口径，普通内部产出不再被写成一刀切待审", () => {
+test("登录落地页宣传权威73位口径，普通内部产出不再被写成一刀切待审", () => {
   const login = read("web/src/pages/Login.tsx");
 
   assert.match(
     login,
-    /<em>72 位数字员工<\/em>/u,
-    "总数应为61餐饮（60核心+1扩展）+10 Paihuo+1 AI带货员",
+    /<em>73 位数字员工<\/em>/u,
+    "总数应为61餐饮（60核心+1扩展）+10 Paihuo+1 AI带货员+1 AI小红书种草员",
   );
   assert.match(login, /\{ value: '61', label: '餐饮数字员工 · 8 大分部' \}/u);
   assert.match(login, /\{ value: '10', label: '内容生产数字员工' \}/u);
@@ -66,9 +66,10 @@ test("内容员工工作台 UI 只按 API 权限显示内部档案，三类特�
     factory,
     /const canViewCrewInternals = \['boss', 'admin', 'platform_super'\]\.includes/u,
   );
-  assert.match(
+  assert.doesNotMatch(
     factory,
-    /if \(canViewCrewInternals\) \{[\s\S]*\/content\/prompt-guides/u,
+    /\/content\/prompt-guides/u,
+    "内部资料在授权员工档案按需读取",
   );
 });
 
@@ -97,70 +98,85 @@ test("内容员工当前工作台以对话和报告为主，不把已确认技�
   assert.doesNotMatch(overview, /\{ label: '待审阅', value: pending \}/u);
   assert.match(overview, /\{ label: '待处理', value: pending \}/u);
 
-  // 右侧面板是当前待处理入口，不应以旧的人工审阅队列作为默认承诺；
-  // 历史记录/详情状态仍由其它投影负责，这里只约束面板静态文案。
-  const pendingPanelStart = factory.indexOf("{/* 待人工处理区");
-  const pendingPanelEnd = factory.indexOf("{/* 高频模板", pendingPanelStart);
-  assert.ok(
-    pendingPanelStart >= 0 && pendingPanelEnd > pendingPanelStart,
-    "待处理面板边界必须可定位",
-  );
-  const pendingPanel = factory.slice(pendingPanelStart, pendingPanelEnd);
-  assert.doesNotMatch(pendingPanel, /进入人工审阅|待人工审阅/u);
-  assert.match(pendingPanel, /待人工处理|策略确认/u);
+  assert.doesNotMatch(factory, /ContentEmployeeTaskCenter|待人工处理区/u);
+  assert.match(factory, /全部历史 · 任务中心/u);
 
-  // 采用策略现由内容员工卡片上的标签呈现（仅管理角色可见）
-  const adoptionSummary =
-    factory.match(/content-crew-card-approval[\s\S]{0,220}/u)?.[0] || "";
-  assert.notEqual(
-    adoptionSummary,
-    "",
-    "员工卡片必须展示采用策略，而不是把普通内部结果写成审批",
-  );
-  assert.match(
+  // 首页只呈现岗位和任务入口，策略由后台保持，不向老板铺内部采用说明。
+  assert.doesNotMatch(
     factory,
-    /if \(role === 'boss' \|\| role === 'platform_super'\) return '当前账号普通内部结果直接采用'/u,
+    /content-crew-card-approval|crewAdoptionLabel|普通内部结果直接采用|通过门禁后自动采用/u,
   );
-  assert.doesNotMatch(adoptionSummary, /策略指定任务人工确认/u);
-  assert.doesNotMatch(factory, /策略指定任务人工确认/u);
-  assert.doesNotMatch(adoptionSummary, /进入人工审阅|人工审阅/u);
   assert.doesNotMatch(factory, /content-crew-emoji[\s\S]*\{station\.emoji\}/u);
   assert.doesNotMatch(crewCard, /提交人工审阅/u);
   assert.doesNotMatch(factory, /人工审阅队列/u);
 });
 
-test("ContentFactory右侧待处理面板不默认承诺人工审阅队列（历史状态映射仍可保留）", () => {
+test("ContentFactory删除重复待处理区域，统一任务中心保留历史状态筛选", () => {
   const factory = read("web/src/pages/ContentFactory.tsx");
-  const pendingPanelStart = factory.indexOf("{/* 待人工处理区");
-  const pendingPanelEnd = factory.indexOf("{/* 高频模板", pendingPanelStart);
-  assert.ok(
-    pendingPanelStart >= 0 && pendingPanelEnd > pendingPanelStart,
-    "待处理面板边界必须可定位",
+  const task = read("web/src/pages/TaskCenter.tsx");
+  assert.doesNotMatch(
+    factory,
+    /ContentEmployeeTaskCenter|待人工处理区|pending-reviews/u,
   );
-  const pendingPanel = factory.slice(pendingPanelStart, pendingPanelEnd);
-  assert.doesNotMatch(pendingPanel, /进入人工审阅|待人工审阅/u);
-  assert.match(pendingPanel, /待人工处理|策略确认/u);
+  assert.match(factory, /全部历史 · 任务中心/u);
+  assert.match(task, /value: 'rejected'/u);
+  assert.match(task, /value: 'failed'/u);
 });
 
-test("内容员工卡片同时提供单独派活和AI带货员30秒视频入口", () => {
+test("内容专岗与标准岗位统一进入员工工作台，技能摘要与深链保留", () => {
   const factory = read("web/src/pages/ContentFactory.tsx");
   const gridStart = factory.indexOf('className="content-crew-grid"');
-  const gridEnd = factory.indexOf("<ContentEmployeeTaskCenter", gridStart);
-  assert.ok(gridStart >= 0 && gridEnd > gridStart, "内容员工卡片阵列必须可定位");
-  const grid = factory.slice(gridStart, gridEnd);
-
-  // 每张卡片可单独派活（打开工作台），能力/技能摘要可点击查看完整能力
-  assert.match(grid, /单独派活/u);
-  assert.match(grid, /setCrewWorkbenchIdx\(station\.employeeIdx\)/u);
-  assert.match(grid, /station\.capabilityCount/u);
-  assert.match(grid, /station\.skillCount/u);
-  assert.match(grid, /station\.capabilityNames/u);
-  // AI带货员卡片保留30秒视频生成入口
-  assert.match(
-    grid,
-    /station\.key === 'commerce_video'[\s\S]*30秒带货视频/u,
+  const gridEnd = factory.indexOf("</section>", gridStart);
+  assert.ok(
+    gridStart >= 0 && gridEnd > gridStart,
+    "内容员工卡片阵列必须可定位",
   );
-  assert.match(grid, /onClick=\{\(\) => setSalesVideoOpen\(true\)\}/u);
+  const grid = factory.slice(gridStart, gridEnd);
+  assert.match(grid, /打开工作台 · 派活/u);
+  assert.match(grid, /setCrewWorkbenchIdx\(station\.employeeIdx\)/u);
+  for (const field of ["capabilityCount", "skillCount", "capabilityNames"]) {
+    assert.match(grid, new RegExp(`station\\.${field}`));
+    assert.match(factory, new RegExp(`${field}:.*remote\\.${field}`));
+  }
+  assert.doesNotMatch(
+    factory,
+    /setSalesVideoOpen|setXhsNoteOpen|<AiSalesVideoPanel|<AiXhsNotePanel/u,
+  );
+  assert.match(factory, /requestedTask === 'ai-sales-video'/u);
+  assert.match(factory, /requestedTask === 'ai-xhs-note'/u);
+  assert.match(
+    factory,
+    /initialMediaJobId=\{crewWorkbenchIdx === 10 \? crewMediaJobId : null\}/u,
+  );
+  assert.match(
+    factory,
+    /initialSalesVideoBrief=\{crewWorkbenchIdx === 10 \? salesVideoPreset : null\}/u,
+  );
+});
+
+test("小红书和带货专岗从能力档案返回派活时进入专用面板，长任务正文允许32000字", () => {
+  const workbench = read("web/src/components/EmployeeWorkbench.tsx");
+  const specialist = read("web/src/components/ContentSpecialistDispatch.tsx");
+  assert.match(
+    workbench,
+    /domain === 'content' && \(idx === 10 \|\| idx === 11\)/u,
+  );
+  assert.match(workbench, /return\s*\(?\s*<ContentSpecialistDispatch/u);
+  assert.match(workbench, /maxLength=\{32000\}/u);
+  assert.match(workbench, /if \(!open \|\| domain !== 'content' \|\| idx === null \|\| dedicatedContentTask\) return;/u);
+  assert.match(workbench, /domain === 'content' && !dedicatedContentTask/u);
+  assert.match(workbench, /loadRunDetail\(Number\(initialRunId\)\)/u);
+  assert.doesNotMatch(workbench, /maxLength=\{8000\}/u);
+  assert.match(specialist, /<AiXhsNotePanel/u);
+  assert.match(specialist, /<AiSalesVideoPanel/u);
+  assert.match(specialist, /canDispatch=\{available\}/u);
+  assert.match(specialist, /embedded/u);
+  assert.match(specialist, /open=\{active\}/u);
+  assert.doesNotMatch(
+    specialist,
+    /打开小红书图文任务|打开30秒带货视频任务|setOpen/u,
+  );
+  assert.doesNotMatch(specialist, /submitDispatch|\/dispatch/u);
 });
 
 test("内容员工任务卡按钮按权威presentationKey展示，不把无摘要任务误报为失败", () => {
@@ -172,6 +188,7 @@ test("内容员工任务卡按钮按权威presentationKey展示，不把无摘�
     ["adopted", "打开完整结果与费用"],
     ["business_blocked", "查看对账状态与处理建议"],
     ["rework_required", "查看返工原因与处理建议"],
+    ["rejected", "查看未采纳结果"],
     ["execution_failed", "查看执行错误与处理建议"],
     ["historical", "查看历史失败与修复记录"],
   ]) {

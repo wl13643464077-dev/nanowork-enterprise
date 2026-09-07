@@ -6,6 +6,19 @@ import {
   sanitizeProviderError,
 } from "../src/engines/provider-errors.js";
 
+test('360模型1001不归因为账号鉴权或用户输入，仍脱敏且禁止自动换模型', () => {
+  const error = providerResponseError(400, { error: {
+    code: '1001', message: '参数错误:model参数对应模型不存在或未授权 secret-upstream-key',
+  } }, { service: '360图片服务' });
+  assert.equal(error.providerReason, 'model_unavailable');
+  assert.equal(error.providerStatus, 400);
+  assert.equal(error.status, 503);
+  assert.match(error.message, /尚未向本账号开放/u);
+  assert.match(error.message, /已生成的文字保留/u);
+  assert.doesNotMatch(error.message, /secret|开通权限|检查.*输入/u);
+  assert.equal(providerResponseError(400, { error: { code: '1001', message: '参数错误:size不正确' } }).providerReason, 'invalid_request');
+});
+
 test("provider错误会安全区分图片提示词超长与尺寸不支持", () => {
   const promptError = providerResponseError(
     400,

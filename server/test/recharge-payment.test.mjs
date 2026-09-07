@@ -19,8 +19,9 @@ for (const k of ['WXPAY_MCHID', 'WXPAY_SERIAL_NO', 'WXPAY_PRIVATE_KEY', 'WXPAY_A
 const { initSchema, migrateV2, q, db, runWithTenant } = await import('../src/db.js');
 const payment = await import('../src/engines/payment.js');
 const { paymentChannels, createPayment, queryPayment, yuanToFen, fenToYuanStr, _setHttpCall } = payment;
-const rechargeRoutes = (await import('../src/routes/recharge.js')).default;
+const { default: rechargeRoutes, settlePaidOrder } = await import('../src/routes/recharge.js');
 const notifyRoutes = (await import('../src/routes/recharge-notify.js')).default;
+const { orderWithSeatMetadata } = await import('../src/engines/seat-requests.js');
 
 initSchema();
 migrateV2();
@@ -136,6 +137,8 @@ function buildWechatNotify(txn, {
   timestamp = Math.floor(Date.now() / 1000),
 } = {}) {
   const iv = crypto.randomBytes(6).toString('hex'); // 12 字符 nonce
+  txn = { appid: process.env.WXPAY_APPID, mchid: process.env.WXPAY_MCHID, ...txn,
+    amount: { currency: 'CNY', ...txn.amount } };
   const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(APIV3_KEY, 'utf8'), Buffer.from(iv, 'utf8'));
   cipher.setAAD(Buffer.from('transaction', 'utf8'));
   const enc = Buffer.concat([cipher.update(JSON.stringify(txn), 'utf8'), cipher.final(), cipher.getAuthTag()]);
@@ -324,7 +327,7 @@ test('微信回调：未配置平台证书默认拒绝；验签失败拒绝；�
 test('支付宝回调：验签失败拒绝；验签通过幂等入账；重复回调不重复入账；金额不符拒绝', async () => {
   const order = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' })).json;
   const before = tenantCredits();
-  const fields = { out_trade_no: order.orderNo, total_amount: '88.80' };
+  const fields = { out_trade_no: order.orderNo, total_amount: '88.80', trade_no: 'ALI_CALLBACK_001' };
 
   // 1) 篡改报文（签名对不上）→ 拒绝
   const tampered = buildAlipayNotify(fields);
@@ -862,4 +865,123 @@ test('超时取消：渠道关单失败或应答坏签名时，本地订单不�
     new Date(Date.now() - 10 * 60_000).toISOString(), forged.json.orderNo);
   const stillPendingAfterBadSign = await getJson(`/api/recharge/orders/${forged.json.orderNo}/status`);
   assert.equal(stillPendingAfterBadSign.json.status, '待支付');
+});
+
+test('分金额拒绝亚分、布尔和额外小数，合法大额不受浮点表示误差影响', () => {
+  for (const value of [0.000001, 0.00001, 1.000001, true, [], {}, '1e2', '1.000']) {
+    assert.throws(() => yuanToFen(value));
+  }
+  for (const value of [0.01, 19.99, 9999.99, 9_999_999.99]) {
+    assert.equal(yuanToFen(value), Math.round(value * 100));
+  }
+});
+
+test('微信通道缺少可用平台验签公钥时不显示可用收款入口', () => {
+  setBothChannelEnvs();
+  delete process.env.WXPAY_PLATFORM_CERT;
+  assert.deepEqual(paymentChannels().map(item => item.channel), ['alipay']);
+  process.env.WXPAY_PLATFORM_CERTS = '{invalid';
+  assert.deepEqual(paymentChannels().map(item => item.channel), ['alipay']);
+  delete process.env.WXPAY_PLATFORM_CERTS;
+  setBothChannelEnvs();
+});
+
+test('验签成功仍须绑定微信商户、应用、人民币整数分与非空交易号', async () => {
+  setBothChannelEnvs(); reconcileMock();
+  const order = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'wechat' })).json;
+  const before = tenantCredits();
+  const txn = { out_trade_no: order.orderNo, transaction_id: 'WX_BOUND_PAYMENT', trade_state: 'SUCCESS', amount: { total: 8880 } };
+  for (const patch of [
+    { appid: 'another-app' }, { mchid: 'another-merchant' },
+    { amount: { total: 8880, currency: 'USD' } }, { amount: { total: 8880, currency: undefined } },
+    { amount: { total: '8880' } }, { amount: { total: 8880.1 } }, { transaction_id: '' },
+  ]) {
+    const rejected = await postWechatNotify(buildWechatNotify({ ...txn, ...patch }));
+    assert.ok(rejected.status >= 400 && rejected.status < 500);
+    assert.equal(tenantCredits(), before);
+    assert.equal(orderLogCount(order.orderNo), 0);
+  }
+  const valid = await postWechatNotify(buildWechatNotify(txn));
+  assert.equal(valid.status, 200);
+  assert.equal(tenantCredits(), before + 9880);
+});
+
+test('回调不能跨支付通道或线下订单入账，交易号冲突不吞为幂等成功', async () => {
+  setBothChannelEnvs(); reconcileMock();
+  const order = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' })).json;
+  const before = tenantCredits();
+  const wx = await postWechatNotify(buildWechatNotify({ out_trade_no: order.orderNo, transaction_id: 'WX_CROSS_CHANNEL', trade_state: 'SUCCESS', amount: { total: 8880 } }));
+  assert.equal(wx.status, 409);
+  q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by)
+    VALUES('R_OFFLINE_BOUND',?,?,?,?,?,'待支付',?)`, tenantId, pkgId, '线下包', 88.8, 9880, bossId);
+  assert.throws(() => settlePaidOrder({ orderNo: 'R_OFFLINE_BOUND', channel: 'alipay', channelName: '支付宝', tradeNo: 'ALI_OFFLINE', paidFen: 8880 }), /通道/);
+  assert.equal(tenantCredits(), before);
+  const fields = { out_trade_no: order.orderNo, total_amount: '88.80', trade_no: 'ALI_BOUND_PAYMENT' };
+  const results = await Promise.all(Array.from({ length: 8 }, () => postAlipayNotify(buildAlipayNotify(fields))));
+  assert.ok(results.every(result => result.status === 200));
+  assert.equal(tenantCredits(), before + 9880);
+  assert.equal(orderLogCount(order.orderNo), 1);
+  const changed = await postAlipayNotify(buildAlipayNotify({ ...fields, trade_no: 'ALI_DIFFERENT_PAYMENT' }));
+  assert.equal(changed.status, 409);
+  const order2 = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' })).json;
+  const reused = await postAlipayNotify(buildAlipayNotify({ ...fields, out_trade_no: order2.orderNo }));
+  assert.equal(reused.status, 409);
+  assert.equal(orderLogCount(order2.orderNo), 0);
+  assert.equal(tenantCredits(), before + 9880);
+});
+
+test('线上与线下都在创建订单前拒绝非分币价格及非整数积分，不调用网关', async () => {
+  const price = q.get('SELECT price_yuan FROM recharge_packages WHERE id=?', pkgId).price_yuan;
+  const credits = q.get('SELECT total_credits FROM recharge_packages WHERE id=?', pkgId).total_credits;
+  let calls = 0; _setHttpCall(async () => { calls += 1; throw new Error('不得请求支付'); });
+  const count = q.get('SELECT COUNT(*) n FROM recharge_orders').n;
+  try {
+    for (const online of [true, false]) {
+      if (online) setBothChannelEnvs();
+      else { delete process.env.WXPAY_MCHID; delete process.env.ALIPAY_APPID; }
+      for (const field of ['price_yuan', 'total_credits']) {
+        q.run(`UPDATE recharge_packages SET ${field}=? WHERE id=?`, field === 'price_yuan' ? 88.801 : 9880.1, pkgId);
+        const result = await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'wechat' });
+        assert.equal(result.status, 400);
+        q.run('UPDATE recharge_packages SET price_yuan=?,total_credits=? WHERE id=?', price, credits, pkgId);
+      }
+    }
+    assert.equal(calls, 0);
+    assert.equal(q.get('SELECT COUNT(*) n FROM recharge_orders').n, count);
+  } finally { q.run('UPDATE recharge_packages SET price_yuan=?,total_credits=? WHERE id=?', price, credits, pkgId); setBothChannelEnvs(); reconcileMock(); }
+});
+
+test('新订单冻结套餐：支付前改价/改种类/赠分不改变购买权益，赠分独立可对账', async () => {
+  setBothChannelEnvs(); reconcileMock();
+  const order = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' })).json;
+  const frozen = q.get('SELECT * FROM recharge_orders WHERE id=?', order.id);
+  assert.equal(JSON.parse(frozen.package_snapshot_json).base_credits, 8880);
+  const before = tenantCredits();
+  q.run(`UPDATE recharge_packages SET name='后改套餐',kind='plan',price_yuan=999,bonus_credits=99999,total_credits=0,valid_days=365 WHERE id=?`, pkgId);
+  try {
+    const paid = await postAlipayNotify(buildAlipayNotify({ out_trade_no: order.orderNo, trade_no: 'ALI_FROZEN_PACKAGE', total_amount: '88.80' }));
+    assert.equal(paid.status, 200);
+    assert.equal(orderWithSeatMetadata(frozen).kind, 'credits');
+    assert.equal(tenantCredits(), before + 9880);
+    const purchased = q.get('SELECT kind,credits FROM credit_logs WHERE tenant_id=? AND note=?', tenantId, `订单 ${order.orderNo}`);
+    const gift = q.get('SELECT kind,credits FROM credit_logs WHERE tenant_id=? AND note=?', tenantId, `订单 ${order.orderNo}（已列明赠送积分）`);
+    assert.equal(purchased.kind, 'recharge'); assert.equal(purchased.credits, -8880);
+    assert.equal(gift.kind, 'bonus'); assert.equal(gift.credits, -1000);
+    assert.equal(q.get('SELECT plan_code FROM tenants WHERE id=?', tenantId).plan_code, null);
+    assert.equal(q.get('SELECT package_snapshot_json FROM recharge_orders WHERE id=?', order.id).package_snapshot_json, frozen.package_snapshot_json);
+  } finally {
+    q.run(`UPDATE recharge_packages SET name='标准包88.8',kind='credits',price_yuan=88.8,bonus_credits=1000,total_credits=9880,valid_days=NULL WHERE id=?`, pkgId);
+  }
+});
+
+test('损坏的新订单快照不得退回读取现价，余额与支付状态都保持原样', async () => {
+  setBothChannelEnvs(); reconcileMock();
+  const order = (await postJson('/api/recharge/orders', { packageId: pkgId, channel: 'alipay' })).json;
+  const before = tenantCredits();
+  q.run('UPDATE recharge_orders SET package_snapshot_json=? WHERE id=?', '{broken', order.id);
+  const paid = await postAlipayNotify(buildAlipayNotify({ out_trade_no: order.orderNo, trade_no: 'ALI_BAD_SNAPSHOT', total_amount: '88.80' }));
+  assert.equal(paid.status, 409);
+  assert.equal(tenantCredits(), before);
+  assert.equal(q.get('SELECT status FROM recharge_orders WHERE id=?', order.id).status, '待支付');
+  assert.equal(orderLogCount(order.orderNo), 0);
 });

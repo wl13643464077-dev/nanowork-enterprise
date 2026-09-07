@@ -461,23 +461,15 @@ test("station9等待指标时UI只提供真实数据回传，不提供普通审�
   assert.match(types, /'awaiting_metrics'/u);
 });
 
-test("内容仓右侧待审队列可发现流水线并深链聚焦对应任务", () => {
+test("流水线历史统一在任务中心，内容仓保留聚焦深链和按需团队入口", () => {
   const factory = read("web/src/pages/ContentFactory.tsx");
-  assert.match(
-    factory,
-    /api\s*\.get\('\/content\/pipelines\/pending-reviews'\)/u,
-  );
-  assert.match(factory, /pipelinePendingReviews\.map\(review =>/u);
-  assert.match(factory, /data-pipeline-review-id=\{review\.pipelineId\}/u);
-  assert.match(
-    factory,
-    /流水线 #\{review\.pipelineId\} · 工位\{review\.stationIdx\}·\{review\.stationName\}/u,
-  );
-  assert.match(factory, /创建人：\{review\.creator\?\.name/u);
-  assert.match(factory, /边界：/u);
-  assert.match(factory, /review\.canReview \? '可审阅' : '只可查看'/u);
+  const task = read("web/src/pages/TaskCenter.tsx");
+  assert.doesNotMatch(factory, /pipelinePendingReviews|pending-reviews/u);
+  assert.match(factory, /全部历史 · 任务中心/u);
   assert.match(factory, /initialPipelineId=\{pipelineFocusId\}/u);
   assert.match(factory, /searchParams\.get\('pipelineId'\)/u);
+  assert.match(task, /detail\.pipeline\.pipelineDeepLink/u);
+  assert.match(task, /前往重试失败工位/u);
 });
 
 test("pipeline UI exposes saved station artifact preview/download without injecting HTML", () => {
@@ -786,7 +778,10 @@ test("老板可切换简洁/标准/专业三档视图，简洁档只保留交付
   );
   assert.match(workbench, /viewMode === 'pro' && primaryArtifact/u);
   assert.match(workbench, /\{providerAssets\.length > 0 && \(/u);
-  assert.doesNotMatch(workbench, /viewMode === 'pro' && providerAssets\.length > 0/u);
+  assert.doesNotMatch(
+    workbench,
+    /viewMode === 'pro' && providerAssets\.length > 0/u,
+  );
   assert.match(workbench, /BOSS_OPEN_STATIONS = new Set\(\[4, 5, 6, 8, 9\]\)/u);
   assert.match(styles, /\.cpw-view-switch/u);
   assert.match(styles, /\.cpw-boss-gallery-grid/u);

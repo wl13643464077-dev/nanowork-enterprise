@@ -19,13 +19,13 @@ process.env.YUNWU_API_KEY = 'test-only-never-sent';
 process.env.YUNWU_BASE_URL = 'https://offline.invalid/v1';
 
 const originalFetch = global.fetch;
-const { initSchema, migrateV2, db, q, runWithTenant } = await import('../src/db.js');
+const { initSchema, migrateV2, db, q, runWithTenant, setConfig, getConfig } = await import('../src/db.js');
 const {
   embedDoc,
   recoverStaleEmbeddingHolds,
 } = await import('../src/engines/rag.js');
 const { acquireBackgroundAiLease } = await import('../src/ai-limits.js');
-const { holdCredits, releaseHold } = await import('../src/engines/credits.js');
+const { holdCredits, releaseHold, getSupplierExpense } = await import('../src/engines/credits.js');
 
 initSchema();
 migrateV2();
@@ -134,6 +134,9 @@ test('供应商首调用失败立即停止剩余分块并全额释放预授权',
   assert.equal(completed.attemptedCalls, 1);
   assert.equal(completed.persistedCalls, 0);
   assert.equal(completed.billing.state, 'released');
+  const latestHold = q.get("SELECT id FROM credit_holds WHERE tenant_id=1 AND ref_type='kb_embedding' ORDER BY id DESC LIMIT 1");
+  assert.ok(getSupplierExpense(latestHold.id, 1)?.refundedAt);
+  assert.equal(getSupplierExpense(latestHold.id, 1)?.costYuan, null);
   assert.equal(completed.billing.chargedCredits, 0);
   assert.equal(providerCalls, 1);
   assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before);
@@ -172,8 +175,8 @@ test('重启恢复只处理足够陈旧的 hold：无产物全退，有产物按
     const docId = addDoc(title, `${title}正文`);
     if (withOutput) q.run('UPDATE kb_docs SET embedding=? WHERE id=?', JSON.stringify([0.1, 0.2]), docId);
     const jobId = Number(db.prepare(`INSERT INTO kb_embedding_jobs(
-      tenant_id,doc_id,status,planned_calls,credits_per_call,persisted_calls
-    ) VALUES(1,?,'running',4,1,?)`).run(docId, persistedCalls).lastInsertRowid);
+      tenant_id,doc_id,status,planned_calls,credits_per_call,persisted_calls,attempted_calls
+    ) VALUES(1,?,'running',4,1,?,?)`).run(docId, persistedCalls, persistedCalls).lastInsertRowid);
     const hold = runWithTenant(1, () => holdCredits({
       tenantId: 1,
       userId: user.lastInsertRowid,
@@ -224,6 +227,94 @@ test('重启恢复只处理足够陈旧的 hold：无产物全退，有产物按
 
   runWithTenant(1, () => releaseHold(recent.hold, '测试清理近期任务占扣'));
   q.run('UPDATE tenants SET credits=? WHERE id=1', before - 1);
+});
+
+test('过期向量任务退款后迟到响应不得写回向量或再次扣费', async () => {
+  let resume, started;
+  const entered = new Promise(resolve => { started = resolve; });
+  global.fetch = async () => {
+    started(); await new Promise(resolve => { resume = resolve; });
+    return {ok:true,json:async()=>({data:[{embedding:[1,2]}]})};
+  };
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const id = addDoc('迟到向量', '已退款的迟到向量不能覆盖');
+  const queued = runWithTenant(1, () => embedDoc(id, '迟到向量', '已退款的迟到向量不能覆盖', {userId:user.lastInsertRowid}));
+  await entered;
+  const hold = q.get("SELECT * FROM credit_holds WHERE tenant_id=1 AND ref_type='kb_embedding' ORDER BY id DESC LIMIT 1");
+  q.run("UPDATE credit_holds SET created_at=datetime('now','localtime','-30 minutes') WHERE id=?", hold.id);
+  const report = recoverStaleEmbeddingHolds({staleMinutes:5});
+  assert.equal(report.find(item=>item.holdId===hold.id)?.action,'released');
+  assert.ok(getSupplierExpense(hold.id,1)?.refundedAt);
+  resume();
+  const completed = await queued.completion;
+  assert.equal(completed.superseded,true);
+  assert.equal(q.get('SELECT embedding FROM kb_docs WHERE id=?',id).embedding,null);
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,before);
+  recoverStaleEmbeddingHolds({staleMinutes:5});
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,before);
+});
+
+test('向量真实回执持久化并按供应商成本结算，元数据不进入向量或公开回执', async () => {
+  const oldConfig = getConfig('supplier_cost_openlux', null);
+  const oldBase = process.env.YUNWU_BASE_URL;
+  const oldCredits = process.env.BACKGROUND_EMBED_CREDITS_PER_CALL;
+  // 2026-09-06 起按上游钱包实际扣费计价：quota ÷ quota_per_unit 得美元，再按 /api/status 展示汇率换算人民币。
+  setConfig('supplier_cost_openlux', {enabled:true,basis:'upstream_debit'});
+  process.env.YUNWU_BASE_URL='https://api.openlux.ai/v1';
+  process.env.BACKGROUND_EMBED_CREDITS_PER_CALL='10';
+  let embeddingCalls=0,receiptCalls=0;
+  global.fetch=async url => {
+    if (new URL(url).pathname === '/v1/embeddings') {
+      embeddingCalls++;
+      return Response.json({data:[{embedding:[0.4,0.8]}],usage:{prompt_tokens:29}}, {headers:{'x-request-id':'rag-known-cost'}});
+    }
+    if (new URL(url).pathname === '/api/status') return Response.json({success:true,data:{quota_per_unit:500000,usd_exchange_rate:6.4,currency_type:'USD'}});
+    assert.equal(new URL(url).pathname,'/api/log/token'); receiptCalls++;
+    return Response.json({success:true,data:[{model_name:'text-embedding-3-small',quota:1000,type:2,other:{request_id:'rag-known-cost'}}]});
+  };
+  try {
+    const id=addDoc('真实计费证据','后台向量真实费用');
+    const before=q.get('SELECT credits FROM tenants WHERE id=1').credits;
+    const queued=runWithTenant(1,()=>embedDoc(id,'真实计费证据','后台向量真实费用',{userId:user.lastInsertRowid}));
+    const result=await queued.completion;
+    assert.equal(result.billing.state,'settled',JSON.stringify(result));
+    assert.equal(result.billing.chargedCredits,3);
+    assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,before-3);
+    assert.equal(embeddingCalls,1); assert.equal(receiptCalls,1);
+    const job=q.get('SELECT * FROM kb_embedding_jobs WHERE doc_id=? ORDER BY id DESC',id);
+    const evidence=JSON.parse(job.billing_evidence_json);
+    assert.equal(evidence[0].supplierCosts[0].costSource.requestId,'rag-known-cost');
+    assert.equal(evidence[0].providerUsage.inputTokens,29);
+    assert.equal(q.get('SELECT embedding FROM kb_docs WHERE id=?',id).embedding,'[0.4,0.8]');
+    assert.doesNotMatch(JSON.stringify(result),/supplierCosts|providerUsage|requestId/);
+    assert.equal(getSupplierExpense(job.hold_id,1).status,'known');
+    assert.equal(getSupplierExpense(job.hold_id,1).costYuan,0.0128);
+  } finally {setConfig('supplier_cost_openlux',oldConfig);process.env.YUNWU_BASE_URL=oldBase;process.env.BACKGROUND_EMBED_CREDITS_PER_CALL=oldCredits;}
+});
+
+test('向量落库失败保留真实供应商费用但全退积分，不把已调用伪装为零成本', async () => {
+  const oldConfig=getConfig('supplier_cost_openlux',null), oldBase=process.env.YUNWU_BASE_URL;
+  setConfig('supplier_cost_openlux',{enabled:true,basis:'upstream_debit'});
+  process.env.YUNWU_BASE_URL='https://api.openlux.ai/v1';
+  global.fetch=async url => new URL(url).pathname === '/v1/embeddings'
+    ? Response.json({data:[{embedding:[0.9]}],usage:{prompt_tokens:17}},{headers:{'x-request-id':'rag-failed-save'}})
+    : new URL(url).pathname === '/api/status'
+      ? Response.json({success:true,data:{quota_per_unit:500000,usd_exchange_rate:6.4,currency_type:'USD'}})
+      : Response.json({success:true,data:[{model_name:'text-embedding-3-small',quota:1000,type:2,other:{request_id:'rag-failed-save'}}]});
+  const id=addDoc('落库失败费用','本次落库故障');
+  db.exec(`CREATE TEMP TRIGGER rag_vector_save_failure BEFORE UPDATE OF embedding ON kb_docs WHEN NEW.id=${id} BEGIN SELECT RAISE(ABORT,'isolated persistence failure'); END`);
+  try {
+    const before=q.get('SELECT credits FROM tenants WHERE id=1').credits;
+    const queued=runWithTenant(1,()=>embedDoc(id,'落库失败费用','本次落库故障',{userId:user.lastInsertRowid}));
+    const result=await queued.completion;
+    assert.equal(result.billing.state,'released',JSON.stringify(result));
+    assert.equal(result.persistedCalls,0);
+    assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,before);
+    const job=q.get('SELECT * FROM kb_embedding_jobs WHERE doc_id=? ORDER BY id DESC',id);
+    const expense=getSupplierExpense(job.hold_id,1);
+    assert.equal(expense.status,'known'); assert.equal(expense.costYuan,0.0128); assert.ok(expense.refundedAt);
+    assert.equal(q.get('SELECT embedding FROM kb_docs WHERE id=?',id).embedding,null);
+  } finally {db.exec('DROP TRIGGER rag_vector_save_failure');setConfig('supplier_cost_openlux',oldConfig);process.env.YUNWU_BASE_URL=oldBase;}
 });
 
 test('余额不足时在入队和供应商调用前明确拒绝', () => {

@@ -12,6 +12,7 @@ import {
 } from '../src/engines/video-composer.js';
 
 const tempRoots = [];
+process.env.NANOWORK_DB = ':memory:';
 
 async function tempRoot(prefix) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -99,8 +100,16 @@ test('有声合成预检验证字幕/音量滤镜和编码器，能力缺失在�
   const runner = async (_cmd, args) => ({ stdout: args.includes('-filters') ? filters : 'libx264 encoder\naac encoder\nlibmp3lame encoder' });
   const ready = await assertAiSalesVoicedComposerReady({ ...options, runner });
   assert.equal(ready.ffmpegPath, '/mock/ffmpeg');
-  await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async () => ({ stdout: 'atempo A->A' }) }), /ass/u);
+  await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async () => ({ stdout: 'atempo A->A' }) }), /volumedetect/u);
   await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async (_cmd, args) => ({ stdout: args.includes('-filters') ? filters : 'libx264 encoder\naac encoder' }) }), /libmp3lame/u);
+  const raster = await assertAiSalesVoicedComposerReady({
+    ...options,
+    runner: async (_cmd, args) => ({ stdout: args.includes('-filters')
+      ? filters.replace('ass V->V', 'overlay VV->V')
+      : 'libx264 encoder\naac encoder\nlibmp3lame encoder' }),
+  });
+  assert.equal(raster.subtitleRenderer, 'raster_png');
+  await assert.rejects(assertAiSalesVoicedComposerReady({ ...options, runner: async (_cmd, args) => ({ stdout: args.includes('-filters') ? filters.replace('ass V->V', '') : 'libx264 encoder\naac encoder\nlibmp3lame encoder' }) }), /ass或overlay/u);
 });
 
 test('有声模式拒绝缺失音轨与未提供的字幕，不能用静音垫轨过关', async () => {

@@ -98,19 +98,39 @@ export function ensurePrivateArtifacts(paths) {
 
 // A caller must pass the exact owned application data directory, never a custom
 // database's parent or a system directory. No recursive enumeration is performed.
-export function ensurePrivateDataDirectory(target) {
+export function ensurePrivateDataDirectory(target, { trustedDirectory = null } = {}) {
   const absolute = path.resolve(target);
   if (absolute === path.parse(absolute).root) throw new Error('Refusing filesystem root ACL change');
-  if (fs.existsSync(absolute)) {
-    const stat = fs.lstatSync(absolute);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Application data directory must not be an alias');
+  let ownedDirectory = absolute;
+  let stat;
+  try { stat = fs.lstatSync(absolute); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (trustedDirectory != null && String(trustedDirectory).trim()) {
+    const configured = String(trustedDirectory).trim();
+    if (!path.isAbsolute(configured)) throw new Error('NANOWORK_DATA_DIR must be an absolute directory');
+    const anchor = path.resolve(configured);
+    if (anchor === path.parse(anchor).root) throw new Error('Refusing filesystem root data trust anchor');
+    const anchorStat = fs.lstatSync(anchor);
+    if (!anchorStat.isDirectory() || anchorStat.isSymbolicLink() || fs.realpathSync(anchor) !== anchor) {
+      throw new Error('NANOWORK_DATA_DIR must be a real unaliased directory');
+    }
+    // Only the deployment's explicit server/data -> owned data link is allowed.
+    // Do not accept a chain of links, an arbitrary alias, or a different target.
+    const directTarget = stat?.isSymbolicLink()
+      ? path.resolve(path.dirname(absolute), fs.readlinkSync(absolute)) : absolute;
+    if (directTarget !== anchor || fs.realpathSync(absolute) !== anchor) {
+      throw new Error('Application data directory does not match NANOWORK_DATA_DIR');
+    }
+    ownedDirectory = anchor;
+  } else if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+    throw new Error('Application data directory must not be an alias; configure NANOWORK_DATA_DIR for the owned deployment directory');
   }
   if (process.platform === 'win32') {
-    if (!windowsAcl([absolute], 'ensure-directory')[0].private) throw new Error('Application data directory is not private');
+    if (!windowsAcl([ownedDirectory], 'ensure-directory')[0].private) throw new Error('Application data directory is not private');
   } else {
-    if (!fs.existsSync(absolute)) fs.mkdirSync(absolute, { mode: 0o700 });
-    fs.chmodSync(absolute, 0o700);
+    if (!fs.existsSync(ownedDirectory)) fs.mkdirSync(ownedDirectory, { mode: 0o700 });
+    fs.chmodSync(ownedDirectory, 0o700);
   }
+  return fs.realpathSync(ownedDirectory);
 }
 
 export function createPrivateArtifact(target) {

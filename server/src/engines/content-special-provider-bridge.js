@@ -4,6 +4,7 @@ import {
   estimateMaxCredits,
   holdCredits,
   releaseHold,
+  refundHold,
   settleHold,
 } from "./credits.js";
 import { contentPaidMediaAuthorizationReservation } from "./content-paid-media-authorization.js";
@@ -833,7 +834,7 @@ function publicBridgeFailure(error, kind, hold) {
 /**
  * 构造可直接注入 content-special-handler-runtime 的 image/material providers。
  * 每次 provider 调用都单独执行：预授权 -> 供应商 -> 业务产物持久化 -> 结算。
- * 只有能证明供应商尚未调用的失败才释放预授权；外调开始后的失败保留 hold 待对账。
+ * 最终无成果时退回用户积分；供应商费用单独记为平台成本，不触发自动重试。
  */
 export function createContentSpecialProviderBridge(
   input = {},
@@ -878,6 +879,8 @@ export function createContentSpecialProviderBridge(
   const holdFn = dependencies.holdCreditsFn || holdCredits;
   const settleFn = dependencies.settleHoldFn || settleHold;
   const releaseFn = dependencies.releaseHoldFn || releaseHold;
+  const refundFn = dependencies.refundHoldFn || refundHold;
+  const hasProviderDeliveryFn = dependencies.hasProviderDeliveryFn;
   const estimateFn = dependencies.estimateMaxCreditsFn || estimateMaxCredits;
   const deliveryFn = dependencies.executeHeldDeliveryFn || executeHeldDelivery;
   const now = dependencies.now || (() => new Date());
@@ -895,6 +898,7 @@ export function createContentSpecialProviderBridge(
     holdFn,
     settleFn,
     releaseFn,
+    refundFn,
     estimateFn,
     deliveryFn,
     now,
@@ -1114,6 +1118,8 @@ export function createContentSpecialProviderBridge(
     let hold;
     let claimedByThisInvocation = false;
     let providerInvocationStarted = false;
+    let persistenceStarted = false;
+    let persistedReceipt = null;
     let ownedIdentity = identity;
 
     const replayPersistedAttempt = (replay) => {
@@ -1256,7 +1262,7 @@ export function createContentSpecialProviderBridge(
         refId: identity.refId,
         note:
           `内容员工#${employeeIdx} run#${runId} ${kind}供应商调用前独立预授权；` +
-          `attempt=${attemptId}；仅外调前失败可释放，外调后未交付保留待对账。`,
+          `attempt=${attemptId}；最终无成果退回用户积分，供应商成本由平台核对承担。`,
       });
       if (typeof associateProviderHoldFn === "function") {
         await associateProviderHoldFn({
@@ -1267,9 +1273,16 @@ export function createContentSpecialProviderBridge(
       const delivered = await deliveryFn({
         hold,
         externalInvocationStarted: () => providerInvocationStarted,
+        refund: refundFn,
+        hasDeliverable: async () => {
+          if (persistedReceipt?.persisted === true && persistedReceipt?.artifactIds?.length) return true;
+          if (typeof hasProviderDeliveryFn === 'function') return hasProviderDeliveryFn(clone(ownedIdentity));
+          // Hosts without a durable probe must not refund an uncertain persist.
+          return persistenceStarted;
+        },
         generate: async () => {
-          // 该标记必须先于任何供应商函数执行。之后若进程失去确定性，
-          // 只能保留hold进入待对账，绝不能凭异常类型自动退款。
+          // 该标记必须先于任何供应商函数执行。最终无成果可退用户积分，
+          // 但不能据此推定供应商未收费，也不能自动重发生成。
           if (
             kind === "image" ||
             materialSearchExecutionClass !== "local_zero_cost"
@@ -1384,6 +1397,7 @@ export function createContentSpecialProviderBridge(
           };
         },
         persist: async (output) => {
+          persistenceStarted = true;
           const receipt = await persistProviderOutputFn({
             tenantId,
             userId,
@@ -1397,6 +1411,7 @@ export function createContentSpecialProviderBridge(
             attempt: clone(ownedIdentity),
             hold: clone(hold),
           });
+          persistedReceipt = receipt;
           assertPersistedDelivery(receipt);
           return receipt;
         },
@@ -1511,6 +1526,11 @@ export function createContentSpecialProviderBridge(
       };
     } catch (error) {
       let billing = error?.billing;
+      if (billing?.state === 'released' && providerInvocationStarted) {
+        // Refunding this failed attempt does not authorize another paid call.
+        billing.automaticRetryAllowed = false;
+        billing.supplierCostStatus = 'pending';
+      }
       if (!billing && hold && !providerInvocationStarted) {
         // hold已经创建但尚未进入任何外部provider函数时，退款依据是明确的；
         // 一旦provider函数开始，哪怕本地拿到异常也不能在缺少交付边界证据时猜测退款。

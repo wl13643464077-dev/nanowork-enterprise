@@ -15,6 +15,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, setAuth } from '../api/client';
 import { SoundToggle, useLoginSound } from '../components/AuthEffects';
+import ClientDownloads from '../components/ClientDownloads';
 import '../components/AuthShell.css';
 import './Login.css';
 
@@ -53,7 +54,7 @@ const FEATURES = [
     title: '内容生产仓 · 10 工位流水线',
     points: [
       '趋势选题、爆款拆解、撰稿、配图、封面、分发、复盘一条线',
-      '10 个 Paihuo 内容工位 + 1 个 AI 带货扩展岗，与 61 位餐饮员工合计 72 位',
+      '10 个 Paihuo 内容工位 + AI 带货员 + AI 小红书种草员，与 61 位餐饮员工合计 73 位',
       '对标外包 300–1500 元/篇的内容，数字员工几毛钱一次',
       '普通内部产出通过质量与账务门禁后自动采用；外发、付费和不可逆动作仍需人工确认',
     ],
@@ -283,6 +284,11 @@ export default function Login() {
       else localStorage.removeItem(REMEMBER_KEY);
       setAuth(data.token, data.user);
       sound.success();
+      if (data.user.accountType === 'tester') {
+        message.success(`欢迎，${data.user.name}`);
+        nav('/tester');
+        return;
+      }
       if (data.user.role === 'platform_super') {
         message.success('欢迎，平台管理员');
         nav('/platform');
@@ -330,6 +336,7 @@ export default function Login() {
             <a href="#lp-features">产品能力</a>
             <a href="#lp-wall">数字员工</a>
             <a href="#lp-flow">怎么用</a>
+            <a href="#lp-downloads">客户端下载</a>
           </div>
           <button type="button" className="lp-nav-login" id="lp-login-cta" onClick={openLogin}>
             登录
@@ -349,7 +356,7 @@ export default function Login() {
             <h1 className="lp-rise" style={{ animationDelay: '0.15s' }}>
               店里的活，交给
               <br />
-              <em>72 位数字员工</em>去干
+              <em>73 位数字员工</em>去干
             </h1>
             <p className="lp-hero-sub lp-rise" style={{ animationDelay: '0.28s' }}>
               不只是 AI 参谋——日清打卡、排班考勤、库存沽清、差评回复、生日关怀、外卖日报，
@@ -359,7 +366,7 @@ export default function Login() {
               <button type="button" className="lp-cta-main" onClick={openLogin}>
                 进入经营工作台
               </button>
-              <button type="button" className="lp-cta-ghost" onClick={() => nav('/register')}>
+              <button type="button" className="lp-cta-ghost" onClick={() => nav('/register?mode=apply')}>
                 申请企业开通
               </button>
             </div>
@@ -368,6 +375,7 @@ export default function Login() {
               <span>关键动作可追溯</span>
               <span>AI 外发需人工确认</span>
             </div>
+            <ClientDownloads />
           </div>
           <div className="lp-hero-visual lp-rise" style={{ animationDelay: '0.3s' }}>
             <img src="/landing/hero.jpg" alt="纳米Work 数字员工在餐饮门店中协助经营" onError={hideBroken} />
@@ -445,7 +453,7 @@ export default function Login() {
       <section className="lp-section lp-reveal" id="lp-wall" aria-label="数字员工">
         <div className="lp-section-head">
           <h2>见见你的新员工</h2>
-          <p>72 位数字员工各有姓名、岗位手册和技能库——不是一个聊天框套 72 个名字。</p>
+          <p>73 位数字员工各有岗位手册和技能库，覆盖餐饮经营、日常内容、带货视频和小红书种草。</p>
         </div>
         <div className="lp-wall-marquee" aria-hidden="false">
           <div className="lp-wall-track">
@@ -545,9 +553,15 @@ export default function Login() {
                 </Button>
               </Form>
               <div className="au-min-foot">
-                <span>还没有企业账号？</span>
+                <span>还没有账号？</span>
                 <button type="button" className="au-link" onClick={() => nav('/register')}>
+                  邀请码注册
+                </button>
+                <button type="button" className="au-link" onClick={() => nav('/register?mode=apply')}>
                   申请开通
+                </button>
+                <button type="button" className="au-link" onClick={() => nav('/tester/apply')}>
+                  测试员申请
                 </button>
               </div>
               <div className="au-min-trust">

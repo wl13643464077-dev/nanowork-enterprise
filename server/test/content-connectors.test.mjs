@@ -1,19 +1,26 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import {
   CONTENT_CREW,
+  CONTENT_EMPLOYEE_ROSTER,
   CONTENT_CREW_CATALOG_PATH,
   publicContentCrew,
   validateContentCrewCatalog,
 } from '../src/catalog/content-crew.js';
-import {
+// 只初始化本进程的内存配置，连接器编译仍不得调用模型或计费。
+process.env.NANOWORK_DB = ':memory:';
+const { db, initSchema } = await import('../src/db.js');
+initSchema();
+after(() => db.close());
+
+const {
   CONTENT_CONNECTOR_REGISTRY,
   connectorDescriptor,
   executeContentConnector,
   prepareContentConnectorEmployeeExecution,
-} from '../src/engines/content-connectors.js';
+} = await import('../src/engines/content-connectors.js');
 
 const FORMER_CATALOG_ONLY_KINDS = [
   'trend_research',
@@ -34,10 +41,7 @@ const catalogConnectors = CONTENT_CREW.employees.flatMap(employee => (
   }))
 ));
 
-const rosterConnectors = [
-  ...CONTENT_CREW.employees,
-  ...(Array.isArray(CONTENT_CREW.nativeEmployees) ? CONTENT_CREW.nativeEmployees : []),
-].flatMap(employee => (
+const rosterConnectors = CONTENT_EMPLOYEE_ROSTER.flatMap(employee => (
   employee.connectorPolicy.connectors.map(connector => ({
     ...connector,
     employeeIdx: employee.idx,
@@ -88,15 +92,16 @@ test('历史8个catalog_only连接器全部归零且逐项进入明确运行状�
   );
 });
 
-test('原13项Paihuo连接器保持不变，组合岗位与15项运行登记严格一致', () => {
+test('原13项Paihuo连接器保持不变，原生带货与种草组合成16项运行登记', () => {
   const publicConnectors = publicContentCrew().employees.flatMap(employee => (
     employee.connectorPolicy.connectors
   ));
   assert.equal(catalogConnectors.length, 13);
-  assert.equal(rosterConnectors.length, 15);
-  assert.equal(publicConnectors.length, 15);
-  assert.equal(CONTENT_CONNECTOR_REGISTRY.length, 15);
-  assert.equal(new Set(CONTENT_CONNECTOR_REGISTRY.map(item => item.kind)).size, 15);
+  assert.equal(rosterConnectors.length, 16);
+  assert.equal(publicConnectors.length, 16);
+  assert.equal(CONTENT_CONNECTOR_REGISTRY.length, 16);
+  assert.equal(new Set(CONTENT_CONNECTOR_REGISTRY.map(item => item.kind)).size, 16);
+  assert.equal(connectorDescriptor('xhs_note_generation').employeeIdx, 11);
   for (const connector of rosterConnectors) {
     const descriptor = connectorDescriptor(connector.kind);
     assert.ok(descriptor, connector.kind);

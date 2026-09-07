@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -20,7 +21,7 @@ import {
 import { ownedFile, updateFileExtraction, isImageExt } from '../engines/filehub.js';
 import { sheetsFromBuffer } from '../engines/data-intake-workbook.js';
 import * as yunwu from '../engines/yunwu.js';
-import {
+import { refundHold,
   balanceOfTenant, estimateCallCredits, holdCredits, precheck, releaseHold, settleHold,
 } from '../engines/credits.js';
 import { executeHeldDelivery, withImmediateTransaction } from '../engines/two-phase-delivery.js';
@@ -1839,6 +1840,8 @@ async function recognizeVisionFile(file, kind, user, { force = false } = {}) {
   });
   const delivered = await executeHeldDelivery({
     hold,
+    refund: refundHold,
+    hasDeliverable: () => hasStoredAiDelivery(hold),
     generate: () => yunwu.chat({
       model,
       system: visionSystemPrompt(kind),

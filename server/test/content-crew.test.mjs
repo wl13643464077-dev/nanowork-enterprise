@@ -77,6 +77,8 @@ const {
 } = await import('../src/catalog/content-crew.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
 const outputRoutes = (await import('../src/routes/employee-outputs.js')).default;
+const workbenchRoutes = (await import('../src/routes/content-employee-workbench.js')).default;
+const { canonicalContentEmployeeProfileFor } = await import('../src/engines/canonical-employee-profile.js');
 
 initSchema();
 migrateV2();
@@ -186,6 +188,7 @@ function appFor(user) {
   app.use(express.json({ limit: '2mb' }));
   app.use((req, _res, next) => runWithTenant(user.tenant_id, () => { req.user = user; next(); }));
   app.use('/content', contentRoutes);
+  app.use('/content-workbench', workbenchRoutes);
   app.use('/analysis/employee-outputs', outputRoutes);
   app.use((error, _req, res, _next) => res.status(error.status || 500).json({ error: error.message }));
   return app;
@@ -399,7 +402,7 @@ test('GET /content/crew只把契约有效且业务可用的成品计入当前账
       assert.equal(typeof data.schemaVersion, 'string');
       assert.ok(data.source);
       assert.ok(data.qualityGate);
-      assert.match(data.executionBoundary, /不表示十个工位/);
+      assert.match(data.executionBoundary, /独立入口/);
       assert.equal(data.employees.find(employee => employee.idx === 3).runtime.outputs, 2);
       assert.equal(data.employees.find(employee => employee.idx === 5).runtime.mediaJobs, 1);
       assert.equal(data.employees.find(employee => employee.idx === 0).skill, CONTENT_EMPLOYEES[0].skill);
@@ -440,6 +443,82 @@ test('GET /content/crew只把契约有效且业务可用的成品计入当前账
     runWithTenant(1, () => q.run('DELETE FROM contents WHERE id=?', currentContentId));
     runWithTenant(1, () => q.run('DELETE FROM contents WHERE id=?', templateDraftId));
     runWithTenant(1, () => q.run('DELETE FROM media_jobs WHERE id=?', pendingReviewMediaId));
+  }
+});
+
+test('原生员工卡片技能数包含必需技能和本企业启用技能，刷新与工作台一致且不污染目录缓存', async () => {
+  const cardFor = (crew, idx) => crew.employees.find(employee => employee.idx === idx);
+  const readCrew = async base => {
+    const response = await fetch(`${base}/content/crew`);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const privateMarker = '仅A店内部技能标记-crew-test';
+  const skillsFor = idx => [
+    { id: `content-custom:${idx}:enabled`, title: `${privateMarker}-自定义`, detail: '只使用门店已确认的照片事实', source: '企业资料', enabled: true },
+    { id: `content-learned:${idx}:enabled`, title: `${privateMarker}-进修`, detail: '使用公开官方文档核对创作方法', source: '官方文档', sourceUrl: 'https://example.com/official', verificationStatus: 'controlled_public_source_verified', enabled: true },
+    { id: `content-custom:${idx}:disabled`, title: `${privateMarker}-停用`, detail: '此技能已停用，不应计入数量', source: '企业资料', enabled: false },
+  ];
+  const saveSkills = (tenantId, idx, skills) => runWithTenant(tenantId, () => q.run(`
+    INSERT INTO content_employee_workbench_configs(employee_idx,skills_json,revision)
+    VALUES(?,?,1) ON CONFLICT(tenant_id,employee_idx)
+    DO UPDATE SET skills_json=excluded.skills_json,revision=revision+1`, idx, JSON.stringify(skills)));
+  try {
+    await withServer(bossA, async base => {
+      const crew = await readCrew(base);
+      for (const idx of [10, 11]) assert.equal(cardFor(crew, idx).skillCount, 1);
+      for (let idx = 0; idx < 10; idx += 1) {
+        assert.equal(cardFor(crew, idx).skillCount, canonicalContentEmployeeProfileFor(idx).skills.catalog.length);
+      }
+    });
+    for (const idx of [10, 11]) saveSkills(1, idx, skillsFor(idx));
+    saveSkills(2, 11, [{ id: 'content-custom:11:b', title: 'B店方法', detail: '仅B店使用', enabled: true }]);
+    await withServer(bossA, async base => {
+      const crew = await readCrew(base);
+      for (const idx of [10, 11]) {
+        const card = cardFor(crew, idx);
+        const response = await fetch(`${base}/content-workbench/${idx}`);
+        assert.equal(response.status, 200);
+        const profile = await response.json();
+        assert.equal(card.skillCount, 3);
+        assert.equal(card.skillCount, profile.skillLibrary.summary.enabledCount);
+        assert.equal(card.skillCount, profile.runtime.enabledSkillCount);
+        assert.equal(card.skillCountUnavailable, undefined);
+      }
+    });
+    await withServer(bossB, async base => {
+      const crew = await readCrew(base);
+      assert.equal(cardFor(crew, 10).skillCount, 1);
+      assert.equal(cardFor(crew, 11).skillCount, 2);
+      assert.equal(JSON.stringify(crew).includes(privateMarker), false);
+    });
+    for (const idx of [10, 11]) {
+      const skills = skillsFor(idx);
+      skills[0].enabled = false;
+      saveSkills(1, idx, skills);
+    }
+    await withServer(staffA, async base => {
+      const crew = await readCrew(base);
+      for (const idx of [10, 11]) assert.equal(cardFor(crew, idx).skillCount, 2);
+      assert.equal(JSON.stringify(crew).includes(privateMarker), false);
+    });
+    // 配置异常只回退该员工的基础计数，不使整份目录失效或暴露技能正文。
+    const invalidSkills = skillsFor(10);
+    invalidSkills[1].verificationStatus = 'unverified';
+    saveSkills(1, 10, invalidSkills);
+    await withServer(bossA, async base => {
+      const crew = await readCrew(base);
+      assert.equal(cardFor(crew, 10).skillCount, 1);
+      assert.equal(cardFor(crew, 10).skillCountUnavailable, true);
+      assert.equal(cardFor(crew, 11).skillCount, 2);
+      assert.equal(cardFor(crew, 11).skillCountUnavailable, undefined);
+      assert.equal(JSON.stringify(crew).includes(privateMarker), false);
+      for (let idx = 0; idx < 10; idx += 1) {
+        assert.equal(cardFor(crew, idx).skillCount, canonicalContentEmployeeProfileFor(idx).skills.catalog.length);
+      }
+    });
+  } finally {
+    for (const tenantId of [1, 2]) runWithTenant(tenantId, () => q.run('DELETE FROM content_employee_workbench_configs WHERE employee_idx IN (10,11)'));
   }
 });
 

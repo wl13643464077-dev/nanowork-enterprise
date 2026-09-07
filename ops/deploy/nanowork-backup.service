@@ -1,0 +1,29 @@
+# 本机备份只含 SQLite 数据库与 uploads，沿用 backup.sh 的 14 天保留策略。
+# 不包含 client-downloads（安装包本地原件另存）；未配置异地备份。
+[Unit]
+Description=NanoWork local database and uploads backup
+# 初装尚无 current 时跳过，不启动应用，也不执行备份脚本。
+ConditionPathExists=/opt/nanowork/current/ops/deploy/backup.sh
+ConditionPathExists=/etc/nanowork/server.env
+
+[Service]
+Type=oneshot
+User=nanowork
+Group=nanowork
+Environment=TZ=Asia/Shanghai
+Environment=HOME=/var/lib/nanowork
+Environment=DATA_DIR=/var/lib/nanowork/data
+Environment=BACKUP_ROOT=/var/backups/nanowork
+Environment=ENV_FILE=/etc/nanowork/server.env
+# backup.sh 仅读取 env 文件里的数据库路径，不把 AI 密钥注入进程环境。
+ExecStart=/bin/bash /opt/nanowork/current/ops/deploy/backup.sh daily
+TimeoutStartSec=1h
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nanowork /var/backups/nanowork
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+

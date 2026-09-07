@@ -1,0 +1,86 @@
+.client-downloads {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  scroll-margin-top: 100px;
+}
+
+.client-downloads h2 {
+  margin: 0 0 5px;
+  font-size: 15px;
+  font-weight: 650;
+  color: inherit;
+}
+.client-downloads p {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  opacity: 0.75;
+}
+.client-downloads-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.client-downloads-option {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.client-downloads-option a,
+.client-downloads-option button {
+  min-height: 42px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  text-decoration: none;
+}
+.client-downloads-option a:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.client-downloads-option a:focus-visible,
+.client-downloads-retry:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.client-downloads-option button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.client-downloads-option small {
+  font-size: 11px;
+  opacity: 0.65;
+}
+.client-downloads-retry {
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@media (max-width: 620px) {
+  .client-downloads-links {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .client-downloads-option {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .client-downloads-option a,
+  .client-downloads-option button {
+    justify-content: flex-start;
+  }
+}

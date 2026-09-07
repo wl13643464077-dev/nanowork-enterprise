@@ -15,12 +15,13 @@ Object.assign(process.env, {
   OPENAI_API_KEY: '',
 });
 const { db, q, initSchema, migrateV2, runWithTenant, getConfig, setConfig } = await import('../src/db.js');
-const { createVoicedSalesVideoJob, voicedSalesSettlement } = await import('../src/engines/ai-sales-video-native.js');
+const { createVoicedSalesVideoJob, voicedSalesSettlement, salesVideoPriceQuote } =
+  await import('../src/engines/ai-sales-video-native.js');
 const { createVoicedSalesVideoRecovery } = await import('../src/engines/ai-sales-video-voiced-recovery.js');
 const { createAiSalesVideoAssetPublisher, readAiSalesVideoVoiceAsset } =
   await import('../src/engines/ai-sales-video-provider-assets.js');
 const { countSpeechChars } = await import('../src/engines/ai-sales-video-script.js');
-const { releaseHold, billing } = await import('../src/engines/credits.js');
+const { releaseHold, holdCredits, getSupplierExpense, billing } = await import('../src/engines/credits.js');
 const { augmentMediaJob, default: mediaReviewRoutes } = await import('../src/routes/media-review.js');
 const contentRoutes = (await import('../src/routes/content.js')).default;
 assert.equal(db.prepare('PRAGMA database_list').get().file, '');
@@ -45,12 +46,13 @@ const snap = id => JSON.parse(row(id).snapshot_json);
 const hold = id =>
   q.get("SELECT * FROM credit_holds WHERE tenant_id=? AND ref_type='media_job' AND ref_id=?", tenantId, id);
 const balance = () => q.get('SELECT credits FROM tenants WHERE id=?', tenantId).credits;
-function script() {
+function script(durationSeconds = 30) {
   const a = '今天吃什么？' + '口味可以按自己的喜好来选。'.repeat(4),
     b = '想知道菜品详情吗？' + '口味可以按自己的喜好来选。'.repeat(3) + '选好再下单。到店咨询详情。';
+  const voices = durationSeconds === 15 ? [a + '到店咨询详情。'] : [a, b];
   return {
     hook_3s: '今天吃什么？',
-    shots: [a, b].map((voiceover, i) => ({
+    shots: voices.map((voiceover, i) => ({
       index: i + 1,
       start: i * 15,
       end: (i + 1) * 15,
@@ -62,25 +64,36 @@ function script() {
     })),
     cta: '到店咨询详情。',
     facts_used: [],
-    total_chars: countSpeechChars(a + b),
-    estimated_seconds: 30,
+    total_chars: countSpeechChars(voices.join('')),
+    estimated_seconds: durationSeconds,
     risk_flags: [],
   };
 }
-async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
-  const counts = { text: 0, tts: 0, submit: 0, query: 0, recoverQuery: 0, compose: 0 },
+async function prepared({ failAt = 'query', beforeRun, mutateRuntime, legacy = false, durationSeconds = 30 } = {}) {
+  const counts = {
+      text: 0,
+      tts: 0,
+      submit: 0,
+      query: 0,
+      recoverQuery: 0,
+      compose: 0,
+    },
     fixtureId = crypto.randomUUID();
   const render = async p => {
     counts.compose++;
     assert.equal(p.requireAudio, true);
-    assert.equal(p.voiceTracks.length, 2);
+    if (p.audioMode === 'provider_native') assert.equal(p.voiceTracks, undefined);
+    else assert.equal(p.voiceTracks.length, 2);
     return {
       url: `/uploads/ai-sales-video/${tenantId}/fixture-${fixtureId}.mp4`,
-      durationSeconds: 30,
+      durationSeconds,
       sha256: 'a'.repeat(64),
       audioVerified: true,
+      ...(p.audioMode === 'provider_native'
+        ? { audioSource: 'provider_native', subtitleTiming: 'script_estimated' }
+        : {}),
       subtitlesBurnedIn: true,
-      audioVerification: [0, 15].map(startSeconds => ({
+      audioVerification: Array.from({ length: durationSeconds / 15 }, (_, i) => i * 15).map(startSeconds => ({
         startSeconds,
         durationSeconds: 15,
         peakDb: -20,
@@ -89,7 +102,10 @@ async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
     };
   };
   const runtime = {
-    mediaReady: async () => ({ ffmpegPath: 'local-test-ffmpeg', ffprobePath: 'local-test-ffprobe' }),
+    mediaReady: async () => ({
+      ffmpegPath: 'local-test-ffmpeg',
+      ffprobePath: 'local-test-ffprobe',
+    }),
     prepareImages: async images => images,
     scanText: () => ({ hits: [] }),
     generateFn: async p => {
@@ -98,7 +114,7 @@ async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
         mode: 'api',
         model: p.model,
         usage: { inputTokens: 1000, outputTokens: 450 },
-        text: JSON.stringify(script()),
+        text: JSON.stringify(script(durationSeconds)),
       };
     },
     voiceClient: {
@@ -107,11 +123,17 @@ async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
         return { audioUrl: 'https://synthetic.example.com/audio.mp3' };
       },
     },
-    fetchImpl: async () => new Response(Buffer.from('fixture-audio'), { headers: { 'content-type': 'audio/mpeg' } }),
+    fetchImpl: async () =>
+      new Response(Buffer.from('fixture-audio'), {
+        headers: { 'content-type': 'audio/mpeg' },
+      }),
     runner: async (cmd, args) => {
       if (cmd === 'local-test-ffprobe')
         return {
-          stdout: JSON.stringify({ format: { duration: 15 }, streams: [{ codec_type: 'audio', duration: 15 }] }),
+          stdout: JSON.stringify({
+            format: { duration: 15 },
+            streams: [{ codec_type: 'audio', duration: 15 }],
+          }),
         };
       if (args.includes('volumedetect')) return { stderr: 'max_volume: -20 dB' };
       await fsp.writeFile(args.at(-1), Buffer.from('fitted-audio'));
@@ -130,11 +152,17 @@ async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
     querySegment: async () => {
       counts.query++;
       if (failAt === 'query') throw new Error('synthetic-query-failure');
-      return { status: 'success', url: 'https://synthetic.example.com/video.mp4' };
+      return {
+        status: 'success',
+        url: 'https://synthetic.example.com/video.mp4',
+      };
     },
     recoverQuery: async () => {
       counts.recoverQuery++;
-      return { status: 'success', url: 'https://synthetic.example.com/video.mp4' };
+      return {
+        status: 'success',
+        url: 'https://synthetic.example.com/video.mp4',
+      };
     },
     downloadSegment: async ({ outputDir, index }) => {
       const file = path.join(outputDir, `clip-${index}.mp4`);
@@ -148,33 +176,123 @@ async function prepared({ failAt = 'query', beforeRun, mutateRuntime } = {}) {
   };
   if (mutateRuntime) mutateRuntime(runtime, counts);
   const created = await createVoicedSalesVideoJob({
+    durationSeconds,
     actor,
     brief: '介绍本店菜品，邀请到店咨询',
     references: [{ name: '合成图' }],
     providerImages: ['data:image/png;base64,YWJj'],
-    grounding: { evidence: {}, storeFacts: { facts: [] }, storeFactsPrompt: '', promptContext: '' },
+    grounding: {
+      evidence: {},
+      storeFacts: { facts: [] },
+      storeFactsPrompt: '',
+      promptContext: '',
+    },
     runtime,
   });
   assert.equal(created.response.status, 'processing', created.response.reason);
   if (beforeRun) await beforeRun();
   await created.run();
-  return { id: created.response.jobId, counts, runtime, created };
+  let fixtureJobId = created.response.jobId;
+  if (failAt === 'query' && row(fixtureJobId).status === '失败') {
+    // The modern runner correctly refunds terminal failures. Recovery contracts
+    // below exercise pre-policy, unrefunded history, so create a separate scoped
+    // historical fixture; never reopen or rewrite the refunded task/ledger.
+    const completed = row(fixtureJobId), plan = snap(fixtureJobId), refundedHold = hold(fixtureJobId);
+    assert.ok(getSupplierExpense(refundedHold.id, tenantId).refundedAt);
+    fixtureJobId = Number(q.run(`INSERT INTO media_jobs(tenant_id,user_id,kind,model,prompt,status,snapshot_json)
+      VALUES(?,?,'video',?,?,'失败','{}')`, tenantId, userId, completed.model, completed.prompt).lastInsertRowid);
+    const historicHold = holdCredits({ tenantId, userId, feature: '隔离历史恢复回执', kind: 'video', model: completed.model,
+      credits: plan.priceQuote.maxCredits, refType: 'media_job', refId: fixtureJobId });
+    q.run('UPDATE credit_holds SET pricing_snapshot_json=NULL WHERE tenant_id=? AND id=?', tenantId, historicHold.holdId);
+    plan.billing = { ...plan.billing, holdId: historicHold.holdId, heldCredits: historicHold.credits,
+      state: 'pending_reconciliation', chargedCredits: null, pendingReconciliation: true, releaseSuppressed: true };
+    q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify(plan), tenantId, fixtureJobId);
+    assert.equal(hold(created.response.jobId).settled_credits, 0, '现代任务的退款记录保持原样');
+  }
+  if (legacy) {
+    // Restore the historical external-TTS snapshot shape in the isolated DB.
+    // New production jobs can no longer request this legacy generation mode.
+    assert.equal(failAt, 'query');
+    const id = fixtureJobId,
+      plan = snap(id),
+      original = hold(id);
+    const quote = salesVideoPriceQuote(plan.priceQuote.textModel, {
+      audioMode: 'external_tts', durationSeconds: 30,
+    });
+    delete quote.durationSeconds;
+    delete quote.segmentCount;
+    const { fingerprint: _oldFingerprint, maxCredits: _maxCredits, ...oldPrices } = quote;
+    quote.fingerprint = crypto.createHash('sha256').update(JSON.stringify(oldPrices)).digest('hex');
+    plan.priceQuote = quote;
+    delete plan.durationSeconds;
+    delete plan.segmentCount;
+    delete plan.audioMode;
+    delete plan.subtitleTiming;
+    plan.voiceTracks = [];
+    for (const index of [1, 2]) {
+      const asset = await runtime.publishAsset({
+        bytes: Buffer.from('fitted-audio'),
+        mime: 'audio/mpeg',
+        purpose: 'ai-sales-video-audio',
+        label: `旧配音${index}`,
+      });
+      plan.voiceTracks.push({
+        index,
+        fileId: asset.fileId,
+        sha256: asset.sha256,
+        durationSeconds: 15,
+        speechSeconds: 15,
+      });
+    }
+    const textEvents = plan.paidExecution.filter(e => e.kind === 'text'),
+      videos = plan.paidExecution.filter(e => e.kind === 'video');
+    plan.paidExecution = [
+      ...textEvents,
+      ...[1, 2].map(index => ({
+        kind: 'tts',
+        model: 'speech-2.8-hd',
+        index,
+        status: 'returned',
+      })),
+      ...videos,
+    ].map((e, i) => ({ ...e, id: i + 1 }));
+    plan.billing.heldCredits = quote.maxCredits;
+    db.prepare('UPDATE tenants SET credits=credits-? WHERE id=?').run(
+      quote.maxCredits - original.held_credits,
+      tenantId,
+    );
+    q.run('UPDATE credit_holds SET held_credits=? WHERE tenant_id=? AND id=?', quote.maxCredits, tenantId, original.id);
+    q.run(
+      'UPDATE credit_logs SET credits=?,balance_after=? WHERE tenant_id=? AND id=?',
+      quote.maxCredits,
+      balance(),
+      tenantId,
+      original.log_id,
+    );
+    q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify(plan), tenantId, id);
+    counts.tts = 2;
+  }
+  return { id: fixtureJobId, counts, runtime, created };
 }
 
-test('实际资产回执逐段持久化：第一段查询超时前，两段视频ID和原配音均可复用', async () => {
+test('原生任务逐段持久化：第一段查询超时前，两段视频ID均可复用且无需独立配音资产', async () => {
   const h = await prepared(),
     plan = snap(h.id);
   assert.equal(row(h.id).status, '失败');
   assert.equal(h.counts.submit, 2);
-  assert.equal(h.counts.query, 1);
-  assert.ok(plan.voiceTracks.every(track => Number.isSafeInteger(track.fileId)));
-  for (const track of plan.voiceTracks)
-    assert.deepEqual(await readAiSalesVideoVoiceAsset({ tenantId, userId, ...track }), Buffer.from('fitted-audio'));
+  assert.equal(h.counts.query, 2, '第一段查询失败也应尝试免费取回已提交的第二段');
+  assert.equal(plan.audioMode, 'provider_native');
+  assert.equal(plan.voiceTracks, undefined);
+  assert.equal(h.counts.tts, 0);
   assert.equal(augmentMediaJob(row(h.id), actor).recovery.available, true);
   const before = balance(),
     originalHold = hold(h.id),
     calls = { ...h.counts };
-  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
   assert.equal(recovery.response.pollUrl, `/content/media-jobs/${h.id}`);
   await recovery.run();
   assert.equal(row(h.id).status, '成功', snap(h.id).failureCode);
@@ -194,10 +312,112 @@ test('实际资产回执逐段持久化：第一段查询超时前，两段视�
   await assert.rejects(createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime }), /已完整结算/u);
 });
 
+test('旧任务缺audioMode仍核验原TTS资产和旧报价，恢复不重复配音或视频生成', async () => {
+  const h = await prepared({ legacy: true }),
+    plan = snap(h.id),
+    original = hold(h.id);
+  assert.equal(plan.audioMode, undefined);
+  assert.equal(plan.durationSeconds, undefined);
+  assert.equal(plan.priceQuote.durationSeconds, undefined);
+  for (const track of plan.voiceTracks)
+    assert.deepEqual(await readAiSalesVideoVoiceAsset({ tenantId, userId, ...track }), Buffer.from('fitted-audio'));
+  const calls = { ...h.counts };
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
+  await recovery.run();
+  assert.equal(row(h.id).status, '成功', snap(h.id).failureCode);
+  assert.equal(hold(h.id).id, original.id);
+  assert.equal(hold(h.id).status, 'settled');
+  assert.equal(h.counts.tts, calls.tts);
+  assert.equal(h.counts.submit, calls.submit);
+  assert.equal(h.counts.recoverQuery, 2);
+  assert.equal(snap(h.id).recovery.providerSubmissions, 0);
+});
+
+test('15秒已提交任务恢复只取回一个原任务，原hold结算一次且不会扩为两段', async () => {
+  const h = await prepared({ durationSeconds: 15 });
+  assert.equal(row(h.id).status, '失败');
+  assert.equal(h.counts.submit, 1);
+  assert.equal(snap(h.id).providerExecution.segments.length, 1);
+  const originalHold = hold(h.id), before = { ...h.counts };
+  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  await recovery.run();
+  assert.equal(row(h.id).status, '成功', JSON.stringify(snap(h.id)));
+  assert.equal(hold(h.id).id, originalHold.id);
+  assert.equal(hold(h.id).status, 'settled');
+  assert.equal(h.counts.submit, before.submit);
+  assert.equal(h.counts.text, before.text);
+  assert.equal(h.counts.tts, 0);
+  assert.equal(h.counts.recoverQuery, 1);
+  assert.equal(snap(h.id).result.durationSeconds, 15);
+  assert.equal(snap(h.id).result.audioVerification.length, 1);
+  assert.equal(snap(h.id).recovery.providerSubmissions, 0);
+  const finalBalance = balance();
+  await recovery.run();
+  assert.equal(balance(), finalBalance);
+});
+
+test('旧Wan原生任务无duration与旧报价签名仍按30秒恢复，不改写原价格或扩大收费', async () => {
+  const h = await prepared(), plan = snap(h.id), original = hold(h.id);
+  delete plan.durationSeconds;
+  delete plan.segmentCount;
+  delete plan.priceQuote.durationSeconds;
+  delete plan.priceQuote.segmentCount;
+  const { fingerprint: _previousFingerprint, maxCredits: _previousMax, ...prices } = plan.priceQuote;
+  plan.priceQuote.fingerprint = crypto.createHash('sha256').update(JSON.stringify(prices)).digest('hex');
+  q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify(plan), tenantId, h.id);
+  const originalQuote = structuredClone(plan.priceQuote);
+  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId:h.id, runtime:h.runtime });
+  await recovery.run();
+  assert.equal(row(h.id).status, '成功', JSON.stringify(snap(h.id)));
+  assert.equal(hold(h.id).id, original.id);
+  assert.equal(hold(h.id).held_credits, original.held_credits);
+  assert.equal(snap(h.id).durationSeconds, undefined, '不把旧任务的缺省语义改写为新默认');
+  assert.equal(snap(h.id).result.durationSeconds, 30);
+  assert.deepEqual(snap(h.id).priceQuote, originalQuote);
+  assert.equal(h.counts.submit, 2);
+  assert.equal(h.counts.recoverQuery, 2);
+  assert.equal(h.counts.tts, 0);
+});
+test('恢复使用规范化临时目录仍拒绝下载软链逃逸，不合成不结算', async () => {
+  const h = await prepared();
+  const outside = path.join(tenantRoot, `escape-${h.id}.mp4`);
+  await fsp.mkdir(tenantRoot, { recursive: true });
+  await fsp.writeFile(outside, 'outside-task-directory');
+  h.runtime.recoverDownload = async ({ outputDir, index }) => {
+    const linked = path.join(outputDir, `linked-${index}.mp4`);
+    await fsp.symlink(outside, linked);
+    return { path: linked };
+  };
+  try {
+    const recovery = await createVoicedSalesVideoRecovery({
+      actor,
+      jobId: h.id,
+      runtime: h.runtime,
+    });
+    await recovery.run();
+    assert.equal(row(h.id).status, '失败');
+    assert.equal(hold(h.id).status, 'held');
+    assert.equal(h.counts.compose, 0);
+    assert.equal(h.counts.submit, 2);
+  } finally {
+    await fsp.rm(outside, { force: true });
+  }
+});
+
 test('并发恢复只有一个认领，重复worker不会重新查询、合成或扣款', async () => {
   const h = await prepared();
   const outcomes = await Promise.allSettled(
-    [1, 2].map(() => createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime })),
+    [1, 2].map(() =>
+      createVoicedSalesVideoRecovery({
+        actor,
+        jobId: h.id,
+        runtime: h.runtime,
+      }),
+    ),
   );
   assert.equal(outcomes.filter(item => item.status === 'fulfilled').length, 1);
   assert.equal(outcomes.find(item => item.status === 'rejected').reason.code, 'AI_SALES_VIDEO_RECOVERY_STATE_CONFLICT');
@@ -229,7 +449,11 @@ test('结算中断但原成片实物核验有效：仅补原账本，不拉取�
   };
   const before = { ...h.counts },
     original = hold(h.id).id;
-  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
   await recovery.run();
   assert.deepEqual(h.counts, before);
   assert.equal(hold(h.id).id, original);
@@ -251,15 +475,19 @@ test('有成片标志但文件失效时不直接结算，而复用原任务恢�
     db.exec('DROP TRIGGER fail_recovery_file');
   }
   // Default verifier must reject the fixture URL, for which no MP4 was written.
-  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
   await recovery.run();
   assert.equal(hold(h.id).status, 'settled');
   assert.equal(h.counts.recoverQuery, 2);
   assert.equal(snap(h.id).recovery.reusedResult, false);
 });
 
-test('音轨被替换/跨企业/错账号/错hash拒绝；无新调用，原hold保留', async () => {
-  const h = await prepared(),
+test('旧TTS任务音轨被替换/跨企业/错账号/错hash拒绝；无新调用，原hold保留', async () => {
+  const h = await prepared({ legacy: true }),
     track = snap(h.id).voiceTracks[0],
     args = { tenantId, userId, fileId: track.fileId, sha256: track.sha256 };
   for (const invalid of [
@@ -276,7 +504,11 @@ test('音轨被替换/跨企业/错账号/错hash拒绝；无新调用，原hold
   await fsp.writeFile(file, Buffer.from('replaced-aaa')); // same size, different bytes
   const before = balance(),
     calls = { ...h.counts };
-  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
   await recovery.run();
   assert.equal(row(h.id).status, '失败');
   assert.equal(hold(h.id).status, 'held');
@@ -296,7 +528,13 @@ test('已退款/未知用量/变价/篡改快照均在查询前拒绝，不自�
       q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify(plan), tenantId, h.id);
     }
     const before = balance();
-    await assert.rejects(createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime }));
+    await assert.rejects(
+      createVoicedSalesVideoRecovery({
+        actor,
+        jobId: h.id,
+        runtime: h.runtime,
+      }),
+    );
     assert.equal(balance(), before);
     assert.equal(h.counts.recoverQuery, 0);
   }
@@ -305,11 +543,21 @@ test('已退款/未知用量/变价/篡改快照均在查询前拒绝，不自�
   try {
     setConfig('billing', {
       ...original,
-      video: { ...original.video, 'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1 },
+      video: {
+        ...original.video,
+        'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1,
+      },
     });
-    await assert.rejects(createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime }), {
-      code: 'AI_SALES_VIDEO_RECOVERY_PRICE_CHANGED',
-    });
+    await assert.rejects(
+      createVoicedSalesVideoRecovery({
+        actor,
+        jobId: h.id,
+        runtime: h.runtime,
+      }),
+      {
+        code: 'AI_SALES_VIDEO_RECOVERY_PRICE_CHANGED',
+      },
+    );
   } finally {
     setConfig('billing', original);
   }
@@ -325,7 +573,11 @@ test('已经实扣但最后快照写入中断：恢复不再次扣款，只补�
   plan.billing.pendingReconciliation = true;
   q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify(plan), tenantId, h.id);
   h.runtime.verifyExistingResult = async () => true;
-  const recovery = await createVoicedSalesVideoRecovery({ actor, jobId: h.id, runtime: h.runtime });
+  const recovery = await createVoicedSalesVideoRecovery({
+    actor,
+    jobId: h.id,
+    runtime: h.runtime,
+  });
   await recovery.run();
   assert.equal(balance(), before);
   assert.equal(hold(h.id).id, original);
@@ -370,12 +622,14 @@ test('旧worker晚返回不能覆盖恢复者快照或继续提交视频', async
   });
   const outstanding = prepared({
     mutateRuntime: runtime => {
-      runtime.voiceClient.synthesize = async () => {
+      const generate = runtime.generateFn;
+      runtime.generateFn = async params => {
+        const output = await generate(params);
         entered();
         await new Promise(resolve => {
           resume = resolve;
         });
-        return { audioUrl: 'https://synthetic.example.com/audio.mp3' };
+        return output;
       };
     },
   });

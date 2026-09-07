@@ -538,11 +538,12 @@ test("外层station落库失败后的新bridge恢复只回放同一attempt，不
   });
 });
 
-test("provider外调已开始后失败则attempt转待对账，禁止自动退款与二次付费复跑", async () => {
+test("provider外调已开始后失败且无成果：用户积分全退、attempt记为released，本次不自动重发；供应商成本待平台核对", async () => {
   await runWithTenant(32, async () => {
     const store = testProviderAttemptStore();
     let providerCalls = 0;
     let holdCalls = 0;
+    const refunds = [];
     const dependencies = {
       resolveProviderAttemptFn: store.resolve,
       claimProviderAttemptFn: store.claim,
@@ -567,8 +568,14 @@ test("provider外调已开始后失败则attempt转待对账，禁止自动退�
       settleHoldFn(hold, input) {
         return { credits: input.credits, balance: 9_950, costYuan: 1 };
       },
+      // 2026-09 规则：最终失败且没有可交付成果时用户积分全退（供应商已扣成本由平台承担），
+      // 走 refund 而不是普通 release；不能把外调已开始当作扣留用户余额的理由。
+      refundHoldFn(hold) {
+        refunds.push(hold.holdId);
+        return { credits: 0, refundedCredits: hold.credits, balance: 10_000, costYuan: null, supplierCostStatus: "pending" };
+      },
       releaseHoldFn() {
-        assert.fail("provider外调已开始后不得自动退款");
+        assert.fail("provider外调已开始后不得走无成本的普通释放，必须走保留供应商成本的退款");
       },
       async generateImageFn(input) {
         providerCalls += 1;
@@ -603,13 +610,14 @@ test("provider外调已开始后失败则attempt转待对账，禁止自动退�
         purpose: "content_images",
       }),
       (error) => {
-        assert.equal(error.billing.state, "pending_reconciliation");
-        assert.equal(error.billing.heldCredits, 25);
-        assert.equal(error.billing.chargedCredits, null);
-        assert.equal(error.billing.releaseSuppressed, true);
+        assert.equal(error.billing.state, "released");
+        assert.equal(error.billing.refundedCredits, 25);
+        assert.equal(error.billing.chargedCredits, 0);
         return true;
       },
     );
+    assert.equal(providerCalls, 1, "同一次调用失败后不自动重发付费请求");
+    assert.deepEqual(refunds, [830_001]);
     assert.equal(
       q.get(
         `SELECT status FROM content_pipeline_special_provider_attempts
@@ -617,18 +625,8 @@ test("provider外调已开始后失败则attempt转待对账，禁止自动退�
         32,
         45_002,
       ).status,
-      "pending_reconciliation",
+      "released",
     );
-
-    await assert.rejects(
-      createContentSpecialProviderBridge(input, dependencies).providers.image({
-        count: 1,
-        purpose: "content_images",
-      }),
-      /幂等尝试仍在执行或等待对账/u,
-    );
-    assert.equal(providerCalls, 1);
-    assert.equal(holdCalls, 1);
     assert.equal(
       q.get(
         `SELECT COUNT(*) n FROM materials
@@ -638,6 +636,15 @@ test("provider外调已开始后失败则attempt转待对账，禁止自动退�
       ).n,
       0,
     );
+
+    // 用户之后再次发起属于新的付费任务：新建预授权，不复用已退款的旧hold。
+    const retried = await createContentSpecialProviderBridge(input, dependencies).providers.image({
+      count: 1,
+      purpose: "content_images",
+    });
+    assert.equal(providerCalls, 2);
+    assert.equal(holdCalls, 2);
+    assert.ok(Array.isArray(retried?.images) ? retried.images.length === 1 : retried, "第二次显式调用取得成果");
   });
 });
 

@@ -1,9 +1,10 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { db, q, curTenant } from '../db.js';
 import { authMiddleware, maskPhone, logOp, notify, today, pct, pageParams, safeJsonArray, safeJsonParse } from '../util.js';
 import { rescoreLead, funnel } from '../engines/scoring.js';
 import { aiAvailable, generate, kbContext, tplInvite } from '../engines/ai.js';
-import {
+import { refundHold,
   precheckByRole,
   estimateCallCredits,
   holdCredits,
@@ -732,6 +733,8 @@ r.post('/leads/:id/objection', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: async () => {
         const kb = await kbContext(['话术案例'], req.user.role, concernText);
         const output = await generate({
@@ -840,6 +843,8 @@ r.post('/suggest-reply', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: async () => {
         const kb = await kbContext(
           ['话术案例', '品牌资料'],
@@ -1003,6 +1008,8 @@ r.post('/birthdays/:id/wish', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {

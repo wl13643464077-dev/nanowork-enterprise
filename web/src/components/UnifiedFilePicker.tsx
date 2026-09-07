@@ -38,6 +38,11 @@ export function UnifiedFilePicker({
   multiple = true,
   compact = false,
   label = '上传文件',
+  imagesOnly = false,
+  recognize = true,
+  onUploadingChange,
+  dropEnabled = false,
+  disabled = false,
 }: {
   files: UploadedFileRef[];
   onChange: (files: UploadedFileRef[]) => void;
@@ -46,24 +51,37 @@ export function UnifiedFilePicker({
   multiple?: boolean;
   compact?: boolean;
   label?: string;
+  imagesOnly?: boolean;
+  recognize?: boolean;
+  onUploadingChange?: (uploading: boolean) => void;
+  dropEnabled?: boolean;
+  disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const pickingRef = useRef(false);
   const [uploading, setUploading] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryFiles, setLibraryFiles] = useState<UploadedFileRef[]>([]);
 
   const pick = async (selected: FileList | null) => {
+    if (disabled || pickingRef.current) return;
     const list = Array.from(selected || []);
     if (!list.length) return;
     if (files.length + list.length > maxFiles) {
       message.warning(`最多同时使用 ${maxFiles} 个文件`);
       return;
     }
+    pickingRef.current = true;
     setUploading(true);
+    onUploadingChange?.(true);
     const next = [...files];
     try {
       for (const file of list) {
+        if (imagesOnly && !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+          message.warning(`${file.name} 不是 PNG、JPG 或 WebP 图片，已跳过`);
+          continue;
+        }
         if (file.size > 15 * 1024 * 1024) {
           message.warning(`${file.name} 超过15MB，已跳过`);
           continue;
@@ -75,18 +93,20 @@ export function UnifiedFilePicker({
             mime: file.type,
             b64,
             purpose,
-            recognize: true,
+            recognize,
           });
           if (result.billing) notifyCredits(result.billing.balance);
           next.push(result.file);
           onChange(next.slice(-maxFiles));
-          message.success(`${file.name} 已上传并读取`);
+          message.success(`${file.name} ${recognize ? '已上传并读取' : '已上传'}`);
         } catch (error: any) {
           message.error(`${file.name} 上传失败：${error?.message || '请检查文件后重试'}`);
         }
       }
     } finally {
+      pickingRef.current = false;
       setUploading(false);
+      onUploadingChange?.(false);
       if (inputRef.current) inputRef.current.value = '';
     }
   };
@@ -96,13 +116,18 @@ export function UnifiedFilePicker({
     setLibraryLoading(true);
     try {
       const rows = await api.get('/files?limit=50');
-      setLibraryFiles(Array.isArray(rows) ? rows : []);
+      setLibraryFiles(
+        Array.isArray(rows) ? rows.filter(file => !imagesOnly || /\.(png|jpe?g|webp)$/i.test(file.name || '')) : [],
+      );
+    } catch {
+      setLibraryFiles([]);
     } finally {
       setLibraryLoading(false);
     }
   };
 
   const addFromLibrary = (file: UploadedFileRef) => {
+    if (disabled || uploading) return;
     if (files.some(item => item.id === file.id)) return;
     if (files.length >= maxFiles) {
       message.warning(`最多同时使用 ${maxFiles} 个文件`);
@@ -112,32 +137,58 @@ export function UnifiedFilePicker({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 5 : 8 }}>
+    <div
+      className={dropEnabled ? 'unified-file-picker--drop' : undefined}
+      style={{ display: 'flex', flexDirection: 'column', gap: compact ? 5 : 8 }}
+      onDragOver={dropEnabled ? event => event.preventDefault() : undefined}
+      onDrop={
+        dropEnabled
+          ? event => {
+              event.preventDefault();
+              void pick(event.dataTransfer.files);
+            }
+          : undefined
+      }
+    >
       <input
         ref={inputRef}
         type="file"
-        accept={BUSINESS_FILE_ACCEPT}
+        accept={imagesOnly ? '.png,.jpg,.jpeg,.webp' : BUSINESS_FILE_ACCEPT}
         multiple={multiple}
+        disabled={disabled || uploading}
         style={{ display: 'none' }}
         onChange={e => pick(e.target.files)}
       />
       <Space size={6} wrap>
-        <Tooltip title="支持Word、PDF、表格、文本和图片，上传后自动提取可读内容">
+        <Tooltip
+          title={
+            imagesOnly
+              ? '支持 PNG、JPG、WebP 图片，单张不超过 15MB'
+              : '支持Word、PDF、表格、文本和图片，上传后自动提取可读内容'
+          }
+        >
           <Button
             size={compact ? 'small' : 'middle'}
             icon={uploading ? <UploadOutlined spin /> : <PaperClipOutlined />}
             loading={uploading}
+            disabled={disabled}
             onClick={() => inputRef.current?.click()}
           >
             {label}
           </Button>
         </Tooltip>
         <Tooltip title="选择此前已上传并读取的文件">
-          <Button size={compact ? 'small' : 'middle'} icon={<FolderOpenOutlined />} onClick={openLibrary}>
+          <Button
+            size={compact ? 'small' : 'middle'}
+            icon={<FolderOpenOutlined />}
+            onClick={openLibrary}
+            disabled={disabled || uploading}
+          >
             文件库
           </Button>
         </Tooltip>
       </Space>
+      {dropEnabled && <span className="unified-file-picker-drop-hint">也可将图片拖到这里</span>}
       {!!files.length && (
         <Space size={[5, 5]} wrap>
           {files.map(file => (
@@ -147,7 +198,7 @@ export function UnifiedFilePicker({
             >
               <Tag
                 color={file.readable ? 'blue' : 'orange'}
-                closable
+                closable={!disabled && !uploading}
                 closeIcon={<CloseOutlined />}
                 onClose={e => {
                   e.preventDefault();
@@ -176,7 +227,7 @@ export function UnifiedFilePicker({
                     key="select"
                     size="small"
                     type={selected ? 'default' : 'primary'}
-                    disabled={selected}
+                    disabled={selected || disabled || uploading}
                     icon={selected ? undefined : <PlusOutlined />}
                     onClick={() => addFromLibrary(file)}
                   >

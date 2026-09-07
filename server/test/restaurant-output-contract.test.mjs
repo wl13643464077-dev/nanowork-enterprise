@@ -632,7 +632,7 @@ test('餐饮demo纯Markdown不得绕过v4岗位审计，live同样要求结构�
   );
 });
 
-test('餐饮demo截断JSON不得冒充Markdown，必须修复为完整岗位结构后才采用', async () => {
+test('餐饮截断JSON骨架不得冒充可用报告，也不自动重复付费生成', async () => {
   const employeeExecution = buildEmployeeExecutionProfile(102, {
     tenantId: 1,
     user: { id: 1, role: 'boss', tenant_id: 1 },
@@ -659,7 +659,10 @@ test('餐饮demo截断JSON不得冒充Markdown，必须修复为完整岗位结�
   ].join('');
   const calls = [];
 
-  const output = await marshalWork(testMarshal, task, 'boss', {
+  const observed = [];
+  let caught;
+  try { await marshalWork(testMarshal, task, 'boss', {
+    onCandidateObserved: candidate => observed.push(candidate),
     employeeExecution,
     dataMode: 'demo',
     webSearchFn: async () => offlineRestaurantSearch(),
@@ -684,39 +687,22 @@ test('餐饮demo截断JSON不得冒充Markdown，必须修复为完整岗位结�
         finishReason: 'stop',
       };
     },
-  });
+  }); } catch (error) { caught = error; }
 
-  assert.equal(calls.length, 2, '截断JSON必须进入已有repair调用，不能首轮报告优先采用');
-  assert.match(calls[1].kind, /contract-repair/u);
-  assert.match(calls[1].userMsg, /待修复首轮输出/u);
-  assert.match(calls[1].userMsg, /被max_tokens截断/u);
-  assert.equal(output.mode, 'api');
-  assert.equal(output.employeeContract.valid, true);
-  assert.equal(output.employeeContract.reportFirstMarkdown, false);
-  assert.equal(output.employeeContract.qualityMode, 'advisory');
-  assert.equal(output.employeeContract.repair.attempted, true);
-  assert.equal(output.employeeContract.repair.succeeded, true);
-  assert.equal(output.employeeContract.providerAttempts.length, 2);
-  assert.deepEqual(
-    output.employeeContract.providerAttempts.map(attempt => ({
-      phase: attempt.phase,
-      contractValid: attempt.contractValid,
-      finishReason: attempt.finishReason,
-    })),
-    [
-      { phase: 'acquire', contractValid: false, finishReason: 'length' },
-      { phase: 'repair', contractValid: true, finishReason: 'stop' },
-    ],
-  );
-  assert.equal(output.employeeContract.parsed.contract_id, contract.contractId);
-  assert.match(output.text, /岗位完整正文/u);
-  assert.deepEqual(output.usage, {
-    inputTokens: 21176,
-    outputTokens: 20138,
-  });
+  assert.ok(caught);
+  assert.equal(caught.code, 'RESTAURANT_OUTPUT_CONTRACT_INVALID');
+  assert.equal(calls.length, 1, '达到输出预算后不得自动再次付费');
+  assert.equal(caught.providerBudget.stoppedReason, 'provider_output_budget_reached');
+  assert.equal(caught.providerAttempts[0].finishReason, 'length');
+  assert.equal(caught.providerAttempts[0].contractValid, false);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].text, truncated, '收到的原文必须交给持久化观察器，不得裁切');
+  assert.equal(observed[0].complete, false);
+  assert.equal(observed[0].valid, false, '只有结构骨架时不能伪称交付成功');
+  assert.deepEqual(caught.providerUsage, { inputTokens: 9132, outputTokens: 14001 });
 });
 
-test('#44回归：v4 JSON候选只进入JSON定向修复，不混入Markdown报告门', async () => {
+test('#44回归：缺少完整交付的JSON才进入定向修复，不混入Markdown报告门', async () => {
   const employeeExecution = buildEmployeeExecutionProfile(101, {
     tenantId: 1,
     user: { id: 1, role: 'boss', tenant_id: 1 },
@@ -740,6 +726,7 @@ test('#44回归：v4 JSON候选只进入JSON定向修复，不混入Markdown报�
   invalid.input_audit[inputKeys[1]].verification.action = '后续处理该项输入';
   invalid.method_execution[methodKeys[0]].evidence_refs = ['[来源1]'];
   invalid.method_execution[methodKeys.at(-1)].next_action = '后续持续关注';
+  delete invalid.deliverables[contract.deliverableKeys.at(-1)];
 
   const calls = [];
   const output = await marshalWork(testMarshal, task, 'boss', {
@@ -762,11 +749,11 @@ test('#44回归：v4 JSON候选只进入JSON定向修复，不混入Markdown报�
 
   assert.equal(calls.length, 2);
   const firstErrors = output.employeeContract.providerAttempts[0].contractErrors.join('\n');
+  assert.match(firstErrors, /缺少必需字段.*deliverables/u);
   assert.doesNotMatch(firstErrors, /Markdown|报告所需的标题|标题与分节/u);
   const repairPrompt = calls[1].userMsg;
   assert.match(repairPrompt, /evidence_refs[\s\S]*decision_context\.sources/u);
-  assert.match(repairPrompt, /verification\.action[\s\S]*(?:调取|核验|采集)/u);
-  assert.match(repairPrompt, /next_action[\s\S]*(?:核验|补采|测算|对比|复核)/u);
+  assert.match(repairPrompt, /缺少必需字段.*deliverables/u);
   assert.doesNotMatch(repairPrompt, /Markdown报告|Markdown标题|报告所需的标题/u);
   assert.match(repairPrompt, /最终响应必须从“\{”开始/u);
   assert.equal(output.employeeContract.valid, true);
@@ -802,7 +789,7 @@ test('#44回归：v4 JSON候选只进入JSON定向修复，不混入Markdown报�
   assert.equal(repairedMarkdown.employeeContract.reportFirstMarkdown, false);
 });
 
-test('demo#47同型：两份完整候选后的length截断不覆盖最新安全规范化报告', async () => {
+test('demo#47同型：首份安全完整草稿即交付，不付费重写后再回退', async () => {
   const employeeExecution = buildEmployeeExecutionProfile(101, {
     tenantId: 1,
     user: { id: 1, role: 'boss', tenant_id: 1 },
@@ -816,35 +803,12 @@ test('demo#47同型：两份完整候选后的length截断不覆盖最新安全�
   const source = `${OFFLINE_RESTAURANT_SOURCE.title}｜${OFFLINE_RESTAURANT_SOURCE.url}`;
   const firstComplete = clone(contract.validFixture);
   firstComplete.decision_context.problem = `${task.title}：第一份完整候选。`;
+  firstComplete.deliverables[contract.deliverableKeys[0]].summary += '第一份完整候选。';
   firstComplete.decision_context.sources[0].source = source;
   pointExecutionEvidenceAtSource(firstComplete, source);
   // 引用空数组在严格契约中仍会报错，demo仅将它降为报告告警；
   // 4/7/5结构、所有work_product正文和真实API证据都完整。
   firstComplete.input_audit[contract.inputKeys[0]].evidence_refs = [];
-
-  const latestComplete = clone(firstComplete);
-  latestComplete.decision_context.problem = `${task.title}：第二份完整安全候选。`;
-  const input = latestComplete.input_audit[contract.inputKeys[0]];
-  input.evidence_refs = ['[来源1]'];
-  input.verification.action = '核验数据';
-  const method = latestComplete.method_execution[contract.methodKeys[0]];
-  method.actual_execution = '已读取本轮来源并完成第一步业务分析，形成初步判断。';
-  method.evidence_refs = ['[任务要求]'];
-  method.next_action = '继续核验';
-  const partialMethod = latestComplete.method_execution[contract.methodKeys[1]];
-  partialMethod.status = 'partial';
-  partialMethod.missing = '待补';
-  const deliverable = latestComplete.deliverables[contract.deliverableKeys[0]];
-  deliverable.summary = '第二份候选';
-  deliverable.actions[0].action = '后续处理';
-  deliverable.actions[0].owner = '负责';
-  deliverable.actions[0].success_metric = '完成';
-  const canonicalizedItem = deliverable.work_product.sections[0].items[0];
-  canonicalizedItem.label = '机会定义·本轮分析项';
-  canonicalizedItem.result =
-    '第二份完整候选已交付可读业务分析；当前缺少样本字段，待负责岗位补采后核验。';
-  canonicalizedItem.evidence_ref = '[来源1]';
-  canonicalizedItem.status = 'verified';
 
   let calls = 0;
   const output = await marshalWork(testMarshal, task, 'boss', {
@@ -855,35 +819,13 @@ test('demo#47同型：两份完整候选后的length截断不覆盖最新安全�
     locationIntelligenceFn: async () => offlineLocationEvidence(),
     generateFn: async () => {
       calls += 1;
-      if (calls === 1) {
-        return {
-          text: JSON.stringify(firstComplete),
-          mode: 'api',
-          model: 'deepseek-v4-flash',
-          usage: { inputTokens: 6000, outputTokens: 2000 },
-          finishReason: 'stop',
-        };
-      }
-      if (calls === 2) {
-        return {
-          text: JSON.stringify(latestComplete),
-          mode: 'api',
-          model: 'deepseek-v4-flash',
-          usage: { inputTokens: 16001, outputTokens: 7102 },
-          finishReason: 'stop',
-        };
-      }
-      return {
-        text: '{"contract_id":"urn:nanowork:restaurant-output:101:',
-        mode: 'api',
-        model: 'deepseek-v4-flash',
-        usage: { inputTokens: 19001, outputTokens: 20001 },
-        finishReason: 'length',
-      };
+      assert.equal(calls, 1, '安全完整首稿后不得自动再次调用模型');
+      return { text: JSON.stringify(firstComplete), mode: 'api', model: 'deepseek-v4-flash',
+        usage: { inputTokens: 6000, outputTokens: 2000 }, finishReason: 'stop' };
     },
   });
 
-  assert.equal(calls, 3, '三正Token候选预算用尽后应回看第二份完整候选');
+  assert.equal(calls, 1);
   assert.equal(output.mode, 'api');
   assert.equal(output.employeeContract.valid, true);
   assert.equal(output.employeeContract.qualityMode, 'report_first');
@@ -891,27 +833,14 @@ test('demo#47同型：两份完整候选后的length截断不覆盖最新安全�
   assert.equal(output.employeeContract.structuredReportFirst, true);
   assert.equal(output.employeeContract.parsed, null);
   assert.equal(output.employeeContract.hardDelivery.valid, true);
-  const warnings = output.employeeContract.warnings.join('\n');
-  assert.match(warnings, /evidence_refs|未回指本次来源/u);
-  assert.match(warnings, /verification|next_action/u);
-  assert.match(warnings, /summary|action|success_metric/u);
-  assert.match(warnings, /标为partial|未完成项|阻断/u);
-  assert.match(output.text, /第二份完整候选已交付可读业务分析/u);
-  assert.doesNotMatch(output.text, /第一份完整候选/u);
-  assert.match(output.text, /## 决策建议与置信度/u);
+  assert.equal(output.employeeContract.qualityReview.requiresUserDecision, true);
+  assert.match(output.employeeContract.warnings.join('\n'), /evidence_refs|引用/u);
+  assert.match(output.text, /第一份完整候选/u);
   assert.doesNotMatch(output.text, /^\s*\{/u);
-  assert.deepEqual(output.usage, { inputTokens: 41002, outputTokens: 29103 });
-  assert.equal(output.employeeContract.providerAttempts[0].contractValid, false);
-  assert.equal(output.employeeContract.providerAttempts[1].contractValid, false);
-  assert.equal(output.employeeContract.providerAttempts[1].finishReason, 'stop');
-  assert.equal(output.employeeContract.providerAttempts[1].canonicalization.changed, true);
-  assert.ok(
-    output.employeeContract.providerAttempts[1].canonicalization.changes.some(
-      change => change.reason === 'result_explicitly_unresolved',
-    ),
-  );
-  assert.equal(output.employeeContract.providerAttempts[2].finishReason, 'length');
-  assert.equal(output.employeeContract.providerAttempts[2].contractValid, false);
+  assert.deepEqual(output.usage, { inputTokens: 6000, outputTokens: 2000 });
+  assert.equal(output.employeeContract.providerAttempts.length, 1);
+  assert.equal(output.employeeContract.providerAttempts[0].contractValid, true);
+  assert.equal(output.employeeContract.providerAttempts[0].rawContractValid, false);
 });
 
 test('demo结构候选仍含未验证来源或未回指证据时不得报告优先放行', async () => {
@@ -962,7 +891,7 @@ test('demo结构候选仍含未验证来源或未回指证据时不得报告优�
   );
 });
 
-test('demo后续length截断候选不得覆盖前一份完整安全结构候选', async () => {
+test('含来源硬错的完整候选不能交付，后续截断仍保留各轮安全失败证据', async () => {
   const employeeExecution = buildEmployeeExecutionProfile(101, {
     tenantId: 1,
     user: { id: 1, role: 'boss', tenant_id: 1 },
@@ -975,8 +904,8 @@ test('demo后续length截断候选不得覆盖前一份完整安全结构候选'
   };
   const complete = clone(contract.validFixture);
   complete.decision_context.problem = `${task.title}：${complete.decision_context.problem}`;
-  // 硬门允许的非URL来源错误：最终仍必须拒绝，但失败证据应指向
-  // 这份完整候选，不得被后续的length半截JSON覆盖。
+  // 非URL来源硬错仍必须拒绝；每轮失败证据保留在providerAttempts，
+  // 不再为了展示旧候选而恢复预算耗尽后的备用产物分支。
   complete.decision_context.sources[0].source = '未验证的公开平台来源';
   pointExecutionEvidenceAtSource(complete, '[来源1]');
   let calls = 0;
@@ -1019,10 +948,10 @@ test('demo后续length截断候选不得覆盖前一份完整安全结构候选'
     }),
     error => {
       assert.equal(error?.code, 'RESTAURANT_OUTPUT_CONTRACT_INVALID');
-      const errors = (error.contractErrors || []).join('\n');
-      assert.match(errors, /来源|source|evidence_ref/u);
-      assert.doesNotMatch(errors, /输出不是有效JSON/u);
+      assert.match((error.contractErrors || []).join('\n'), /输出不是有效JSON/u);
       assert.equal(error.providerAttempts?.length, 3);
+      assert.match((error.providerAttempts?.[1]?.contractErrors || []).join('\n'), /来源|source|evidence_ref/u);
+      assert.equal(error.providerAttempts?.[1]?.contractValid, false);
       assert.equal(error.providerAttempts?.[1]?.finishReason, 'stop');
       assert.equal(error.providerAttempts?.[2]?.finishReason, 'length');
       return true;
@@ -1041,6 +970,10 @@ test('餐饮最终硬门独立于岗位契约状态阻断伪URL、越权动作�
     allowedSources: [],
   };
   assert.equal(restaurantEmployeeHardDeliveryDecision(base).valid, true);
+
+  for (const text of ['', '收到，我会开始处理。', '好的，正在分析任务。', '太短，不构成岗位报告。']) {
+    assert.equal(restaurantEmployeeHardDeliveryDecision({ ...base, text }).valid, false, `空正文或仅确认任务不能冒充交付：${text}`);
+  }
 
   const governed = restaurantEmployeeHardDeliveryDecision({
     ...base,
@@ -1165,7 +1098,7 @@ test('餐饮平台不合规建议可确定性改写为授权沙盒或纯线下�
   assert.equal(postRewrite.valid, true, postRewrite.errors.join('\n'));
 });
 
-test('餐饮预订/锁位/改价等不可逆动作可改写为内部验证而非整单无产出', () => {
+test('声称已经预订/锁位/改价的内容保留原始声明并由硬门阻止，不能改写为未执行', () => {
   const rewritten = rewriteUnsafeRestaurantPlatformActions({
     decision_context: { problem: '只形成内部报告。' },
     deliverables: {
@@ -1174,8 +1107,8 @@ test('餐饮预订/锁位/改价等不可逆动作可改写为内部验证而非
       },
     },
   });
-  assert.equal(rewritten.changed, true);
-  assert.match(rewritten.parsed.deliverables.validation.result, /平台提供的合规测试工具或沙盒|纯线下意向页或问卷/u);
+  assert.equal(rewritten.changed, false);
+  assert.match(rewritten.text, /系统已自动订座、锁位并动态调价/u);
   const decision = restaurantEmployeeHardDeliveryDecision({
     text: rewritten.text,
     mode: 'api',
@@ -1183,7 +1116,8 @@ test('餐饮预订/锁位/改价等不可逆动作可改写为内部验证而非
     usage: { inputTokens: 11, outputTokens: 19 },
     task: { title: '内部报告', requirement: '只形成内部报告。' },
   });
-  assert.equal(decision.valid, true, decision.errors.join('\n'));
+  assert.equal(decision.valid, false);
+  assert.match(decision.errors.join('\n'), /外发|不可逆|授权/u);
 });
 
 test('live派活保持岗位深层质检严格失败', async () => {

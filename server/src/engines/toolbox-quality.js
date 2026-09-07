@@ -1,8 +1,5 @@
-// 经营工具箱交付质检：判定 Markdown 交付是否达到「老板可直接使用」标准。
-// 该模块被两处共用：
-// 1. engines/toolbox.js 生成循环 —— 首轮产出缺项时把缺项定向反馈给模型返工；
-// 2. routes/toolbox.js 最终验收 —— 交付契约的质量门（与账务判定配合）。
-// 抽出独立模块保证两处口径完全一致，不会出现“生成时过检、验收时翻车”。
+// 经营工具箱质量建议：版式、篇幅与业务缺项供用户审阅，
+// 不因普通质量建议丢弃已生成正文或自动追加付费返工。
 
 function resultText(value) {
   return String(value || "")
@@ -90,7 +87,8 @@ function responsibilityTableValid(text) {
     const rows = [];
     for (
       let cursor = index + 1;
-      cursor < scheduleLines.length && scheduleLines[cursor].trim().startsWith("|");
+      cursor < scheduleLines.length &&
+      scheduleLines[cursor].trim().startsWith("|");
       cursor += 1
     ) {
       const cells = markdownCells(scheduleLines[cursor]);
@@ -124,12 +122,24 @@ function responsibilityTableValid(text) {
   for (let index = 0; index < calendarLines.length; index += 1) {
     if (!calendarLines[index].trim().startsWith("|")) continue;
     const headers = markdownCells(calendarLines[index]);
-    const dateIndex = headers.findIndex((cell) => /日期|时间|阶段|周期/u.test(cell));
-    const actionIndex = headers.findIndex((cell) => /动作|任务|执行|安排/u.test(cell));
-    const metricIndex = headers.findIndex((cell) => /指标|记录|产出|验收|证据/u.test(cell));
-    if ([dateIndex, actionIndex, metricIndex].some((value) => value < 0)) continue;
+    const dateIndex = headers.findIndex((cell) =>
+      /日期|时间|阶段|周期/u.test(cell),
+    );
+    const actionIndex = headers.findIndex((cell) =>
+      /动作|任务|执行|安排/u.test(cell),
+    );
+    const metricIndex = headers.findIndex((cell) =>
+      /指标|记录|产出|验收|证据/u.test(cell),
+    );
+    if ([dateIndex, actionIndex, metricIndex].some((value) => value < 0))
+      continue;
     const rows = [];
-    for (let cursor = index + 1; cursor < calendarLines.length && calendarLines[cursor].trim().startsWith("|"); cursor += 1) {
+    for (
+      let cursor = index + 1;
+      cursor < calendarLines.length &&
+      calendarLines[cursor].trim().startsWith("|");
+      cursor += 1
+    ) {
       const cells = markdownCells(calendarLines[cursor]);
       if (!cells.every((cell) => /^:?-{3,}:?$/u.test(cell))) rows.push(cells);
     }
@@ -137,7 +147,14 @@ function responsibilityTableValid(text) {
       const date = cells[dateIndex] || "";
       const action = cells[actionIndex] || "";
       const metric = cells[metricIndex] || "";
-      return TIME_MARKER.test(date) && action.length >= 10 && ACTION_VERB.test(action) && CONCRETE_ACTION_OBJECT.test(action) && metric.length >= 3 && OUTPUT_EVIDENCE.test(metric);
+      return (
+        TIME_MARKER.test(date) &&
+        action.length >= 10 &&
+        ACTION_VERB.test(action) &&
+        CONCRETE_ACTION_OBJECT.test(action) &&
+        metric.length >= 3 &&
+        OUTPUT_EVIDENCE.test(metric)
+      );
     });
     if (complete.length >= 3) return true;
   }
@@ -275,10 +292,7 @@ export function toolboxResultQuality(
     for (const line of text.split("\n")) {
       if (!line.trim().startsWith("|")) continue;
       const cells = markdownCells(line);
-      if (
-        cells.length < 3 ||
-        cells.every((cell) => /^:?-{3,}:?$/u.test(cell))
-      )
+      if (cells.length < 3 || cells.every((cell) => /^:?-{3,}:?$/u.test(cell)))
         continue;
       const joined = cells.join(" ");
       if (/(?:选题|内容动作|题材|素材对象)/u.test(joined)) {
@@ -326,18 +340,15 @@ export function toolboxResultQuality(
   return { valid: errors.length === 0, errors };
 }
 
-// 把质检缺项转成模型可执行的定向返工指令；只指出缺什么，不放宽事实边界。
-export function toolboxQualityReworkInstruction(errors) {
-  const issues = (Array.isArray(errors) ? errors : [])
-    .map((item) => String(item || "").trim())
-    .filter(Boolean)
-    .slice(0, 12);
-  return [
-    "",
-    "【定向返工·质检缺项】",
-    "上一轮草案整体方向可用，但以下缺项会导致验收失败：",
-    ...issues.map((item) => `- ${item}`),
-    "请从头输出一份补齐上述全部缺项的完整交付草案；保持原有真实内容与全部硬性边界不变。",
-    "缺失的事实仍必须标注「待补充」或「待人工核验」，禁止为通过质检编造数据、案例或效果。",
-  ].join("\n");
+// 内容可审阅与质量达标是两个状态。真实调用、模板冒充、档案泄漏、
+// 媒体完整性和账务检查仍由交付契约处理；这里只保留空正文硬失败。
+export function toolboxDeliveryQuality(toolKey, inputs, resultMd, options) {
+  const quality = toolboxResultQuality(toolKey, inputs, resultMd, options);
+  const errors = resultText(resultMd) ? [] : ["工具产物正文为空"];
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings: quality.errors,
+    qualityValid: quality.valid,
+  };
 }

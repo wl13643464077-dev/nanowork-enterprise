@@ -10,7 +10,7 @@ interface SystemBillingPanelProps {
   billingReconciliation: any;
   canResolveBilling: boolean;
   loadBillingReconciliation: () => void;
-  resolveBilling: (row: any, action: BillingAction) => void;
+  resolveBilling?: (row: any, action: BillingAction) => void;
 }
 
 export function SystemBillingPanel({
@@ -20,6 +20,13 @@ export function SystemBillingPanel({
   loadBillingReconciliation,
   resolveBilling,
 }: SystemBillingPanelProps) {
+  if (!billingReconciliation)
+    return (
+      <Panel title="AI积分与用量">
+        <p>{billingLoading ? '正在读取积分记录…' : '尚未取得积分记录，请重新读取。'}</p>
+        {!billingLoading && <Button onClick={loadBillingReconciliation}>重新读取</Button>}
+      </Panel>
+    );
   const rows = Array.isArray(billingReconciliation?.rows) ? billingReconciliation.rows : [];
   const total = Number(billingReconciliation?.summary?.total ?? rows.length) || 0;
   const activeRows = rows.filter((row: any) => row?.stillActive === true);
@@ -43,8 +50,11 @@ export function SystemBillingPanel({
       : active > 0
         ? `当前有 ${active} 笔 AI 任务正在生成，临时预留 ${activeHeldCredits} 积分，无需人工处理。`
         : '当前没有需要处理的 AI 积分记录。';
-  const alertDescription =
-    requiresAttention > 0
+  const alertDescription = !canResolveBilling
+    ? requiresAttention > 0
+      ? '平台正在核对这些任务的费用，处理后会更新记录。如有疑问，请联系平台。'
+      : '生成时先预留积分，结束后按实际用量结算，多余部分退回。'
+    : requiresAttention > 0
       ? '只有业务主产物、共享语义契约、模型和真实 token 证据一致时才能结算；确认未通过交付门禁后才能退款。仍在正常生成的任务不会列为异常。'
       : active > 0
         ? '任务结束后，系统会按真实 token 自动结算并退回多余预留；质量门不通过则整笔释放。生成期间不会实际扣除这笔预留。'
@@ -98,14 +108,18 @@ export function SystemBillingPanel({
                 <div>{row.business?.label || `${row.refType || '-'}#${row.refId || '-'}`}</div>
                 <Space size={4} wrap>
                   <Tag>{row.business?.status || '-'}</Tag>
-                  <Tag color={row.stillActive === true ? 'processing' : row.business?.deliveryValid ? 'green' : 'red'}>
-                    {row.stillActive === true
-                      ? '交付门禁待检测'
-                      : row.business?.deliveryValid
-                        ? '交付证据有效'
-                        : '未通过交付门禁'}
-                  </Tag>
-                  {row.business?.usage?.valid && (
+                  {canResolveBilling && (
+                    <Tag
+                      color={row.stillActive === true ? 'processing' : row.business?.deliveryValid ? 'green' : 'red'}
+                    >
+                      {row.stillActive === true
+                        ? '交付门禁待检测'
+                        : row.business?.deliveryValid
+                          ? '交付证据有效'
+                          : '未通过交付门禁'}
+                    </Tag>
+                  )}
+                  {canResolveBilling && row.business?.usage?.valid && (
                     <Tag color="blue">
                       {row.business.usage.inputTokens}/{row.business.usage.outputTokens} tokens
                     </Tag>
@@ -119,6 +133,7 @@ export function SystemBillingPanel({
             key: 'evidence',
             width: 240,
             render: (_: any, row: any) => {
+              if (!canResolveBilling) return <span>{row.stillActive ? '正在生成，积分暂时预留' : '平台核对中'}</span>;
               const detail = [...(row.integrityErrors || []), ...(row.business?.errors || [])].join('；');
               return (
                 <Tooltip title={detail || row.blockedReason || ''}>
@@ -141,16 +156,16 @@ export function SystemBillingPanel({
             width: 190,
             render: (_: any, row: any) =>
               !canResolveBilling ? (
-                <span style={{ color: 'var(--ui-muted)' }}>仅老板/管理员可处理</span>
+                <span style={{ color: 'var(--ui-muted)' }}>由平台处理</span>
               ) : (
                 <Space>
                   {row.availableActions?.includes('settle') && (
-                    <Button size="small" type="primary" onClick={() => resolveBilling(row, 'settle')}>
+                    <Button size="small" type="primary" onClick={() => resolveBilling?.(row, 'settle')}>
                       按证据结算
                     </Button>
                   )}
                   {row.availableActions?.includes('release') && (
-                    <Button size="small" danger onClick={() => resolveBilling(row, 'release')}>
+                    <Button size="small" danger onClick={() => resolveBilling?.(row, 'release')}>
                       隔离并退款
                     </Button>
                   )}

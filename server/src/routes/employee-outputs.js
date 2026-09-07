@@ -182,7 +182,7 @@ function publicNextAction(status, user, record = null) {
     return '查看岗位质检错误，补充或修正材料后重新派活';
   }
   if (status === STATUS.reviewRejected) {
-    return '查看人工审阅退回意见，按意见返工后重新派活';
+    return '原稿与审阅意见已保留；如需优化，可自行编辑或另行发起修改';
   }
   if (status === STATUS.reviewPending) {
     const canReview = typeof record?.canReview === 'boolean'
@@ -233,8 +233,12 @@ function isCompleted(status) {
 }
 
 function isFailed(status) {
-  return [STATUS.generationFailed, STATUS.qualityFailed, STATUS.reviewRejected]
+  return [STATUS.generationFailed, STATUS.qualityFailed]
     .includes(String(status || ''));
+}
+
+function isRejected(status) {
+  return String(status || '') === STATUS.reviewRejected;
 }
 
 function isRemediated(status) {
@@ -1405,6 +1409,7 @@ function pivotRows(rows, dimension) {
       completed: 0,
       pending: 0,
       failed: 0,
+      rejected: 0,
       remediated: 0,
       superseded: 0,
     };
@@ -1412,6 +1417,7 @@ function pivotRows(rows, dimension) {
     if (row.hasOutput) item.withOutput += 1;
     if (isCompleted(row.status)) item.completed += 1;
     else if (isFailed(row.status)) item.failed += 1;
+    else if (isRejected(row.status)) item.rejected += 1;
     else if (isRemediated(row.status)) item.remediated += 1;
     else if (isSuperseded(row.status)) item.superseded += 1;
     else item.pending += 1;
@@ -1468,8 +1474,10 @@ r.get('/', (req, res) => {
     completed: rows.filter(row => isCompleted(row.status)).length,
     pending: rows.filter(row => !isCompleted(row.status)
       && !isFailed(row.status)
+      && !isRejected(row.status)
       && !isRemediated(row.status)).length,
     failed: rows.filter(row => isFailed(row.status)).length,
+    rejected: rows.filter(row => isRejected(row.status)).length,
     remediated: rows.filter(row => isRemediated(row.status)).length,
     ...(supersededCount > 0 ? { superseded: supersededCount } : {}),
   };

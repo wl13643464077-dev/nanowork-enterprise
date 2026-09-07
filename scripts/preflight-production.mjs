@@ -395,7 +395,13 @@ if (String(env.SEED_DEMO || "").trim() === "true") {
 // ---------------------------------------------------------------------------
 // 7. AI 通道（只检查是否配置，不外呼）
 // ---------------------------------------------------------------------------
-if (present("YUNWU_API_KEY")) {
+if (env.NANOWORK_AI_PROVIDER === '360') {
+  if (!present('AI360_API_KEY')) fail('AI360_API_KEY', '360模式必须配置专用AI360_API_KEY，避免复用旧供应商凭据');
+  else pass('AI', '360专用Key已配置，连接与模型权限需分别验证');
+  if (env.YUNWU_BASE_URL && env.YUNWU_BASE_URL !== 'https://api.360.cn/v1') fail('YUNWU_BASE_URL', '360模式接口地址必须为https://api.360.cn/v1');
+  const encryptionSecret = env.TESTER_KEY_ENCRYPTION_SECRET || env.JWT_SECRET;
+  if (!encryptionSecret || encryptionSecret.length < 32) fail('TESTER_KEY_ENCRYPTION_SECRET', '测试员Key加密需要至少32字符的持久化服务端密钥');
+} else if (present("YUNWU_API_KEY")) {
   const base = String(env.YUNWU_BASE_URL || "").trim();
   if (base && !/^https:\/\//.test(base)) fail("YUNWU_BASE_URL", "生产下 API BaseURL 必须为 https");
   else pass("AI", `YUNWU_API_KEY 已配置（${base || "默认 base"}）；连接测试需在管理后台显式执行`);

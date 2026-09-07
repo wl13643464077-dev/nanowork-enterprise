@@ -20,6 +20,7 @@ import {
   findHoldByRef,
   holdCredits,
   releaseHold,
+  refundHold,
   settleHold,
 } from "./credits.js";
 import { decodeBase64File } from "./filehub.js";
@@ -28,6 +29,7 @@ import {
   resolveFfmpeg,
 } from "./media-binaries.js";
 import createMiniMaxVoiceClient from "./minimax-voice.js";
+import { provider360Active } from "./yunwu.js";
 import { parseMiniMaxAudioUrl } from "./minimax-voice.js";
 import createHeyGenAvatarClient from "./heygen-avatar.js";
 import createKlingAvatarClient from "./kling-avatar.js";
@@ -744,6 +746,7 @@ function providerPricing(engine, durationSeconds) {
 }
 
 function explicitDefaultProvider({ engine, tenantId, durationSeconds }) {
+  if (provider360Active()) return Object.freeze({ ready: () => false });
   if (engine === "runninghub") {
     const config = getTenantConfig("avatar_runninghub", {}, tenantId) || {};
     return createRunningHubClient({
@@ -917,6 +920,7 @@ function defaultProviderFactory({
 }
 
 function defaultVoiceClientFactory({ tenantId }) {
+  if (provider360Active()) return createMiniMaxVoiceClient({ apiKey: '' });
   const config = getTenantConfig("avatar_minimax_voice", {}, tenantId) || {};
   return createMiniMaxVoiceClient({
     apiKey: config.apiKey || config.key || process.env.YUNWU_API_KEY,
@@ -1398,6 +1402,7 @@ export function createAvatarJobService(options = {}) {
   }
 
   async function voiceClientFor(context, capability = "cloneVoice") {
+    if (!customVoiceClient && provider360Active()) throw failure('当前360供应商尚未开放独立声音克隆接口，请使用AI带货员生成原生有声视频', 503, 'PROVIDER_360_CAPABILITY_UNAVAILABLE');
     const client = await voiceClientFactory(context);
     if (!client || typeof client[capability] !== "function") {
       throw failure(
@@ -1675,20 +1680,44 @@ export function createAvatarJobService(options = {}) {
     );
   }
 
-  function settleFailure(jobId, error) {
+  function providerWasStarted(row) {
+    return !!row.provider_task_id || !!row.provider_result_json || !!row.tts_attempt_json
+      || parseJson(row.steps_json, []).some(step => ['provider_call', 'tts_call', 'upload_image', 'upload_audio', 'create', 'accepted', 'polling', 'download'].includes(step.phase));
+  }
+
+  function refundUndeliveredAvatar(row, hold, note, invoked = providerWasStarted(row)) {
+    if (!hold) return null;
+    if (outputArtifact(row)) throw failure('已有成片，保留结果待结算', 409, 'AVATAR_BILLING_DELIVERED');
+    if (!invoked) return releaseHold(hold, note);
+    return refundHold(hold, {
+      note,
+      assertRefundable: () => {
+        const current = q.get('SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?', row.tenant_id, row.id);
+        return current?.status === row.status && current.started_at === row.started_at
+          && current.retry_count === row.retry_count && !outputArtifact(current);
+      },
+    });
+  }
+
+  function settleFailure(jobId, error, { invoked, owns } = {}) {
     const row = q.get(
       "SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?",
       curTenant(),
       jobId,
     );
     if (!row || row.status === "cancelled" || row.status === "done") return;
+    if (owns && !owns(row)) return;
+    if (outputArtifact(row)) {
+      markPendingReconciliation(jobId, error);
+      return;
+    }
     const safe = safeError(error);
     let billingStatus = row.billing_status;
     if (billingStatus === "held") {
       const hold = findHoldByRef(BILLING_REF, jobId, row.tenant_id);
       try {
         const released = hold
-          ? releaseHold(hold, `数字人未交付：${safe.message}`)
+          ? refundUndeliveredAvatar(row, hold, `数字人最终未交付，用户积分全退：${safe.message}`, invoked)
           : null;
         billingStatus =
           released || ledgerWasReleased(BILLING_REF, jobId, row.tenant_id)
@@ -1742,6 +1771,14 @@ export function createAvatarJobService(options = {}) {
       const controller = new AbortController();
       const key = `${tid}:${id}`;
       active.set(key, controller);
+      const claimedRow = q.get('SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?', tid, id);
+      const owns = row => row?.status === 'running' && row.started_at === startedAt
+        && row.timeout_at === timeoutAt && row.retry_count === claimedRow.retry_count;
+      const assertOwner = () => {
+        if (!owns(q.get('SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?', tid, id)))
+          throw failure('数字人任务执行已接管', 409, 'AVATAR_OWNER_CHANGED');
+      };
+      let invoked = false;
       let timedOut = false;
       let rejectDeadline;
       const deadline = new Promise((_, reject) => {
@@ -1784,6 +1821,9 @@ export function createAvatarJobService(options = {}) {
           const voiceClient = await beforeDeadline(
             voiceClientFor({ tenantId: tid }, "synthesize"),
           );
+          assertOwner();
+          appendStep(id, { phase: 'tts_call', message: '已开始供应商口播调用' }, now);
+          invoked = true;
           const tts = await beforeDeadline(
             voiceClient.synthesize({
               text: scriptOf(row.script, row.duration_seconds),
@@ -1791,6 +1831,7 @@ export function createAvatarJobService(options = {}) {
               signal: controller.signal,
             }),
           );
+          assertOwner();
           q.run(
             `UPDATE avatar_jobs SET tts_attempt_json=?,updated_at=?
             WHERE tenant_id=? AND id=? AND status='running'`,
@@ -1874,15 +1915,21 @@ export function createAvatarJobService(options = {}) {
             );
           }
         }
+        assertOwner();
+        appendStep(id, { phase: 'provider_call', message: '已开始供应商数字人渲染调用' }, now);
+        invoked = true;
         const result = await beforeDeadline(
           synthesize.call(provider, {
             image: imageInput,
             audio: audioInput,
             prompt: row.prompt || "",
             signal: controller.signal,
-            onProgress: (event) => appendStep(id, event, now),
+            onProgress: (event) => {
+              if (owns(q.get('SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?', tid, id))) appendStep(id, event, now);
+            },
           }),
         );
+        assertOwner();
         const evidence = providerEvidence(result);
         const providerTaskId = String(result?.taskId || "").trim();
         if (!providerTaskId || providerTaskId.length > 200) {
@@ -1940,7 +1987,7 @@ export function createAvatarJobService(options = {}) {
           tid,
           id,
         );
-        if (row?.status !== "running") {
+        if (!owns(row)) {
           throw failure("数字人任务已取消", 499, "AVATAR_CANCELLED");
         }
         appendStep(id, {
@@ -1948,6 +1995,10 @@ export function createAvatarJobService(options = {}) {
           message: "正在把真实视频成片写入租户文件库",
         }, now);
         const artifact = await beforeDeadline(persistOutput(row, downloaded));
+        if (!owns(q.get('SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?', tid, id))) {
+          await removeOutputFile({ ...row, output_file_id: artifact.file.id });
+          throw failure('数字人任务执行已接管', 409, 'AVATAR_OWNER_CHANGED');
+        }
         q.run(
           `UPDATE avatar_jobs SET output_file_id=?,result_url=?,result_sha256=?,
           result_bytes=?,updated_at=? WHERE tenant_id=? AND id=? AND status='running'`,
@@ -1964,7 +2015,7 @@ export function createAvatarJobService(options = {}) {
           tid,
           id,
         );
-        if (row?.status !== "running") {
+        if (!owns(row)) {
           await removeOutputFile({ ...row, output_file_id: artifact.file.id });
           throw failure("数字人任务已取消", 499, "AVATAR_CANCELLED");
         }
@@ -2040,7 +2091,7 @@ export function createAvatarJobService(options = {}) {
           tid,
           id,
         );
-        if (row?.status === "cancelled") return publicJob(row);
+        if (!owns(row)) return row ? publicJob(row) : null;
         const failedAttempts = fallbackAttemptEvidence(
           effectiveError?.fallbackAttempts,
         );
@@ -2060,13 +2111,12 @@ export function createAvatarJobService(options = {}) {
           );
         }
         if (
-          code.startsWith("AVATAR_BILLING_") ||
-          code === "BILLING_HOLD_EXCEEDED" ||
+          outputArtifact(row) || code === "BILLING_HOLD_EXCEEDED" ||
           code === "CREDIT_HOLD_INTEGRITY_MISMATCH"
         ) {
           markPendingReconciliation(id, effectiveError);
         } else {
-          settleFailure(id, effectiveError);
+          settleFailure(id, effectiveError, { invoked, owns });
         }
         return publicJob(
           q.get("SELECT * FROM avatar_jobs WHERE tenant_id=? AND id=?", tid, id),
@@ -2099,6 +2149,7 @@ export function createAvatarJobService(options = {}) {
 
   function cancelJob(user, jobId) {
     const row = authorizedJob(user, jobId);
+    if (outputArtifact(row)) throw failure('成片已经保存，请查看结果及账务状态', 409, 'AVATAR_ALREADY_DELIVERED');
     if (!["queued", "running"].includes(row.status)) {
       throw failure("该数字人工单已经结束，无需取消", 409, "AVATAR_NOT_CANCELABLE");
     }
@@ -2122,7 +2173,7 @@ export function createAvatarJobService(options = {}) {
       const hold = findHoldByRef(BILLING_REF, row.id, row.tenant_id);
       try {
         const released = hold
-          ? releaseHold(hold, "用户取消数字人任务，预授权全额退回")
+          ? refundUndeliveredAvatar({ ...row, status: 'cancelled' }, hold, "用户取消数字人任务且无成片，用户积分全退")
           : null;
         billingStatus =
           released || ledgerWasReleased(BILLING_REF, row.id, row.tenant_id)
@@ -2225,6 +2276,7 @@ export function createAvatarJobService(options = {}) {
         tid,
       );
       for (const original of rows) {
+        if (active.has(`${tid}:${original.id}`)) continue;
         let row = original;
         try {
           if (row.billing_status === "pending") {
@@ -2326,7 +2378,7 @@ export function createAvatarJobService(options = {}) {
           if (["failed", "cancelled"].includes(row.status) && row.billing_status === "held") {
             const hold = findHoldByRef(BILLING_REF, row.id, tid);
             const released = hold
-              ? releaseHold(hold, "启动恢复终态数字人工单，预授权全额退回")
+              ? refundUndeliveredAvatar(row, hold, "启动恢复终态数字人工单，无成片用户积分全退")
               : null;
             if (!released && !ledgerWasReleased(BILLING_REF, row.id, tid)) {
               throw failure(
@@ -2420,6 +2472,7 @@ export function createAvatarJobService(options = {}) {
     );
     const voiceRowId = Number(inserted.lastInsertRowid);
     let hold;
+    let invoked = false;
     try {
       hold = holdCredits({
         userId,
@@ -2438,6 +2491,7 @@ export function createAvatarJobService(options = {}) {
         tenantId,
         voiceRowId,
       );
+      invoked = true;
       const result = await client.cloneVoice({
         audio: audio.bytes,
         fileName: audio.fileName,
@@ -2503,10 +2557,27 @@ export function createAvatarJobService(options = {}) {
       );
     } catch (error) {
       const safe = safeError(error);
+      const current = q.get('SELECT * FROM avatar_voices WHERE tenant_id=? AND id=?', tenantId, voiceRowId);
+      if (current?.status === 'ready' && current.provider_voice_id) {
+        const ledger = ledgerFor(VOICE_BILLING_REF, voiceRowId, tenantId);
+        q.run("UPDATE avatar_voices SET billing_status=?,error_code=?,error_message=?,updated_at=? WHERE tenant_id=? AND id=? AND status='ready'",
+          ledger?.status === 'settled' && Number(ledger.settled_credits) > 0 ? 'settled' : 'pending_reconciliation',
+          safe.code, '音色已生成并保留，账务状态待核对', timestamp(now), tenantId, voiceRowId);
+        return publicVoice(q.get('SELECT * FROM avatar_voices WHERE tenant_id=? AND id=?', tenantId, voiceRowId));
+      }
+      if (!current || current.status !== 'pending') throw error;
       let billingStatus = "released";
       try {
         const released = hold
-          ? releaseHold(hold, `声音克隆未交付：${safe.message}`)
+          ? invoked
+            ? refundHold(hold, {
+              note: `声音克隆最终未交付，用户积分全退：${safe.message}`,
+              assertRefundable: () => {
+                const owned = q.get('SELECT status,provider_voice_id,created_by FROM avatar_voices WHERE tenant_id=? AND id=?', tenantId, voiceRowId);
+                return owned?.status === 'pending' && !owned.provider_voice_id && owned.created_by === userId;
+              },
+            })
+            : releaseHold(hold, '声音克隆尚未发起供应商调用，预授权退回')
           : null;
         if (
           hold &&

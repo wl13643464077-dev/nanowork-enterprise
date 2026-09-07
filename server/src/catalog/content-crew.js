@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AI_XHS_EMPLOYEE } from './ai-xhs-employee.js';
 import {
   EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH,
   validateEmployeeSkillEvidenceCatalog,
@@ -384,8 +385,9 @@ export const CONTENT_EMPLOYEES = CONTENT_CREW.employees;
  */
 function validateNativeContentEmployee(value) {
   objectValue(value, '原生内容员工');
-  if (value.idx !== 10 || value.key !== 'commerce_video' || value.name !== 'AI带货员') {
-    fail('原生内容员工必须是10/commerce_video/AI带货员');
+  if (!((value.idx === 10 && value.key === 'commerce_video' && value.name === 'AI带货员')
+    || (value.idx === 11 && value.key === 'xhs_note' && value.name === 'AI小红书种草员'))) {
+    fail('原生内容员工身份不正确');
   }
   if (value.person !== null) fail('原生内容员工person必须为null');
   for (const field of [
@@ -428,7 +430,7 @@ function validateNativeContentEmployee(value) {
     fail('原生内容员工outputKeys不完整');
   }
   objectValue(value.skillProfile, '原生内容员工.skillProfile');
-  if (value.skillProfile.employeeIdx !== 10
+  if (value.skillProfile.employeeIdx !== value.idx
     || value.skillProfile.expectedSkillCount !== 0
     || value.skillProfile.verificationStatus !== 'native_verified') {
     fail('原生内容员工.skillProfile不完整');
@@ -467,11 +469,11 @@ function validateNativeContentEmployee(value) {
   objectValue(value.outputSchema, '原生内容员工.outputSchema');
   if (value.outputSchema.format !== 'json_object'
     || JSON.stringify(value.outputSchema.keys) !== JSON.stringify(value.outputKeys)
-    || !value.outputSchema.contract.includes('"facts"')) {
+    || !value.outputSchema.contract.includes(value.idx === 11 ? '"body"' : '"facts"')) {
     fail('原生内容员工outputSchema不完整');
   }
   objectValue(value.connectorPolicy, '原生内容员工.connectorPolicy');
-  if (!Array.isArray(value.connectorPolicy.connectors) || value.connectorPolicy.connectors.length < 2) {
+  if (!Array.isArray(value.connectorPolicy.connectors) || value.connectorPolicy.connectors.length < (value.idx === 11 ? 1 : 2)) {
     fail('原生内容员工connectorPolicy不完整');
   }
   const connectorKinds = new Set();
@@ -503,7 +505,7 @@ function validateNativeContentEmployee(value) {
     }
   }
   objectValue(value.sourceProvenance, '原生内容员工.sourceProvenance');
-  if (value.sourceProvenance.native !== true || value.sourceProvenance.legacyIdx !== 10
+  if (value.sourceProvenance.native !== true || value.sourceProvenance.legacyIdx !== value.idx
     || value.sourceProvenance.sourceCapabilitySetFingerprint !== jsonFingerprint(sourceCapabilities)
     || value.sourceProvenance.sourcePromptFingerprint !== value.pipelinePrompt.sourceFingerprint) {
     fail('原生内容员工sourceProvenance不完整');
@@ -522,9 +524,9 @@ function validateNativeContentEmployee(value) {
 }
 
 export const NATIVE_CONTENT_EMPLOYEES = deepFreeze(
-  (CONTENT_CREW.nativeEmployees || []).map(validateNativeContentEmployee),
+  [...(CONTENT_CREW.nativeEmployees || []), AI_XHS_EMPLOYEE].map(validateNativeContentEmployee),
 );
-if (NATIVE_CONTENT_EMPLOYEES.length !== 1) fail('必须恰好包含1名原生内容员工');
+if (NATIVE_CONTENT_EMPLOYEES.length !== 2) fail('必须恰好包含2名原生内容员工');
 
 // Runtime roster is additive; the legacy export remains the 10-role source
 // snapshot for all parity and source-fingerprint consumers.
@@ -714,6 +716,6 @@ export function publicContentCrew() {
       outputKeys: employee.outputKeys,
       connectorPolicy: employee.connectorPolicy,
     })),
-    executionBoundary: '10位Paihuo来源员工 + 1位NanoWork原生AI带货员均有独立工作台和单独派活能力；这不表示十个工位已经自动串行执行，也不表示完整团队已经自动串行执行。',
+    executionBoundary: '10位内容员工与AI带货员、AI小红书种草员均有独立入口；生成结果由用户按需使用，不自动发布。',
   };
 }

@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { safeUrl } from '../api/client';
+import './Markdown.css';
 
 // AI 输出统一 Markdown 渲染（##/**/表格/列表/代码块），安全策略三层：
 // 1. 不挂 rehype-raw —— 原文中的 HTML 一律按纯文本展示，不进 DOM；
@@ -22,6 +23,13 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeSanitize, schema]]}
         components={{
+          table: ({ children }) => (
+            // 可聚焦的滚动区域让键盘用户用方向键读取宽表格，不改变表格语义。
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+            <div className="md-table-scroll" role="region" aria-label="报告表格（可横向滚动）" tabIndex={0}>
+              <table>{children}</table>
+            </div>
+          ),
           a: ({ href, children }) => (
             <a href={safeUrl(href)} target="_blank" rel="noopener noreferrer">
               {children}

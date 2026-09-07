@@ -7,7 +7,7 @@ import { getTenantConfig, setTenantConfig } from '../db.js';
 export const DISPATCH_POLICY_KEY = 'employee_dispatch_policy';
 export const DISPATCHABLE_ROLES = Object.freeze(['boss', 'ops_director', 'sales', 'admin', 'partner']);
 const ALWAYS_ALLOWED_ROLES = new Set(['boss', 'admin', 'platform_super']);
-const EMPLOYEE_KEY_RE = /^(emp:(10[1-9]|1[1-5][0-9]|16[01])|crew:[0-9])$/;
+const EMPLOYEE_KEY_RE = /^(emp:(10[1-9]|1[1-5][0-9]|16[01])|crew:([0-9]|1[01]))$/;
 
 function normalizeRoles(value) {
   if (!Array.isArray(value)) return null;
@@ -54,7 +54,7 @@ export function saveDispatchPolicy(input) {
   if (input.employees && typeof input.employees === 'object' && !Array.isArray(input.employees)) {
     for (const [key, rule] of Object.entries(input.employees)) {
       if (!EMPLOYEE_KEY_RE.test(key)) {
-        throw Object.assign(new Error(`员工标识「${key}」不合法（emp:101-161 或 crew:0-9）`), { status: 400 });
+        throw Object.assign(new Error(`员工标识「${key}」不合法（emp:101-161 或 crew:0-11）`), { status: 400 });
       }
       const roles = normalizeRoles(rule?.roles);
       if (!roles) throw Object.assign(new Error(`员工「${key}」的角色列表不合法`), { status: 400 });
@@ -69,7 +69,7 @@ export function saveDispatchPolicy(input) {
  * 判定用户能否给指定数字员工派活。
  * @param user     req.user（含 role）
  * @param employee { kind: 'restaurant'|'crew', idx, group }
- *                 餐饮员工 idx 101-161；内容员工 idx 0-9；group 为分部名（内容部固定'内容生产部'）
+ *                 餐饮员工 idx 101-161；内容员工 idx 0-11；group 为分部名（内容部固定'内容生产部'）
  */
 export function canDispatchEmployee(user, employee) {
   if (!user?.id) return false;

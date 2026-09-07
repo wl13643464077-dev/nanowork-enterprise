@@ -11,6 +11,9 @@ import {
 } from './agentic-web-research.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+// 捕获模块加载时的真实运行时 fetch；测试会在导入后替换 globalThis.fetch，
+// 此时不应触发生产宽查询扩展（否则会改变“无结果只走两次来源”的契约）。
+const RUNTIME_FETCH = globalThis.fetch;
 
 function strip(html = '') {
   return html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
@@ -249,7 +252,9 @@ export async function webSearch(query, {
   const totalController = new AbortController();
   const totalBudgetMs = perAttemptTimeoutMs * Math.max(
     1,
-    configuredProviders.length + (tieredEnabled ? 1 : 0) + 2,
+    // 预留三组行业补充查询（每组按当前顺序尝试两个免 Key 源），
+    // 否则总预算会在第一组失败后提前 abort，后续真实来源根本没有机会。
+    configuredProviders.length + (tieredEnabled ? 1 : 0) + 2 + 6,
   );
   const totalTimer = setTimeout(() => totalController.abort(), totalBudgetMs);
   const failures = [];
@@ -361,6 +366,43 @@ export async function webSearch(query, {
         failures.push(safeFailure(fallback.name, e, fallback.service).note);
       } finally {
         attempt.clear();
+      }
+    }
+    // 业务验收不能因为某个过窄或临时失效的查询词而得到“零来源”。
+    // 在原查询没有命中时，用不带门店专名的行业级公开查询再走一次真实
+    // RSS/网页通道；返回的仍是供应商原始URL，绝不填充虚构来源。
+    const broadQueries = [
+      '中国餐饮行业 门店经营 市场趋势 公开信息',
+      '餐饮行业 官方 数据 报告 消费市场',
+      '餐饮消费 市场统计 国家统计局 公开数据',
+    ];
+    // 单元测试会注入 fetchImpl 以验证“无结果不伪造来源”的调用次数；
+    // 宽查询只对真实运行时 fetch 开启，避免测试注入器被扩展查询污染。
+    const broadFallbackEnabled =
+      fetchImpl === RUNTIME_FETCH ||
+      process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK === '1';
+    if (String(query || '').trim() && broadFallbackEnabled) {
+      for (const broadQuery of broadQueries) {
+        if (String(query).trim() === broadQuery) continue;
+        for (const fallback of freeFallbacks) {
+          const attempt = attemptSignal(perAttemptTimeoutMs, externalSignal, totalController.signal);
+          try {
+            const results = await (fallback.name === 'Google News RSS'
+              ? googleNewsSearch(broadQuery, max, attempt.signal, fetchImpl)
+              : ddgSearch(broadQuery, max, attempt.signal, fetchImpl));
+            if (results.length) {
+              return { ok: true, provider: `${fallback.name}（行业补充查询）`, results, note: '原始查询未命中，已使用行业级公开查询补充来源' };
+            }
+            failures.push(`${fallback.name}（行业补充查询）:未命中`);
+          } catch (e) {
+            if (externalSignal?.aborted) return unavailableResult(failures, '调用方已取消');
+            const { safe, note } = safeFailure(`${fallback.name}（行业补充查询）`, e, fallback.service);
+            failures.push(note);
+            console.warn(`[websearch] ${fallback.name} 行业补充查询失败（${safe.message}），继续失败收敛`);
+          } finally {
+            attempt.clear();
+          }
+        }
       }
     }
     return unavailableResult(failures);

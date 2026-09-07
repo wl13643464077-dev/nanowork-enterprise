@@ -110,7 +110,7 @@ function assertCompleteProfile(profile, employee) {
   assert.equal(profile.workMethod.execution.tenantKnowledgeBaseAllowed, true, `${employee.name}: execution KB flag`);
   assert.equal(
     profile.runtimeBindings.currentRuntimeBindings.work.handler,
-    employee.idx === 10
+    employee.idx === 11 ? 'ai-xhs-note' : employee.idx === 10
       ? 'native-content-handler:ai-sales-video'
       : `content-handler-adapter:${employee.workMethod.execution.handler}`,
     `${employee.name}: bound handler`,
@@ -165,7 +165,7 @@ async function callJson(base, route, { user, method = 'GET', body } = {}) {
 
 test('11名内容员工管理视图完整复用派活档案：能力、技能、提示词、工作方式、配置、岗位档案与接线', () => {
   assert.equal(CONTENT_EMPLOYEES.length, 10, 'Paihuo source roster must remain ten employees');
-  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 11, 'runtime roster must add AI带货员');
+  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 12, 'runtime roster adds AI带货员 and AI小红书种草员');
   for (const employee of CONTENT_EMPLOYEE_ROSTER) {
     const profile = buildContentEmployeeWorkbenchProfile(employee.idx);
     assertCompleteProfile(profile, employee);
@@ -208,8 +208,11 @@ test('0-9及AI带货员编译完整连接器包；每个连接器均绑定正确
       const responseSchema = getContentEmployeeOutputResponseSchema(employee.idx);
       assert.ok(responseSchema && responseSchema.schema, `${employee.name}: response schema`);
       assert.equal(responseSchema.schema.properties ? typeof responseSchema.schema.properties : 'object', 'object');
-    } else {
+    } else if (employee.idx === 10) {
       assert.match(profile.jobProfile.outputSchema.contract, /video_plan|durationSeconds|segmentDurationSeconds/u);
+    } else {
+      assert.match(profile.jobProfile.outputSchema.contract, /firstComment/);
+      assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.businessEndpoint, '/api/content/ai-xhs-note');
     }
   }
 });
@@ -261,9 +264,15 @@ test('AI带货员只走专用30秒视频能力，图片/视频/PPT需求不会�
   assert.equal(employee.key, 'commerce_video');
   assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.adapter, 'ai-sales-video');
   assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.execution.workflow, 'ai_sales_video');
-  assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.execution.durationSeconds, 30);
-  assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.execution.segmentCount, 3);
-  assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.execution.segmentDurationSeconds, 10);
+  assert.equal(profile.runtimeBindings.currentRuntimeBindings.work.execution.durationSeconds, 15);
+  const execution = profile.runtimeBindings.currentRuntimeBindings.work.execution;
+  assert.equal(execution.segmentPolicy, 'model_dependent');
+  const wan = execution.segmentPlans.find(plan => plan.models.includes('wan2.6-i2v'));
+  const wan30 = execution.segmentPlans.find(plan => plan.models.includes('wan2.6-i2v') && plan.durationSeconds === 30);
+  assert.deepEqual([wan30.segmentCount, wan30.segmentDurationSeconds], [2, 15]);
+  const hailuo = execution.segmentPlans.find(plan => plan.models.includes('MiniMax-Hailuo-2.3'));
+  assert.deepEqual([wan.segmentCount, wan.segmentDurationSeconds], [1, 15]);
+  assert.deepEqual([hailuo.segmentCount, hailuo.segmentDurationSeconds], [3, 10]);
   const kinds = profile.runtimeBindings.currentRuntimeBindings.connectors.map(connector => connector.kind);
   assert.deepEqual(kinds, ['sales_video_plan', 'sales_video_generation']);
   for (const connector of profile.runtimeBindings.currentRuntimeBindings.connectors) {
@@ -341,12 +350,12 @@ test('只输入一句业务问题即可派活；Boss/platform_super 内部任务
     precheckByRoleFn: () => 1_000,
     estimateCallCreditsFn: () => 30,
     holdCreditsFn: args => holdCredits({ ...args, credits: 30 }),
+    // Text settles from the run's real usage; a fixed credit figure is rejected as tampering.
     settleHoldFn: (hold, args) => settleHold(hold, {
       ...args,
-      credits: 7,
       model: 'local-luna-test-model',
       aiMode: 'api',
-      usage: { inputTokens: 120, outputTokens: 80 },
+      usage: args.usage?.inputTokens != null ? args.usage : { inputTokens: 120, outputTokens: 80 },
     }),
     releaseHoldFn: hold => releaseFailedAiHold(hold, 'isolated acceptance cleanup'),
     textModelForFn: () => 'local-luna-test-model',

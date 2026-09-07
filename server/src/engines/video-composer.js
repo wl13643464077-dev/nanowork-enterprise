@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { mediaBinarySearchDirectories, mediaBinaryNames } from './media-binaries.js';
-import { voiceSubtitleAss, voicedVideoFilter, assertAudibleTrack, assertVoiceProbe } from './video-voice-composition.js';
+import { voiceSubtitleAss, voicedVideoFilter, assertAudibleTrack, assertVoiceProbe, AI_SALES_NATIVE_TRANSITION } from './video-voice-composition.js';
 
 export const AI_SALES_VIDEO_TARGET_DURATION_SECONDS = 30;
 export const AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS = Object.freeze([2, 3]);
@@ -23,6 +23,11 @@ const AUDIO_CODEC = 'aac';
 const MAX_TENANT_ID = 2_147_483_647;
 const MIN_SEGMENT_DURATION_SECONDS = 0.05;
 const MAX_SEGMENT_DURATION_SECONDS = 600;
+
+async function renderRasterSubtitle(options) {
+  const { renderPlainSubtitleOverlayPng } = await import('./text-video.js');
+  return renderPlainSubtitleOverlayPng(options);
+}
 
 function composerError(message, code = 'AI_SALES_VIDEO_COMPOSER_INVALID') {
   const error = new Error(message);
@@ -159,9 +164,9 @@ function normalizeSegmentInput(value, index) {
   return resolved;
 }
 
-async function validateLocalSegments(segments) {
-  if (!Array.isArray(segments) || !AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS.includes(segments.length)) {
-    throw composerError('视频合成必须提供2或3个本地片段');
+async function validateLocalSegments(segments, allowedCounts = AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS) {
+  if (!Array.isArray(segments) || !allowedCounts.includes(segments.length)) {
+    throw composerError(`视频合成必须提供${allowedCounts.join('或')}个本地片段`);
   }
   const paths = segments.map(normalizeSegmentInput);
   const seen = new Set();
@@ -218,23 +223,31 @@ export function runAiSalesMediaCommand(file, args, { cwd, timeoutMs = 180_000, s
 
 // Native voiced callers must run this before creating a hold or calling TTS.
 // An executable alone does not prove subtitle/MP3/H264/AAC support.
-export async function assertAiSalesVoicedComposerReady({ runner = runAiSalesMediaCommand, ...options } = {}) {
+export async function assertAiSalesVoicedComposerReady({ runner = runAiSalesMediaCommand, audioMode = 'external_tts', durationSeconds = 30, ...options } = {}) {
   const binaries = await assertAiSalesVideoComposerReady(options);
   const filters = await runner(binaries.ffmpegPath, ['-hide_banner', '-filters']);
   const filterText = `${filters.stdout || ''}\n${filters.stderr || ''}`;
-  for (const name of ['ass', 'volumedetect', 'atempo', 'apad']) {
+  for (const name of (audioMode === 'provider_native' ? ['volumedetect', 'apad', ...(durationSeconds === 30 ? ['xfade', 'afade'] : [])] : ['volumedetect', 'atempo', 'apad'])) {
     if (!new RegExp(`\\b${name}\\s+[AV]`).test(filterText)) {
       throw composerError(`有声合成环境缺少 ${name} 滤镜`, 'AI_SALES_VIDEO_COMPOSER_CAPABILITY_MISSING');
     }
   }
+  const subtitleRenderer = /\bass\s+V/u.test(filterText) ? 'ass' : 'raster_png';
+  if (subtitleRenderer === 'raster_png') {
+    if (!/\boverlay\s+V/u.test(filterText)) {
+      throw composerError('有声合成环境需要ass或overlay字幕滤镜', 'AI_SALES_VIDEO_COMPOSER_CAPABILITY_MISSING');
+    }
+    // 在占扣/调用TTS前验证真实中文栅格能力，不把缺libass误判为整个剪辑不可用。
+    await renderRasterSubtitle({ text: '中文字幕 Aa 123' });
+  }
   const encoders = await runner(binaries.ffmpegPath, ['-hide_banner', '-encoders']);
   const encoderText = `${encoders.stdout || ''}\n${encoders.stderr || ''}`;
-  for (const name of ['libx264', 'aac', 'libmp3lame']) {
+  for (const name of (audioMode === 'provider_native' ? ['libx264', 'aac'] : ['libx264', 'aac', 'libmp3lame'])) {
     if (!new RegExp(`\\b${name}\\s`).test(encoderText)) {
       throw composerError(`有声合成环境缺少 ${name} 编码器`, 'AI_SALES_VIDEO_COMPOSER_CAPABILITY_MISSING');
     }
   }
-  return binaries;
+  return { ...binaries, subtitleRenderer };
 }
 
 const spawnCommand = runAiSalesMediaCommand;
@@ -347,7 +360,7 @@ function parseOutputDuration(probeResult, targetDuration) {
 
 /**
  * Normalize two or three downloaded local clips and concatenate them into a
- * protected 30-second portrait MP4. `runner` receives `(command,args,opts)`
+ * protected portrait MP4 (native audio: 15/30 seconds). `runner` receives `(command,args,opts)`
  * and is injectable for hermetic tests; the production runner always uses
  * spawn with `shell:false` and an argument array.
  */
@@ -360,36 +373,47 @@ export async function composeAiSalesVideo({
   runner = spawnCommand,
   targetDurationSeconds = AI_SALES_VIDEO_TARGET_DURATION_SECONDS,
   requireAudio = false,
+  audioMode = 'external_tts',
   voiceTracks = [],
   subtitleCues = [],
+  subtitleRenderer = 'auto',
 } = {}) {
+  if (!['external_tts', 'provider_native'].includes(audioMode)) throw composerError('声音来源无效');
+  const nativeAudio = audioMode === 'provider_native';
+  if (nativeAudio && !requireAudio) throw composerError('原生有声视频必须验证音轨');
   let resolvedFfmpegPath = ffmpegPath;
   let resolvedFfprobePath = ffprobePath;
   if (runner === spawnCommand) {
-    const ready = await assertAiSalesVideoComposerReady({
+    const ready = await (requireAudio ? assertAiSalesVoicedComposerReady : assertAiSalesVideoComposerReady)({
       ffmpegPath,
       ffprobePath,
+      audioMode,
+      durationSeconds: targetDurationSeconds,
     });
     resolvedFfmpegPath = ready.ffmpegPath;
     resolvedFfprobePath = ready.ffprobePath;
+    if (subtitleRenderer === 'auto') subtitleRenderer = ready.subtitleRenderer || 'ass';
   } else {
     // Injected runners are hermetic test/adaptor boundaries; they receive the
     // requested command label without inspecting the host filesystem.
     resolvedFfmpegPath = resolvedFfmpegPath || process.env.FFMPEG_PATH || FFMPEG_BINARY_NAME;
     resolvedFfprobePath = resolvedFfprobePath || process.env.FFPROBE_PATH || FFPROBE_BINARY_NAME;
+    if (subtitleRenderer === 'auto') subtitleRenderer = 'ass';
   }
+  if (!['ass', 'raster_png'].includes(subtitleRenderer)) throw composerError('字幕渲染方式无效');
   const safeTenantId = ensureSafeTenantId(tenantId);
   const targetDuration = Number(targetDurationSeconds);
   if (!Number.isFinite(targetDuration) || targetDuration <= 0 || targetDuration > 3600) {
     throw composerError('目标视频时长无效');
   }
-  const inputPaths = await validateLocalSegments(segments);
+  const inputPaths = await validateLocalSegments(segments, nativeAudio ? [1, 2] : AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS);
   let voicePaths = [], subtitles = null;
   if (requireAudio) {
-    if (inputPaths.length !== 2 || targetDuration !== 30 || voiceTracks.length !== 2) {
-      throw composerError('有声模式必须提供两段视频及两段15秒配音音轨');
+    if ((nativeAudio ? ![15, 30].includes(targetDuration) || ![1, targetDuration / 15].includes(inputPaths.length) : inputPaths.length !== 2 || targetDuration !== 30)
+      || voiceTracks.length !== (nativeAudio ? 0 : 2)) {
+      throw composerError(nativeAudio ? '原生有声模式按所选15或30秒提供一或两段视频，不叠加外部配音音轨' : '有声模式必须提供两段视频及两段15秒配音音轨');
     }
-    voicePaths = await validateLocalSegments(voiceTracks);
+    if (!nativeAudio) voicePaths = await validateLocalSegments(voiceTracks);
     subtitles = voiceSubtitleAss(subtitleCues, targetDuration);
   } else if (voiceTracks.length || subtitleCues.length) {
     throw composerError('配音/字幕必须显式启用有声模式');
@@ -424,9 +448,11 @@ export async function composeAiSalesVideo({
       probes.push(parseProbeResult(result, `第${index + 1}段`));
     }
 
+    const subtitlePaths = [];
     if (requireAudio) {
-      if (probes.some(probe => !probe.hasAudio || Math.abs(probe.duration - 15) > 0.35)) {
-        throw composerError('供应商片段缺少音轨或实测时长不符合15秒', 'AI_SALES_VIDEO_COMPOSER_AUDIO_INVALID');
+      const expectedSegmentSeconds = nativeAudio ? targetDuration / inputPaths.length : 15;
+      if (probes.some(probe => !probe.hasAudio || Math.abs(probe.duration - expectedSegmentSeconds) > 0.35)) {
+        throw composerError(`供应商片段缺少音轨或实测时长不符合${expectedSegmentSeconds}秒`, 'AI_SALES_VIDEO_COMPOSER_AUDIO_INVALID');
       }
       for (const voicePath of voicePaths) {
         assertVoiceProbe(await runner(resolvedFfprobePath, [
@@ -435,13 +461,27 @@ export async function composeAiSalesVideo({
         ], { cwd: tempDir }));
         await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: voicePath, cwd: tempDir, durationSeconds: 15 });
       }
-      await fsp.writeFile(path.join(tempDir, 'captions.ass'), subtitles, { flag: 'wx', mode: 0o600 });
+      if (nativeAudio) {
+        for (const inputPath of inputPaths) {
+          await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: inputPath, cwd: tempDir, durationSeconds: expectedSegmentSeconds });
+        }
+      }
+      if (subtitleRenderer === 'raster_png') {
+        for (const [index, cue] of subtitleCues.entries()) {
+          const destination = path.join(tempDir, `caption-${index}.png`);
+          await renderRasterSubtitle({ text: cue.text, destination });
+          subtitlePaths.push(destination);
+        }
+      } else {
+        await fsp.writeFile(path.join(tempDir, 'captions.ass'), subtitles, { flag: 'wx', mode: 0o600 });
+      }
     }
 
     const ffmpegArgs = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y'];
-    for (const inputPath of [...inputPaths, ...voicePaths]) ffmpegArgs.push('-protocol_whitelist', 'file,pipe', '-i', inputPath);
+    for (const inputPath of [...inputPaths, ...voicePaths, ...subtitlePaths]) ffmpegArgs.push('-protocol_whitelist', 'file,pipe', '-i', inputPath);
     ffmpegArgs.push(
-      '-filter_complex', requireAudio ? voicedVideoFilter(inputPaths.length) : buildFilterGraph(probes, targetDuration),
+      '-filter_complex_threads', '1',
+      '-filter_complex', requireAudio ? voicedVideoFilter(inputPaths.length, { audioMode, segmentDurationSeconds: nativeAudio ? targetDuration / inputPaths.length : 15, rasterCues: subtitlePaths.length ? subtitleCues : [] }) : buildFilterGraph(probes, targetDuration),
       '-map', '[vout]', '-map', '[aout]',
       '-c:v', VIDEO_CODEC,
       '-profile:v', 'high',
@@ -482,8 +522,8 @@ export async function composeAiSalesVideo({
     const outputProbe = parseOutputDuration(outputProbeResult, targetDuration);
     const audioVerification = [];
     if (requireAudio) {
-      if (Math.abs(outputProbe.duration - 30) > 0.25) throw composerError('有声成片时长偏离30秒', 'AI_SALES_VIDEO_COMPOSER_OUTPUT_INVALID');
-      for (const startSeconds of [0, 15]) {
+      if (Math.abs(outputProbe.duration - targetDuration) > 0.25) throw composerError('有声成片时长偏离所选时长', 'AI_SALES_VIDEO_COMPOSER_OUTPUT_INVALID');
+      for (const startSeconds of Array.from({ length: targetDuration / 15 }, (_, i) => i * 15)) {
         audioVerification.push(await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: tempOutput, cwd: tempDir, durationSeconds: 15, startSeconds }));
       }
     }
@@ -510,7 +550,7 @@ export async function composeAiSalesVideo({
       videoCodec: VIDEO_CODEC,
       audioCodec: AUDIO_CODEC,
       segmentCount: inputPaths.length,
-      ...(requireAudio ? { hasAudio: true, audioVerified: true, audioVerification, subtitleCount: subtitleCues.length, subtitlesBurnedIn: true, audioSource: 'reviewed_tts' } : {}),
+      ...(requireAudio ? { hasAudio: true, audioVerified: true, audioVerification, subtitleCount: subtitleCues.length, subtitlesBurnedIn: true, subtitleRenderer, audioSource: nativeAudio ? 'provider_native' : 'reviewed_tts', ...(nativeAudio ? { subtitleTiming: 'script_estimated', ...(inputPaths.length === 2 ? { transition: { ...AI_SALES_NATIVE_TRANSITION } } : {}) } : {}) } : {}),
     };
   } catch (error) {
     if (committed) await fsp.rm(filePath, { force: true }).catch(() => {});

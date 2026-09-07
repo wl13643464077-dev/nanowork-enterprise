@@ -5,7 +5,6 @@ import { canAccessOwner, canReviewManualTask, scopedUserIds } from '../engines/a
 import { normalizeInternalProfileLeakage } from '../engines/internal-profile-leakage.js';
 import {
   contentOutputReviewAccess,
-  inspectRestaurantOutputAudit,
 } from '../engines/restaurant-output-review.js';
 import { contentEmployeeRunReviewAccess } from '../engines/content-approval-policy.js';
 import {
@@ -41,6 +40,7 @@ const PUBLIC_STATUS = Object.freeze({
   reviewPending: BUSINESS_DELIVERY_LABELS.reviewPending,
   reviewRejected: BUSINESS_DELIVERY_LABELS.reviewRejected,
   approved: BUSINESS_DELIVERY_LABELS.adopted,
+  autoAdopted: '已自动采用（可用于业务）',
   published: BUSINESS_DELIVERY_LABELS.published,
 });
 
@@ -234,6 +234,9 @@ function realContentRunSource(run, snapshot) {
 }
 
 function restaurantState(task, output, approval, user) {
+  const delivery = output
+    ? loadContentDeliveryState(output.id, { tenantId: curTenant() })
+    : null;
   if (output) {
     const adoption = loadContentAdoptionAvailability(output.id, { tenantId: curTenant() });
     if (BILLING_BLOCKING_CODES.has(adoption.state?.code)) {
@@ -262,16 +265,9 @@ function restaurantState(task, output, approval, user) {
   }
 
   if (output) {
-    const audit = inspectRestaurantOutputAudit({
-      employeeProfileVersion: task.employee_profile_version,
-      aiMode: output.ai_mode,
-      executionEvidence: task.employee_web_snapshot,
-      employeeIdx: task.employee_idx,
-      taskTitle: task.title,
-      taskRequirement: task.requirement,
-      outputBody: output.body,
-    });
-    if (output.ai_mode === 'template' || (audit.applicable && !audit.valid)) {
+    // Reuse the delivery authority that understands both structured JSON and
+    // report-first Markdown; a second JSON-only audit mislabels valid reports.
+    if (output.ai_mode === 'template' || delivery?.contract?.valid === false) {
       return {
         status: flowStatus('quality_failed', PUBLIC_STATUS.qualityFailed, true),
         action: nextAction('retry', '修复输入或模型通道后重新派活', '/employees'),
@@ -308,9 +304,15 @@ function restaurantState(task, output, approval, user) {
       action: nextAction('view_result', '查看已发布结果', '/content'),
     };
   }
-  if (approval?.status === '已通过' && ['可使用', '已发布'].includes(output?.status)) {
+  if (delivery?.eligible && ['可使用', '已发布'].includes(output?.status)) {
     return {
-      status: flowStatus('approved', PUBLIC_STATUS.approved, true),
+      status: flowStatus(
+        'approved',
+        delivery.automaticAdoption?.valid === true
+          ? PUBLIC_STATUS.autoAdopted
+          : PUBLIC_STATUS.approved,
+        true,
+      ),
       action: nextAction('view_result', '查看已采纳的业务结果', '/assets'),
     };
   }
@@ -479,10 +481,22 @@ function contentState(run, contents = [], user = null) {
       action: nextAction('view_content', '查看已发布内容', '/content'),
     };
   }
-  if (run.status === '已完成' && snapshot.review?.decision === 'adopt') {
+  // 普通内部内容产出按岗位中央策略会在质量门与账务结算后自动采用。
+  // 这类运行没有人工审批记录，但依然是可用于业务的真实终态；不能再把
+  // snapshot.review=auto_adopt 显示成“待人工审阅”。
+  if (
+    run.status === '已完成' &&
+    ['adopt', 'auto_adopt'].includes(snapshot.review?.decision)
+  ) {
     return {
       status: flowStatus('approved', PUBLIC_STATUS.approved, true),
-      action: nextAction('view_material', '查看已采纳的素材与内容', '/content'),
+      action: nextAction(
+        'view_material',
+        snapshot.review?.decision === 'auto_adopt'
+          ? '查看已自动采用的素材与内容'
+          : '查看已采纳的素材与内容',
+        '/content',
+      ),
     };
   }
   return {
@@ -531,15 +545,17 @@ function contentFlow(id, user) {
     const snapshot = parsedSnapshot(run.snapshot_json);
     const reviewStatus = state.status.code === 'quality_failed'
       ? PUBLIC_STATUS.qualityFailed
-      : snapshot.review?.decision === 'adopt'
-        ? PUBLIC_STATUS.approved
+      : ['adopt', 'auto_adopt'].includes(snapshot.review?.decision)
+        ? snapshot.review?.decision === 'auto_adopt'
+          ? PUBLIC_STATUS.autoAdopted
+          : PUBLIC_STATUS.approved
         : snapshot.review?.decision === 'reject' || run.status === '已驳回'
           ? PUBLIC_STATUS.reviewRejected
           : PUBLIC_STATUS.reviewPending;
     const reviewNode = node(
       `content-review:${run.id}`,
       'review',
-      '人工审阅',
+      snapshot.review?.decision === 'auto_adopt' ? '中央策略自动采用' : '人工审阅',
       reviewStatus,
       run.updated_at,
       `/content?employee=${run.employee_idx}&runId=${run.id}`,

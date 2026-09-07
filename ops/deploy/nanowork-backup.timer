@@ -1,0 +1,13 @@
+[Unit]
+Description=NanoWork daily local backup at 03:00 Beijing time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+AccuracySec=1s
+# 停机错过的备份在恢复定时器后补做；service 的路径条件保护未部署的初装。
+Persistent=true
+Unit=nanowork-backup.service
+
+[Install]
+WantedBy=timers.target
+

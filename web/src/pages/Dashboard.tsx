@@ -62,6 +62,7 @@ import DashboardRoleHeader, {
 import { dashboardRankMeta } from '../components/DashboardRankingMeta';
 import { dashboardFeishuPresentation } from '../components/statusPresentation.js';
 import { useStreamingTask, type StreamStage } from '../hooks/useStreamingTask';
+import { useDashboardFeishu } from '../hooks/useDashboardFeishu';
 
 // 数字员工协同分析的阶段轴：与后端事件对齐，不编造中间态
 const AI_ANALYSIS_STAGES: StreamStage[] = [
@@ -151,7 +152,6 @@ export default function Dashboard() {
   const canViewAnalysis = hasModule('analysis');
   const canViewActivities = hasModule('activities');
   const canViewMarshals = hasModule('marshals');
-  const canViewSystem = hasModule('system');
   const canViewStoreData = canViewAnalysis && ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
   const { name: dashboardName, summary: dashboardSummary } = dashboardRoleView(role);
   const canViewManagementBriefing = ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
@@ -283,15 +283,7 @@ export default function Dashboard() {
   });
   const stream = useStreamingTask();
   const lastAiRef = useRef<{ title: string; summary: string } | null>(null);
-  const [feishu, setFeishu] = useState<any>(null);
-  useEffect(() => {
-    if (canViewActivities && canViewSystem) {
-      api
-        .get('/sys/feishu')
-        .then(setFeishu)
-        .catch(() => {});
-    }
-  }, [canViewActivities, canViewSystem]);
+  const { enabled: canViewFeishuConfig, data: feishu } = useDashboardFeishu(role, userModules);
   const feishuStatus = dashboardFeishuPresentation(feishu);
 
   // 门店真数据 KPI（当月真实客单价/毛利率/经营利润率）：值为 null 时整卡不渲染；调用失败静默隐藏。
@@ -1503,25 +1495,15 @@ export default function Dashboard() {
           title={`${scopeLabel}活动概览`}
           extra={
             <Space size={10}>
-              <Tooltip
-                title={
-                  hasModule('system')
-                    ? `${feishuStatus.description} 到“系统管理 → 配置与备份 → 飞书集成”处理。`
-                    : `${feishuStatus.description} 飞书由老板或管理层统一配置。`
-                }
-              >
-                {hasModule('system') ? (
+              {canViewFeishuConfig && (
+                <Tooltip title={`${feishuStatus.description} 到“系统管理 → 配置与备份 → 飞书集成”处理。`}>
                   <Link to="/system" aria-label={`${feishuStatus.label}，前往系统管理`}>
                     <Tag color={feishuStatus.color} style={{ cursor: 'pointer', fontSize: 11 }}>
                       {feishuStatus.label}
                     </Tag>
                   </Link>
-                ) : (
-                  <Tag color={feishuStatus.color} style={{ cursor: 'pointer', fontSize: 11 }}>
-                    {feishuStatus.label}
-                  </Tag>
-                )}
-              </Tooltip>
+                </Tooltip>
+              )}
               <Link style={{ fontSize: 12 }} to="/activities">
                 活动中心 <RightOutlined />
               </Link>

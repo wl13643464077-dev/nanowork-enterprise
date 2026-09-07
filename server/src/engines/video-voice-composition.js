@@ -1,5 +1,12 @@
 const invalid = message => Object.assign(new Error(message), { code: 'AI_SALES_VIDEO_COMPOSER_AUDIO_INVALID', status: 502 });
 
+// Frame handles create a dissolve around 15s without shifting the second
+// clip, overlapping words, or moving the absolute subtitle timeline.
+export const AI_SALES_NATIVE_TRANSITION = Object.freeze({
+  type: 'dissolve', startSeconds: 14.8, endSeconds: 15.2,
+  durationSeconds: 0.4, audioEdgeFadeSeconds: 0.04, timelinePreserved: true,
+});
+
 export function voiceSubtitleAss(cues, duration = 30) {
   if (!Array.isArray(cues) || !cues.length || cues.length > 120) throw invalid('有声成片缺少有效字幕');
   let previousEnd = 0;
@@ -26,18 +33,48 @@ export function voiceSubtitleAss(cues, duration = 30) {
   ].join('\n');
 }
 
-export function voicedVideoFilter(segmentCount) {
+export function voicedVideoFilter(segmentCount, { rasterCues = [], audioMode = 'external_tts', segmentDurationSeconds = 15 } = {}) {
+  if (!['external_tts', 'provider_native'].includes(audioMode)) throw invalid('声音来源无效');
+  const nativeAudio = audioMode === 'provider_native';
+  if (![15, 30].includes(segmentDurationSeconds) || (segmentDurationSeconds === 30 && (!nativeAudio || segmentCount !== 1)))
+    throw invalid('视频片段时长不正确');
+  if (nativeAudio && ![1, 2].includes(segmentCount)) throw invalid('原生声音需要一或两段15秒视频');
+  const transition = nativeAudio && segmentCount === 2;
   const filters = [], labels = [];
   for (let i = 0; i < segmentCount; i += 1) {
-    filters.push(`[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=0.35,trim=duration=15,setpts=PTS-STARTPTS[v${i}]`);
-    // Use the exact reviewed TTS tracks, not arbitrary vendor background speech.
-    filters.push(`[${segmentCount + i}:a]aresample=48000,apad=whole_dur=15,atrim=duration=15,asetpts=PTS-STARTPTS[a${i}]`);
+    const handles = transition ? (i === 0
+      ? ',tpad=stop_mode=clone:stop_duration=0.2,trim=duration=15.2'
+      : ',tpad=start_mode=clone:start_duration=0.2,trim=duration=15.2') : '';
+    filters.push(`[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=0.35,trim=duration=${segmentDurationSeconds},setpts=PTS-STARTPTS${handles},settb=AVTB[v${i}]`);
+    // Native Wan already contains speech and ambience; keep that soundtrack.
+    // Legacy external TTS jobs continue to use their reviewed voice tracks.
+    const edgeFade = transition ? (i === 0
+      ? ',afade=t=out:st=14.96:d=0.04:curve=qsin'
+      : ',afade=t=in:st=0:d=0.04:curve=qsin') : '';
+    filters.push(`[${nativeAudio ? i : segmentCount + i}:a]aresample=48000,apad=whole_dur=${segmentDurationSeconds},atrim=duration=${segmentDurationSeconds},asetpts=PTS-STARTPTS${edgeFade}[a${i}]`);
     labels.push(`[v${i}][a${i}]`);
   }
-  filters.push(`${labels.join('')}concat=n=${segmentCount}:v=1:a=1[voiced][aout]`);
+  if (transition) {
+    filters.push('[v0][v1]xfade=transition=fade:duration=0.4:offset=14.8,trim=duration=30,format=yuv420p[voiced]');
+    filters.push('[a0][a1]concat=n=2:v=0:a=1[aout]');
+  } else if (nativeAudio) {
+    filters.push('[v0]null[voiced]', '[a0]anull[aout]');
+  } else filters.push(`${labels.join('')}concat=n=${segmentCount}:v=1:a=1[voiced][aout]`);
   // Constant relative name inside the caller-owned temp dir: no path escaping
   // in filter syntax, and no user-controlled filter expressions.
-  filters.push('[voiced]ass=filename=captions.ass[vout]');
+  if (rasterCues.length) {
+    for (const [index, cue] of rasterCues.entries()) {
+      const start = Number(cue.start), end = Number(cue.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > segmentCount * segmentDurationSeconds)
+        throw invalid('字幕时间轴越界');
+      const input = index === 0 ? 'voiced' : `caption${index - 1}`;
+      const output = index === rasterCues.length - 1 ? 'vout' : `caption${index}`;
+      // 静态PNG由overlay重复最后一帧；时间只来自校验后的数字，无文本/路径拼接。
+      filters.push(`[${input}][${segmentCount * (nativeAudio ? 1 : 2) + index}:v]overlay=0:0:eof_action=repeat:repeatlast=1:enable='gte(t,${start})*lt(t,${end})'[${output}]`);
+    }
+  } else {
+    filters.push('[voiced]ass=filename=captions.ass[vout]');
+  }
   return filters.join(';');
 }
 

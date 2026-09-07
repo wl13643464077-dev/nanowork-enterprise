@@ -27,6 +27,11 @@ export function testInvocation(extraArgs = [], inheritedEnv = process.env) {
         YUNWU_API_KEY: '',
         ANTHROPIC_API_KEY: '',
         OPENAI_API_KEY: '',
+        // The 360 platform key and provider switch must never leak from a
+        // developer shell into the suite; each test injects its own fake key.
+        AI360_API_KEY: '',
+        NANOWORK_AI_PROVIDER: '',
+        MINIMAX_API_KEY: '',
         // CLI test entrypoints are supplied by each isolated fixture only.
         CONTENTCREW_CLAUDE_PATH: '',
       },

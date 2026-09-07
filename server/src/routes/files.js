@@ -1,10 +1,11 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, curTenant, getTenantConfig } from "../db.js";
 import { logOp, notify } from "../util.js";
-import {
+import { refundHold,
   precheck,
   estimateCallCredits,
   holdCredits,
@@ -639,6 +640,8 @@ r.post("/upload", async (req, res) => {
         const imageMime = row.ext === "jpg" ? "jpeg" : row.ext;
         const delivered = await executeHeldDelivery({
           hold,
+          refund: refundHold,
+          hasDeliverable: () => hasStoredAiDelivery(hold),
           generate: () =>
             yunwu.chat({
               model: holdModel,

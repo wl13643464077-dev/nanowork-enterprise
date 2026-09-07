@@ -65,7 +65,7 @@ q.run(`INSERT INTO tenants(id,name,status,credits)
   VALUES(1,'运行就绪测试企业','已开通',10000)
   ON CONFLICT(id) DO UPDATE SET name=excluded.name,status=excluded.status`);
 const bossId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
-  VALUES('runtime-readiness-boss','unused','运行就绪负责人','boss','启用',1)`).lastInsertRowid);
+  VALUES('runtime-readiness-boss','unused','运行就绪负责人','platform_super','启用',1)`).lastInsertRowid);
 const boss = q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', bossId);
 
 function channel(matrix, key) {
@@ -150,10 +150,10 @@ test('无凭证矩阵诚实阻断模型生成，不用本地替代文本冒充�
 
   const connectors = channel(matrix, 'content_connectors');
   assert.deepEqual(connectors.details.counts, {
-    total: 15,
+    total: 16,
     localAssist: 6,
     verifiedInputAssist: 2,
-    employeeGeneration: 7,
+    employeeGeneration: 8,
     externalPublish: 0,
   });
   assert.equal(connectors.canExecute, true);
@@ -368,9 +368,8 @@ test('readiness GET 严禁联网，AI 显式测试成败会更新进程内证据
     assert.equal(channel(result.json, 'ai').effective, 'connected');
 
     result = await request(base, '/admin/overview');
-    assert.equal(result.response.status, 200);
+    assert.equal(result.response.status, 403, '平台超管定向访问运维接口，不冒充企业管理');
     assert.equal(fetchCalls, 1);
-    assert.equal(result.json.readiness.externalChecksPerformed, false);
 
     result = await request(base, '/admin/api-config');
     assert.equal(result.response.status, 200);
@@ -388,9 +387,8 @@ test('readiness GET 严禁联网，AI 显式测试成败会更新进程内证据
     assert.equal(result.json.readiness.externalChecksPerformed, false);
 
     result = await request(base, '/sys/feishu');
-    assert.equal(result.response.status, 200);
+    assert.equal(result.response.status, 403, '企业自有飞书集成仍由企业管理');
     assert.equal(fetchCalls, 1);
-    assert.ok(result.json.readiness);
 
     setConfig('yunwu_base_url', 'https://93.184.216.35/v1');
     result = await request(base, '/admin/runtime-readiness');

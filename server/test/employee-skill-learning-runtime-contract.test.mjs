@@ -414,9 +414,11 @@ test('启动恢复按租户关闭陈旧进修：未开始直接失败、held原�
     refType: 'employee_skill_learning_run',
     refId: positivelySettled.id,
   });
+  // 文本按真实用量结算：600 token × ¥30/M × 2 ÷ 0.01 = 3.6 → 4 积分。
   settleHold(settledAuthorization, {
-    credits: 4,
     aiMode: 'api',
+    model: 'fixture-real-model',
+    usage: { inputTokens: 400, outputTokens: 200 },
     note: '模拟进程在结算后、任务终态落库前中断',
   });
   q.run(`UPDATE employee_skill_learning_runs

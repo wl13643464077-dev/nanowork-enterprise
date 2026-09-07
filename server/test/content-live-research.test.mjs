@@ -38,6 +38,7 @@ const {
   runContentLiveResearch,
 } = await import('../src/engines/content-live-research.js');
 const { extractPublishedAt } = await import('../src/engines/controlled-web-evidence.js');
+const { resolveAgenticResearchCli } = await import('../src/engines/agentic-web-research.js');
 const { db } = await import('../src/db.js');
 
 after(() => {
@@ -157,13 +158,39 @@ test('未配置任何检索通道时返回 unavailable，文案诚实且不产�
   assert.deepEqual(networkCalls, []);
 });
 
-test('真实进程 readiness 在无任何 Key 与 CLI 时为未配置，免 Key 灾备不计入已配置', () => {
+test('真实进程 readiness 在无任何 Key 时为未配置，本机 CLI 自动发现不代表车道已就绪', () => {
   const state = contentLiveResearchReadiness();
   assert.equal(state.configured, false);
-  assert.equal(state.cliAvailable, false);
+  // 空路径只是不指定覆盖值；开发机可能通过默认路径发现已安装的 Claude。
+  assert.equal(state.cliAvailable, Boolean(resolveAgenticResearchCli()));
   assert.match(state.summary, /未配置/u);
   assert.deepEqual(state.lanes.map((lane) => lane.key), ['tinyfish', 'claude_websearch', 'search_api']);
   assert.ok(state.lanes.every((lane) => lane.ready === false));
+  const claude = state.lanes.find((lane) => lane.key === 'claude_websearch');
+  assert.equal(claude.cliReady, state.cliAvailable);
+  assert.equal(claude.credentialReady, false);
+  assert.deepEqual(networkCalls, []);
+});
+
+test('检测到可读的 CLI 文件仍不能在无 Key 时启用联网车道，也不会执行该文件', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nanowork-research-cli-'));
+  const cliPath = path.join(directory, 'claude-fixture.mjs');
+  fs.writeFileSync(cliPath, "throw new Error('readiness 不应执行 CLI');\n");
+  const previous = process.env.CONTENTCREW_CLAUDE_PATH;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CONTENTCREW_CLAUDE_PATH;
+    else process.env.CONTENTCREW_CLAUDE_PATH = previous;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  process.env.CONTENTCREW_CLAUDE_PATH = cliPath;
+  assert.equal(resolveAgenticResearchCli(), cliPath);
+  const state = contentLiveResearchReadiness();
+  assert.equal(state.cliAvailable, true);
+  assert.equal(state.configured, false);
+  assert.match(state.summary, /未配置/u);
+  assert.ok(state.lanes.every((lane) => lane.ready === false));
+  assert.equal(state.lanes.find((lane) => lane.key === 'claude_websearch').credentialReady, false);
+  assert.deepEqual(networkCalls, []);
 });
 
 test('TinyFish 车道：每条结果带抓取时间、发布时间可空、按 7 天窗口标注 stale，并给出 freshness 摘要', async () => {

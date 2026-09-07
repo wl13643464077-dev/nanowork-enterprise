@@ -38,54 +38,6 @@
   line-height: 1.65;
 }
 
-.content-command-side {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-end;
-  gap: 18px;
-}
-
-.content-command-side > .ant-btn {
-  min-height: 42px;
-  border-radius: 11px;
-  box-shadow: none;
-  white-space: nowrap;
-}
-
-.content-command-metrics {
-  display: flex;
-  flex: 0 0 auto;
-  margin: 0;
-}
-
-.content-command-metrics > div {
-  min-width: 88px;
-  padding: 2px 18px;
-  border-left: 1px solid var(--ui-border);
-}
-
-.content-command-metrics dt,
-.content-command-metrics dd {
-  margin: 0;
-}
-
-.content-command-metrics dt {
-  color: var(--ui-muted);
-  font-size: 11px;
-}
-
-.content-command-metrics dd {
-  margin-top: 3px;
-  font-size: 22px;
-  font-weight: 720;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
-}
-
-.content-command-metrics [data-state='attention'] dd {
-  color: var(--warn);
-}
-
 .content-crew-command {
   overflow: hidden;
   padding: 22px;
@@ -294,11 +246,6 @@
   box-shadow: inset 0 0 0 1px var(--ui-border);
 }
 
-.content-crew-card-deliverables .content-crew-card-approval {
-  background: color-mix(in srgb, var(--ui-primary) 8%, var(--ui-surface-2));
-  color: var(--ui-primary);
-}
-
 .content-crew-card-actions {
   display: flex;
   gap: 8px;
@@ -308,130 +255,6 @@
 .content-crew-card-actions .ant-btn {
   min-height: 36px;
   box-shadow: none;
-}
-
-.content-employee-review-link {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--ui-border));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--warn) 7%, var(--ui-surface));
-  color: var(--ui-text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.content-employee-review-link:hover,
-.content-employee-review-link:focus-visible {
-  border-color: color-mix(in srgb, var(--warn) 55%, var(--ui-border));
-  background: color-mix(in srgb, var(--warn) 11%, var(--ui-surface));
-}
-
-.content-employee-review-link:focus-visible {
-  outline: 2px solid var(--ui-primary);
-  outline-offset: 2px;
-}
-
-.content-employee-review-link > span {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 9px;
-}
-
-.content-employee-review-link > span > b {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--warn);
-  color: #fff;
-  font-size: 12px;
-}
-
-.content-employee-review-link strong,
-.content-employee-review-link small {
-  display: block;
-}
-
-.content-employee-review-link strong {
-  font-size: 11px;
-}
-
-.content-employee-review-link small {
-  margin-top: 2px;
-  color: var(--ui-muted);
-  font-size: 9px;
-}
-
-.content-pipeline-review-card {
-  display: grid;
-  width: 100%;
-  gap: 5px;
-  margin-bottom: 8px;
-  padding: 11px;
-  border: 1px solid color-mix(in srgb, var(--ui-primary) 26%, var(--ui-border));
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--ui-primary) 5%, var(--ui-surface));
-  color: var(--ui-text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 150ms ease,
-    background 150ms ease,
-    transform 150ms ease;
-}
-
-.content-pipeline-review-card:hover,
-.content-pipeline-review-card:focus-visible {
-  border-color: color-mix(in srgb, var(--ui-primary) 58%, var(--ui-border));
-  background: color-mix(in srgb, var(--ui-primary) 9%, var(--ui-surface));
-  transform: translateY(-1px);
-}
-
-.content-pipeline-review-card:focus-visible {
-  outline: 2px solid var(--ui-primary);
-  outline-offset: 2px;
-}
-
-.content-pipeline-review-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  gap: 8px;
-}
-
-.content-pipeline-review-head strong {
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.content-pipeline-review-head .ant-tag {
-  flex: 0 0 auto;
-  margin: 0;
-}
-
-.content-pipeline-review-meta,
-.content-pipeline-review-blocked {
-  color: var(--ui-muted);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.content-pipeline-review-blocked {
-  color: var(--warn);
 }
 
 .content-reference-upload {
@@ -520,11 +343,6 @@
     flex-direction: column;
   }
 
-  .content-command-side {
-    width: 100%;
-    justify-content: space-between;
-  }
-
   .content-crew-grid {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   }
@@ -534,23 +352,6 @@
   .content-command-head {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .content-command-metrics {
-    width: 100%;
-  }
-
-  .content-command-side {
-    width: 100%;
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .content-command-metrics > div {
-    min-width: 0;
-    flex: 1;
-    padding-inline: 12px;
   }
 
   .content-crew-grid {
@@ -563,4 +364,23 @@
   .content-crew-card-powers {
     transition: none;
   }
+}
+
+.content-auxiliary {
+  border-top: 1px solid var(--ui-border);
+  padding: 16px 4px;
+}
+.content-auxiliary summary {
+  cursor: pointer;
+  color: var(--ui-text-2);
+  font-size: 14px;
+}
+.content-auxiliary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 16px;
+}
+.content-command-head > .ant-btn {
+  flex-shrink: 0;
 }

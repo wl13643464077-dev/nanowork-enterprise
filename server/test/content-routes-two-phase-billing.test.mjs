@@ -90,6 +90,7 @@ const post = async (route, body) => {
   });
   return { response, payload: await response.json() };
 };
+let expectedPendingHolds = 0;
 const heldRows = () => db.prepare(
   `SELECT * FROM credit_holds WHERE tenant_id=? AND status='held' ORDER BY id`,
 ).all(tenantId);
@@ -118,11 +119,11 @@ test('同步文案与PPT先占扣，模板降级不得交付并全额释放占�
   assert.equal(ppt.payload.billing.state, 'released');
   assert.equal(ppt.payload.billing.chargedCredits, 0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n, contentBefore);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before);
 });
 
-test('内容、PPT与日更包 API 返回正文但 usage 为0时，均在持久化前失败关闭', async () => {
+test('内容、PPT与日更包 API 返回正文但 usage 为0时，均保留完整成果并等待账务核对', async () => {
   const before = balanceOfTenant(tenantId);
   const contentBefore = db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?')
     .get(tenantId).n;
@@ -134,31 +135,35 @@ test('内容、PPT与日更包 API 返回正文但 usage 为0时，均在持久�
       topic: '同步文案零token',
       employeeIdx: 3,
     });
-    assert.equal(copy.response.status, 409, JSON.stringify(copy.payload));
-    assert.equal(copy.payload.billing.state, 'released');
+    assert.equal(copy.response.status, 200, JSON.stringify(copy.payload));
+    assert.equal(copy.payload.billing.state, 'pending_reconciliation');
 
     const ppt = await post('/content/generate-ppt', {
       topic: 'PPT零token',
       pages: 3,
       employeeIdx: 7,
     });
-    assert.equal(ppt.response.status, 409, JSON.stringify(ppt.payload));
-    assert.equal(ppt.payload.billing.state, 'released');
+    assert.equal(ppt.response.status, 200, JSON.stringify(ppt.payload));
+    assert.equal(ppt.payload.billing.state, 'pending_reconciliation');
 
     const daily = await post('/content/daily-pack', {
       topic: '日更包零token',
       employeeIdx: 3,
     });
-    assert.equal(daily.response.status, 502, JSON.stringify(daily.payload));
-    assert.equal(daily.payload.status, 'failed');
-    assert.equal(daily.payload.results.length, 0);
-    assert.equal(daily.payload.failures.length, 3);
-    assert.ok(daily.payload.failures.every(item => item.billing.state === 'released'));
+    assert.equal(daily.response.status, 200, JSON.stringify(daily.payload));
+    assert.equal(daily.payload.status, 'success');
+    assert.equal(daily.payload.results.length, 3);
+    assert.equal(daily.payload.failures.length, 0);
+    assert.ok(daily.payload.results.every(item => item.billing.state === 'pending_reconciliation' && item.body));
+    const results = [copy.payload, ppt.payload, ...daily.payload.results];
+    assert.ok(results.every(item => item.billing.chargedCredits === null && item.billing.heldCredits > 0));
+    assert.ok(results.every(item => heldRows().some(row => Number(row.id) === Number(item.billing.holdId))));
+    expectedPendingHolds += results.length;
 
     assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?')
-      .get(tenantId).n, contentBefore);
-    assert.equal(heldRows().length, 0);
-    assert.equal(balanceOfTenant(tenantId), before);
+      .get(tenantId).n, contentBefore + 5);
+    assert.equal(heldRows().length, expectedPendingHolds);
+    assert.equal(balanceOfTenant(tenantId), before - results.reduce((sum, item) => sum + item.billing.heldCredits, 0));
   } finally {
     process.env.YUNWU_API_KEY = '';
     providerReturnsZeroUsage = true;
@@ -178,7 +183,7 @@ test('自定义内容类型没有内置提示词代码时仍走通用契约，�
   assert.doesNotMatch(String(generated.payload.error || ''), /SQLite|cannot be bound/iu);
   assert.equal(generated.payload.billing.state, 'released');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM contents WHERE tenant_id=?').get(tenantId).n, contentBefore);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before);
 });
 
@@ -202,7 +207,7 @@ test('实际内容落库事务失败时路由释放预授权且不留半成品',
     assert.equal(db.prepare(
       `SELECT COUNT(*) n FROM contents WHERE tenant_id=? AND topic='强制落库失败'`,
     ).get(tenantId).n, 0);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
     assert.equal(balanceOfTenant(tenantId), before);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_content_persist_failure');
@@ -235,7 +240,7 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
     ).get(tenantId, pending.payload.id);
     assert.ok(row.body);
     assert.equal(JSON.parse(row.snapshot_json).billing.state, 'pending_reconciliation');
-    [pendingHold] = heldRows();
+    pendingHold = heldRows().find(row => Number(row.id) === Number(pending.payload.billing.holdId));
     assert.ok(pendingHold);
     assert.equal(balanceOfTenant(tenantId), before - pendingHold.held_credits);
   } finally {
@@ -257,7 +262,7 @@ test('实际结算事务异常时内容仍交付，响应与持久快照明确�
     }
   }
   assert.equal(balanceOfTenant(tenantId), before);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
 });
 
 test('后台文案在返回jobId前已占扣，模板终态必须失败并退回预授权', async () => {
@@ -301,7 +306,7 @@ test('后台文案在返回jobId前已占扣，模板终态必须失败并退回
   for (let i = 0; i < 100 && heldRows().length; i++) {
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before);
   assert.equal(contentLeaseEvents.slice(leaseBefore).filter(event => event.action === 'release').length, 1);
 });
@@ -333,7 +338,7 @@ test('日更包逐项结算，模板子任务全部失败且逐项退款', async
     WHERE tenant_id=? AND source_type='content'`).get(tenantId).n, 0);
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM kb_docs
     WHERE tenant_id=? AND source_type='content'`).get(tenantId).n, 0);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before);
   const lease = contentLeaseEvents.slice(leaseBefore);
   assert.equal(lease.filter(event => event.action === 'defer').length, 1);

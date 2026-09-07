@@ -36,6 +36,27 @@ import {
   summarizeFeatureState,
 } from "./lib/real-feature-matrix.mjs";
 
+function acceptsConfiguredGateway(baseUrl) {
+  if (isYunwuCloudBaseUrl(baseUrl)) return true;
+  if (process.env.MATRIX_ALLOW_COMPAT_GATEWAY !== "1") return false;
+  try {
+    const url = new URL(String(baseUrl || "").trim());
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      (!url.port || url.port === "443") &&
+      (hostname === "openlux.ai" || hostname.endsWith(".openlux.ai")) &&
+      (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function usage() {
   return `独立于72名员工全量验收的真实云API功能矩阵
 
@@ -733,9 +754,9 @@ async function initializeRuntime() {
       "真实矩阵只允许使用服务进程环境中的云雾凭证，拒绝数据库遗留Key或持久化Key",
     );
   }
-  if (!isYunwuCloudBaseUrl(config.payload?.channel?.baseUrl)) {
+  if (!acceptsConfiguredGateway(config.payload?.channel?.baseUrl)) {
     throw new Error(
-      `真实矩阵拒绝非云雾公网HTTPS地址：${config.payload?.channel?.baseUrl || "missing"}`,
+      `真实矩阵拒绝未允许的公网HTTPS地址：${config.payload?.channel?.baseUrl || "missing"}`,
     );
   }
   const databaseIdentity = hashJson({

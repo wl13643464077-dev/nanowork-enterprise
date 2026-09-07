@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from "express";
 import { db, q, curTenant, mergeMarshal, runWithTenant } from "../db.js";
 import { logOp, notify, pct, monthStart, today } from "../util.js";
@@ -8,6 +9,7 @@ import {
   EMPLOYEE_REPAIR_CONTEXT_CHAR_LIMIT,
   employeeTextModelFailoverPlan,
   employeeOutputTokenBudget,
+  resolveEmployeeExecutionModel,
   marshalWork,
   marshalChat,
   tenantDataMode,
@@ -19,7 +21,7 @@ import {
   createApproval,
 } from "../engines/risk.js";
 import { recordKbCitations } from "../engines/rag.js";
-import {
+import { refundHold,
   precheck,
   precheckByRole,
   estimateCallCredits,
@@ -97,6 +99,7 @@ import {
   humanizeContractFailures,
   resolveContractTier,
 } from "../engines/contract-tiers.js";
+import { outputQualityReview } from "../engines/output-quality-advice.js";
 
 const r = Router();
 const TASK_TYPES = new Set(EMPLOYEE_TASK_TYPES);
@@ -798,6 +801,7 @@ function employeeContractAudit(out) {
     warnings: Array.isArray(out.employeeContract.warnings)
       ? out.employeeContract.warnings.map(String).filter(Boolean).slice(0, 50)
       : [],
+    qualityReview: outputQualityReview(out.employeeContract.warnings || []),
     repair: out.employeeContract.repair || null,
     generationRetry: out.employeeContract.generationRetry || null,
     providerAttempts: Array.isArray(out.employeeContract.providerAttempts)
@@ -1352,8 +1356,8 @@ export async function dispatchMarshalTask(req, res) {
     if (!taskTitle) return res.status(400).json({ error: "任务标题必填" });
     if (taskTitle.length > 100)
       return res.status(400).json({ error: "任务标题不能超过100字" });
-    if (taskRequirement == null || taskRequirement.length > 8000)
-      return res.status(400).json({ error: "任务要求必须是8000字以内的文本" });
+    if (taskRequirement == null || taskRequirement.length > 32000)
+      return res.status(400).json({ error: "任务要求必须是32000字以内的文本" });
     if (!TASK_TYPES.has(taskType))
       return res.status(400).json({ error: "任务类型不正确" });
     if (dueAt && !dueDate)
@@ -1442,11 +1446,9 @@ export async function dispatchMarshalTask(req, res) {
     const employeeConfig = employeeExecution?.workbench?.workConfig || {};
     const estimateCreditsFn =
       req.app?.locals?.employeeEstimateCallCredits || estimateCallCredits;
-    const holdModel = taskImage
-      ? employeeConfig.visionModel ||
-        employeeConfig.textModel ||
-        textModelFor(req.user.role)
-      : employeeConfig.textModel || textModelFor(req.user.role);
+    const holdModel = resolveEmployeeExecutionModel({
+      workConfig: employeeConfig, image: taskImage, role: req.user.role,
+    });
     // 餐饮岗位的备用模型只会在首选模型发生受控的零 Token 传输故障后
     // 启用。预授权必须在任何供应商调用前覆盖主备模型的较高价格；hold
     // 本身仍记录 requested primary，最终 credit_logs 则由 settleHold 写入
@@ -1697,6 +1699,8 @@ export async function dispatchMarshalTask(req, res) {
           try {
             const delivered = await executeHeldDelivery({
               hold,
+              refund: refundHold,
+              hasDeliverable: () => hasStoredAiDelivery(hold),
               generate: async () => {
                 const taskDeadline = new Promise((_, reject) => {
                   taskDeadlineTimer = setTimeout(() => {
@@ -1738,6 +1742,8 @@ export async function dispatchMarshalTask(req, res) {
                     {
                       employeeExecution,
                       contractTier: lockedContractTier || undefined,
+                      userId,
+                      specialistId: specialist,
                       onCandidateObserved: (candidate) => {
                         lastObservedCandidate = candidate;
                       },
@@ -2035,7 +2041,7 @@ export async function dispatchMarshalTask(req, res) {
                     configuredApproval,
                     risk,
                   );
-                  const approvalRoute = resolveApprovalRoute({
+                  let approvalRoute = resolveApprovalRoute({
                     targetType: "content",
                     riskLevel: risk.level,
                     requestedLevel: approvalPolicy.approvalLevel,
@@ -2043,8 +2049,21 @@ export async function dispatchMarshalTask(req, res) {
                     actorUserId: userId,
                     policy: lockedApprovalRoutingPolicy,
                   });
+                  const qualityReview = outputQualityReview(out.employeeContract?.warnings || []);
+                  if (qualityReview.requiresUserDecision && !approvalRoute.requiresReview) {
+                    approvalRoute = resolveApprovalRoute({
+                      targetType: "content",
+                      riskLevel: risk.level,
+                      requestedLevel: approvalPolicy.approvalLevel,
+                      policy: {
+                        ...lockedApprovalRoutingPolicy,
+                        employeeOutput: { mode: risk.level === "high" ? "boss" : "manager", reviewerUserId: null },
+                      },
+                    });
+                  }
                   const demoInternalAutoAdopt =
                     dataMode === "demo" &&
+                    !qualityReview.requiresUserDecision &&
                     risk.level !== "high" &&
                     approvalRoute.executionAuthorizationRequired !== true;
                   const effectiveApprovalRoute = demoInternalAutoAdopt
@@ -2120,6 +2139,10 @@ export async function dispatchMarshalTask(req, res) {
                           modelFailover:
                             out.modelFailover ||
                             out.employeeContract?.modelFailover ||
+                            null,
+                          acceptanceModelOverride:
+                            out.acceptanceModelOverride ||
+                            out.employeeContract?.acceptanceModelOverride ||
                             null,
                           usage: {
                             inputTokens: Number(out.usage?.inputTokens || 0),
@@ -2291,19 +2314,28 @@ export async function dispatchMarshalTask(req, res) {
             let autoAdoption = null;
             if (delivered.delivery.autoAdopt) {
               if (delivered.billing.state === "settled") {
-                autoAdoption = autoAdoptContentOutput({
-                  outputId: delivered.delivery.contentId,
-                  taskId,
-                  tenantId,
-                  policyReason: delivered.delivery.approvalReason,
-                  actorRole: userRole,
-                  actorUserId: userId,
-                });
+                try {
+                  autoAdoption = autoAdoptContentOutput({
+                    outputId: delivered.delivery.contentId,
+                    taskId,
+                    tenantId,
+                    policyReason: delivered.delivery.approvalReason,
+                    actorRole: userRole,
+                    actorUserId: userId,
+                  });
+                } catch (adoptionError) {
+                  // Generation and settlement already succeeded. Preserve the paid
+                  // result and expose the actual review/billing blocker separately.
+                  q.run(`UPDATE agent_tasks SET status='待审阅'
+                    WHERE tenant_id=? AND id=? AND status='生成中' AND output_id=?`,
+                    tenantId, taskId, delivered.delivery.contentId);
+                  console.error(`[marshal] 任务#${taskId}结果已保存，采用待处理:`, adoptionError?.message || adoptionError);
+                }
               } else {
                 // 产物与真实调用证据已保留，但账务没有终态时不能自动变成可用，
                 // 也不能伪造一张需要人审内容的审批单。
                 q.run(
-                  `UPDATE agent_tasks SET status='失败'
+                  `UPDATE agent_tasks SET status='待审阅'
                   WHERE tenant_id=? AND id=? AND status='生成中'`,
                   tenantId,
                   taskId,
@@ -2587,7 +2619,7 @@ function restaurantTaskProgress(status, adoptionKind = null) {
         flow: ["已派发", "AI生成完成", BUSINESS_DELIVERY_LABELS.reviewRejected],
         stepIndex: 2,
         failed: false,
-        nextAction: "根据驳回意见补充材料后重新派活",
+        nextAction: "原稿和本次费用记录已保留，可继续查看、复制；是否另行优化由你决定。",
       };
     case "失败":
       return {
@@ -2965,8 +2997,10 @@ r.get("/tasks/:taskId/status", (req, res) => {
       ? "review_pending"
       : t.status === "已完成"
         ? "adopted"
-        : t.status === "已驳回" || qualityFailed
-          ? "rework_required"
+        : t.status === "已驳回"
+          ? "rejected"
+          : qualityFailed
+            ? "rework_required"
           : t.status === "失败"
             ? "execution_failed"
             : "generating";
@@ -2996,7 +3030,7 @@ r.get("/tasks/:taskId/status", (req, res) => {
               : t.status === "失败"
                 ? "执行过程发生异常，需要先检查失败原因"
                 : t.status === "已驳回"
-                  ? "本次产出已驳回，不能在原任务继续审阅；请按驳回意见补充材料后重新派活"
+                  ? "本次已选择不采纳，原稿和费用记录已保留；不会自动重新生成。"
                   : "当前任务状态没有可执行的人工审阅动作",
     billing,
     billingState: pendingReconciliation
@@ -3172,6 +3206,8 @@ r.post("/:id/skill-file", async (req, res) => {
     const tenantId = curTenant();
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: async () => {
         const out = await marshalChat(m, {
           message: guide,
@@ -3499,6 +3535,8 @@ r.post("/:id/chat", async (req, res) => {
     holdManaged = true;
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: () =>
         marshalChat(m, {
           message: finalMsg || "",

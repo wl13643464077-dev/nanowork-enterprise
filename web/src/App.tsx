@@ -6,6 +6,9 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 
 const Register = lazy(() => import('./pages/Register'));
+const TesterApply = lazy(() => import('./pages/TesterApply'));
+const TesterPortal = lazy(() => import('./pages/TesterPortal'));
+const TrialExperience = lazy(() => import('./pages/TrialExperience'));
 const Pending = lazy(() => import('./pages/Pending'));
 const Platform = lazy(() => import('./pages/Platform'));
 const Recharge = lazy(() => import('./pages/Recharge'));
@@ -37,7 +40,17 @@ function Protected({ children }: { children: JSX.Element }) {
 function EnterpriseOnly({ children }: { children: JSX.Element }) {
   const user = getUser();
   if (!user) return <Navigate to="/login" replace />;
+  if (user.accountType === 'tester') return <Navigate to="/tester" replace />;
   return user.role === 'platform_super' ? <Navigate to="/platform" replace /> : children;
+}
+function TesterOnly({ children }: { children: JSX.Element }) {
+  const user = getUser();
+  if (!user) return <Navigate to="/login" replace />;
+  return user.accountType === 'tester' ? (
+    children
+  ) : (
+    <Navigate to={user.role === 'platform_super' ? '/platform' : '/'} replace />
+  );
 }
 // 平台超管专属
 function PlatformOnly({ children }: { children: JSX.Element }) {
@@ -116,6 +129,16 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/tester/apply" element={<TesterApply />} />
+            <Route path="/try/:token" element={<TrialExperience />} />
+            <Route
+              path="/tester"
+              element={
+                <TesterOnly>
+                  <TesterPortal />
+                </TesterOnly>
+              }
+            />
             <Route
               path="/pending"
               element={

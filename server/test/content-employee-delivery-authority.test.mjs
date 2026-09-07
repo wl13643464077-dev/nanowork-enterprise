@@ -58,11 +58,11 @@ function settleTextHold(runId) {
     refType: 'content_employee_run',
     refId: runId,
   });
+  // Text settles from real usage: 3300 tokens × ¥30/M × 2 ÷ 0.01 = 19.8 → 20 credits.
   const settled = settleHold(hold, {
-    credits: 20,
     model: 'test-model',
     aiMode: 'api',
-    usage: { inputTokens: 10, outputTokens: 20 },
+    usage: { inputTokens: 1000, outputTokens: 2300 },
   });
   assert.equal(settled.credits, 20);
   return hold;
@@ -142,7 +142,7 @@ function prepareSnapshot(runId, providerState = 'settled') {
       providerAttempt: {
         mode: 'api',
         model: 'test-model',
-        usage: { inputTokens: 10, outputTokens: 20 },
+        usage: { inputTokens: 1000, outputTokens: 2300 },
       },
       billing,
     }), tenantId, runId);

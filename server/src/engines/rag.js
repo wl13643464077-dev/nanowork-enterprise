@@ -1,7 +1,8 @@
 import { db, q, curTenant, getConfig, runWithTenant, setTenantConfig } from '../db.js';
 import { acquireBackgroundAiLease } from '../ai-limits.js';
-import { holdCredits, releaseHold, settleHold } from './credits.js';
+import { holdCredits, releaseHold, refundHold, settleHold } from './credits.js';
 import { embed } from './yunwu.js';
+import { aggregateSupplierCosts } from './provider-cost-receipts.js';
 
 const positiveInt = (value, fallback) => {
   const parsed = Number(value);
@@ -432,6 +433,7 @@ function updateEmbeddingJob(tenantId, jobId, fields = {}) {
     'last_error',
     'started_at',
     'finished_at',
+    'billing_evidence_json',
   ]);
   const entries = Object.entries(fields).filter(([key]) => allowed.has(key));
   if (!entries.length) return;
@@ -461,6 +463,45 @@ export function buildEmbeddingPlan(title, body, {
   };
 }
 
+// Supplier receipts stay on the internal job, never in the vector or public result.
+function recordEmbeddingEvidence(progress, vector, tenantId, jobId) {
+  progress.billingEvidence ||= [];
+  progress.billingEvidence.push({
+    supplierCosts: Array.isArray(vector?.supplierCosts) ? vector.supplierCosts : [],
+    providerUsage: vector?.providerUsage || null,
+  });
+  updateEmbeddingJob(tenantId, jobId, {
+    billing_evidence_json: JSON.stringify(progress.billingEvidence),
+  });
+}
+
+function embeddingUsage(progress) {
+  const evidence = progress.billingEvidence || [];
+  const usage = {};
+  if (evidence.some(call => call.supplierCosts?.length)) {
+    usage.supplierCosts = evidence.flatMap(call => call.supplierCosts?.length
+      ? call.supplierCosts : [{status: 'pending'}]);
+    if (evidence.length < progress.attemptedCalls) usage.supplierCosts.push({status: 'pending'});
+  }
+  const records = evidence.map(call => call.providerUsage);
+  if (records.length && records.length === progress.attemptedCalls
+    && records.every(item => Number.isSafeInteger(item?.inputTokens) && item.inputTokens >= 0)) {
+    usage.inputTokens = records.reduce((sum, item) => sum + item.inputTokens, 0);
+    usage.outputTokens = 0;
+  }
+  return usage;
+}
+
+function embeddingRefundCost(progress) {
+  const cost = aggregateSupplierCosts(embeddingUsage(progress).supplierCosts);
+  return cost?.status === 'known'
+    ? {supplierCostYuan: cost.costYuanOverride, costSource: cost.costSource} : {};
+}
+
+function embeddingCounts(progress) {
+  return {attemptedCalls: progress.attemptedCalls, persistedCalls: progress.persistedCalls};
+}
+
 // 每次落库都再次确认文档正文没有变化。progress 是后台结算依据：只有真正
 // 持久化成功的向量才计入实扣；上游失败后立即停止，不继续扇出剩余分块。
 async function persistEmbeddingPlan({
@@ -473,14 +514,26 @@ async function persistEmbeddingPlan({
   embedFn = embed,
   signal,
   jobId = null,
+  hold,
 }) {
   if (!liveDoc(id, tenantId, title, body)) return;
+  const assertOwner = () => {
+    if (!jobId && !hold) return; // Explicit synchronous backfill keeps its existing lifecycle.
+    const job = q.get('SELECT status,hold_id FROM kb_embedding_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+    const ledger = q.get('SELECT status FROM credit_holds WHERE tenant_id=? AND id=?', tenantId, hold?.holdId);
+    if (job?.status !== 'running' || job.hold_id !== hold?.holdId || ledger?.status !== 'held')
+      throw Object.assign(new Error('向量任务已由其他执行流程接管'), { code: 'EMBEDDING_OWNER_CHANGED' });
+  };
+  assertOwner();
   progress.attemptedCalls += 1;
   updateEmbeddingJob(tenantId, jobId, { attempted_calls: progress.attemptedCalls });
   const mainVector = await embedFn(plan.mainText, undefined, signal);
+  assertOwner();
+  recordEmbeddingEvidence(progress, mainVector, tenantId, jobId);
   if (!mainVector) return;
   db.exec('BEGIN IMMEDIATE');
   try {
+    assertOwner();
     const updated = q.run(`UPDATE kb_docs SET embedding=?
       WHERE tenant_id=? AND id=? AND title IS ? AND body IS ?`,
     JSON.stringify(mainVector), tenantId, id, title ?? null, body ?? null);
@@ -503,13 +556,17 @@ async function persistEmbeddingPlan({
     throw error;
   }
   for (let i = 0; i < plan.chunks.length; i++) {
+    assertOwner();
     if (signal?.aborted) throw Object.assign(new Error('后台向量任务已超时'), { status: 504 });
     progress.attemptedCalls += 1;
     updateEmbeddingJob(tenantId, jobId, { attempted_calls: progress.attemptedCalls });
     const vector = await embedFn(`${title || ''}\n${plan.chunks[i]}`, undefined, signal);
+    assertOwner();
+    recordEmbeddingEvidence(progress, vector, tenantId, jobId);
     if (!vector) break;
     db.exec('BEGIN IMMEDIATE');
     try {
+      assertOwner();
       const inserted = q.run(`INSERT INTO kb_chunks(doc_id,seq,text,embedding)
         SELECT ?,?,?,?
         WHERE EXISTS(
@@ -540,19 +597,21 @@ function settleEmbeddingLifecycle({
   creditsPerCall,
   model,
   error = null,
+  assertRefundable,
 }) {
   const actualCredits = progress.persistedCalls * creditsPerCall;
   try {
     const settled = actualCredits > 0
       ? settleHold(hold, {
         credits: actualCredits,
+        usage: embeddingUsage(progress),
         model,
         note: `知识库后台向量化完成：计划${hold.plannedCalls}次，实际持久化${progress.persistedCalls}次`,
       })
-      : releaseHold(
-        hold,
-        `知识库后台向量化未形成可用向量${error ? `（${String(error.message || error).slice(0, 80)}）` : ''}，预授权全额退回`,
-      );
+      : progress.attemptedCalls > 0
+        ? refundHold(hold, { note: '知识库后台向量化最终无可用向量，用户积分全退，供应商成本由平台承担', assertRefundable, ...embeddingRefundCost(progress) })
+        : releaseHold(hold, '知识库后台向量化未发起供应商调用，预授权退回');
+    if (!settled) throw new Error('向量预授权已由其他流程处理');
     return {
       state: actualCredits > 0 ? 'settled' : 'released',
       heldCredits: hold.credits,
@@ -594,15 +653,24 @@ async function executeEmbeddingLifecycle({
   });
   try {
     await persistEmbeddingPlan({
-      id, title, body, tenantId, plan, progress, embedFn, signal: controller.signal, jobId,
+      id, title, body, tenantId, plan, progress, embedFn, signal: controller.signal, jobId, hold,
     });
   } catch (caught) {
     error = caught;
   } finally {
     clearTimeout(timer);
   }
+  const current = q.get('SELECT * FROM kb_embedding_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+  if (current?.status !== 'running' || current.hold_id !== hold.holdId) return {
+    ...embeddingCounts(progress), superseded: true, error: null,
+    billing: { state: current?.status || 'pending_reconciliation', chargedCredits: null },
+  };
   const billing = settleEmbeddingLifecycle({
     hold, progress, creditsPerCall, model, error,
+    assertRefundable: () => {
+      const owned = q.get('SELECT status,hold_id,persisted_calls FROM kb_embedding_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
+      return owned?.status === 'running' && owned.hold_id === hold.holdId && Number(owned.persisted_calls) === 0;
+    },
   });
   updateEmbeddingJob(tenantId, jobId, {
     status: billing.state,
@@ -612,7 +680,7 @@ async function executeEmbeddingLifecycle({
     finished_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
   });
   return {
-    ...progress,
+    ...embeddingCounts(progress),
     error: error ? String(error.message || error).slice(0, 160) : null,
     billing,
   };
@@ -748,6 +816,7 @@ export function embedDoc(id, title, body, options = {}) {
         }),
       }
   )).then(result => {
+    if (result.superseded) return result;
     updateEmbeddingJob(tenantId, jobId, {
       status: result.billing?.state || 'pending_reconciliation',
       last_error: result.error || null,
@@ -847,7 +916,7 @@ export function recoverStaleEmbeddingHolds({
   const rows = db.prepare(`SELECT
       h.id hold_id,h.log_id,h.tenant_id,h.user_id,h.feature,h.kind,h.model,h.held_credits,
       h.ref_id,j.id job_id,j.doc_id,j.planned_calls,j.credits_per_call,
-      j.attempted_calls,j.persisted_calls
+      j.attempted_calls,j.persisted_calls,j.billing_evidence_json,j.status job_status,j.hold_id job_hold_id
     FROM credit_holds h
     LEFT JOIN kb_embedding_jobs j
       ON j.id=h.ref_id AND j.tenant_id=h.tenant_id
@@ -885,6 +954,9 @@ export function recoverStaleEmbeddingHolds({
       plannedCalls: row.planned_calls || null,
       balance: null,
     };
+    let billingEvidence = [];
+    try { billingEvidence = JSON.parse(row.billing_evidence_json || '[]'); } catch { /* legacy unknown cost */ }
+    const progress = {attemptedCalls: Number(row.attempted_calls || 0), billingEvidence: Array.isArray(billingEvidence) ? billingEvidence : []};
     try {
       const settled = runWithTenant(row.tenant_id, () => (
         hasTrackedDelivery
@@ -894,9 +966,21 @@ export function recoverStaleEmbeddingHolds({
               Number(row.persisted_calls) * positiveInt(row.credits_per_call, 1),
             ),
             model: row.model,
+            usage: embeddingUsage(progress),
             note: `重启恢复：检测到${row.persisted_calls}个已持久化向量，按实际数量结算`,
           })
-          : releaseHold(hold, '重启恢复：陈旧后台向量任务无可交付产物，预授权全额退回')
+          : Number(row.attempted_calls || 0) > 0 || !row.job_id
+            ? refundHold(hold, {
+              note: '重启恢复：陈旧后台向量任务最终无可交付成果，用户积分全退',
+              ...embeddingRefundCost(progress),
+              assertRefundable: () => {
+                if (!row.job_id) return !q.get('SELECT id FROM kb_embedding_jobs WHERE tenant_id=? AND id=?', row.tenant_id, row.ref_id);
+                const current = q.get('SELECT status,hold_id,persisted_calls,attempted_calls FROM kb_embedding_jobs WHERE tenant_id=? AND id=?', row.tenant_id, row.job_id);
+                return current?.status === row.job_status && current.hold_id === row.job_hold_id
+                  && Number(current.persisted_calls || 0) === 0 && current.attempted_calls === row.attempted_calls;
+              },
+            })
+            : releaseHold(hold, '重启恢复：后台向量任务尚未调用供应商，预授权全额退回')
       ));
       const billingState = hasTrackedDelivery ? 'settled' : 'released';
       if (row.job_id) {

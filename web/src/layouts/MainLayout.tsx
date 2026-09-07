@@ -35,6 +35,7 @@ import {
   MailOutlined,
   QuestionCircleOutlined,
   LogoutOutlined,
+  LockOutlined,
   UserOutlined,
   ControlOutlined,
   WalletOutlined,
@@ -54,7 +55,6 @@ import {
   SearchOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  DeploymentUnitOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
@@ -64,6 +64,7 @@ import { RouteErrorBoundary } from '../components/AppErrorBoundary';
 import FeatureGuideCenter from '../components/FeatureGuideCenter';
 import RoleOnboarding from '../components/RoleOnboarding';
 import StoreSwitcher from '../components/StoreSwitcher';
+import ChangePasswordModal from '../components/ChangePasswordModal';
 import InboxDrawer, { InboxTrigger, useInboxCount } from '../components/InboxDrawer';
 import { KB_HEALTH_UPDATED_EVENT } from '../components/SystemKbHealthCard';
 import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
@@ -74,9 +75,8 @@ const NOTIF_POLL_MS = 60_000;
 const NOTIF_POLL_REALTIME_MS = 5 * 60_000;
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
-// group 字段把 13 个一级项按「老板一天里的动作顺序」聚成 4 组：
+// group 字段把一级导航按「老板一天里的动作顺序」聚成 4 组：
 // 先看数据 → 再派活干活 → 产出内容 → 最后才是配置。
-// 此前全部平铺，13 个同级项无任何层次，老板要逐个读完才能找到入口。
 const MENUS = [
   { key: '/', icon: <DashboardOutlined />, label: '老板驾驶舱', mod: 'dashboard', group: 'watch' },
   { key: '/analysis', icon: <BarChartOutlined />, label: '经营洞察', mod: 'analysis', group: 'watch' },
@@ -96,8 +96,6 @@ const MENUS = [
   { key: '/reviews', icon: <CommentOutlined />, label: '评价中心', mod: 'dashboard', group: 'work' },
   { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities', group: 'work' },
   { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth', group: 'work' },
-  // 自定义智能体：/api/agents 无独立模块键，沿用 marshals（餐饮数字员工）模块
-  { key: '/agents', icon: <DeploymentUnitOutlined />, label: '我的智能体', mod: 'marshals', group: 'work' },
   { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'make' },
   { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'make' },
   { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'make' },
@@ -150,6 +148,7 @@ const KEY_OF_PATH: Record<string, string> = {
 // 菜单 key 精确匹配路径；子路由（如 /employees/:domain/:idx/intro 自我介绍页）归到其父菜单高亮与模块门控。
 const MENU_PATH_PREFIXES = ['/employees'];
 function menuPathOf(pathname: string): string {
+  if (pathname === '/agents') return '/employees';
   if (KEY_OF_PATH[pathname]) return pathname;
   const prefix = MENU_PATH_PREFIXES.find(p => pathname.startsWith(`${p}/`));
   return prefix || pathname;
@@ -485,6 +484,7 @@ export default function MainLayout() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [featureGuideOpen, setFeatureGuideOpen] = useState(false);
   const [onboardingNonce, setOnboardingNonce] = useState(0);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [personalFeishuOpen, setPersonalFeishuOpen] = useState(false);
   const [personalFeishu, setPersonalFeishu] = useState<any>(null);
   const [personalFeishuBind, setPersonalFeishuBind] = useState<any>(null);
@@ -837,10 +837,12 @@ export default function MainLayout() {
                   label: `账号：${ROLE_NAME[user?.role] || user?.role}`,
                   disabled: true,
                 },
+                { key: 'password', icon: <LockOutlined />, label: '修改密码' },
                 { key: 'feishu', icon: <LinkOutlined />, label: '绑定我的飞书' },
                 { key: 'logout', icon: <LogoutOutlined />, label: '退出登录' },
               ],
               onClick: ({ key }) => {
+                if (key === 'password') setPasswordOpen(true);
                 if (key === 'feishu') openPersonalFeishuBinding();
                 if (key === 'logout') {
                   clearAuth();
@@ -1184,6 +1186,7 @@ export default function MainLayout() {
         </div>
       </Drawer>
 
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
       <Modal
         open={personalFeishuOpen}
         footer={null}

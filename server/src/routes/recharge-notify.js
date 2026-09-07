@@ -25,9 +25,10 @@ r.post('/wechat', express.raw({ type: () => true, limit: '1mb' }), (req, res) =>
     }
     const out = settlePaidOrder({
       orderNo: d.out_trade_no,
+      channel: 'wechat',
       channelName: '微信支付',
       tradeNo: d.transaction_id,
-      paidFen: Number(d.amount?.total),
+      paidFen: d.amount?.total,
     });
     if (out.duplicated) console.info(`[pay-notify][wechat] 重复回调已幂等忽略 order=${out.orderNo}`);
     res.json({ code: 'SUCCESS', message: '成功' });
@@ -52,6 +53,7 @@ r.post('/alipay', express.urlencoded({ extended: false, limit: '1mb' }), (req, r
     }
     const out = settlePaidOrder({
       orderNo: params.out_trade_no,
+      channel: 'alipay',
       channelName: '支付宝',
       tradeNo: params.trade_no,
       paidFen: yuanToFen(params.total_amount),

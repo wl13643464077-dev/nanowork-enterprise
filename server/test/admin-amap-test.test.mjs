@@ -1,6 +1,6 @@
 /**
  * POST /api/admin/api-config/amap/test 权限与状态翻转：
- * - 仅 boss/admin 且平台总部（租户 1）可调用；
+ * - 仅 platform_super 可调用；
  * - 未配置密钥不发起外网、不记录进程检查；
  * - 成功 → connected 并落 sys_config.amap_verified_at；配额超限 → blocked；
  * - 响应与就绪矩阵永不泄露密钥。全部 mock fetch，零外网。
@@ -43,7 +43,7 @@ function makeUser(username, role, tenantId) {
     VALUES(?,?,?,?,'启用',?)`, username, 'unused', username, role, tenantId).lastInsertRowid);
   return q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', id);
 }
-const hqBoss = makeUser('amap-hq-boss', 'boss', 1);
+const hqBoss = makeUser('amap-hq-boss', 'platform_super', 1);
 const hqManager = makeUser('amap-hq-manager', 'manager', 1);
 const tenantBoss = makeUser('amap-tenant-boss', 'boss', 2);
 
@@ -102,7 +102,7 @@ test('非 boss/admin 角色与非总部租户均被拒绝，且不触发任何�
   assert.match(manager.json.error, /无权限/u);
   const tenant = await post(tenantBoss);
   assert.equal(tenant.status, 403);
-  assert.match(tenant.json.error, /平台总部/u);
+  assert.match(tenant.json.error, /平台超级管理员/u);
   assert.equal(fetchCalls, 0);
 });
 
@@ -123,7 +123,7 @@ test('未配置密钥：返回 configured=false 与 disabled 就绪状态，不�
   assert.equal(fetchCalls, 0);
 });
 
-test('总部 boss 测试成功 → connected + sys_config.amap_verified_at；再次 10003 → blocked 并作废持久化验证', async () => {
+test('平台超管测试成功 → connected + sys_config.amap_verified_at；再次 10003 → blocked 并作废持久化验证', async () => {
   process.env.AMAP_WEB_KEY = AMAP_KEY;
   globalThis.fetch = async input => {
     const url = new URL(String(input));

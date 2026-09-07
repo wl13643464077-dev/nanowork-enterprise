@@ -17,18 +17,19 @@ const STATUS_META: Record<ContentEmployeeRunStatus, { label: string; color: stri
   生成中: { label: '生成中', color: 'processing' },
   待审阅: { label: '待人工审阅', color: 'gold' },
   已完成: { label: '已完成（可用于业务）', color: 'green' },
-  已驳回: { label: '失败需返工', color: 'orange' },
+  已驳回: { label: '未采纳（原稿已保留）', color: 'default' },
   失败: { label: '失败需处理（执行异常）', color: 'red' },
 };
 
 const FILTER_STATUS_META: Record<ContentEmployeePublicRunStatus, { label: string; color: string }> = {
   ...STATUS_META,
-  失败: { label: '全部失败（返工或处理）', color: 'red' },
+  失败: { label: '执行或质检失败', color: 'red' },
   待账务对账: { label: '业务暂不可采用（待账务对账）', color: 'orange' },
 };
 const PRESENTATION_META: Record<EmployeeRunPresentationKey, { label: string; color: string }> = {
   generating: { label: '生成中', color: 'processing' },
   review_pending: { label: '待人工审阅', color: 'gold' },
+  rejected: { label: '未采纳（原稿已保留）', color: 'default' },
   adopted: { label: '已完成（可用于业务）', color: 'green' },
   business_blocked: { label: '业务暂不可采用（待账务对账）', color: 'orange' },
   rework_required: { label: '失败需返工', color: 'red' },
@@ -39,6 +40,7 @@ const PRESENTATION_META: Record<EmployeeRunPresentationKey, { label: string; col
 const PRESENTATION_ACTION_LABEL: Record<EmployeeRunPresentationKey, string> = {
   generating: '查看实时进度',
   review_pending: '打开结果并处理',
+  rejected: '查看未采纳结果',
   adopted: '打开完整结果与费用',
   business_blocked: '查看对账状态与处理建议',
   rework_required: '查看返工原因与处理建议',
@@ -70,7 +72,7 @@ export function contentEmployeeRunActionLabel(run: EmployeeWorkbenchRun) {
   if (run.status === '生成中') return PRESENTATION_ACTION_LABEL.generating;
   if (run.status === '待审阅') return PRESENTATION_ACTION_LABEL.review_pending;
   if (run.status === '已完成') return PRESENTATION_ACTION_LABEL.adopted;
-  if (run.status === '已驳回') return PRESENTATION_ACTION_LABEL.rework_required;
+  if (run.status === '已驳回') return PRESENTATION_ACTION_LABEL.rejected;
   if (run.status === '失败') return PRESENTATION_ACTION_LABEL.execution_failed;
   return '打开任务详情';
 }
@@ -168,7 +170,7 @@ export default function ContentEmployeeTaskCenter({ refreshToken = 0, onOpenRun,
     >
       <header className="content-task-center-head">
         <div>
-          <span>11 名内容员工 · 真实运行记录</span>
+          <span>内容数字员工 · 真实运行记录</span>
           <h2 id="content-task-center-title">内容数字员工任务中心</h2>
           <p>
             {data?.scope.label || '按当前账号权限读取任务'}

@@ -261,7 +261,7 @@ test('分发官允许同平台可选变体，但重复项不能冒充缺失平�
   assert.doesNotMatch(rejected.errors.join('；'), /必须包含3项/u);
 });
 
-test('撰稿人标题静态契约为3-5，明确要求则匹配数量，无要求时至少保留3个', () => {
+test('撰稿人标题数量作为优化建议，完整结果保留给用户决定', () => {
   const fiveTitles = minimalValidOutput(3);
   fiveTitles.title_candidates.push(
     '经营异常先核口径，再沿业务链找证据',
@@ -277,8 +277,9 @@ test('撰稿人标题静态契约为3-5，明确要求则匹配数量，无要�
   const missesExplicitFive = validateContentEmployeeOutputContract(3, onlyThree, {
     requirement: '请交付1篇小红书正文初稿、5个差异化标题、6至8个标签，并给出配图点位建议。',
   });
-  assert.equal(missesExplicitFive.valid, false);
-  assert.match(missesExplicitFive.errors.join('；'), /title_candidates.*明确要求.*恰好包含5项/u);
+  assert.equal(missesExplicitFive.valid, true);
+  assert.equal(missesExplicitFive.qualityReview.requiresUserDecision, true);
+  assert.match(missesExplicitFive.warnings.join('；'), /title_candidates.*明确要求.*恰好包含5项/u);
 
   const feedbackOverridesRequirement = validateContentEmployeeOutputContract(3, fiveTitles, {
     requirement: '原任务要求3个标题。',
@@ -316,9 +317,10 @@ test('撰稿人标题静态契约为3-5，明确要求则匹配数量，无要�
   const impossibleEight = validateContentEmployeeOutputContract(3, onlyThree, {
     requirement: '请给8个标题，正文、标签和配图建议也要完整。',
   });
-  assert.equal(impossibleEight.valid, false);
+  assert.equal(impossibleEight.valid, true);
+  assert.equal(impossibleEight.qualityReview.requiresUserDecision, true);
   assert.match(
-    impossibleEight.errors.join('；'),
+    impossibleEight.warnings.join('；'),
     /明确要求8个标题.*岗位契约仅允许3-5个.*当前任务无法满足/u,
   );
 
@@ -330,8 +332,9 @@ test('撰稿人标题静态契约为3-5，明确要求则匹配数量，无要�
   const belowMinimum = minimalValidOutput(3);
   belowMinimum.title_candidates = belowMinimum.title_candidates.slice(0, 2);
   const belowMinimumResult = validateContentEmployeeOutputContract(3, belowMinimum);
-  assert.equal(belowMinimumResult.valid, false);
-  assert.match(belowMinimumResult.errors.join('；'), /title_candidates.*3-5/u);
+  assert.equal(belowMinimumResult.valid, true);
+  assert.equal(belowMinimumResult.qualityReview.requiresUserDecision, true);
+  assert.match(belowMinimumResult.warnings.join('；'), /title_candidates.*3-5/u);
 
   const aboveMaximum = structuredClone(fiveTitles);
   aboveMaximum.title_candidates.push(
@@ -342,8 +345,9 @@ test('撰稿人标题静态契约为3-5，明确要求则匹配数量，无要�
   const aboveMaximumResult = validateContentEmployeeOutputContract(3, aboveMaximum, {
     requirement: '请给8个标题。',
   });
-  assert.equal(aboveMaximumResult.valid, false);
-  assert.match(aboveMaximumResult.errors.join('；'), /title_candidates.*3-5/u);
+  assert.equal(aboveMaximumResult.valid, true);
+  assert.equal(aboveMaximumResult.qualityReview.requiresUserDecision, true);
+  assert.match(aboveMaximumResult.warnings.join('；'), /title_candidates.*3-5/u);
 });
 
 test('撰稿人标题数量解析区分改数、历史引用、自由数量与上下界语义', () => {
@@ -397,7 +401,7 @@ test('撰稿人标题数量解析区分改数、历史引用、自由数量与�
   five.title_candidates.push('证据不足时先列缺口再写正文', '从异常数字走到可验证行动');
   assert.equal(validateContentEmployeeOutputContract(3, onlyThree, {
     requirement: '至少给5个标题',
-  }).valid, false);
+  }).qualityReview.requiresUserDecision, true);
   assert.equal(validateContentEmployeeOutputContract(3, five, {
     requirement: '至少给5个标题',
   }).valid, true);
@@ -424,9 +428,10 @@ test('语义数量数组拒绝复制凑数，标题、标签、来源与洞察�
     const output = minimalValidOutput(idx);
     mutate(output);
     const result = validateContentEmployeeOutputContract(idx, output);
-    assert.equal(result.valid, false, `content:${idx}`);
-    assert.match(result.errors.join('；'), /必须唯一/u, `content:${idx}`);
-    assert.deepEqual(result.artifacts, []);
+    const cosmeticDuplicate = result.warnings.some(item => /必须唯一/u.test(String(item)));
+    assert.equal(result.valid, cosmeticDuplicate, `content:${idx}`);
+    assert.match([...(result.errors || []), ...(result.warnings || [])].join('；'), /必须唯一/u, `content:${idx}`);
+    assert.equal(result.artifacts.length, cosmeticDuplicate ? 1 : 0);
   }
 });
 
@@ -561,14 +566,17 @@ test('content:9人设回流无经验时可为空，有单条真实经验也与JS
   assert.equal(singleAccepted.valid, true, singleAccepted.errors.join('；'));
 });
 
-test('content:9简洁上限与云端JSON Schema一致，阻止过长报告再次打满输出窗口', () => {
+test('content:9过长报告完整交付，字数上限作为优化建议', () => {
   const output = minimalValidOutput(9);
   output.report = `# 过长复盘\n\n${'只有真实数据和已核验来源才能形成结论。'.repeat(80)}`;
   assert.ok([...output.report].length > 1200);
   const rejected = validateContentEmployeeOutputContract(9, output);
-  assert.equal(rejected.valid, false);
-  assert.match(rejected.errors.join('；'), /report.*最多允许1200个字符/u);
-  assert.deepEqual(rejected.artifacts, []);
+  assert.equal(rejected.valid, true);
+  assert.equal(rejected.strictValid, false);
+  assert.equal(rejected.qualityReview.requiresUserDecision, true);
+  assert.match(rejected.warnings.join('；'), /report.*最多允许1200个字符/u);
+  assert.ok(rejected.artifacts[0].content.includes(output.report));
+  assert.ok(rejected.previewMarkdown.includes(output.report));
 });
 
 test('无数据复盘回退产物通过工位9契约', () => {
@@ -736,7 +744,7 @@ test('content:9可复述任务书或已核验web中明确支持的定性规则',
   assert.equal(webAccepted.valid, true, webAccepted.errors.join('；'));
 });
 
-test('撰稿人与分发官的tags事后校验严格禁止#和＃', () => {
+test('撰稿人与分发官标签带#时仍交付并提示优化', () => {
   for (const [idx, mutate] of [
     [3, output => { output.tags[0] = '#经营'; }],
     [8, output => { output.versions[0].tags[0] = '＃经营'; }],
@@ -744,9 +752,10 @@ test('撰稿人与分发官的tags事后校验严格禁止#和＃', () => {
     const output = minimalValidOutput(idx);
     mutate(output);
     const result = validateContentEmployeeOutputContract(idx, output);
-    assert.equal(result.valid, false);
-    assert.match(result.errors.join('；'), /tags.*不得包含 # 或＃/u);
-    assert.deepEqual(result.artifacts, []);
+    assert.equal(result.valid, true);
+    assert.match(result.warnings.join('；'), /tags.*不得包含 # 或＃/u);
+    assert.equal(result.qualityReview.requiresUserDecision, true);
+    assert.equal(result.artifacts.length, 1);
   }
 });
 
@@ -1531,12 +1540,13 @@ test('趋势官未覆盖渠道允许写无明显信号，不必引用来源', ()
   assert.equal(result.valid, true, result.errors.join('；'));
 });
 
-test('文风师把小标题压成一行空格时契约失败', () => {
+test('文风师小标题排版问题保留全文，提示用户优化', () => {
   const output = minimalValidOutput(4);
   output.body = output.body.replaceAll('\n', ' ');
   const result = validateContentEmployeeOutputContract(4, output);
-  assert.equal(result.valid, false);
-  assert.match(result.errors.join('；'), /分段 Markdown/u);
+  assert.equal(result.valid, true);
+  assert.match(result.warnings.join('；'), /分段 Markdown/u);
+  assert.ok(result.previewMarkdown.includes(output.body));
 });
 
 test('内容流水线按派活组装各平台拿来即发 packs', () => {
@@ -1759,7 +1769,7 @@ test('岗位数组中的对象结构、数量与内层非空数组同样严格�
     [0, output => { delete output.channel_scan[0].finding; }, /channel_scan\[0\]\.finding/iu],
     [1, output => { output.sources[0].url = '不是链接'; }, /sources\[0\]\.url/iu],
     [2, output => { output.benchmarks[0].dimensions = {}; }, /benchmarks\[0\]\.dimensions/iu],
-    [3, output => { output.title_candidates = ['只有一个']; }, /title_candidates.*3-5/iu],
+    [3, output => { output.title_candidates = ['只有一个']; }, /title_candidates.*至少需要6/iu],
     [3, output => { output.tags = ['一', '二', '三', '四']; }, /tags.*5-8/iu],
     [3, output => { delete output.image_plan[0].desc; }, /image_plan\[0\]\.desc/iu],
     [5, output => { output.images[0].svg = '不是SVG'; }, /images\[0\]\.svg/iu],

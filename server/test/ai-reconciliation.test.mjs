@@ -20,6 +20,10 @@ process.env.ANTHROPIC_API_KEY = '';
 const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
 const { hashPassword } = await import('../src/util.js');
 const { holdCredits } = await import('../src/engines/credits.js');
+const {
+  resolveContentPipelineReconciliation,
+  resolveContentSpecialProviderReconciliation,
+} = await import('../src/engines/ai-reconciliation.js');
 const { canonicalContentEmployeeProfileFor } = await import('../src/engines/canonical-employee-profile.js');
 const { createSqliteContentProductionPipelineRepository } = await import('../src/engines/content-production-pipeline.js');
 const { ensureContentPipelineSpecialProviderAttemptSchema } = await import('../src/routes/content-production-pipeline.js');
@@ -38,7 +42,7 @@ const opsId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,s
 const salesId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
   VALUES(?,?,?,?,?,1)`, 'reconcile-sales', hashPassword('Secret123!'), '对账员工', 'sales', '启用').lastInsertRowid);
 
-const boss = { id: bossId, name: '对账老板', role: 'boss', tenant_id: 1 };
+const boss = { id: bossId, name: '平台对账员', role: 'platform_super', tenant_id: 1 };
 const ops = { id: opsId, name: '对账运营', role: 'ops_director', tenant_id: 1 };
 const sales = { id: salesId, name: '对账员工', role: 'sales', tenant_id: 1 };
 
@@ -103,6 +107,25 @@ function outputFingerprint(value) {
   return `sha256:${crypto.createHash('sha256')
     .update(JSON.stringify(stableValue(value)), 'utf8')
     .digest('hex')}`;
+}
+
+function useUpstreamDebitPolicy(hold) {
+  const row = q.get('SELECT pricing_snapshot_json FROM credit_holds WHERE id=?', hold.holdId);
+  const snapshot = JSON.parse(row.pricing_snapshot_json);
+  snapshot.supplierCostPolicy = { enabled: true, basis: 'upstream_debit' };
+  q.run('UPDATE credit_holds SET pricing_snapshot_json=? WHERE id=?', JSON.stringify(snapshot), hold.holdId);
+}
+
+function reconciliationLedgerSnapshot(created) {
+  return {
+    balance: q.get('SELECT credits FROM tenants WHERE id=1').credits,
+    hold: q.get('SELECT * FROM credit_holds WHERE id=?', created.hold.holdId),
+    log: q.get('SELECT * FROM credit_logs WHERE id=?', created.hold.logId),
+    station: q.get(`SELECT status,output_json,billing_evidence_json FROM content_production_pipeline_stations
+      WHERE tenant_id=1 AND pipeline_id=? AND station_idx=?`, created.pipelineId, created.stationIdx),
+    job: q.get('SELECT status,current_station FROM content_production_pipeline_jobs WHERE tenant_id=1 AND id=?',
+      created.pipelineId),
+  };
 }
 
 function createPipelineStation({
@@ -830,3 +853,82 @@ test('特殊provider重复占扣、未知attempt和正常执行窗口均保持�
     assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', holdId).status, 'held');
   }
 });
+
+for (const [label, create, resolve] of [
+  ['文本流水线', createPipelineStation, resolveContentPipelineReconciliation],
+  ['特殊图片provider', createSpecialProviderAttempt, resolveContentSpecialProviderReconciliation],
+]) {
+  test(`upstream_debit ${label}保留结果，禁止按参考价手工结算且账本不变`, async () => {
+    const created = runWithTenant(1, () => {
+      const result = create({ valid: true, title: `${label}等待上游实际扣费回执` });
+      useUpstreamDebitPolicy(result.hold);
+      return result;
+    });
+    const before = reconciliationLedgerSnapshot(created);
+    await withServer(boss, async base => {
+      const queue = await getQueue(base);
+      const row = queue.body.rows.find(item => item.holdId === Number(created.hold.holdId));
+      assert.ok(row);
+      assert.equal(row.business.deliveryValid, true, JSON.stringify(row.business.errors));
+      const request = {
+        tenantId: 1,
+        holdId: row.holdId,
+        action: 'settle',
+        evidenceHash: row.evidenceHash,
+        actor: boss,
+        reason: '已生成产物保留，但缺少上游实际扣费回执',
+        // 请求体不能覆盖数据库冻结的计价策略。
+        pricing_snapshot_json: null,
+        supplierCostPolicy: { enabled: false },
+      };
+      assert.throws(() => runWithTenant(1, () => resolve(request)), error => {
+        assert.equal(error.code, 'BILLING_SUPPLIER_COST_PENDING');
+        assert.equal(error.billingPending, true);
+        assert.match(error.message, /结果已保留.*上游实际扣费回执/u);
+        return true;
+      });
+      assert.deepEqual(reconciliationLedgerSnapshot(created), before);
+      const response = await fetch(`${base}/sys/billing/reconciliation/${row.holdId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 409, JSON.stringify(body));
+      assert.match(body.error, /结果已保留.*上游实际扣费回执/u);
+    });
+    assert.deepEqual(reconciliationLedgerSnapshot(created), before);
+  });
+
+  test(`upstream_debit ${label}无有效交付时仍可全额释放预占`, async () => {
+    const created = runWithTenant(1, () => {
+      const result = create({ valid: false, title: `${label}无有效交付全退` });
+      useUpstreamDebitPolicy(result.hold);
+      return result;
+    });
+    const before = reconciliationLedgerSnapshot(created);
+    await withServer(boss, async base => {
+      const queue = await getQueue(base);
+      const row = queue.body.rows.find(item => item.holdId === Number(created.hold.holdId));
+      assert.ok(row);
+      assert.deepEqual(row.availableActions, ['release']);
+      const response = await fetch(`${base}/sys/billing/reconciliation/${row.holdId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'release',
+          evidenceHash: row.evidenceHash,
+          reason: '确认未形成有效交付，完整退还任务预占积分',
+        }),
+      });
+      assert.equal(response.status, 200, JSON.stringify(await response.json()));
+    });
+    const after = reconciliationLedgerSnapshot(created);
+    assert.equal(after.balance, before.balance + before.hold.held_credits);
+    assert.equal(after.hold.status, 'settled');
+    assert.equal(after.hold.settled_credits, 0);
+    assert.equal(after.log.credits, 0);
+    assert.equal(after.station.status, 'failed');
+    assert.equal(after.job.status, 'failed');
+  });
+}

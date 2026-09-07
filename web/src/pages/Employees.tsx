@@ -81,7 +81,7 @@ function pulseDisplayStatus(item: any) {
   if (['生成中', '执行中'].includes(String(item?.status || ''))) return String(item.status);
   if (item?.status === '待审阅') return '待人工审阅';
   if (item?.status === '已完成') return '已自动采用（可用于业务）';
-  if (item?.status === '已驳回') return '失败需返工（人工审阅未通过）';
+  if (item?.status === '已驳回') return '未采纳（原稿已保留）';
   if (item?.status === '失败') return '失败需处理（执行异常）';
   return String(item?.status || '待处理');
 }
@@ -319,6 +319,16 @@ export default function Employees() {
     setParams(next, { replace: true });
   };
 
+  const clearFilters = () => {
+    setKeyword('');
+    setDebouncedKeyword('');
+    setGroup('全部分部');
+    setStatusFilter('');
+    const next = new URLSearchParams(params);
+    for (const key of ['q', 'group', 'status', 'introCheck']) next.delete(key);
+    setParams(next, { replace: true });
+  };
+
   return (
     <div className="employee-page">
       <section className="employee-directory-head" aria-labelledby="employee-directory-title">
@@ -328,6 +338,9 @@ export default function Employees() {
           </div>
           <h1 id="employee-directory-title">选择数字员工</h1>
           <p>按经营问题找到对应岗位，一句话派活后即可查看进度、业务结果和真实费用。</p>
+          <Link to="/agents" style={{ fontSize: 13 }}>
+            自定义员工 / 导入工作流
+          </Link>
         </div>
         <dl className="employee-summary" aria-label="数字员工概况">
           <div>
@@ -390,6 +403,19 @@ export default function Employees() {
           />
         </div>
       </section>
+
+      {introReviewOnly && (
+        <Alert
+          type="info"
+          showIcon
+          message="正在查看自我介绍待确认的员工"
+          action={
+            <Button size="small" onClick={clearFilters}>
+              查看全部员工
+            </Button>
+          }
+        />
+      )}
 
       <nav className="employee-groups" aria-label="员工分部">
         <button
@@ -621,7 +647,9 @@ export default function Employees() {
           ))}
         </div>
       ) : (
-        <Empty className="employee-empty" description="没有匹配的员工，换一个经营问题试试" />
+        <Empty className="employee-empty" description="没有匹配的员工，换一个经营问题试试">
+          <Button onClick={clearFilters}>清除筛选，查看全部员工</Button>
+        </Empty>
       )}
 
       <details className="employee-disclosure employee-origin">

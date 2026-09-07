@@ -217,8 +217,12 @@ test('injected provider completes exactly three 10-second segments, settles the 
     assert.deepEqual(submitCalls.map(call => call.duration), [10, 10, 10]);
     assert.equal(kbCalls.length, 1);
     assert.equal(webCalls.length, 1);
-    assert.ok(submitCalls.every(call => call.prompt.includes('企业已确认知识')));
-    assert.ok(submitCalls.every(call => call.prompt.includes('official.test/current-guide')));
+    assert.ok(submitCalls.every(call => call.prompt.length <= 900));
+    assert.ok(submitCalls.every(call => !call.prompt.includes('企业已确认知识')));
+    assert.ok(submitCalls.every(call => !call.prompt.includes('official.test/current-guide')));
+    const grounding = JSON.parse(row.snapshot_json).grounding;
+    assert.equal(grounding.knowledgeBase.tenantScoped, true);
+    assert.equal(grounding.web.triggered, true);
     assert.equal(queryCalls.length, 3);
     assert.equal(downloadCalls.length, 3);
     assert.equal(composeCalls.length, 1);

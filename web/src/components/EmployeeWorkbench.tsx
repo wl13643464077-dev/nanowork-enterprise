@@ -12,7 +12,6 @@ import {
   Select,
   Skeleton,
   Space,
-  Steps,
   Switch,
   Tabs,
   Tag,
@@ -51,7 +50,6 @@ import { refineVoiceIntent, useVoiceInput } from './useVoiceInput';
 import type {
   EmployeeCapability,
   EmployeeDispatch,
-  EmployeeExecutionProgress,
   EmployeeJobProfile,
   EmployeeRuntimeTask,
   EmployeeRuntimeBindingItem,
@@ -73,6 +71,7 @@ import type { ContentEmployeeDispatchFormValues } from '../api/contentProfileTyp
 import { Markdown } from './Markdown';
 import { ArtifactActions } from './ArtifactActions';
 import ContentEmployeeResult from './ContentEmployeeResult';
+import ContentSpecialistDispatch from './ContentSpecialistDispatch';
 import EmployeeExecutionTimeline from './EmployeeExecutionTimeline';
 import EmployeeResearchPlan from './EmployeeResearchPlan';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -95,6 +94,7 @@ import './EmployeeWorkbench.css';
 import ContentBenchmarkLibrary from './ContentBenchmarkLibrary';
 import ContentXhsVersions from './ContentXhsVersions';
 import { ContentEvolutionNotes, ContentRetroChanges, ContentRetroSourceSelect } from './ContentRetrospectiveLearning';
+import ConversationTaskFeedback from './ConversationTaskFeedback';
 
 type Props = {
   open: boolean;
@@ -103,6 +103,11 @@ type Props = {
   initialRunId?: number | null;
   initialRetroContentId?: number | null;
   initialTaskId?: string | number | null;
+  initialMediaJobId?: number | null;
+  initialSalesVideoBrief?: { key: number; text: string } | null;
+  onSpecialistTaskSubmitted?: () => void;
+  initialProfileTab?: 'skills';
+  onSkillsChanged?: () => void | Promise<unknown>;
   // 「一句话找人」等入口带来的派活预填：打开工作台时填进派活输入框，老板可改可删。
   initialDirective?: string | null;
   identityHint?: EmployeeWorkbenchIdentityHint | null;
@@ -203,31 +208,13 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   '历史失败（后续已修复）': 'blue',
   '失败需处理（执行异常）': 'red',
   '失败需返工（质检未通过）': 'red',
-  '失败需返工（人工审阅未通过）': 'red',
+  '未采纳（原稿已保留）': 'orange',
   '未达标草稿（待老板处理）': 'orange',
   '已接受草稿（内部参考，未通过质量门）': 'orange',
 };
 
 const DRAFT_PENDING_LABEL = '未达标草稿（待老板处理）';
 const DRAFT_ACCEPTED_LABEL = '已接受草稿（内部参考，未通过质量门）';
-
-const DISPATCH_GUIDE_PREFERENCE_VERSION = 'v1';
-
-function safeLocalStorageGet(key: string) {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeLocalStorageSet(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // 隐私模式或存储不可用时只影响展示偏好，不影响派活。
-  }
-}
 
 function isTaskRunning(status: unknown) {
   return text(status) === '生成中';
@@ -245,20 +232,22 @@ function canonicalDisplayStatus(value: unknown, completedLabel = '已自动采�
     已采纳: '已人工采纳（可用于业务）',
     已通过: '已人工采纳（可用于业务）',
     已完成: completedLabel,
-    已驳回: '失败需返工（人工审阅未通过）',
+    已驳回: '未采纳（原稿已保留）',
     草稿待处理: DRAFT_PENDING_LABEL,
     草稿已接受: DRAFT_ACCEPTED_LABEL,
     '生成失败（可重跑）': '失败需处理（执行异常）',
     '执行失败（可重跑）': '失败需处理（执行异常）',
     '质检失败（可重跑）': '失败需返工（质检未通过）',
     '质检未通过（可重跑）': '失败需返工（质检未通过）',
-    '审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
-    '人工审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
+    '失败需返工（人工审阅未通过）': '未采纳（原稿已保留）',
+    '审核未通过（可重跑）': '未采纳（原稿已保留）',
+    '人工审核未通过（可重跑）': '未采纳（原稿已保留）',
   };
   return labels[raw] || raw;
 }
 
 function runStatus(run: EmployeeWorkbenchRun) {
+  if (run.presentationKey === 'rejected') return '未采纳（原稿已保留）';
   if (run.remediated === true) return '历史失败（后续已修复）';
   const provided = canonicalDisplayStatus(run.displayStatus);
   if (provided) return provided;
@@ -267,7 +256,7 @@ function runStatus(run: EmployeeWorkbenchRun) {
   }
   if (run.status === '生成中') return '生成中';
   if (run.aiMode === 'template' || run.contract?.valid !== true) return '失败需返工（质检未通过）';
-  if (run.status === '已驳回') return '失败需返工（人工审阅未通过）';
+  if (run.status === '已驳回') return '未采纳（原稿已保留）';
   if (run.status === '已完成') {
     return run.review?.decision === 'adopt' ? '已人工采纳（可用于业务）' : '已自动采用（可用于业务）';
   }
@@ -275,6 +264,7 @@ function runStatus(run: EmployeeWorkbenchRun) {
 }
 
 function restaurantStatus(task: EmployeeRuntimeTask) {
+  if (task.presentationKey === 'rejected') return '未采纳（原稿已保留）';
   const provided = canonicalDisplayStatus(task.displayStatus);
   if (provided) return provided;
   if (task.failed || text(task.status) === '失败') {
@@ -294,7 +284,7 @@ function restaurantStatus(task: EmployeeRuntimeTask) {
     task.executionSnapshot?.outputContract?.valid === false
   )
     return '失败需返工（质检未通过）';
-  if (text(task.status) === '已驳回') return '失败需返工（人工审阅未通过）';
+  if (text(task.status) === '已驳回') return '未采纳（原稿已保留）';
   if (text(task.status) === '已完成') return '已自动采用（可用于业务）';
   return '待处理';
 }
@@ -358,12 +348,6 @@ function billingStateLabel(billing?: EmployeeRunBilling | null, runStatus?: stri
 
 function runTime(value?: string | null) {
   return text(value).replace('T', ' ').slice(0, 16) || '时间未记录';
-}
-
-function isWaitingForFirstModelCharacter(progress?: EmployeeExecutionProgress | null) {
-  if (!progress || progress.receivedChars !== 0) return false;
-  const stage = text(progress.currentStage);
-  return !stage || stage === 'generate' || stage === 'repair';
 }
 
 function stringList(value: unknown) {
@@ -1046,7 +1030,7 @@ function SourceDeliverables({
 export default function EmployeeWorkbench(props: Props) {
   const instanceKey =
     props.open && props.idx !== null
-      ? `${props.domain}-${props.idx}-${props.initialRunId || 'run'}-${props.initialTaskId || 'task'}-${props.initialDirective ? 'prefilled' : 'blank'}-${props.initialRetroContentId || 'no-retro'}`
+      ? `${props.domain}-${props.idx}-${props.initialRunId || 'run'}-${props.initialTaskId || 'task'}-${props.initialDirective ? 'prefilled' : 'blank'}-${props.initialRetroContentId || 'no-retro'}-${props.initialProfileTab || 'dispatch'}`
       : 'closed';
   return <EmployeeWorkbenchInstance key={instanceKey} {...props} />;
 }
@@ -1058,6 +1042,11 @@ function EmployeeWorkbenchInstance({
   initialRunId,
   initialRetroContentId,
   initialTaskId,
+  initialMediaJobId,
+  initialSalesVideoBrief,
+  onSpecialistTaskSubmitted,
+  initialProfileTab,
+  onSkillsChanged,
   initialDirective,
   identityHint,
   onClose,
@@ -1065,14 +1054,13 @@ function EmployeeWorkbenchInstance({
   const [profile, setProfile] = useState<EmployeeWorkbenchProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
-  const [backendProfileOpen, setBackendProfileOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState(initialProfileTab || 'overview');
+  const [backendProfileOpen, setBackendProfileOpen] = useState(!!initialProfileTab);
   const [saving, setSaving] = useState<MutationName | 'dispatch' | ''>('');
   const [promptDraft, setPromptDraft] = useState('');
   const [customSkillOpen, setCustomSkillOpen] = useState(false);
   const [skillLearningRun, setSkillLearningRun] = useState<EmployeeSkillLearningRun | null>(null);
   const [skillLearningLoading, setSkillLearningLoading] = useState(false);
-  const [lastSnapshot, setLastSnapshot] = useState<Record<string, unknown> | null>(null);
   // 餐饮域派活后的任务进度（content 域走 runs 列表，restaurant 域走 /marshals/tasks/:id/status）
   const [restaurantTask, setRestaurantTask] = useState<EmployeeRuntimeTask | null>(null);
   const [restaurantPollWarning, setRestaurantPollWarning] = useState<RestaurantTaskPollWarning | null>(null);
@@ -1082,18 +1070,16 @@ function EmployeeWorkbenchInstance({
   const [restaurantTasksRefreshing, setRestaurantTasksRefreshing] = useState(false);
   const [restaurantTasksLoadingMore, setRestaurantTasksLoadingMore] = useState(false);
   const [dispatchFiles, setDispatchFiles] = useState<UploadedFileRef[]>([]);
+  const dedicatedContentTask = domain === 'content' && (idx === 10 || idx === 11);
   const [runs, setRuns] = useState<EmployeeWorkbenchRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState('');
   const [selectedRun, setSelectedRun] = useState<EmployeeWorkbenchRun | null>(null);
+  const [expandedContentRunId, setExpandedContentRunId] = useState<number | null>(null);
+  const [contentResultOpen, setContentResultOpen] = useState(true);
+  const [restaurantResultOpen, setRestaurantResultOpen] = useState(true);
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [activeRunId, setActiveRunId] = useState<number | null>(null);
-  const [reviewing, setReviewing] = useState(false);
-  const [adoptRun, setAdoptRun] = useState<EmployeeWorkbenchRun | null>(null);
-  const [adoptCandidateIndex, setAdoptCandidateIndex] = useState<number | null>(null);
-  const [rejectRun, setRejectRun] = useState<EmployeeWorkbenchRun | null>(null);
-  const [rejectOpinion, setRejectOpinion] = useState('');
-  const [dispatchGuideOpen, setDispatchGuideOpen] = useState(false);
   const [contentProfileOpen, setContentProfileOpen] = useState(false);
   // 「TA 的自我介绍」抽屉：四段介绍 + 老板叮嘱 + 周校验状态（餐饮域）
   const [selfIntroOpen, setSelfIntroOpen] = useState(false);
@@ -1132,24 +1118,10 @@ function EmployeeWorkbenchInstance({
   const [configForm] = Form.useForm();
   const [customSkillForm] = Form.useForm();
 
-  const profileVersionForGuide =
-    text(profile?.jobProfile.profileVersion) ||
-    text(profile?.provenance.profileVersion) ||
-    text(profile?.provenance.sourceVersion) ||
-    'current';
   const currentUser = getUser();
+  const canViewDiagnostics = currentUser?.role === 'platform_super';
   const canManageContentProfile =
     domain === 'content' && ['boss', 'admin', 'platform_super'].includes(currentUser?.role || '');
-  const tenantId = Number(currentUser?.tenant?.id ?? currentUser?.tenant_id);
-  const userId = Number(currentUser?.id);
-  const dispatchGuidePreferenceKey = !profile
-    ? ''
-    : idx !== null && Number.isSafeInteger(tenantId) && tenantId > 0 && Number.isSafeInteger(userId) && userId > 0
-      ? domain === 'restaurant'
-        ? `nanowork.employee-workbench.dispatch-guide.seen.${DISPATCH_GUIDE_PREFERENCE_VERSION}:${tenantId}:${userId}:restaurant`
-        : `nanowork.employee-workbench.dispatch-guide.seen.${DISPATCH_GUIDE_PREFERENCE_VERSION}:${tenantId}:${userId}:${domain}:${idx}:${encodeURIComponent(profileVersionForGuide)}`
-      : 'unscoped';
-  const dispatchGuideId = `employee-dispatch-guide-${domain}-${idx ?? 'closed'}`;
   const taskCenterId = `employee-task-center-${domain}-${idx ?? 'closed'}`;
   const contentResultId = `employee-content-result-${idx ?? 'closed'}`;
   const restaurantResultId = `employee-restaurant-result-${idx ?? 'closed'}`;
@@ -1190,7 +1162,7 @@ function EmployeeWorkbenchInstance({
   );
 
   const loadRuns = useCallback(async () => {
-    if (!open || domain !== 'content' || idx === null) return;
+    if (!open || domain !== 'content' || idx === null || dedicatedContentTask) return;
     const serial = ++runRequestSerial.current;
     setRunsLoading(true);
     setRunsError('');
@@ -1200,23 +1172,21 @@ function EmployeeWorkbenchInstance({
       const nextRuns = Array.isArray(data?.runs) ? data.runs : [];
       setRuns(nextRuns);
       setSelectedRun(current => {
-        if (!current) return current;
+        if (!current) return nextRuns[0] || null;
         const summary = nextRuns.find(run => run.id === current.id);
         return summary ? { ...current, ...summary, resultMd: current.resultMd, snapshot: current.snapshot } : current;
       });
       setActiveRunId(current => current ?? nextRuns.find(run => run.status === '生成中')?.id ?? null);
     } catch (error: any) {
-      if (serial === runRequestSerial.current) {
-        setRunsError(error?.message || '近期任务读取失败');
-      }
+      if (serial === runRequestSerial.current) setRunsError(error?.message || '近期任务读取失败');
     } finally {
       if (serial === runRequestSerial.current) setRunsLoading(false);
     }
-  }, [domain, idx, open]);
+  }, [dedicatedContentTask, domain, idx, open]);
 
   const loadRunDetail = useCallback(
-    async (id: number, { quiet = false } = {}) => {
-      if (!open || domain !== 'content' || idx === null) return null;
+    async (id: number, { quiet = false, expand = true } = {}) => {
+      if (!open || domain !== 'content' || idx === null || dedicatedContentTask) return null;
       if (!quiet) setRunDetailLoading(true);
       try {
         const data = (await api.get(`/employee-workbench/content/${idx}/runs/${id}`)) as { run?: EmployeeWorkbenchRun };
@@ -1224,6 +1194,10 @@ function EmployeeWorkbenchInstance({
         if (run) {
           setSelectedRun(current => (quiet && current && current.id !== run.id ? current : run));
           setRuns(current => current.map(item => (item.id === run.id ? { ...item, ...run } : item)));
+          if (expand) {
+            setExpandedContentRunId(run.id);
+            setContentResultOpen(true);
+          }
           if (!quiet) {
             window.requestAnimationFrame(() => {
               window.requestAnimationFrame(() => {
@@ -1239,7 +1213,25 @@ function EmployeeWorkbenchInstance({
         if (!quiet) setRunDetailLoading(false);
       }
     },
-    [contentResultId, domain, idx, open],
+    [contentResultId, dedicatedContentTask, domain, idx, open],
+  );
+
+  const toggleContentRun = useCallback(
+    (run: EmployeeWorkbenchRun) => {
+      if (expandedContentRunId === run.id && selectedRun?.id === run.id) {
+        if (!contentResultOpen) {
+          setContentResultOpen(true);
+          return;
+        }
+        setExpandedContentRunId(null);
+        return;
+      }
+      setSelectedRun(run);
+      setExpandedContentRunId(run.id);
+      setContentResultOpen(true);
+      void loadRunDetail(run.id);
+    },
+    [contentResultOpen, expandedContentRunId, loadRunDetail, selectedRun?.id],
   );
 
   const loadProfile = useCallback(async () => {
@@ -1248,7 +1240,6 @@ function EmployeeWorkbenchInstance({
     setLoading(true);
     setLoadError('');
     setProfile(null);
-    setLastSnapshot(null);
     try {
       const data = await api.get(`/employee-workbench/${domain}/${idx}`);
       const normalized = normalizeProfile(data);
@@ -1368,6 +1359,7 @@ function EmployeeWorkbenchInstance({
           timer = window.setTimeout(poll, 2000);
         } else if (data.run.status === 'completed') {
           await refreshProfileQuietly();
+          void onSkillsChanged?.();
           message.success(`全网进修完成，新增${data.run.skillsAdded}条技能`);
         } else {
           message.error(data.run.error?.message || '全网进修失败，预授权已按记录处理');
@@ -1381,7 +1373,7 @@ function EmployeeWorkbenchInstance({
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [domain, idx, open, refreshProfileQuietly, skillLearningRunId, skillLearningRunStatus]);
+  }, [domain, idx, open, refreshProfileQuietly, skillLearningRunId, skillLearningRunStatus, onSkillsChanged]);
 
   const loadRestaurantTask = useCallback(
     async (rawTaskId: string | number, options: { scrollToResult?: boolean } = {}) => {
@@ -1393,6 +1385,7 @@ function EmployeeWorkbenchInstance({
       }
       setRestaurantTaskLoading(String(taskId));
       setRestaurantPollWarning(null);
+      if (options.scrollToResult) setRestaurantResultOpen(true);
       try {
         const task = (await api.get(`/marshals/tasks/${taskId}/status`)) as EmployeeRuntimeTask;
         setRestaurantTask(task);
@@ -1567,7 +1560,7 @@ function EmployeeWorkbenchInstance({
     queueMicrotask(() => {
       if (cancelled || !open) return;
       void loadProfile();
-      if (domain === 'content') {
+      if (domain === 'content' && !dedicatedContentTask) {
         void loadRuns();
         if (Number.isSafeInteger(initialRunId) && Number(initialRunId) > 0) {
           void loadRunDetail(Number(initialRunId)).then(run => {
@@ -1581,28 +1574,10 @@ function EmployeeWorkbenchInstance({
       requestSerial.current += 1;
       runRequestSerial.current += 1;
     };
-  }, [domain, initialRunId, loadProfile, loadRunDetail, loadRuns, open]);
+  }, [dedicatedContentTask, domain, initialRunId, loadProfile, loadRunDetail, loadRuns, open]);
 
   useEffect(() => {
-    if (!dispatchGuidePreferenceKey) return;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      if (dispatchGuidePreferenceKey === 'unscoped') {
-        setDispatchGuideOpen(true);
-        return;
-      }
-      const seen = safeLocalStorageGet(dispatchGuidePreferenceKey) === '1';
-      setDispatchGuideOpen(!seen);
-      if (!seen) safeLocalStorageSet(dispatchGuidePreferenceKey, '1');
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [dispatchGuidePreferenceKey]);
-
-  useEffect(() => {
-    if (!open || domain !== 'content' || idx === null || activeRunId === null) return;
+    if (!open || domain !== 'content' || idx === null || dedicatedContentTask || activeRunId === null) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
@@ -1612,19 +1587,12 @@ function EmployeeWorkbenchInstance({
         };
         const run = data?.run;
         if (cancelled || !run) return;
-        setRuns(current => {
-          const exists = current.some(item => item.id === run.id);
-          return exists
-            ? current.map(item => (item.id === run.id ? { ...item, ...run } : item))
-            : [run, ...current].slice(0, 8);
-        });
         setSelectedRun(current => (!current || current.id === run.id ? run : current));
         if (run.status === '生成中') {
           timer = window.setTimeout(poll, 1500);
         } else {
           setActiveRunId(null);
-          void loadRuns();
-          void refreshProfileQuietly();
+          void Promise.all([refreshProfileQuietly(), loadRuns()]);
         }
       } catch {
         if (!cancelled) setActiveRunId(null);
@@ -1635,7 +1603,7 @@ function EmployeeWorkbenchInstance({
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeRunId, domain, idx, loadRuns, open, refreshProfileQuietly]);
+  }, [activeRunId, dedicatedContentTask, domain, idx, loadRuns, open, refreshProfileQuietly]);
 
   const mutate = async (name: MutationName, body: Record<string, unknown>, success: string) => {
     if (idx === null) return false;
@@ -1645,6 +1613,7 @@ function EmployeeWorkbenchInstance({
       const wrapped = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
       if (wrapped.profile) applyProfile(normalizeProfile(data));
       else await loadProfile();
+      if (name === 'skills') void onSkillsChanged?.();
       message.success(success);
       return true;
     } catch {
@@ -1847,16 +1816,14 @@ function EmployeeWorkbenchInstance({
         ...(dispatchFiles.length ? { fileIds: dispatchFiles.map(file => file.id) } : {}),
       });
       const payload = result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
-      const snapshot =
-        payload.snapshot && typeof payload.snapshot === 'object' ? (payload.snapshot as Record<string, unknown>) : null;
       const billing =
         payload.billing && typeof payload.billing === 'object'
           ? (payload.billing as EmployeeWorkbenchRun['billing'])
           : null;
-      setLastSnapshot(snapshot);
       const createdRunId = Number(payload.runId ?? payload.taskId);
       if (domain === 'restaurant' && Number.isSafeInteger(createdRunId) && createdRunId > 0) {
         setRestaurantPollWarning(null);
+        setRestaurantResultOpen(true);
         setRestaurantTask({
           id: createdRunId,
           title: String(values.question || values.goal || values.title || `任务 #${createdRunId}`),
@@ -1868,6 +1835,8 @@ function EmployeeWorkbenchInstance({
       }
       if (domain === 'content' && Number.isSafeInteger(createdRunId) && createdRunId > 0) {
         setActiveRunId(createdRunId);
+        setExpandedContentRunId(createdRunId);
+        setContentResultOpen(true);
         setSelectedRun({
           id: createdRunId,
           runId: createdRunId,
@@ -1885,7 +1854,7 @@ function EmployeeWorkbenchInstance({
           terminal: false,
         });
       }
-      await refreshProfileQuietly();
+      await Promise.all([refreshProfileQuietly(), loadRuns()]);
       message.success(
         canViewInternalProfile
           ? text(payload.msg) || text(payload.message) || '任务已派发，完整能力快照已锁定'
@@ -1916,57 +1885,26 @@ function EmployeeWorkbenchInstance({
     }
   };
 
-  const reviewRun = async (
-    run: EmployeeWorkbenchRun,
+  const reviewContentOutput = async (
     decision: 'adopt' | 'reject',
-    opinion = '',
+    opinion: string,
     selection?: { candidateIndex: number },
   ) => {
-    if (domain !== 'content' || idx === null) return;
-    setReviewing(true);
-    try {
-      const data = (await api.post(`/employee-workbench/content/${idx}/runs/${run.id}/review`, {
-        decision,
-        opinion,
-        selection,
-      })) as { run?: EmployeeWorkbenchRun; alreadyReviewed?: boolean };
-      if (data.run) setSelectedRun(data.run);
-      message.success(
-        data.alreadyReviewed
-          ? `该产出已经${decision === 'adopt' ? '采纳' : '驳回'}`
-          : decision === 'adopt'
-            ? idx === 8
-              ? '分发官产出已人工审阅通过，并形成可继续发布登记的内容'
-              : '产出已人工审阅通过'
-            : '产出已驳回',
-      );
-      setRejectRun(null);
-      setRejectOpinion('');
-      setAdoptRun(null);
-      setAdoptCandidateIndex(null);
-      await Promise.all([loadRuns(), refreshProfileQuietly()]);
-      if (data.run) setSelectedRun(data.run);
-    } finally {
-      setReviewing(false);
-    }
+    if (domain !== 'content' || idx === null || !selectedRun) throw new Error('内容任务尚未载入');
+    const data = (await api.post(
+      `/employee-workbench/content/${idx}/runs/${selectedRun.id}/review`,
+      { decision, opinion, selection },
+      { silent: true },
+    )) as { run?: EmployeeWorkbenchRun };
+    if (data.run) setSelectedRun(data.run);
+    await Promise.all([loadRuns(), refreshProfileQuietly()]);
+    if (data.run) setSelectedRun(data.run);
   };
 
-  const confirmAdoptRun = (run: EmployeeWorkbenchRun) => {
-    if (run.handlerApproval?.candidateSelectionRequired) {
-      setAdoptCandidateIndex(null);
-      setAdoptRun(run);
-      return;
-    }
-    Modal.confirm({
-      title: `确认采纳「${run.title}」？`,
-      content:
-        idx === 8
-          ? '采纳即完成人工审阅，内容通过交付门禁后可在内容列表继续做发布登记；系统不会自动对外发布。'
-          : '采纳后本次内容员工运行将计入已完成并沉淀为素材；对外发布及不可逆动作仍需按岗位边界另行授权。',
-      okText: '确认采纳',
-      cancelText: '取消',
-      onOk: () => reviewRun(run, 'adopt'),
-    });
+  const reviewRestaurantOutput = async (decision: 'adopt' | 'reject', reason: string) => {
+    if (!restaurantTask?.output_id) throw new Error('餐饮员工结果尚未载入');
+    await api.post(`/marshals/outputs/${restaurantTask.output_id}/review`, { decision, reason }, { silent: true });
+    await Promise.all([loadRestaurantTask(restaurantTask.id), refreshRestaurantTasks()]);
   };
 
   const dispatchAvailable =
@@ -1975,13 +1913,19 @@ function EmployeeWorkbenchInstance({
   const dispatchTab =
     profile &&
     (() => {
-      const guidance = profile.dispatch.guidance || {};
-      const materialChecklist =
-        stringList(guidance.materialChecklist) ||
-        stringList(profile.workMethod.inputs || profile.workMethod.requiredInputs);
-      const deliverableChecklist =
-        stringList(guidance.deliverableChecklist) || stringList(profile.workMethod.deliverables);
-      const taskExamples = stringList(guidance.taskExamples);
+      if (domain === 'content' && (idx === 10 || idx === 11)) {
+        return (
+          <ContentSpecialistDispatch
+            employeeIdx={idx}
+            active={open}
+            available={dispatchAvailable}
+            onChanged={refreshProfileQuietly}
+            initialJobId={initialMediaJobId}
+            presetBrief={initialSalesVideoBrief}
+            onTaskSubmitted={onSpecialistTaskSubmitted}
+          />
+        );
+      }
       const restaurantRecentTasks =
         profile.runtime.recentTasks?.length || !profile.runtime.lastTask
           ? profile.runtime.recentTasks || []
@@ -2010,14 +1954,6 @@ function EmployeeWorkbenchInstance({
         restaurantPollWarning.terminal === false &&
         isTaskRunning(restaurantTask?.status);
       const selectedRunPublicStatus = selectedRun ? runStatus(selectedRun) : '';
-      const currentPublicStatus = domain === 'content' ? selectedRunPublicStatus : restaurantPublicStatus;
-      const hasCurrentSelection = domain === 'content' ? !!selectedRun : !!restaurantTask;
-      const hasPendingReview = currentPublicStatus === '待人工审阅';
-      const currentReviewFinished = ['已人工采纳（可用于业务）', '失败需返工（人工审阅未通过）'].includes(
-        currentPublicStatus,
-      );
-      const dispatchPathStep =
-        hasPendingReview || currentReviewFinished ? 2 : hasCurrentSelection || lastSnapshot ? 1 : 0;
       const restaurantContractInvalid = restaurantPublicStatus === '失败需返工（质检未通过）';
       // P0-1 未达标草稿：状态接口带 draft 时走橙色草稿卡，不按失败/成功渲染
       const restaurantDraft = restaurantTask?.draft || null;
@@ -2029,18 +1965,14 @@ function EmployeeWorkbenchInstance({
         (selectedRun.review?.decision === 'adopt' || selectedRunPublicStatus === '已自动采用（可用于业务）') &&
         selectedRun.billing?.state === 'settled' &&
         selectedRun.contract?.valid === true;
-      const scrollToTaskCenter = () => document.getElementById(taskCenterId)?.scrollIntoView({ block: 'start' });
-      const scrollToContentReview = async () => {
-        const pendingRun = selectedRun && runStatus(selectedRun) === '待人工审阅' ? selectedRun : null;
-        if (!pendingRun) {
-          scrollToTaskCenter();
-          return;
-        }
-        if (selectedRun?.id !== pendingRun.id) await loadRunDetail(pendingRun.id);
+      const oneLineExample = !dedicatedContentTask ? stringList(profile.dispatch.guidance?.taskExamples)[0] : '';
+      const useOneLineExample = () => {
+        if (!oneLineExample || !dispatchAvailable) return;
+        dispatchForm.setFieldValue('question', oneLineExample);
         window.requestAnimationFrame(() => {
-          const result = document.getElementById(contentResultId);
-          if (result) result.scrollIntoView({ block: 'start' });
-          else scrollToTaskCenter();
+          const anchor = document.getElementById(dispatchFormId);
+          anchor?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          anchor?.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true });
         });
       };
       return (
@@ -2065,6 +1997,15 @@ function EmployeeWorkbenchInstance({
                   text(profile.identity.duty) ||
                   '直接告诉我你想完成什么，我会在后台自动调用岗位技能、工具和可用资料。'}
               </p>
+              {oneLineExample && (
+                <div className="ewb-one-line-example">
+                  <span>一句话使用我</span>
+                  <button type="button" disabled={!dispatchAvailable} onClick={useOneLineExample}>
+                    {oneLineExample}
+                  </button>
+                  <small>点击只会填入输入框，你确认后再发送。</small>
+                </div>
+              )}
               {domain === 'restaurant' && (
                 <button
                   type="button"
@@ -2078,161 +2019,6 @@ function EmployeeWorkbenchInstance({
               )}
             </div>
           </div>
-          <SectionHeading
-            title="派活与任务"
-            description={
-              domain === 'content'
-                ? '写清一件要做的事，提交后在同一页看进度；普通内部产出通过门禁后自动采用。'
-                : '写清一件要做的事，公开信息由岗位自行联网补齐；提交后在同一页看进度、结果和费用状态。'
-            }
-            extra={
-              <Space size={4} wrap>
-                {canManageContentProfile && (
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => setContentProfileOpen(true)}>
-                    企业品牌与账号人设
-                  </Button>
-                )}
-                <Button
-                  type="text"
-                  size="small"
-                  aria-expanded={dispatchGuideOpen}
-                  aria-controls={dispatchGuideId}
-                  onClick={() => setDispatchGuideOpen(value => !value)}
-                >
-                  {dispatchGuideOpen ? '收起岗位说明' : '查看岗位说明'}
-                </Button>
-              </Space>
-            }
-          />
-          <Steps
-            className="ewb-dispatch-path"
-            size="small"
-            current={dispatchPathStep}
-            items={[
-              { title: '一句话派活', description: '内部材料可选' },
-              {
-                title: '看进度',
-                description: (
-                  <button type="button" className="ewb-step-link" onClick={scrollToTaskCenter}>
-                    打开任务列表
-                  </button>
-                ),
-              },
-              {
-                title: '看结果',
-                description:
-                  domain === 'content' ? (
-                    <button type="button" className="ewb-step-link" onClick={() => void scrollToContentReview()}>
-                      {hasPendingReview && profile.permissions.canReviewRuns ? '处理待确认结果' : '查看任务结果'}
-                    </button>
-                  ) : (
-                    <button type="button" className="ewb-step-link" onClick={scrollToTaskCenter}>
-                      查看任务结果与费用
-                    </button>
-                  ),
-              },
-            ]}
-          />
-          <div className="ewb-status-help" aria-label="任务状态说明">
-            {hasPendingReview ? (
-              <div>
-                <strong>这是一条旧策略历史记录</strong>
-                <span>原状态仅为审计留档，不影响当前普通内部任务自动执行与采用。</span>
-                <a href="/tasks">在任务中心查看</a>
-              </div>
-            ) : domain === 'content' ? (
-              <div>
-                <strong>普通内部产出自动采用</strong>
-                <span>质量、账务和安全门禁通过后直接进入业务可用状态；系统不会自动外发。</span>
-              </div>
-            ) : null}
-            <div>
-              <strong>数字员工任务在哪里</strong>
-              <span>数字员工和 AI 任务统一进入「任务中心」；「经营执行」只放人工任务与拆解任务。</span>
-              <a href="/tasks">打开任务中心</a>
-            </div>
-          </div>
-          <Alert
-            type={dispatchAvailable ? 'info' : 'warning'}
-            showIcon
-            message={dispatchAvailable ? '岗位能力由系统自动锁定执行' : '该员工当前不可执行'}
-            description={
-              dispatchAvailable
-                ? profile.permissions.canViewCapabilities
-                  ? '不需要在这里逐项设置；提交后会自动保存执行快照，完整能力可在「能力」页签查看。'
-                  : '不需要逐项设置；提交后会自动保存岗位执行快照，便于追溯。'
-                : profile.dispatch.boundary || '请联系管理员检查员工权限与工作配置。'
-            }
-          />
-          {dispatchGuideOpen && (
-            <section
-              id={dispatchGuideId}
-              className="ewb-dispatch-guide"
-              aria-label={`${profile.identity.name}派活操作指引`}
-            >
-              <div className="ewb-dispatch-guide-intro">
-                <span>这个岗位怎么派活</span>
-                <strong>
-                  <IdcardOutlined aria-hidden /> {profile.identity.name}
-                </strong>
-                <p>
-                  {text(guidance.intro) ||
-                    `${profile.identity.name}会严格按岗位要求处理专项问题；材料不足时会标出缺口，不会猜测成事实。`}
-                </p>
-                <p>
-                  您只需说清要解决的问题。地点、竞品、地图、评价、公开规则和实时信息由系统自行联网；下面的内部材料只是可选补充。
-                </p>
-              </div>
-              <div className="ewb-dispatch-guide-grid">
-                <div>
-                  <span className="ewb-dispatch-guide-label">可选补充（没有也可开工）</span>
-                  {materialChecklist.length ? (
-                    <ul>
-                      {materialChecklist.map((item, index) => (
-                        <li key={index}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p>没有附件也可直接派活；岗位会自行搜集公开信息并按任务需要调用工具。</p>
-                  )}
-                </div>
-                <div>
-                  <span className="ewb-dispatch-guide-label">这个岗位会交付</span>
-                  {deliverableChecklist.length ? (
-                    <ul>
-                      {deliverableChecklist.map((item, index) => (
-                        <li key={index}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p>接口未返回岗位交付清单，请在任务要求中写明期望的结果格式。</p>
-                  )}
-                </div>
-              </div>
-              {!!taskExamples.length && (
-                <div className="ewb-dispatch-examples">
-                  <span className="ewb-dispatch-guide-label">可直接参考的任务</span>
-                  <div>
-                    {taskExamples.map((example, index) => (
-                      <button
-                        type="button"
-                        key={`${example}-${index}`}
-                        disabled={!dispatchAvailable}
-                        onClick={() => dispatchForm.setFieldValue('question', example)}
-                        aria-label={`使用任务示例：${example}`}
-                      >
-                        <b>{index + 1}</b>
-                        <span>{example}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {text(guidance.evidenceTip) && (
-                <p className="ewb-dispatch-evidence-tip">证据要求：{guidance.evidenceTip}</p>
-              )}
-            </section>
-          )}
           {domain === 'content' && idx !== null && [2, 3, 10].includes(idx) && (
             <ContentBenchmarkLibrary
               canManage={canManageContentProfile}
@@ -2240,16 +2026,18 @@ function EmployeeWorkbenchInstance({
             />
           )}
           {domain === 'content' && idx !== null && <ContentEvolutionNotes key={idx} employeeIdx={idx} />}
-          {domain === 'content' && (
-            <section id={taskCenterId} className="ewb-run-center" aria-label="内容员工任务列表">
+          {domain === 'content' && dedicatedContentTask && (
+            <section id={taskCenterId} className="ewb-run-center">
+              <Button href="/tasks">全部历史 · 任务中心</Button>
+            </section>
+          )}
+          {domain === 'content' && !dedicatedContentTask && (
+            <section id={taskCenterId} className="ewb-run-center" aria-label="内容员工聊天记录">
               <SectionHeading
-                title="任务列表"
-                description="派活后在这里看生成、自动采用、策略确认、业务暂不可采用和失败返工状态；真实历史状态会原样保留。"
+                title="聊天记录"
+                description="每次派活的输入、完整结果和采纳选择都保留在这里。"
                 extra={
-                  <Space size={8}>
-                    {Number(profile.runtime.reviewPendingRuns || 0) > 0 && (
-                      <Tag color="gold">待人工审阅 {profile.runtime.reviewPendingRuns}</Tag>
-                    )}
+                  <Space size={8} wrap>
                     <Button
                       size="small"
                       icon={<ReloadOutlined />}
@@ -2258,14 +2046,17 @@ function EmployeeWorkbenchInstance({
                     >
                       刷新
                     </Button>
+                    <Button size="small" href="/tasks">
+                      全部历史 · 任务中心
+                    </Button>
                   </Space>
                 }
               />
               {runsError && (
                 <Alert
-                  type="error"
+                  type="warning"
                   showIcon
-                  message="任务列表读取失败"
+                  message="聊天记录暂未读取"
                   description={runsError}
                   action={
                     <Button size="small" onClick={() => void loadRuns()}>
@@ -2280,34 +2071,47 @@ function EmployeeWorkbenchInstance({
                     type="button"
                     key={run.id}
                     className={selectedRun?.id === run.id ? 'active' : ''}
-                    onClick={() => void loadRunDetail(run.id)}
+                    aria-expanded={selectedRun?.id === run.id && expandedContentRunId === run.id && contentResultOpen}
+                    onClick={() => toggleContentRun(run)}
                   >
                     <span className="ewb-chat-user-avatar" aria-hidden="true">
                       <UserOutlined />
                     </span>
                     <span className="ewb-chat-user-message">
                       <span className="ewb-run-list-status">
-                        <i className={`status-${run.status}`} />
                         <Tag color={RUN_STATUS_COLOR[runStatus(run)] || 'default'}>{runStatus(run)}</Tag>
                       </span>
-                      <strong>{run.title}</strong>
+                      <strong>{run.title || `任务 #${run.id}`}</strong>
                       <small>
-                        {run.type || '岗位交付'} · {runTime(run.createdAt || run.updatedAt)}
+                        {run.type || '岗位交付'} · {runTime(run.createdAt || run.updatedAt)} · #{run.id}
                       </small>
-                      {run.resultPreview && <p>{localizeOperationalStatus(run.resultPreview)}</p>}
+                      <span className="ewb-run-list-action">
+                        <EyeOutlined />{' '}
+                        {selectedRun?.id === run.id && expandedContentRunId === run.id && contentResultOpen
+                          ? '收起员工结果'
+                          : '展开员工结果'}
+                      </span>
                     </span>
                   </button>
                 ))}
-                {!runsLoading && !runs.length && !runsError && <HonestEmpty description="这名内容员工还没有派活记录" />}
+                {!runsLoading && !runs.length && !runsError && <HonestEmpty description="这名员工还没有聊天记录" />}
               </div>
             </section>
           )}
-          {domain === 'content' && selectedRun && (
-            <section id={contentResultId} className="ewb-run-center" aria-label="当前选中的内容员工任务结果">
-              <SectionHeading
-                title="岗位交付报告"
-                description="点击上方任务后，在这里直接阅读完整报告、查看交付文件与采用记录。"
-              />
+          {domain === 'content' && !dedicatedContentTask && selectedRun && expandedContentRunId === selectedRun.id && (
+            <details
+              key={`content-result-${selectedRun.id}`}
+              id={contentResultId}
+              className="ewb-run-center ewb-chat-result-disclosure"
+              aria-label="当前选中的内容员工任务结果"
+              open={contentResultOpen}
+              onToggle={event => setContentResultOpen(event.currentTarget.open)}
+            >
+              <summary>
+                <span>员工结果</span>
+                <strong>{selectedRun.title || `任务 #${selectedRun.id}`}</strong>
+              </summary>
+              <SectionHeading title="岗位交付报告" description="完整输出、任务输入和本次选择都保留在这条聊天记录里。" />
               <article className="ewb-run-detail">
                 <div className="ewb-run-detail-head">
                   <div>
@@ -2348,6 +2152,43 @@ function EmployeeWorkbenchInstance({
                     </Button>
                   </Space>
                 </div>
+                {selectedRun.billing && (
+                  <div className={`ewb-billing-result state-${selectedRun.billing.state || 'unknown'}`}>
+                    <strong>本次费用</strong>
+                    <span>
+                      {billingStateLabel(selectedRun.billing, selectedRun.status) || '账务状态未记录'}
+                      {selectedRun.billing.note ? `；${localizeOperationalStatus(selectedRun.billing.note)}` : ''}
+                    </span>
+                    {selectedRun.billing.chargedCredits != null && (
+                      <small>实扣 {selectedRun.billing.chargedCredits} 积分</small>
+                    )}
+                  </div>
+                )}
+                {selectedRun.resultMd && (
+                  <ContentEmployeeResult
+                    raw={localizeOperationalStatus(selectedRun.resultMd)}
+                    title={selectedRun.title || `内容员工运行 #${selectedRun.id}`}
+                    runId={selectedRun.id}
+                  />
+                )}
+                <ConversationTaskFeedback
+                  key={`content-feedback-${selectedRun.id}`}
+                  kind="content"
+                  taskId={selectedRun.id}
+                  businessReview={
+                    selectedRunPublicStatus === '待人工审阅'
+                      ? {
+                          required: true,
+                          canReview: selectedRun.canReview === true && profile.permissions.canReviewRuns === true,
+                          blockedReason: selectedRun.reviewBlockedReason,
+                          candidates: selectedRun.handlerApproval?.candidateSelectionRequired
+                            ? selectedRun.handlerApproval.candidates
+                            : undefined,
+                          onSubmit: reviewContentOutput,
+                        }
+                      : undefined
+                  }
+                />
                 {selectedRun.resultMd && (
                   <SourceDeliverables
                     items={currentSourceDeliverables}
@@ -2371,7 +2212,11 @@ function EmployeeWorkbenchInstance({
                   />
                 )}
                 {selectedRunPublicStatus === '生成中' && (
-                  <EmployeeExecutionTimeline progress={selectedRun.executionProgress} title="内容员工实时执行过程" />
+                  <EmployeeExecutionTimeline
+                    progress={selectedRun.executionProgress}
+                    title="任务进度"
+                    diagnostics={canViewDiagnostics}
+                  />
                 )}
                 {selectedRunPublicStatus === '失败需处理（执行异常）' && (
                   <Alert
@@ -2422,6 +2267,23 @@ function EmployeeWorkbenchInstance({
                     }
                   />
                 )}
+                {!!selectedRun.contract?.warnings?.length && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="结果已生成，有优化建议"
+                    description={
+                      <>
+                        <p>完整结果已保留。先查看内容，再决定采纳或填写下一稿修改意见。</p>
+                        <ul className="ewb-contract-errors">
+                          {selectedRun.contract.warnings.map((warning, index) => (
+                            <li key={index}>{warning}</li>
+                          ))}
+                        </ul>
+                      </>
+                    }
+                  />
+                )}
                 {selectedRunPublicStatus === '业务暂不可采用（待账务对账）' && (
                   <Alert
                     type="warning"
@@ -2461,18 +2323,6 @@ function EmployeeWorkbenchInstance({
                     }
                   />
                 )}
-                {selectedRun.billing && (
-                  <div className={`ewb-billing-result state-${selectedRun.billing.state || 'unknown'}`}>
-                    <strong>本次费用</strong>
-                    <span>
-                      {billingStateLabel(selectedRun.billing, selectedRun.status) || '账务状态未记录'}
-                      {selectedRun.billing.note ? `；${localizeOperationalStatus(selectedRun.billing.note)}` : ''}
-                    </span>
-                    {selectedRun.billing.chargedCredits != null && (
-                      <small>实扣 {selectedRun.billing.chargedCredits} 积分</small>
-                    )}
-                  </div>
-                )}
                 {profile.permissions.canReviewRuns && !selectedRunReviewReady && selectedRun.reviewBlockedReason && (
                   <Alert
                     type="info"
@@ -2481,34 +2331,6 @@ function EmployeeWorkbenchInstance({
                     description={`${selectedRun.reviewBlockedReason}。下一步：${
                       selectedRun.nextAction || '查看当前状态说明后处理'
                     }`}
-                  />
-                )}
-                {profile.permissions.canReviewRuns && selectedRunReviewReady && (
-                  <div className="ewb-run-review-actions">
-                    {selectedRun.canAdopt === true && (
-                      <Button type="primary" loading={reviewing} onClick={() => confirmAdoptRun(selectedRun)}>
-                        {selectedRun.handlerApproval?.candidateSelectionRequired ? '选择并采纳' : '采纳'}
-                      </Button>
-                    )}
-                    {selectedRun.canReject === true && (
-                      <Button
-                        danger
-                        disabled={reviewing}
-                        onClick={() => {
-                          setRejectOpinion('');
-                          setRejectRun(selectedRun);
-                        }}
-                      >
-                        驳回
-                      </Button>
-                    )}
-                  </div>
-                )}
-                {selectedRun.resultMd && (
-                  <ContentEmployeeResult
-                    raw={localizeOperationalStatus(selectedRun.resultMd)}
-                    title={selectedRun.title || `内容员工运行 #${selectedRun.id}`}
-                    runId={selectedRun.id}
                   />
                 )}
                 {!!selectedRun.contract?.artifacts.length && (
@@ -2541,9 +2363,7 @@ function EmployeeWorkbenchInstance({
                 {selectedRun.review && (
                   <div className="ewb-run-review-record">
                     <strong>
-                      {selectedRun.review.decision === 'adopt'
-                        ? '已人工采纳（可用于业务）'
-                        : '人工审阅未通过（需返工）'}
+                      {selectedRun.review.decision === 'adopt' ? '已人工采纳（可用于业务）' : '未采纳（原稿已保留）'}
                     </strong>
                     <span>
                       {selectedRun.review.reviewerName || '审阅人未记录'} · {runTime(selectedRun.review.reviewedAt)}
@@ -2612,7 +2432,7 @@ function EmployeeWorkbenchInstance({
                   </details>
                 )}
               </article>
-            </section>
+            </details>
           )}
           {domain === 'restaurant' && (
             <section id={taskCenterId} className="ewb-run-center" aria-label="餐饮数字员工任务列表">
@@ -2642,6 +2462,12 @@ function EmployeeWorkbenchInstance({
                     key={task.id}
                     className={String(restaurantTask?.id) === String(task.id) ? 'active' : ''}
                     disabled={restaurantTaskLoading === String(task.id)}
+                    aria-expanded={
+                      String(restaurantTask?.id) === String(task.id) &&
+                      (!isTaskRunning(restaurantTask?.status) || Boolean(restaurantTask?.output_body))
+                        ? restaurantResultOpen
+                        : undefined
+                    }
                     onClick={() => void loadRestaurantTask(task.id, { scrollToResult: true })}
                   >
                     <span className="ewb-chat-user-avatar" aria-hidden="true">
@@ -2664,7 +2490,9 @@ function EmployeeWorkbenchInstance({
                           ? '查看实时进度'
                           : task.failed || text(task.status) === '失败'
                             ? '查看执行记录'
-                            : '查看完整结果'}
+                            : String(restaurantTask?.id) === String(task.id) && restaurantResultOpen
+                              ? '查看并可收起完整结果'
+                              : '查看完整结果'}
                       </span>
                     </span>
                   </button>
@@ -2721,27 +2549,6 @@ function EmployeeWorkbenchInstance({
                       </span>
                     </div>
                   )}
-                  <Steps
-                    size="small"
-                    current={restaurantTask.failed ? 1 : (restaurantTask.stepIndex ?? 1)}
-                    status={
-                      restaurantTask.failed
-                        ? 'error'
-                        : isBusinessUsableStatus(restaurantPublicStatus)
-                          ? 'finish'
-                          : 'process'
-                    }
-                    items={(
-                      restaurantTask.flow || ['已派发', 'AI生成中', '质量与账务门禁', '已自动采用（可用于业务）']
-                    ).map((step: string) => ({
-                      title:
-                        step === '待审阅' || step === '待审核'
-                          ? '旧策略/显式策略待处理'
-                          : step === '已完成' || step === '已通过'
-                            ? '已采用（可用于业务）'
-                            : canonicalDisplayStatus(step),
-                    }))}
-                  />
                   <div className="ewb-task-progress-note">
                     {restaurantDraft ? (
                       <>
@@ -2769,45 +2576,11 @@ function EmployeeWorkbenchInstance({
                         <span>请重新选择员工派活，本记录不会继续假显示运行中。</span>
                       </>
                     ) : isTaskRunning(restaurantTask.status) ? (
-                      activeRestaurantPollWarning ? (
-                        <>
-                          <span>当前无法确认最新生成进度，下方仅保留上次服务端已确认的状态。</span>
-                          {restaurantTask.generationProgress && (
-                            <span>
-                              {isWaitingForFirstModelCharacter(restaurantTask.generationProgress)
-                                ? '上次确认：模型正在推理，等待首字返回'
-                                : `上次收到约 ${restaurantTask.generationProgress.receivedChars.toLocaleString('zh-CN')} 个响应字符（仅表示流式进度，不是质检阈值）`}{' '}
-                              · 最近活动 {runTime(restaurantTask.generationProgress.lastActivityAt)}
-                            </span>
-                          )}
-                        </>
-                      ) : restaurantTask.generationProgress ? (
-                        <>
-                          <span>
-                            {isWaitingForFirstModelCharacter(restaurantTask.generationProgress)
-                              ? '模型正在推理，等待首字返回'
-                              : `云端流式生成中 · 已接收约 ${restaurantTask.generationProgress.receivedChars.toLocaleString('zh-CN')} 个响应字符（不是质检阈值）`}{' '}
-                            · 当前阶段：
-                            {restaurantTask.generationProgress.currentLabel || '正在准备岗位交付'} · 最近活动{' '}
-                            {runTime(restaurantTask.generationProgress.lastActivityAt)}
-                          </span>
-                          <span>
-                            第 {restaurantTask.generationProgress.attemptNumber} 次
-                            {restaurantTask.generationProgress.phase === 'repair' ? '定向修复' : '生成'}；此处每 5
-                            秒自动刷新，也可关闭窗口等待站内通知。
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          数字员工正在奋笔疾书
-                          <span className="nw-typing">
-                            <i />
-                            <i />
-                            <i />
-                          </span>{' '}
-                          此处每 5 秒自动刷新；也可关闭窗口，完成后会收到站内通知。
-                        </>
-                      )
+                      <span>
+                        {activeRestaurantPollWarning
+                          ? '暂时无法确认最新进度，下方保留上次确认的状态。'
+                          : '进度会自动更新，可关闭窗口稍后查看结果。'}
+                      </span>
                     ) : restaurantPublicStatus === '业务暂不可采用（待账务对账）' ? (
                       <>
                         <span>当前只完成技术生成，积分账务尚未终结，因此不会形成业务可用结果。</span>
@@ -2815,8 +2588,7 @@ function EmployeeWorkbenchInstance({
                       </>
                     ) : restaurantPublicStatus === '待人工审阅' ? (
                       <>
-                        <span>这是旧策略留下的历史状态，仅作审计留档，不影响当前普通内部任务自动执行。</span>
-                        <a href="/tasks">在任务中心查看</a>
+                        <span>结果已生成，请查看下方完整内容和优化建议，再选择是否采纳。</span>
                       </>
                     ) : (
                       '任务已结束；产出与证据可在「经营洞察 → 员工产出」中随时回看。'
@@ -2826,7 +2598,8 @@ function EmployeeWorkbenchInstance({
                     <>
                       <EmployeeExecutionTimeline
                         progress={restaurantTask.generationProgress}
-                        title="餐饮数字员工实时执行过程"
+                        title="任务进度"
+                        diagnostics={canViewDiagnostics}
                         compact
                       />
                       <EmployeeResearchPlan evidence={restaurantTask.executionSnapshot?.webEvidence} compact />
@@ -2839,7 +2612,18 @@ function EmployeeWorkbenchInstance({
           {domain === 'restaurant' &&
             restaurantTask &&
             (!isTaskRunning(restaurantTask.status) || Boolean(restaurantOutputBody)) && (
-              <section id={restaurantResultId} className="ewb-run-center" aria-label="当前选中的餐饮员工任务结果">
+              <details
+                key={`restaurant-result-${restaurantTask.id}`}
+                id={restaurantResultId}
+                className="ewb-run-center ewb-chat-result-disclosure"
+                aria-label="当前选中的餐饮员工任务结果"
+                open={restaurantResultOpen}
+                onToggle={event => setRestaurantResultOpen(event.currentTarget.open)}
+              >
+                <summary>
+                  <span>员工结果</span>
+                  <strong>{restaurantTask.title || `任务 #${restaurantTask.id}`}</strong>
+                </summary>
                 <SectionHeading
                   title={
                     restaurantDraft
@@ -2867,6 +2651,23 @@ function EmployeeWorkbenchInstance({
                       void loadRestaurantTask(restaurantTask.id);
                       void refreshRestaurantTasks();
                     }}
+                  />
+                )}
+                {!!restaurantTask.executionSnapshot?.outputContract?.warnings?.length && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="结果已生成，有优化建议"
+                    description={
+                      <>
+                        <p>完整结果已保留。先查看内容，再决定是否采纳；需要调整时写下修改意见。</p>
+                        <ul className="ewb-contract-errors">
+                          {restaurantTask.executionSnapshot.outputContract.warnings.map((warning, index) => (
+                            <li key={index}>{warning}</li>
+                          ))}
+                        </ul>
+                      </>
+                    }
                   />
                 )}
                 <article className="ewb-run-detail">
@@ -2913,6 +2714,15 @@ function EmployeeWorkbenchInstance({
                       </Button>
                     </Space>
                   </div>
+                  {restaurantTask.billing && (
+                    <div className={`ewb-billing-result state-${restaurantTask.billing.state || 'unknown'}`}>
+                      <strong>本次费用</strong>
+                      <span>{restaurantTask.billing.label || '账务状态未记录'}</span>
+                      {canViewDiagnostics && restaurantTask.billing.costYuan != null && (
+                        <small>供应商成本 ¥{Number(restaurantTask.billing.costYuan).toFixed(4)}</small>
+                      )}
+                    </div>
+                  )}
                   {restaurantOutputBody ? (
                     <>
                       <div className="ewb-report-view" aria-label="餐饮数字员工岗位报告">
@@ -2923,39 +2733,10 @@ function EmployeeWorkbenchInstance({
                           </div>
                           <Markdown content={localizeOperationalStatus(restaurantReportView.overviewMarkdown)} />
                         </section>
-                        {!restaurantReportView.structured &&
-                          restaurantReportView.markdownReport &&
-                          restaurantReportView.deliverablesMarkdown && (
-                            <details className="ewb-report-details">
-                              <summary>
-                                <span>
-                                  <strong>完整报告</strong>
-                                  <small>展开查看全部分析、表格与来源标注</small>
-                                </span>
-                                <ArrowDownOutlined aria-hidden />
-                              </summary>
-                              <div className="ewb-report-details-body">
-                                <Markdown
-                                  content={localizeOperationalStatus(restaurantReportView.deliverablesMarkdown)}
-                                />
-                              </div>
-                            </details>
-                          )}
-                        {restaurantReportView.structured && restaurantReportView.deliverablesMarkdown && (
-                          <details className="ewb-report-details">
-                            <summary>
-                              <span>
-                                <strong>岗位完整成果</strong>
-                                <small>{restaurantReportView.deliverableCount} 项岗位专属交付，展开查看全部栏目</small>
-                              </span>
-                              <ArrowDownOutlined aria-hidden />
-                            </summary>
-                            <div className="ewb-report-details-body">
-                              <Markdown
-                                content={localizeOperationalStatus(restaurantReportView.deliverablesMarkdown)}
-                              />
-                            </div>
-                          </details>
+                        {restaurantReportView.deliverablesMarkdown && (
+                          <section className="ewb-run-output ewb-report-full" aria-label="完整报告">
+                            <Markdown content={localizeOperationalStatus(restaurantReportView.deliverablesMarkdown)} />
+                          </section>
                         )}
                         {restaurantReportView.structured && restaurantReportView.inputMethodMarkdown && (
                           <details className="ewb-report-details is-method">
@@ -3011,8 +2792,8 @@ function EmployeeWorkbenchInstance({
                       <details className="ewb-report-details is-operational">
                         <summary>
                           <span>
-                            <strong>运行与交付记录</strong>
-                            <small>取证过程、账务状态与改进建议</small>
+                            <strong>查看详情</strong>
+                            <small>来源资料与交付记录</small>
                           </span>
                           <ArrowDownOutlined aria-hidden />
                         </summary>
@@ -3032,31 +2813,6 @@ function EmployeeWorkbenchInstance({
                                 : '未达到业务可用状态的结果不得直接用于外部执行。'
                             }
                           />
-                          {restaurantTask.billing && (
-                            <div className={`ewb-billing-result state-${restaurantTask.billing.state || 'unknown'}`}>
-                              <strong>本次费用</strong>
-                              <span>{restaurantTask.billing.label || '账务状态未记录'}</span>
-                              {restaurantTask.billing.costYuan != null && (
-                                <small>供应商成本 ¥{Number(restaurantTask.billing.costYuan).toFixed(4)}</small>
-                              )}
-                            </div>
-                          )}
-                          {!!restaurantTask.executionSnapshot?.outputContract?.warnings?.length && (
-                            <Alert
-                              type="info"
-                              showIcon
-                              message="可继续完善的建议（不影响查看本次产物）"
-                              description={
-                                <ul className="ewb-contract-errors">
-                                  {restaurantTask.executionSnapshot.outputContract.warnings
-                                    .slice(0, 8)
-                                    .map((warning, index) => (
-                                      <li key={index}>{warning}</li>
-                                    ))}
-                                </ul>
-                              }
-                            />
-                          )}
                         </div>
                       </details>
                     </>
@@ -3108,8 +2864,26 @@ function EmployeeWorkbenchInstance({
                       </div>
                     </details>
                   )}
+                  <ConversationTaskFeedback
+                    key={`restaurant-feedback-${restaurantTask.id}`}
+                    kind="restaurant"
+                    taskId={Number(restaurantTask.id)}
+                    businessReview={
+                      restaurantPublicStatus === '待人工审阅'
+                        ? {
+                            required: true,
+                            canReview:
+                              restaurantTask.reviewReady === true &&
+                              Boolean(restaurantTask.output_id) &&
+                              profile.permissions.canReviewRuns === true,
+                            blockedReason: restaurantTask.nextAction,
+                            onSubmit: reviewRestaurantOutput,
+                          }
+                        : undefined
+                    }
+                  />
                 </article>
-              </section>
+              </details>
             )}
           <div id={dispatchFormId} className="ewb-chat-composer ewb-dispatch-form-anchor">
             <Form form={dispatchForm} requiredMark={false} onFinish={submitDispatch}>
@@ -3133,7 +2907,7 @@ function EmployeeWorkbenchInstance({
                 >
                   <Input.TextArea
                     autoSize={{ minRows: 2, maxRows: 6 }}
-                    maxLength={8000}
+                    maxLength={32000}
                     disabled={!dispatchAvailable}
                     placeholder={`发消息给${profile.identity.person || profile.identity.name}，说清想要的结果…`}
                     onPressEnter={event => {
@@ -3244,27 +3018,6 @@ function EmployeeWorkbenchInstance({
               )}
             </Form>
           </div>
-          {lastSnapshot && (
-            <Alert
-              type="success"
-              showIcon
-              message="任务已建立，执行快照已保存"
-              description={
-                canViewInternalProfile
-                  ? [
-                      lastSnapshot.profileVersion && '岗位档案快照已保存',
-                      lastSnapshot.promptHash && `提示词 ${String(lastSnapshot.promptHash).slice(0, 12)}…`,
-                      profile.permissions.canViewCapabilities &&
-                        Number.isFinite(lastSnapshot.capabilityCount) &&
-                        `${lastSnapshot.capabilityCount} 项能力`,
-                      lastSnapshot.configVersion && '工作配置快照已保存',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  : '可在任务列表查看进度和结果。'
-              }
-            />
-          )}
         </div>
       );
     })();
@@ -3801,7 +3554,7 @@ function EmployeeWorkbenchInstance({
               style={{ '--ewb-color': identityColor(titleIdentity) || 'var(--ui-primary)' } as CSSProperties}
             >
               <span className="ewb-title-avatar">
-                {domain === 'restaurant' && typeof titleIdentity.idx === 'number' ? (
+                {typeof titleIdentity.idx === 'number' ? (
                   <EmployeeAvatar
                     idx={titleIdentity.idx}
                     name={String(titleIdentity.person || titleIdentity.name || '')}
@@ -3862,7 +3615,7 @@ function EmployeeWorkbenchInstance({
         rootClassName="employee-workbench-backend-drawer-root"
         className="employee-workbench-backend-drawer"
         width="min(900px, 96vw)"
-        open={open && backendProfileOpen}
+        open={open && backendProfileOpen && canViewInternalProfile}
         onClose={() => setBackendProfileOpen(false)}
         destroyOnClose={false}
         title={
@@ -3902,82 +3655,6 @@ function EmployeeWorkbenchInstance({
           </div>
         )}
       </Drawer>
-      <Modal
-        open={!!adoptRun}
-        title={`选择并采纳：${adoptRun?.title || ''}`}
-        okText="确认选择并采纳"
-        cancelText="取消"
-        confirmLoading={reviewing}
-        onCancel={() => {
-          if (reviewing) return;
-          setAdoptRun(null);
-          setAdoptCandidateIndex(null);
-        }}
-        onOk={async () => {
-          if (adoptCandidateIndex === null) {
-            message.warning('请先选择一个具体候选结果');
-            return;
-          }
-          if (adoptRun) {
-            await reviewRun(adoptRun, 'adopt', '', { candidateIndex: adoptCandidateIndex });
-          }
-        }}
-        destroyOnClose
-      >
-        <Alert
-          type="info"
-          showIcon
-          message="该岗位采用候选选择审批"
-          description="必须由审阅人明确选择一个候选项，系统才会把选择、审阅人和时间写入任务审计记录；系统不会自动对外发布。"
-          className="ewb-adoption-alert"
-        />
-        <Select
-          style={{ width: '100%' }}
-          placeholder="请选择要采纳的候选项"
-          value={adoptCandidateIndex ?? undefined}
-          onChange={value => setAdoptCandidateIndex(value)}
-          options={(adoptRun?.handlerApproval?.candidates || []).map(candidate => ({
-            value: candidate.candidateIndex,
-            label: `${candidate.candidateIndex + 1}. ${candidate.label}`,
-          }))}
-        />
-      </Modal>
-      <Modal
-        open={!!rejectRun}
-        title={`驳回产出：${rejectRun?.title || ''}`}
-        okText="确认驳回"
-        cancelText="取消"
-        okButtonProps={{ danger: true }}
-        confirmLoading={reviewing}
-        onCancel={() => {
-          if (reviewing) return;
-          setRejectRun(null);
-          setRejectOpinion('');
-        }}
-        onOk={async () => {
-          if (!rejectOpinion.trim()) {
-            message.warning('驳回必须填写意见');
-            return;
-          }
-          if (rejectRun) await reviewRun(rejectRun, 'reject', rejectOpinion.trim());
-        }}
-        destroyOnClose
-      >
-        <Alert
-          className="ewb-review-reject-note"
-          type="warning"
-          showIcon
-          message="驳回后本次运行会保留结果、执行快照和审阅意见，便于追溯。"
-        />
-        <Input.TextArea
-          rows={4}
-          maxLength={1000}
-          showCount
-          value={rejectOpinion}
-          onChange={event => setRejectOpinion(event.target.value)}
-          placeholder="请写明需要修改的问题、证据缺口或不予采纳的原因。"
-        />
-      </Modal>
       <Modal
         title="添加企业自定义技能"
         open={customSkillOpen}

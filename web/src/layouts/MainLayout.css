@@ -293,6 +293,11 @@
   color: var(--nav-icon) !important;
   font-size: var(--font-4);
 }
+/* 系统管理有知识库提醒时，文字会被 Ant Badge 自带的正文色覆盖；
+   让提醒标签跟随菜单项，在普通、悬停和选中态都保持侧栏应有的对比度。 */
+.os-left .ant-menu-item .ant-menu-title-content > .ant-badge {
+  color: inherit !important;
+}
 .os-left .ant-menu-item:hover {
   color: var(--nav-text-active) !important;
   background: var(--nav-hover) !important;

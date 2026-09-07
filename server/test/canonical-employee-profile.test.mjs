@@ -41,11 +41,11 @@ function sha256(value) {
   return createHash("sha256").update(String(value), "utf8").digest("hex");
 }
 
-test("统一权威员工对象完整覆盖72岗与全部必备领域", () => {
+test("统一权威员工对象完整覆盖73岗与全部必备领域", () => {
   const summary = canonicalEmployeeProfileSummary();
   assert.deepEqual(summary, {
-    employeeCount: 72,
-    contentEmployeeCount: 11,
+    employeeCount: 73,
+    contentEmployeeCount: 12,
     restaurantEmployeeCount: 61,
     catalogSkillCount: 409,
     sourceHashes: summary.sourceHashes,
@@ -84,7 +84,7 @@ test("统一权威员工对象完整覆盖72岗与全部必备领域", () => {
     assert.equal(identities.has(identity), false, identity);
     identities.add(identity);
   }
-  assert.equal(identities.size, 72);
+  assert.equal(identities.size, 73);
 });
 
 test("统一权威员工对象逐岗复用409张派活技能卡及原始证据指纹", () => {
@@ -123,7 +123,7 @@ test("统一权威员工对象逐岗复用409张派活技能卡及原始证据�
 });
 
 test("AI带货员原生岗位包完整覆盖能力、提示词、视频运行绑定与0条历史技能", () => {
-  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 11);
+  assert.equal(CONTENT_EMPLOYEE_ROSTER.length, 12);
   const profile = canonicalContentEmployeeProfileFor(10);
   assert.equal(profile.identity.domain, "content");
   assert.equal(profile.identity.idx, 10);
@@ -169,17 +169,21 @@ test("AI带货员原生岗位包完整覆盖能力、提示词、视频运行绑
   assert.equal(
     profile.runtimeBindings.currentRuntimeBindings.work.execution
       .durationSeconds,
-    30,
+    15,
   );
   assert.equal(
-    profile.runtimeBindings.currentRuntimeBindings.work.execution.segmentCount,
-    3,
+    profile.runtimeBindings.currentRuntimeBindings.work.execution.segmentPolicy,
+    'model_dependent',
   );
+  assert.deepEqual(profile.runtimeBindings.currentRuntimeBindings.work.execution.segmentPlans
+    .map(plan => [plan.segmentCount, plan.segmentDurationSeconds]), [[1, 15], [2, 15], [3, 10]]);
   assert.equal(
     profile.runtimeBindings.currentRuntimeBindings.work.execution
       .segmentDurationSeconds,
-    10,
+    undefined,
   );
+  assert.equal(profile.runtimeBindings.currentRuntimeBindings.skillLearning.supported, true);
+  assert.equal(profile.skills.required[0].title, '图生带货视频制作');
   assert.equal(
     profile.runtimeBindings.currentRuntimeBindings.models.video.route,
     "tenant_video_model_route",
@@ -646,11 +650,22 @@ test("内容10岗权威运行绑定逐岗保持派活handler与connector映射",
     ],
     ["10:sales_video_plan", "/api/content/ai-sales-video"],
     ["10:sales_video_generation", "/api/content/ai-sales-video"],
+    ["11:xhs_note_generation", "/api/content/ai-xhs-note"],
   ]);
   const assertedEndpoints = new Set();
   for (const employee of CONTENT_EMPLOYEE_ROSTER) {
     const profile = canonicalContentEmployeeProfileFor(employee.idx);
     const handlerAdapter = handlerAdapters.get(employee.idx);
+    if (employee.idx === 11) {
+      assert.equal(handlerAdapter, undefined);
+      const work = profile.runtimeBindings.currentRuntimeBindings.work;
+      assert.equal(work.handler, 'ai-xhs-note');
+      assert.equal(work.businessEndpoint, '/api/content/ai-xhs-note');
+      assert.equal(profile.contracts.approval.code, 'review');
+      assert.deepEqual(profile.jobProfile.outputKeys, ['title', 'body', 'tags', 'firstComment', 'imagePlan', 'generatedImagePlan', 'warnings']);
+      assertedEndpoints.add('11:xhs_note_generation');
+      continue;
+    }
     if (employee.idx === 10) {
       assert.equal(
         handlerAdapter,
@@ -774,7 +789,7 @@ test("内容10岗权威运行绑定逐岗保持派活handler与connector映射",
       assertedEndpoints.add(`${employee.idx}:${connector.kind}`);
     }
   }
-  assert.equal(expectedBusinessEndpoints.size, 15);
+  assert.equal(expectedBusinessEndpoints.size, 16);
   assert.deepEqual(
     assertedEndpoints,
     new Set(expectedBusinessEndpoints.keys()),

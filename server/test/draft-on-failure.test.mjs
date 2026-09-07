@@ -112,7 +112,7 @@ const GOOD_MARKDOWN = `# 太原吾悦广场粤菜馆晚市机会判断
 3. 汇总7天数据后再评估是否扩大排期（负责人：老板复核）。
 `;
 
-// 完整但过短：不足 200 字 → 结构类（非安全、非来源）失败 → 可落草稿且可接受
+// 完整短稿：不再因不足 200 字失败，保留全文和建议供用户选择。
 const SHORT_MARKDOWN = `# 晚市机会初判
 
 商场晚市两人套餐存在价格带空白，建议先做 7 天低成本验证。
@@ -365,92 +365,53 @@ test("安全类失败（声称已付款/已外发）：不落草稿，任务失�
   }
 });
 
-test("accept-draft：普通员工 403；老板接受后任务翻转为草稿已接受，草稿不会变成可用于业务", async () => {
+test("短稿正常交付：普通员工不能越权采纳，老板采纳后可用于业务且只生成一次", async () => {
   const { app, generated } = bootApp((args) => ({
-    text: SHORT_MARKDOWN,
-    mode: "api",
-    model: args.model,
-    usage: { inputTokens: 600, outputTokens: 120 },
-    finishReason: "stop",
+    text: SHORT_MARKDOWN, mode: "api", model: args.model,
+    usage: { inputTokens: 600, outputTokens: 120 }, finishReason: "stop",
   }));
   const { server, base } = await listen(app);
-  let taskId;
+  let taskId, outputId;
   try {
     const dispatched = await dispatchAndWait(base, {
-      title: "粤菜馆 太原吾悦广场 晚市机会评估·过短草稿",
-      type: "经营诊断",
-      requirement: REQUIREMENT,
+      title: "粤菜馆 太原吾悦广场 晚市机会评估·短稿",
+      type: "经营诊断", requirement: REQUIREMENT,
     });
     taskId = dispatched.taskId;
-    assert.equal(dispatched.row?.status, "草稿待处理");
-    assert.equal(generated.length, 3);
-    // 第二、三次完整重生成必须带上一轮产物与机器校验报告（增量修复），且不是契约修复器
-    assert.match(generated[1].userMsg, /上一轮完整产物·增量修复基线/u);
-    assert.match(generated[1].userMsg, /晚市机会初判/u);
-    assert.match(generated[1].userMsg, /机器校验报告·未通过的检查/u);
-    assert.match(generated[1].userMsg, /只修改上述未通过的部分，其余章节、数字、来源与措辞原样保留/u);
-    assert.doesNotMatch(generated[1].kind || "", /contract-repair/u);
-    const report = JSON.parse(dispatched.row.contract_report);
-    assert.equal(report.acceptable, true);
-    const status = await (await fetch(`${base}/marshals/tasks/${taskId}/status`)).json();
-    assert.equal(status.draft?.canAccept, true);
-  } finally {
-    server.close();
-  }
+    outputId = dispatched.row.output_id;
+    assert.equal(dispatched.row.status, "待审阅");
+    assert.equal(generated.length, 1);
+    assert.equal(dispatched.row.body, SHORT_MARKDOWN.trim());
+    const snapshot = JSON.parse(dispatched.row.employee_web_snapshot);
+    assert.equal(snapshot.outputContract.valid, true);
+    assert.equal(snapshot.outputContract.qualityReview.requiresUserDecision, true);
+  } finally { server.close(); }
 
-  // 普通员工不能接受草稿
-  const salesApp = bootApp(() => ({}), { id: salesId, name: "普通员工", role: "sales" });
-  const sales = await listen(salesApp.app);
+  const sales = await listen(bootApp(() => ({}), { id: salesId, name: "普通员工", role: "sales" }).app);
   try {
-    const denied = await fetch(`${sales.base}/marshals/tasks/${taskId}/accept-draft`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
+    const denied = await fetch(`${sales.base}/marshals/outputs/${outputId}/review`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "adopt", reason: "尝试越权采纳" }),
     });
     assert.equal(denied.status, 403);
-  } finally {
-    sales.server.close();
-  }
+  } finally { sales.server.close(); }
 
-  const bossApp = bootApp(() => ({}));
+  const bossApp = bootApp(() => { throw new Error("采纳不得重新生成"); });
   const boss = await listen(bossApp.app);
   try {
-    const accepted = await fetch(`${boss.base}/marshals/tasks/${taskId}/accept-draft`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: "先用这份初判安排本周竞品计数" }),
+    const accepted = await fetch(`${boss.base}/marshals/outputs/${outputId}/review`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "adopt", reason: "先用这份初判安排本周竞品计数" }),
     });
-    const payload = await accepted.json();
-    assert.equal(accepted.status, 200, JSON.stringify(payload));
-    assert.equal(payload.ok, true);
-    assert.equal(payload.requiresReview, false);
-    assert.equal(payload.status, "草稿已接受");
+    assert.equal(accepted.status, 200, await accepted.text());
     const row = readTask(taskId);
-    assert.equal(row.status, "草稿已接受");
-    assert.equal(row.content_status, "草稿");
-    const contentSnapshot = JSON.parse(row.content_snapshot);
-    assert.equal(contentSnapshot.draftAcceptance.acceptedBy, bossId);
-    assert.equal(contentSnapshot.contract.valid, false, "接受草稿不改写质量门结论");
+    assert.equal(row.status, "已完成");
+    assert.equal(row.content_status, "可使用");
     const status = await (await fetch(`${boss.base}/marshals/tasks/${taskId}/status`)).json();
-    assert.equal(status.presentationKey, "draft_accepted");
-    assert.equal(status.displayStatus, "已接受草稿（内部参考，未通过质量门）");
-    assert.equal(status.adoptionKind, null);
-    assert.equal(status.draft?.state, "accepted");
-    // 重复接受 → 409
-    const again = await fetch(`${boss.base}/marshals/tasks/${taskId}/accept-draft`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
-    assert.equal(again.status, 409);
-    const opLog = q.get(
-      `SELECT action FROM op_logs WHERE tenant_id=? AND action='接受未达标草稿' ORDER BY id DESC LIMIT 1`,
-      TENANT_ID,
-    );
-    assert.ok(opLog, "接受草稿必须记 op_logs");
-  } finally {
-    boss.server.close();
-  }
+    assert.equal(status.adoptionKind, "human");
+    assert.equal(bossApp.generated.length, 0);
+    assert.equal(generated.length, 1);
+  } finally { boss.server.close(); }
 });
 
 test("supersede 对草稿任务仍可用：合格新任务可以取代草稿任务", async () => {
@@ -474,6 +435,14 @@ test("supersede 对草稿任务仍可用：合格新任务可以取代草稿任�
       type: "经营诊断",
       requirement: REQUIREMENT,
     });
+    if (replacement.row?.status === "待审阅") {
+      const reviewed = await fetch(`${base}/marshals/outputs/${replacement.row.output_id}/review`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "adopt", reason: "已查看安全修订版与优化建议，确认采纳。" }),
+      });
+      assert.equal(reviewed.status, 200, await reviewed.text());
+      replacement.row.status = q.get("SELECT status FROM agent_tasks WHERE id=?", replacement.taskId).status;
+    }
     assert.equal(
       replacement.row?.status,
       "已完成",
@@ -551,49 +520,29 @@ const offlineOptions = () => ({
   dataMode: "live",
 });
 
-test("墙钟耗尽：已有一轮完整正文时，错误对象携带 failReason=timeout 的草稿", async () => {
+test("墙钟临界时已收到的短稿直接交付，不再进入多轮修复或抹掉正文", async () => {
   let clock = 0;
   const observed = [];
-  let caught = null;
-  try {
-    await runWithTenant(TENANT_ID, () =>
-      marshalWork(
-        { code: "M-01", name: "战略与开店筹备部", duty: "仅负责调度" },
-        TASK,
-        "boss",
-        {
-          ...offlineOptions(),
-          employeeExecution: paihuoExecution(),
-          nowFn: () => clock,
-          onCandidateObserved: (candidate) => observed.push(candidate),
-          generateFn: async (args) => {
-            // 首轮返回完整但过短的候选；随后墙钟直接跳过上限，模拟第二轮前超时。
-            clock += 10 * 60 * 60 * 1000;
-            return {
-              text: SHORT_MARKDOWN,
-              mode: "api",
-              model: args.model,
-              usage: { inputTokens: 700, outputTokens: 130 },
-              finishReason: "stop",
-            };
-          },
-        },
-      ),
-    );
-  } catch (error) {
-    caught = error;
-  }
-  assert.ok(caught, "候选未通过且墙钟耗尽必须仍按原契约抛错");
-  assert.equal(caught.providerBudget?.stoppedReason, "wall_clock_exhausted");
-  assert.ok(caught.draft, "应附带草稿");
-  assert.equal(caught.draft.disposition.failReason, "timeout");
-  assert.equal(caught.draft.text.trim(), SHORT_MARKDOWN.trim());
-  assert.equal(caught.draft.contractTier, "standard");
-  assert.equal(caught.draftBlockedBy, null);
-  assert.equal(observed.length, 1, "每一轮完整 API 候选都应留底");
+  let calls = 0;
+  const result = await runWithTenant(TENANT_ID, () => marshalWork(
+    { code: "M-01", name: "战略与开店筹备部", duty: "仅负责调度" }, TASK, "boss", {
+      ...offlineOptions(), employeeExecution: paihuoExecution(), nowFn: () => clock,
+      onCandidateObserved: candidate => observed.push(candidate),
+      generateFn: async args => {
+        calls += 1;
+        clock += 10 * 60 * 60 * 1000;
+        return { text: SHORT_MARKDOWN, mode: "api", model: args.model,
+          usage: { inputTokens: 700, outputTokens: 130 }, finishReason: "stop" };
+      },
+    },
+  ));
+  assert.equal(calls, 1);
+  assert.equal(result.text.trim(), SHORT_MARKDOWN.trim());
+  assert.equal(result.employeeContract.valid, true);
+  assert.equal(result.employeeContract.qualityReview.requiresUserDecision, true);
+  assert.equal(observed.length, 1);
   assert.equal(observed[0].complete, true);
   assert.equal(observed[0].text.trim(), SHORT_MARKDOWN.trim());
-  assert.equal(observed[0].contractTier, "standard");
 });
 
 test("契约 JSON 模式 repair 提示词：包含首轮产物片段、失败规则清单与“原样保留”指令", async () => {

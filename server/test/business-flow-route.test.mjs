@@ -169,8 +169,9 @@ const restaurantBilling = holdCredits({
   refType: 'agent_task',
   refId: restaurantTaskId,
 });
+// Text settlement is derived from real usage; a caller-supplied fixed credit
+// amount for LLM text is rejected as tampering (BILLING_FIXED_PRICE_MISMATCH).
 settleHold(restaurantBilling, {
-  credits: 2,
   aiMode: 'api',
   model: 'test-model',
   usage: { inputTokens: 80, outputTokens: 20 },
@@ -263,13 +264,15 @@ const contentRunBilling = holdCredits({
   refType: 'content_employee_run',
   refId: contentRunId,
 });
-settleHold(contentRunBilling, {
-  credits: 5,
+const contentRunSettled = settleHold(contentRunBilling, {
   aiMode: 'api',
   model: 'deepseek-v4-flash',
   usage: { inputTokens: 51, outputTokens: 37 },
   note: '测试：内容员工权威结算',
 });
+// The snapshot must echo the authoritative ledger; any other figure is a pending reconciliation.
+db.prepare(`UPDATE content_employee_runs SET snapshot_json=json_set(snapshot_json,'$.billing.chargedCredits',?) WHERE id=?`)
+  .run(contentRunSettled.credits, contentRunId);
 const contentRunOutputCreatedAt = '2026-07-31 09:10:11';
 const contentRunOutputId = Number(db.prepare(`INSERT INTO contents(
   tenant_id,type,title,body,status,ai_mode,creator_id,source_type,source_id,snapshot_json,created_at

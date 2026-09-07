@@ -1,10 +1,11 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { db, q, curTenant } from '../db.js';
 import { logOp, safeJsonArray } from '../util.js';
 import { marshalChat } from '../engines/ai.js';
 import { applyChatRiskControl } from '../engines/risk.js';
 import { recordKbCitations } from '../engines/rag.js';
-import {
+import { refundHold,
   precheckByRole,
   estimateCallCredits,
   holdCredits,
@@ -218,6 +219,8 @@ r.post('/:id/chat', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: async () => {
         const output = await marshalChat(pseudo, {
           message: chatText,

@@ -14,8 +14,9 @@ const {
   writeDesktopConfig,
 } = require("../src/config.cjs");
 
-test("defaults to the local NanoWork service", () => {
-  assert.equal(DEFAULT_SERVER_URL, "http://127.0.0.1:3107");
+test("fresh installs default to the planned NanoWork HTTPS service", () => {
+  assert.equal(DEFAULT_SERVER_URL, "https://xn--work-9r3ko5i.cn");
+  assert.equal(normalizeServerUrl("https://纳米work.cn"), DEFAULT_SERVER_URL);
 });
 
 test("normalizes HTTPS origins and loopback HTTP origins", () => {

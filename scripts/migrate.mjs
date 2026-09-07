@@ -12,6 +12,8 @@
 //   node scripts/migrate.mjs down [步数=1]         # 回退最近 N 个迁移（需迁移实现 down）
 //   node scripts/migrate.mjs create <说明>         # 生成新迁移文件骨架
 //   NANOWORK_DB=/path/to.db node scripts/migrate.mjs up  # 指定库（默认 server/data/nanowork-industry.db）
+//   生产 server/data 为发布链接时，迁移与服务必须同时设置
+//   NANOWORK_DATA_DIR=/var/lib/nanowork/data（真实目录信任锚；不允许任意链接）
 //
 // 生产迁移前必须先停止写入并完成独立数据库快照；本项目不继承来源项目的部署脚本。
 import fs from "node:fs";
@@ -69,7 +71,8 @@ function openDb() {
       `数据库不存在：${DB_PATH}（首次建库由 server 启动时 initSchema 完成，迁移只做增量）`,
     );
   prepareDatabaseStorage({ databasePath: DB_PATH, dataDirectory: DATA_DIR,
-    protectDataDirectory: process.env.NODE_ENV !== "test" });
+    protectDataDirectory: process.env.NODE_ENV !== "test",
+    trustedDataDirectory: process.env.NANOWORK_DATA_DIR || null });
   const db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");

@@ -3,6 +3,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig, q, curTenant } from "../db.js";
 import { parseProviderMediaUrl } from './provider-media-download.js';
+import { readOpenLuxCost } from './provider-cost-receipts.js';
+import { read360Cost, is360Base } from './provider-360-cost.js';
+import { providerContext } from './tester-provider-context.js';
+import { selectedProviderId, selectedProviderCredentials, withPlatformProvider, withTaskProvider, providerForModel } from './ai-provider-selection.js';
+import {
+  PROVIDER_360_IMAGE_MODEL, PROVIDER_360_VIDEO_MODEL,
+  PROVIDER_360_TEXT_MODEL, PROVIDER_360_BOSS_MODEL, PROVIDER_360_VISION_MODEL,
+  PROVIDER_360_VIDEO_PATH, provider360Catalog, resolve360Model,
+  provider360VideoInfo, build360ImageGenerationBody, build360ImageEditBody, build360VideoBody,
+  normalize360VideoTask, valid360VideoTaskId, build360ThinkingOptions,
+} from './provider-360.js';
 import {
   providerResponseError,
   sanitizeProviderError,
@@ -30,43 +41,40 @@ if (process.env.NANOWORK_TEST_TEMPLATE_AI !== "1" && fs.existsSync(envPath)) {
   }
 }
 
-function isMissingLegacyConfigTable(error) {
-  return (
-    error?.code === "ERR_SQLITE_ERROR" &&
-    /^(?:SQLITE_ERROR:\s*)?no such table:\s*(?:main\.)?sys_config$/iu.test(
-      String(error?.message || "").trim(),
-    )
-  );
-}
-
-// `yunwu.js` can be imported before initSchema() during a first boot or by
-// isolated workers/tests.  A not-yet-created legacy config table means only
-// that no legacy key is available; every other database failure must surface.
-const legacyStoredKey = () => {
-  try {
-    return String(getConfig("yunwu_api_key", null) || "").trim();
-  } catch (error) {
-    if (isMissingLegacyConfigTable(error)) return "";
-    throw error;
-  }
-};
-const environmentKey = () => String(process.env.YUNWU_API_KEY || "").trim();
-const KEY = () => environmentKey() || legacyStoredKey();
-// Base URL 与 Key 对齐：显式环境变量优先，避免库内旧地址盖住运维切换（如切到 OpenLux）。
-const environmentBase = () => String(process.env.YUNWU_BASE_URL || "").trim();
-const BASE = () =>
-  environmentBase() ||
-  getConfig("yunwu_base_url", null) ||
-  "https://yunwu.ai/v1";
+export const provider360Active = () => selectedProviderId() === '360';
+const KEY = () => selectedProviderCredentials().apiKey;
+const BASE = () => selectedProviderCredentials().baseUrl;
 export const yunwuAvailable = () => !!KEY();
 export const maskedKey = () => {
   const k = KEY();
   return k ? `${k.slice(0, 8)}****${k.slice(-4)}` : "（未配置）";
 };
-export const yunwuKeySource = () =>
-  environmentKey() ? "environment" : legacyStoredKey() ? "legacy_db" : "none";
+export const yunwuKeySource = () => selectedProviderCredentials().keySource;
 export const yunwuApiKey = () => KEY();
 export const yunwuMediaBaseUrl = () => ywRoot();
+export const supplierRequestCost = ({ requestId, model, response, providerId, provider }) => {
+  const read = () => is360Base(BASE())
+    ? read360Cost({ requestId, model, response, baseUrl: BASE() })
+    : readOpenLuxCost({ requestId, model, baseUrl: BASE(), apiKey: KEY(),
+        ...(providerContext() ? { settings: { enabled: true, ready: true, basis: 'upstream_debit' } } : {}) });
+  if (providerId === 'yunwu' && selectedProviderId() === 'yunwu') return read();
+  return providerId || provider || providerForModel(model)
+    ? withTaskProvider({ providerId, provider, model }, read)
+    : Promise.resolve({ status: 'pending', requestId: requestId || null, model, reason: 'unknown_provider' });
+};
+const currentRequestCost = args => supplierRequestCost({ ...args, providerId: selectedProviderId() });
+export const responseRequestId = res => {
+  // OpenLux exposes its wallet-log ID as X-Api-Request-Id; upstream New API
+  // uses X-Oneapi-Request-Id. X-Request-Id can belong to the downstream model.
+  for (const name of ['x-api-request-id', 'x-oneapi-request-id', 'x-request-id', 'request-id']) {
+    const value = res?.headers?.get?.(name);
+    if (value == null) continue;
+    // A malformed authoritative ID must remain unverified, never fall back to
+    // another request's downstream tracking ID for settlement.
+    return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(value) ? value : null;
+  }
+  return null;
+};
 
 // H3 直连 MiniMax 官方，不复用 YUNWU/OpenLux 的 key 或 base URL。
 // 这两个凭证函数只在服务端内部传递；对路由仅导出不含密钥的可用性摘要。
@@ -110,7 +118,7 @@ const DEFAULT_ROUTING = {
     "veo-3.1-generate-preview",
     "veo-3.1-fast-generate-preview",
   ],
-  videoDefault: "happyhorse-1.0-t2v:floor",
+  videoDefault: "wan2.6-i2v",
   deepThink: "gpt-5.5", // 深度思考模式统一升级到老板级模型（后台可改）
 };
 const VIDEO_MODEL_CATALOG = {
@@ -348,7 +356,7 @@ const VIDEO_MODEL_CATALOG = {
     nativeAudio: true,
     audioInput: true,
     durationRange: [2, 15],
-    note: "走云雾百炼专用提交/查询端点，由网关处理异步；文档支持 input.audio_url 自定义音轨，AI带货员使用 TTS 音轨，实际声音与口型仍需成片验收",
+    note: "走云雾百炼专用提交/查询端点，由网关处理异步；AI带货员由Wan原生生成中文声音，不调用独立TTS；历史任务可按原记录恢复自定义音轨，实际声音与口型仍需成片验收",
   },
   "wan2.5-i2v-preview": {
     displayName: "通义万相 2.5 预览（原生有声）",
@@ -501,7 +509,7 @@ export function miniMaxH3Availability() {
   const billingVerified = capability.billingVerified === true;
   return Object.freeze({
     enabled:
-      deploymentFlagEnabled &&
+      !provider360Active() && deploymentFlagEnabled &&
       providerVerified &&
       billingVerified &&
       credentials.configured,
@@ -518,16 +526,15 @@ export function miniMaxH3Enabled() {
   return miniMaxH3Availability().enabled;
 }
 const MINIMAX_HAILUO_RE = /^MiniMax-Hailuo-(?:02|2\.3(?:-Fast)?)$/iu;
-const ALLOWED_VIDEO_MODEL_RE = /^(kling-|happyhorse-|wan|veo-)/i;
 function allowedVideoModel(id = "") {
+  if (provider360Active()) return id === PROVIDER_360_VIDEO_MODEL;
   const value = String(id || "");
-  return (
-    ALLOWED_VIDEO_MODEL_RE.test(value) ||
-    MINIMAX_HAILUO_RE.test(value) ||
-    (value === MINIMAX_H3_MODEL && miniMaxH3Enabled())
-  );
+  if (value === MINIMAX_H3_MODEL) return miniMaxH3Enabled();
+  return Object.hasOwn(VIDEO_MODEL_CATALOG, value)
+    && VIDEO_MODEL_CATALOG[value].supported === true;
 }
 export function videoModelInfo(id = "") {
+  if (provider360Active()) return provider360VideoInfo(id);
   const known = VIDEO_MODEL_CATALOG[id];
   if (known) {
     if (id === MINIMAX_H3_MODEL)
@@ -600,6 +607,7 @@ export const TEXT_ROUTING_ROLES = Object.freeze(Object.keys(DEFAULT_ROUTING.text
 
 // 白名单快照：video 按当前 H3 门禁动态计算（与 routing().video 同源）。
 export function allowedModelCatalog() {
+  if (provider360Active()) return provider360Catalog();
   const gatedVideo = miniMaxH3Enabled() ? [MINIMAX_H3_MODEL] : [];
   const video = [...new Set([...DEFAULT_ROUTING.video, ...gatedVideo])]
     .filter(allowedVideoModel)
@@ -621,11 +629,20 @@ export function allowedModelCatalog() {
   };
 }
 export function isAllowedModel(kind, id) {
-  const value = String(id || "").trim();
+  if (typeof id !== 'string') return false;
+  const value = id.trim();
   if (!value) return false;
-  if (kind === "video") return allowedVideoModel(value);
   const catalog = allowedModelCatalog()[kind];
   return Array.isArray(catalog) && catalog.some((item) => item.id === value);
+}
+
+// Older tenant snapshots may contain retired or free-form model names. Never
+// send them to a provider: use the platform route until an allowed selection is saved.
+export function allowedModelPreference(kind, value, fallback = null) {
+  if (provider360Active() && value) {
+    try { return resolve360Model(kind, value); } catch { return fallback; }
+  }
+  return isAllowedModel(kind, value) ? value.trim() : fallback;
 }
 
 function isMissingTenantRoutingTable(error) {
@@ -661,17 +678,42 @@ export function tenantRoutingOverride(tenantId = curTenant()) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return null;
   return {
-    routing: parsed,
+    routing: parsed.providerProfiles?.[selectedProviderId(tenantId)] || (parsed.providerProfiles ? {} : parsed),
+    rawRouting: parsed,
     updatedBy: row.updated_by ?? null,
     updatedAt: row.updated_at ?? null,
   };
+}
+
+export function providerRoutingConfig() {
+  return getConfig(`model_routing_${selectedProviderId()}`, null) || getConfig('model_routing', {}) || {};
 }
 
 // 解析优先级：租户覆盖 > sys_config.model_routing（平台全局覆盖）> DEFAULT_ROUTING。
 // 无租户覆盖时结果与历史行为完全一致（由 test/tenant-model-routing.test.mjs 锁定）。
 // 租户层的值再过一次白名单：库里若残留已下线模型，回落到上一层，不把无效模型送到供应商。
 export function routing(tenantId = curTenant()) {
-  const cfg = getConfig("model_routing", {}) || {};
+  const providerId = selectedProviderId(tenantId);
+  if (providerId !== selectedProviderId()) return withPlatformProvider(providerId, () => routing(tenantId));
+  if (provider360Active()) {
+    const cfg = providerRoutingConfig();
+    const tenant = tenantRoutingOverride(tenantId)?.routing || {};
+    const pick = (kind, preferred, global, fallback) => {
+      for (const value of [preferred, global, fallback]) {
+        try { if (value && providerForModel(value) === '360') return resolve360Model(kind, value); } catch { /* retired selection uses 360 default */ }
+      }
+      return fallback;
+    };
+    return {
+      text: Object.fromEntries(TEXT_ROUTING_ROLES.map(role => [role,
+        pick('text', tenant.text?.[role], cfg.text?.[role], ['boss', 'ops_director', 'manager'].includes(role) ? PROVIDER_360_BOSS_MODEL : PROVIDER_360_TEXT_MODEL)])),
+      image: pick('image', tenant.image, cfg.image, PROVIDER_360_IMAGE_MODEL),
+      vision: pick('vision', tenant.vision, cfg.vision, PROVIDER_360_VISION_MODEL),
+      video: [PROVIDER_360_VIDEO_MODEL], videoDefault: PROVIDER_360_VIDEO_MODEL,
+      deepThink: pick('text', tenant.deepThink, cfg.deepThink, PROVIDER_360_BOSS_MODEL),
+    };
+  }
+  const cfg = providerRoutingConfig();
   const tenantLayer = tenantRoutingOverride(tenantId)?.routing || {};
   const tenantText = Object.fromEntries(
     Object.entries(tenantLayer.text || {}).filter(
@@ -681,8 +723,15 @@ export function routing(tenantId = curTenant()) {
   );
   const out = {
     ...DEFAULT_ROUTING,
-    ...cfg,
-    text: { ...DEFAULT_ROUTING.text, ...(cfg.text || {}), ...tenantText },
+    text: {
+      ...Object.fromEntries(TEXT_ROUTING_ROLES.map(role => [role,
+        allowedModelPreference('text', cfg.text?.[role], DEFAULT_ROUTING.text[role])])),
+      ...tenantText,
+    },
+    image: allowedModelPreference('image', cfg.image, DEFAULT_ROUTING.image),
+    vision: allowedModelPreference('vision', cfg.vision, DEFAULT_ROUTING.vision),
+    deepThink: allowedModelPreference('text', cfg.deepThink, DEFAULT_ROUTING.deepThink),
+    videoDefault: allowedModelPreference('video', cfg.videoDefault, DEFAULT_ROUTING.videoDefault),
   };
   if (isAllowedModel("image", tenantLayer.image)) out.image = tenantLayer.image;
   if (isAllowedModel("vision", tenantLayer.vision))
@@ -713,7 +762,9 @@ export function routing(tenantId = curTenant()) {
 }
 // 分层来源说明（后台"当前生效来源"用）：逐字段标注 tenant / global / default。
 export function routingSources(tenantId = curTenant()) {
-  const cfg = getConfig("model_routing", {}) || {};
+  const providerId = selectedProviderId(tenantId);
+  if (providerId !== selectedProviderId()) return withPlatformProvider(providerId, () => routingSources(tenantId));
+  const cfg = providerRoutingConfig();
   const tenantLayer = tenantRoutingOverride(tenantId)?.routing || {};
   const effective = routing(tenantId);
   const pick = (tenantValue, globalValue, effectiveValue) => {
@@ -742,6 +793,11 @@ export function routingSources(tenantId = curTenant()) {
   };
 }
 export function defaultRouting() {
+  if (provider360Active()) return {
+    text: Object.fromEntries(TEXT_ROUTING_ROLES.map(role => [role, ['boss', 'ops_director', 'manager'].includes(role) ? PROVIDER_360_BOSS_MODEL : PROVIDER_360_TEXT_MODEL])),
+    image: PROVIDER_360_IMAGE_MODEL, vision: PROVIDER_360_VISION_MODEL,
+    video: [PROVIDER_360_VIDEO_MODEL], videoDefault: PROVIDER_360_VIDEO_MODEL, deepThink: PROVIDER_360_BOSS_MODEL,
+  };
   return {
     ...DEFAULT_ROUTING,
     text: { ...DEFAULT_ROUTING.text },
@@ -825,14 +881,20 @@ function timedSignal(timeoutMs, externalSignal) {
 }
 
 function normalizeFetchError(error, timedOut, externalSignal) {
-  if (error?.name !== "AbortError")
-    return sanitizeProviderError(error, { service: "云雾AI服务" });
+  if (error?.name !== "AbortError") {
+    const normalized = sanitizeProviderError(error, { service: provider360Active() ? '360 AI服务' : "云雾AI服务" });
+    // Only normalized billing receipts cross this boundary; never retain the
+    // supplier's raw error text or request body (which can contain secrets).
+    if (Array.isArray(error?.supplierCosts)) normalized.supplierCosts = error.supplierCosts;
+    if (error?.providerUsage) normalized.providerUsage = rawChatUsage(error.providerUsage);
+    return normalized;
+  }
   if (externalSignal?.aborted && !timedOut()) {
     return Object.assign(new Error("请求已由客户端取消"), { status: 499 });
   }
   return Object.assign(
     new Error("AI服务响应超时，系统已停止等待，请缩短要求后重试"),
-    { status: 504 },
+    { status: 504, providerReason: "timeout" },
   );
 }
 
@@ -857,9 +919,16 @@ async function post(
       signal: timed.signal,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw providerResponseError(res.status, data, { service: "云雾AI服务" });
+    if (!res.ok || data?.error) {
+      const error = providerResponseError(res.ok ? 502 : res.status, data, { service: provider360Active() ? '360 AI服务' : "云雾AI服务" });
+      if (selectedProviderId() !== 'yunwu') {
+        const receipt = await currentRequestCost({ requestId: responseRequestId(res) || data.id, model: body.model, response: data });
+        if (receipt) error.supplierCosts = [receipt];
+        error.providerUsage = rawChatUsage(data.usage);
+      }
+      throw error;
     }
+    if (data && typeof data === 'object') data._gatewayRequestId = responseRequestId(res);
     return data;
   } catch (error) {
     throw normalizeFetchError(error, timed.timedOut, externalSignal);
@@ -875,6 +944,9 @@ export async function embed(
   signal,
 ) {
   if (!text || !KEY()) return null;
+  // No embedding model is authorized by the migrated 360 account. Existing
+  // keyword retrieval remains available, without issuing an unsupported call.
+  if (provider360Active()) return null;
   try {
     const model = getConfig("embed_model", null) || "text-embedding-3-small";
     const timeout = Math.min(
@@ -887,7 +959,20 @@ export async function embed(
       timeout,
       signal,
     );
-    return data.data?.[0]?.embedding || null;
+    const vector = data.data?.[0]?.embedding;
+    if (!Array.isArray(vector) || !vector.length || vector.some(value => !Number.isFinite(value))) return null;
+    const supplierCost = await currentRequestCost({ requestId: data._gatewayRequestId, model });
+    const inputTokens = data.usage?.prompt_tokens ?? data.usage?.input_tokens;
+    // Preserve the vector API and its JSON representation. Background billing can
+    // explicitly persist these internal receipts alongside the owning job.
+    Object.defineProperties(vector, {
+      supplierCosts: { value: supplierCost ? [supplierCost] : [], enumerable: false },
+      providerUsage: { value: {
+        model,
+        ...(Number.isSafeInteger(inputTokens) && inputTokens >= 0 ? { inputTokens, outputTokens: 0 } : {}),
+      }, enumerable: false },
+    });
+    return vector;
   } catch (error) {
     if (error?.status === 499) throw error;
     return null;
@@ -1018,11 +1103,13 @@ export async function chat({
   timeoutMs = INTERACTIVE_CHAT_TIMEOUT_MS,
   signal,
   responseFormat,
+  thinking,
 }) {
-  const m = model || textModelFor(role);
+  const m = provider360Active() ? resolve360Model('text', model, textModelFor(role)) : model || textModelFor(role);
   const body = {
     model: m,
     max_tokens: maxTokens,
+    ...(provider360Active() ? build360ThinkingOptions(m, thinking) : {}),
     ...(responseFormat ? { response_format: responseFormat } : {}),
     messages: [
       ...(system ? [{ role: "system", content: system }] : []),
@@ -1033,11 +1120,14 @@ export async function chat({
   const data = await post("/chat/completions", body, timeout, signal);
   const choice = data.choices?.[0];
   const text = completionMessageText(choice);
+  const supplierCost = await currentRequestCost({ requestId: data._gatewayRequestId || data.id, model: m, response: data });
   if (!text.trim()) {
     const error = Object.assign(new Error("AI供应商返回了用量但没有业务正文"), {
       code: "provider_empty_output",
       status: 502,
       providerUsage: rawChatUsage(data.usage),
+      model: m,
+      ...(supplierCost ? { supplierCosts: [supplierCost] } : {}),
       finishReason: safeFinishReason(choice?.finish_reason),
     });
     throw error;
@@ -1055,6 +1145,7 @@ export async function chat({
     inputTokens: providerUsage.inputTokens,
     outputTokens: providerUsage.outputTokens,
     finishReason: safeFinishReason(choice?.finish_reason),
+    ...(supplierCost ? { supplierCosts: [supplierCost] } : {}),
   };
 }
 
@@ -1070,11 +1161,13 @@ export async function chatStream({
   signal,
   onDelta,
   responseFormat,
+  thinking,
 }) {
-  const m = model || textModelFor(role);
+  const m = provider360Active() ? resolve360Model('text', model, textModelFor(role)) : model || textModelFor(role);
   const body = {
     model: m,
     max_tokens: maxTokens,
+    ...(provider360Active() ? build360ThinkingOptions(m, thinking) : {}),
     stream: true,
     stream_options: { include_usage: true },
     ...(responseFormat ? { response_format: responseFormat } : {}),
@@ -1118,6 +1211,7 @@ export async function chatStream({
       text = "",
       u = null,
       finishReason = null;
+    let providerId = null, returnedModel = null;
     const consumeLine = (rawLine) => {
       const line = rawLine.trim();
       if (!line.startsWith("data:")) return;
@@ -1130,6 +1224,9 @@ export async function chatStream({
       } catch {
         return;
       }
+      if (typeof json.id === 'string') providerId = json.id;
+      if (typeof json.model === 'string') returnedModel = json.model;
+      if (json.error) throw providerResponseError(502, json, { service: 'AI服务' });
       const delta = json.choices?.[0]?.delta?.content || "";
       if (delta) {
         text += delta;
@@ -1172,6 +1269,9 @@ export async function chatStream({
     if (!text && !sawSseLine && rawAll.trim()) {
       try {
         const whole = JSON.parse(rawAll);
+        if (whole?.id) providerId = whole.id;
+        if (whole?.model) returnedModel = whole.model;
+        if (whole?.usage) u = whole.usage;
         const content = String(whole?.choices?.[0]?.message?.content || "");
         if (content) {
           text = content;
@@ -1184,9 +1284,14 @@ export async function chatStream({
         /* 非 JSON 整包，仍按流式空响应处理 */
       }
     }
+    const supplierCost = await currentRequestCost({ requestId: responseRequestId(res) || providerId, model: m,
+      response: { id: providerId, model: returnedModel || m, usage: u } });
     if (!text) {
       const e = new Error("AI流式返回为空");
       e.status = 502;
+      e.model = m;
+      e.providerUsage = rawChatUsage(u);
+      if (supplierCost) e.supplierCosts = [supplierCost];
       throw e;
     }
     // 网关常在正文后补一条 completion_tokens=0 的 usage，或只给
@@ -1205,6 +1310,7 @@ export async function chatStream({
       inputTokens: providerUsage.inputTokens,
       outputTokens: providerUsage.outputTokens,
       finishReason,
+      ...(supplierCost ? { supplierCosts: [supplierCost] } : {}),
     };
   } catch (error) {
     throw normalizeFetchError(error, timed.timedOut, signal);
@@ -1240,6 +1346,16 @@ function imageUsage(value) {
 
 const IMAGE_RATE_LIMIT_RETRY_LIMIT = 3;
 
+// 图片供应商偶发的 TCP/TLS 断连或上游超时不代表请求一定没有被处理。
+// 仅使用同一个 Idempotency-Key 做有限次重试，避免重复计费；鉴权、参数、模型等
+// 确定性错误仍立即失败。默认只补两次，避免把真实任务拖成无限等待。
+const IMAGE_TRANSIENT_RETRY_LIMIT = boundedTimeout(
+  "NANOWORK_IMAGE_TRANSIENT_RETRY_LIMIT",
+  2,
+  0,
+  3,
+);
+
 function imageRateLimitRetryBaseMs() {
   return boundedTimeout("NANOWORK_IMAGE_RATE_LIMIT_RETRY_MS", 2000, 1, 15000);
 }
@@ -1253,10 +1369,11 @@ export async function generateImage({
   idempotencyKey,
   fetchFn = globalThis.fetch,
 }) {
-  const m = model || routing().image;
-  const body = { model: m, prompt, n: 1, size };
+  const m = provider360Active() ? resolve360Model('image', model, routing().image) : model || routing().image;
+  const body = provider360Active() ? build360ImageGenerationBody({ model: m, prompt, size }) : { model: m, prompt, n: 1, size };
   const headers = imageIdempotencyHeader(idempotencyKey);
   let lastError;
+  const startedAt = Date.now();
   for (let attempt = 0; attempt <= IMAGE_RATE_LIMIT_RETRY_LIMIT; attempt++) {
     if (attempt > 0) {
       await waitForRetry(
@@ -1274,20 +1391,46 @@ export async function generateImage({
         fetchFn,
       );
       const item = data.data?.[0] || {};
+      const supplierCost = await currentRequestCost({ requestId: data._gatewayRequestId || data.id, model: m, response: data });
+      // OpenAI-compatible gateways occasionally return HTTP 200 with an empty
+      // `data` array after an upstream timeout. Treat that as a transient
+      // provider failure instead of handing an empty image to the media bridge
+      // (which would otherwise stop without retrying).
+      if (!item.url && !item.b64_json && !item.b64) {
+        const error = providerResponseError(
+          502,
+          { message: "image provider returned empty data" },
+          { service: "云雾AI服务" },
+        );
+        if (supplierCost) error.supplierCosts = [supplierCost];
+        throw error;
+      }
       usage.images++;
       return {
         model: m,
         url: item.url || null,
-        b64: item.b64_json || null,
+        b64: item.b64_json || item.b64 || null,
         mimeType: item.mime_type || item.mimeType || "image/png",
-        usage: imageUsage(data.usage),
+        usage: { ...imageUsage(data.usage), ...(supplierCost ? { supplierCosts: [supplierCost] } : {}) },
+        providerRequestId: data._gatewayRequestId || data.id || null,
       };
     } catch (error) {
       lastError = error;
-      if (
-        attempt >= IMAGE_RATE_LIMIT_RETRY_LIMIT ||
-        error?.providerReason !== "rate_limit"
-      ) {
+      if (process.env.NANOWORK_IMAGE_RETRY_DEBUG === "1") {
+        console.warn(
+          `[yunwu:image] attempt=${attempt + 1} elapsedMs=${Date.now() - startedAt}` +
+            ` reason=${error?.providerReason || "unknown"} status=${error?.status || ""}`,
+        );
+      }
+      const retryableRateLimit = error?.providerReason === "rate_limit";
+      const retryableTransient = !provider360Active() && (
+        error?.providerReason === "network" ||
+        error?.providerReason === "timeout" ||
+        error?.providerReason === "upstream");
+      const retryLimit = retryableRateLimit
+        ? IMAGE_RATE_LIMIT_RETRY_LIMIT
+        : IMAGE_TRANSIENT_RETRY_LIMIT;
+      if (attempt >= retryLimit || (!retryableRateLimit && !retryableTransient)) {
         throw error;
       }
     }
@@ -1300,11 +1443,18 @@ export async function editImage({
   prompt,
   images = [],
   image,
+  mask,
   size = "1024x1024",
   model,
   signal,
+  timeoutMs,
+  idempotencyKey,
+  fetchFn = globalThis.fetch,
+  onResponse,
+  onReceipt,
+  onBodyProgress,
 }) {
-  const m = model || routing().image;
+  const m = provider360Active() ? resolve360Model('image', model, routing().image) : model || routing().image;
   const references = (
     Array.isArray(images) && images.length ? images : [image]
   ).filter(Boolean);
@@ -1314,7 +1464,7 @@ export async function editImage({
   fd.append("model", m);
   fd.append("prompt", prompt);
   fd.append("size", size);
-  references.forEach((reference, index) => {
+  if (!provider360Active()) references.forEach((reference, index) => {
     const match = String(reference).match(
       /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/,
     );
@@ -1329,23 +1479,88 @@ export async function editImage({
       `reference-${index + 1}.${ext}`,
     );
   });
-  const timed = timedSignal(IMAGE_TIMEOUT_MS, signal);
+  // Background photo editing can legitimately take longer than the interactive
+  // 105s default. Only an explicit caller budget expands it; remain bounded.
+  const requestedTimeout = Number(timeoutMs);
+  const imageTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.min(900000, Math.max(1000, requestedTimeout)) : IMAGE_TIMEOUT_MS;
+  const timed = timedSignal(imageTimeout, signal);
+  let responseStatus = null, responsePhase = 'request', providerRequestId = null;
+  let bodyBytes = 0, firstByteAt = null, lastByteAt = null, bodyComplete = false;
   try {
-    const res = await fetch(`${BASE()}/images/edits`, {
+    const res = await fetchFn(`${BASE()}/images/edits`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${KEY()}` },
-      body: fd,
+      headers: { Authorization: `Bearer ${KEY()}`, ...imageIdempotencyHeader(idempotencyKey),
+        ...(provider360Active() ? { 'Content-Type': 'application/json' } : {}) },
+      body: provider360Active() ? JSON.stringify(build360ImageEditBody({ model: m, prompt, size, images: references, mask })) : fd,
       signal: timed.signal,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw providerResponseError(res.status, data, { service: "云雾AI服务" });
+    responseStatus = res.status;
+    providerRequestId = responseRequestId(res);
+    responsePhase = 'response_body';
+    // HTTP 200 only acknowledges headers. Never turn a timed-out body into an
+    // empty JSON object, or claim a complete image receipt before parsing it.
+    try { await onResponse?.({ status: res.status, requestId: providerRequestId, receivedAt: new Date().toISOString() }); } catch { /* keep reading an already paid request */ }
+    let data;
+    try {
+      if (res.body?.getReader) {
+        const reader = res.body.getReader(), decoder = new TextDecoder();
+        const parts = [];
+        let lastProgressAt = 0;
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bodyBytes += chunk.value.byteLength;
+          if (bodyBytes > 32 * 1024 * 1024) {
+            await reader.cancel();
+            throw new Error('image response exceeded bounded body size');
+          }
+          const now = Date.now();
+          firstByteAt ||= new Date(now).toISOString(); lastByteAt = new Date(now).toISOString();
+          parts.push(decoder.decode(chunk.value, { stream: true }));
+          if (now - lastProgressAt >= 5000) {
+            lastProgressAt = now;
+            try { await onBodyProgress?.({ bodyBytes, firstByteAt, lastByteAt, bodyComplete: false }); } catch { /* continue reading the already paid response */ }
+          }
+        }
+        parts.push(decoder.decode()); bodyComplete = true;
+        try { await onBodyProgress?.({ bodyBytes, firstByteAt, lastByteAt, bodyComplete: true }); } catch { /* result receipt is persisted independently below */ }
+        data = JSON.parse(parts.join(''));
+      } else { data = await res.json(); bodyComplete = true; }
+    } catch (error) {
+      if (!res.ok) throw providerResponseError(res.status, {}, { service: '云雾AI服务' });
+      throw error;
     }
+    responsePhase = 'response_parse';
+    if (!res.ok || data?.error) {
+      throw providerResponseError(res.ok ? 502 : res.status, data, { service: provider360Active() ? '360 AI服务' : "云雾AI服务" });
+    }
+    providerRequestId ||= data.id || null;
     const item = data.data?.[0] || {};
+    const supplierCost = await currentRequestCost({ requestId: providerRequestId, model: m, response: data });
+    if (!item.url && !item.b64_json && !item.b64) {
+      const empty = providerResponseError(502, { message: "image provider returned empty data" }, { service: "云雾AI服务" });
+      empty.responseStatus = res.status;
+      empty.responseEmpty = true;
+      if (supplierCost) empty.supplierCosts = [supplierCost];
+      throw empty;
+    }
     usage.images++;
-    return { model: m, url: item.url || null, b64: item.b64_json || null };
+    const output = { model: m, url: item.url || null, b64: item.b64_json || item.b64 || null,
+      mimeType: item.mime_type || item.mimeType || "image/png", usage: { ...imageUsage(data.usage), ...(supplierCost ? { supplierCosts: [supplierCost] } : {}) }, providerStatus: res.status, providerRequestId };
+    responsePhase = 'receipt_persist';
+    await onReceipt?.(output);
+    return output;
   } catch (error) {
-    throw normalizeFetchError(error, timed.timedOut, signal);
+    const normalized = normalizeFetchError(error, timed.timedOut, signal);
+    if (responseStatus !== null) normalized.responseStatus = responseStatus;
+    normalized.providerResponsePhase = error?.name === 'SyntaxError' ? 'response_parse' : responsePhase;
+    normalized.providerResponseBytes = bodyBytes;
+    normalized.providerResponseBodyComplete = bodyComplete;
+    normalized.providerFirstByteAt = firstByteAt;
+    normalized.providerLastByteAt = lastByteAt;
+    if (providerRequestId) normalized.providerRequestId = providerRequestId;
+    throw normalized;
   } finally {
     timed.clear();
   }
@@ -1360,22 +1575,34 @@ async function ywJson(
   externalSignal,
   fetchImpl = globalThis.fetch,
 ) {
+  if (!KEY()) throw Object.assign(new Error('此任务的原供应商尚未配置 API Key，未发送请求'), { status: 503, code: 'AI_PROVIDER_NOT_CONFIGURED' });
   const timed = timedSignal(timeoutMs, externalSignal);
+  let responseStatus = null, responsePhase = 'request', providerRequestId = null;
   try {
     const res = await fetchImpl(url, {
       ...opts,
       headers: { Authorization: `Bearer ${KEY()}`, ...(opts.headers || {}) },
       signal: timed.signal,
     });
-    const data = await res.json().catch(() => ({}));
+    responseStatus = res.status;
+    providerRequestId = responseRequestId(res);
+    responsePhase = 'response_body';
+    // A paid submit can time out after HTTP headers. Keep that uncertainty;
+    // an incomplete body is not an empty successful provider response.
+    const data = await res.json();
     if (!res.ok) {
       throw providerResponseError(res.status, data, {
         service: "云雾视频服务",
       });
     }
+    if (data && typeof data === 'object') data._gatewayRequestId = providerRequestId;
     return data;
   } catch (error) {
-    throw normalizeFetchError(error, timed.timedOut, externalSignal);
+    const normalized = normalizeFetchError(error, timed.timedOut, externalSignal);
+    if (responseStatus !== null) normalized.responseStatus = responseStatus;
+    normalized.providerResponsePhase = error?.name === 'SyntaxError' ? 'response_parse' : responsePhase;
+    if (providerRequestId) normalized.providerRequestId = providerRequestId;
+    throw normalized;
   } finally {
     timed.clear();
   }
@@ -1639,7 +1866,9 @@ export async function submitAliBailianVideoSegment({
   promptExtend,
   signal,
   fetchImpl,
+  timeoutMs = 360000,
 }) {
+  if (provider360Active()) return submit360VideoSegment({ prompt, model, images, audioUrl, duration, resolution, promptExtend, signal, fetchImpl, timeoutMs });
   const info = videoModelInfo(model);
   const body = buildAliBailianVideoRequestBody({
     prompt,
@@ -1661,7 +1890,9 @@ export async function submitAliBailianVideoSegment({
       },
       body: JSON.stringify(body),
     },
-    60000,
+    // The gateway may wait on upstream admission before returning a task ID.
+    // This remains a single POST: expiry must never trigger an automatic retry.
+    Math.min(900000, Math.max(1000, Number(timeoutMs) || 360000)),
     signal,
     fetchImpl,
   );
@@ -1671,6 +1902,8 @@ export async function submitAliBailianVideoSegment({
   usage.videos++;
   return {
     ...task,
+    provider: selectedProviderId(), providerId: selectedProviderId(),
+    providerRequestId: data._gatewayRequestId || null,
     status: task.status || "queued",
     hasAudioClaimed: Boolean(info.nativeAudio || audioUrl),
     requestedDuration: body.parameters.duration,
@@ -1683,7 +1916,11 @@ export async function submitAliBailianVideoSegment({
 async function submitAliBailianVideoTask({ prompt, model, images = [], audioUrl = null, signal }) {
   return submitAliBailianVideoSegment({ prompt, model, images, audioUrl, signal });
 }
-export async function queryAliBailianVideoSegment({ taskId, model, signal, fetchImpl }) {
+export async function queryAliBailianVideoSegment(args) {
+  return withTaskProvider(args, () => queryAliBailianVideoSegmentSelected(args));
+}
+async function queryAliBailianVideoSegmentSelected({ taskId, model, signal, fetchImpl }) {
+  if (provider360Active()) return query360VideoSegment({ taskId, model, signal, fetchImpl });
   const data = await ywJson(
     `${ywRoot()}${ALIBAILIAN_VIDEO_TASK_PATH}/${encodeURIComponent(taskId)}`,
     {},
@@ -1691,7 +1928,7 @@ export async function queryAliBailianVideoSegment({ taskId, model, signal, fetch
     signal,
     fetchImpl,
   );
-  return normalizeVideoTask(data, model, taskId);
+  return { ...normalizeVideoTask(data, model, taskId), provider: selectedProviderId(), providerId: selectedProviderId() };
 }
 async function queryAliBailianVideoTask({ taskId, model }) {
   return queryAliBailianVideoSegment({ taskId, model });
@@ -1770,6 +2007,7 @@ export async function submitMiniMaxVideoSegment({
   resolution = "768P",
   signal,
 }) {
+  if (provider360Active()) throw Object.assign(new Error('当前供应商已切换360，请选择万相3.0视频模型'), { status: 400 });
   const transport = createMiniMaxVideoTransport({
     baseUrl: BASE(),
     apiKey: KEY(),
@@ -1794,6 +2032,7 @@ async function queryMiniMaxVideoTask({ taskId, model }) {
 }
 
 export async function queryMiniMaxVideoSegment({ taskId, model, signal }) {
+  if (provider360Active()) throw Object.assign(new Error('旧供应商视频任务不能使用360凭证查询'), { status: 409 });
   const transport = createMiniMaxVideoTransport({
     baseUrl: BASE(),
     apiKey: KEY(),
@@ -1830,12 +2069,45 @@ async function summarizeVideoReferences(images, prompt, signal) {
 }
 
 // 视频任务只在当前请求中完成“参考图理解+任务提交”，成片由媒体任务列表异步轮询。
+export async function submit360VideoSegment({ prompt, model = PROVIDER_360_VIDEO_MODEL, images = [], audioUrl = null,
+  duration = 15, resolution = '720P', promptExtend = false, signal, fetchImpl, timeoutMs = 360000 } = {}) {
+  if (!provider360Active()) throw Object.assign(new Error('360视频通道尚未启用'), { status: 409 });
+  const body = build360VideoBody({ model, prompt, images, audioUrl, duration, resolution, promptExtend });
+  const data = await ywJson(`${BASE()}${PROVIDER_360_VIDEO_PATH}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }, Math.min(900000, Math.max(1000, Number(timeoutMs) || 360000)), signal, fetchImpl);
+  if (data?.error) throw providerResponseError(502, data, { service: '360视频服务' });
+  const task = normalize360VideoTask(data, body.model);
+  const receipt = await currentRequestCost({ requestId: data._gatewayRequestId || data.id || task.taskId, model: body.model, response: data });
+  usage.videos++;
+  return { ...task, provider: '360', providerId: '360', providerRequestId: data._gatewayRequestId || data.id || task.taskId,
+    ...(receipt ? { supplierCosts: [receipt] } : {}), hasAudioClaimed: true,
+    requestedDuration: body.extra_body.parameters.duration, requestedResolution: body.extra_body.parameters.resolution };
+}
+
+export async function query360VideoSegment(args = {}) {
+  const binding = { ...args, model: args.model || PROVIDER_360_VIDEO_MODEL };
+  return withTaskProvider(binding, () => query360VideoSegmentSelected(binding));
+}
+async function query360VideoSegmentSelected({ taskId, model = PROVIDER_360_VIDEO_MODEL, signal, fetchImpl } = {}) {
+  if (!provider360Active()) throw Object.assign(new Error('360视频通道尚未启用'), { status: 409 });
+  resolve360Model('video', model);
+  if (!valid360VideoTaskId(taskId)) throw Object.assign(new Error('视频任务编号无效'), { status: 400 });
+  const data = await ywJson(`${BASE()}${PROVIDER_360_VIDEO_PATH}/${encodeURIComponent(taskId)}`, {}, 30000, signal, fetchImpl);
+  if (data?.error) throw providerResponseError(502, data, { service: '360视频服务' });
+  const task = normalize360VideoTask(data, model, taskId);
+  const receipt = await currentRequestCost({ requestId: data._gatewayRequestId || data.id || task.taskId, model, response: data });
+  return { ...task, provider: '360', providerId: '360', providerRequestId: data._gatewayRequestId || data.id || task.taskId,
+    ...(receipt ? { supplierCosts: [receipt] } : {}) };
+}
+
 export async function generateVideo({
   prompt,
   model,
   images = [],
   image,
   audioUrl = null,
+  duration,
   signal,
 }) {
   const m = model || routing().videoDefault;
@@ -1843,6 +2115,11 @@ export async function generateVideo({
   const references = (
     Array.isArray(images) && images.length ? images : [image]
   ).filter(Boolean);
+  if (provider360Active()) {
+    const out = await submit360VideoSegment({ prompt, model: m, images: references, audioUrl, duration, signal });
+    return { ...out, referencesUsed: references.length,
+      referenceMode: references.length > 1 ? 'multi-reference' : references.length ? 'first-frame' : 'text-only' };
+  }
   const referenceBrief = await summarizeVideoReferences(
     references,
     prompt,
@@ -1877,7 +2154,7 @@ export async function generateVideo({
     });
   if (out)
     return {
-      ...out,
+      ...out, provider: selectedProviderId(), providerId: selectedProviderId(),
       referencesUsed: references.length,
       referenceMode:
         references.length > 1
@@ -1894,8 +2171,13 @@ export async function generateVideo({
   err.status = 400;
   throw err;
 }
-export async function fetchVideoTask({ taskId, model }) {
+export async function fetchVideoTask(args) {
+  if (!args?.taskId) return null;
+  return withTaskProvider(args, () => fetchVideoTaskSelected(args));
+}
+async function fetchVideoTaskSelected({ taskId, model }) {
   if (!taskId) return null;
+  if (provider360Active()) return query360VideoSegment({ taskId, model });
   const info = videoModelInfo(model);
   if (["minimax", "minimax-h3"].includes(info.adapter))
     return queryMiniMaxVideoTask({ taskId, model });

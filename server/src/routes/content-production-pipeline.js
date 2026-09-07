@@ -27,6 +27,7 @@ import {
   precheckByRole,
   releaseHeldCreditsByRefInCurrentTransaction,
   releaseHold,
+  refundHold,
   settleHold,
 } from "../engines/credits.js";
 import {
@@ -865,6 +866,21 @@ export function mergeContentPipelineStationBillingEvidence(
   );
 }
 
+// A persisted station output is the only thing that can turn a failed run into
+// "keep the result, reconcile the fee". Before the pipeline schema exists there
+// is provably nothing persisted; any other database error stays conservative
+// (executeHeldDelivery treats a throwing check as delivered).
+function stationDeliverableExists(tenantId, pipelineId, stationIdx) {
+  try {
+    return Boolean(q.get(`SELECT pipeline_id FROM content_production_pipeline_stations
+      WHERE tenant_id=? AND pipeline_id=? AND station_idx=? AND output_json IS NOT NULL`,
+    tenantId, pipelineId, stationIdx));
+  } catch (error) {
+    if (/no such table:\s*(?:main\.)?content_production_pipeline_stations/iu.test(String(error?.message || ''))) return false;
+    throw error;
+  }
+}
+
 export function createStationDeliveryBoundary({ repository }) {
   return async (input) => {
     const tenantId = positiveInteger(input?.tenantId, "tenantId");
@@ -926,6 +942,8 @@ export function createStationDeliveryBoundary({ repository }) {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => stationDeliverableExists(tenantId, pipelineId, stationIdx),
       generate: input.generate,
       persist: input.persist,
       settle: settleHold,
@@ -2255,6 +2273,9 @@ function defaultRuntime() {
           validateProviderClaimFn: specialAttemptStore.validateClaim,
           associateProviderHoldFn: specialAttemptStore.associateHold,
           persistProviderOutputFn: specialAttemptStore.persist,
+          hasProviderDeliveryFn: ({ tenantId, attemptId }) => Boolean(q.get(`SELECT id
+            FROM content_pipeline_special_provider_attempts WHERE tenant_id=? AND attempt_id=?
+            AND output_json IS NOT NULL AND delivery_json IS NOT NULL`, tenantId, attemptId)),
           finalizeProviderAttemptFn: specialAttemptStore.finalize,
           estimateMaxCreditsFn,
           materialSearchFn: searchLicensedMaterials,

@@ -32,7 +32,7 @@ export function commandPaletteContentStatus(record) {
     }
     if (delivery.canUse === false) {
       if (rawStatus === '待审核') return '待人工审阅';
-      if (rawStatus === '已驳回') return '失败需返工（人工审阅未通过）';
+      if (rawStatus === '已驳回') return '未采纳（原稿已保留）';
       return '业务暂不可采用';
     }
   }
@@ -40,6 +40,6 @@ export function commandPaletteContentStatus(record) {
   if (isReconciliationStatus(rawStatus)) return COMMAND_PALETTE_RECONCILIATION_STATUS;
   if (rawStatus === '可使用') return COMMAND_PALETTE_UNVERIFIED_ADOPTION_STATUS;
   if (rawStatus === '待审核') return '待人工审阅';
-  if (rawStatus === '已驳回') return '失败需返工（人工审阅未通过）';
+  if (rawStatus === '已驳回') return '未采纳（原稿已保留）';
   return rawStatus || '状态未知';
 }

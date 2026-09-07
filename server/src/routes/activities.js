@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { db, q, curTenant, mergeMarshal } from '../db.js';
 import { logOp, notify, pct, monthStart } from '../util.js';
@@ -6,7 +7,7 @@ import {
   syncActivityLifecycleToFeishu, pushFeishuToManagers, pushFeishuToUser,
   feishuUserRecipient, icsToken, appReady, appBotReady, feishuManagerSummary, feishuConfig,
 } from '../engines/feishu.js';
-import {
+import { refundHold,
   estimateCallCredits,
   holdCredits,
   settleHold,
@@ -974,6 +975,8 @@ r.post('/:id/plan', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: () => buildActivityPlan(
         act,
         { goal, audience, budget },
@@ -1078,6 +1081,8 @@ r.post('/plan-drafts/generate', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: () => buildActivityPlan(
         act,
         { goal, audience, budget },
@@ -1530,6 +1535,8 @@ r.post('/:id/review', async (req, res) => {
     });
     const delivered = await executeHeldDelivery({
       hold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(hold),
       generate: async () => {
         const { marshalWork } = await import('../engines/ai.js');
         const out = await marshalWork(reviewDivision, {

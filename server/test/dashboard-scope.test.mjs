@@ -562,7 +562,9 @@ test("内容数字员工待审阅进入驾驶舱待办，并按任务快照的�
       approvalPolicy: { mode },
       contractValid: true,
       contract: { valid: true },
-      billing: { state: billingState, chargedCredits: billingState === "settled" ? 5 : null },
+      // Text settles from real usage at the default ¥30/M table (×2, 1 credit = ¥0.01).
+      billing: { state: billingState, chargedCredits: billingState === "settled"
+        ? Math.ceil((((inputTokens + outputTokens) * 30) / 1e6) * 200) : null },
       providerAttempt: {
         mode: providerMode,
         model: aiMode === "api" ? "dashboard-real-provider" : aiMode,
@@ -596,8 +598,7 @@ test("内容数字员工待审阅进入驾驶舱待办，并按任务快照的�
         refId: runId,
       });
       settleHold(hold, {
-        credits: 5,
-        aiMode: "api",
+        aiMode,
         model: "dashboard-real-provider",
         usage: { inputTokens, outputTokens },
       });

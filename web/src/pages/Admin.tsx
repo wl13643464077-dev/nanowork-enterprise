@@ -43,19 +43,19 @@ import { api, fmtMoney, getUser, exportCsv } from '../api/client';
 import { StatCard, Panel } from '../components/Kit';
 import AdminDispatchPolicyPanel, { AdminDeptModulesPanel } from './AdminDispatchPolicyPanel';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
-import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
-import { AdminWebSearchPanel } from '../components/AdminWebSearchPanel';
-import { AdminMiniMaxH3Panel } from '../components/AdminMiniMaxH3Panel';
-import { AdminAmapPanel } from '../components/AdminAmapPanel';
+import { readinessMeta } from '../components/RuntimeReadiness';
 import { AdminCreditBudgetPanel, AdminModelRoutingPanel } from '../components/AdminTenantAiPanels';
 import FeatureGuideCenter from '../components/FeatureGuideCenter';
 import UserOrgFields from '../components/UserStoreField';
+import InvitationManager from '../components/InvitationManager';
+import SeatRequestPanel from '../components/SeatRequestPanel';
 import './Admin.css';
 
 // ===== 常量与小工具 =====
 const ROLE_NAME: Record<string, string> = {
   boss: '老板',
   ops_director: '管理层',
+  manager: '店长',
   sales: '员工',
   admin: '管理员',
   partner: '合伙人',
@@ -63,6 +63,7 @@ const ROLE_NAME: Record<string, string> = {
 const ROLE_COLOR: Record<string, string> = {
   boss: 'gold',
   ops_director: 'blue',
+  manager: 'cyan',
   sales: 'green',
   admin: 'purple',
   partner: 'orange',
@@ -107,9 +108,10 @@ const chip = (label: string, val: React.ReactNode) => (
 const MENU = [
   { key: 'overview', label: '概览', icon: <DashboardOutlined /> },
   { key: 'users', label: '用户与组织', icon: <TeamOutlined /> },
+  { key: 'invitations', label: '邀请码', icon: <UserOutlined /> },
   { key: 'perms', label: '角色与权限', icon: <SafetyCertificateOutlined /> },
   { key: 'marshals', label: '员工管理', icon: <RobotOutlined /> },
-  { key: 'api', label: '接口管理', icon: <ApiOutlined /> },
+  { key: 'api', label: '模型设置', icon: <ApiOutlined /> },
   { key: 'credits', label: '积分管理', icon: <GoldOutlined /> },
   { key: 'logs', label: '日志与安全', icon: <AuditOutlined /> },
 ];
@@ -117,7 +119,10 @@ const MENU = [
 // ===== 主组件：自带整页布局（深色侧边栏 + 白色顶栏 + 浅灰主区）=====
 export default function Admin() {
   const user = getUser();
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    return MENU.some(item => item.key === requested) ? requested! : 'overview';
+  });
   const [featureGuideOpen, setFeatureGuideOpen] = useState(false);
 
   if (!user || !['boss', 'admin'].includes(user.role)) {
@@ -197,9 +202,10 @@ export default function Admin() {
         <div className="admin-content">
           {tab === 'overview' && <Overview onTab={setTab} />}
           {tab === 'users' && <UsersOrg />}
+          {tab === 'invitations' && <InvitationManager scope="tenant" />}
           {tab === 'perms' && <Permissions />}
           {tab === 'marshals' && <MarshalsAdmin />}
-          {tab === 'api' && <AdminModelRoutingPanel platformConfig={<ApiConfig />} />}
+          {tab === 'api' && <AdminModelRoutingPanel />}
           {tab === 'credits' && <AdminCreditBudgetPanel ledger={<CreditsAdmin />} />}
           {tab === 'logs' && <LogsSecurity />}
         </div>
@@ -317,7 +323,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
 
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={8}>
-          <Panel title="AI通道状态 · 本企业用量" extra={<Badge status={aiState.badge} text={aiState.label} />}>
+          <Panel title="AI服务与本企业用量" extra={<Badge status={aiState.badge} text={aiState.label} />}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '10px 12px' }}>
                 <div
@@ -332,8 +338,8 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                 <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 2 }}>
                   {aiReadiness.description ||
                     (ov.channel === 'yunwu'
-                      ? '已发现服务端密钥，但尚未通过最近一次显式连接测试'
-                      : '未配置API Key，AI输出为内置模板，不扣积分')}
+                      ? 'AI服务正在等待平台验证；可先查看当前可用能力。'
+                      : 'AI服务暂不可用，可生成本地底稿；需要帮助请联系平台。')}
                 </div>
                 {aiReadiness.nextAction && (
                   <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 6 }}>{aiReadiness.nextAction}</div>
@@ -343,8 +349,6 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                 {chip('文本调用', u.textCalls)}
                 {chip('生图', u.images)}
                 {chip('生视频', u.videos)}
-                {chip('输入tokens', (u.input ?? 0).toLocaleString())}
-                {chip('输出tokens', (u.output ?? 0).toLocaleString())}
                 {chip('今日调用', ov.todayCalls)}
               </div>
               <div
@@ -394,8 +398,6 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
           </Panel>
         </Col>
       </Row>
-
-      <RuntimeReadinessMatrix matrix={ov.readiness} />
 
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={13}>
@@ -590,6 +592,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
 // ===== ② 用户与组织 =====
 function UsersOrg() {
   const [users, setUsers] = useState<any[]>([]);
+  const [seatRefresh, setSeatRefresh] = useState(0);
   const [org, setOrg] = useState<any[]>([]);
   const [modules, setModules] = useState<any[]>([]);
   const [editing, setEditing] = useState<any>(null);
@@ -599,8 +602,11 @@ function UsersOrg() {
   const [editForm] = Form.useForm();
   const [addForm] = Form.useForm();
 
-  const load = () => {
-    api.get('/admin/users').then(setUsers);
+  const load = (refreshSeats = false) => {
+    api.get('/admin/users').then(data => {
+      setUsers(data);
+      if (refreshSeats) setSeatRefresh(value => value + 1);
+    });
     api.get('/admin/org').then(setOrg);
   };
   useEffect(() => {
@@ -609,6 +615,7 @@ function UsersOrg() {
   }, []);
 
   const openEdit = (r: any) => {
+    if (r.accountType === 'primary' && Number(r.id) !== Number(getUser()?.id)) return;
     setEditing(r);
     const { name, role, dept, store_id } = r;
     const status = r.status || '启用';
@@ -621,10 +628,11 @@ function UsersOrg() {
     await api.put(`/admin/users/${editing.id}`, body);
     message.success(`已保存「${v.name}」${body.password ? '，密码已重置' : ''}`);
     setEditing(null);
-    load();
+    load(true);
   };
 
   const openPerm = (r: any) => {
+    if (r.accountType === 'primary' && Number(r.id) !== Number(getUser()?.id)) return;
     setPermUser(r);
     setPermChecked(r.effectiveModules || []);
   };
@@ -647,11 +655,12 @@ function UsersOrg() {
     message.success(`用户「${v.name}」已创建`);
     setAdding(false);
     addForm.resetFields();
-    load();
+    load(true);
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <SeatRequestPanel refreshKey={seatRefresh} />
       <Panel
         title="用户列表"
         extra={
@@ -673,6 +682,15 @@ function UsersOrg() {
                 render: (v: string) => <span style={{ fontFamily: MONO, fontSize: 12.5 }}>{v}</span>,
               },
               { title: '姓名', dataIndex: 'name', render: (v: string) => <b>{v}</b> },
+              {
+                title: '账号身份',
+                dataIndex: 'accountType',
+                render: (v: string) => (
+                  <Tag color={v === 'primary' ? 'blue' : 'default'}>
+                    {v === 'primary' ? '主账号' : v === 'sub' ? '副账号' : '待确认'}
+                  </Tag>
+                ),
+              },
               {
                 title: '角色',
                 dataIndex: 'role',
@@ -706,10 +724,20 @@ function UsersOrg() {
                 width: 130,
                 render: (_: any, r: any) => (
                   <Space size={10}>
-                    <button type="button" className="ui-link-button" onClick={() => openEdit(r)}>
+                    <button
+                      type="button"
+                      className="ui-link-button"
+                      disabled={r.accountType === 'primary' && Number(r.id) !== Number(getUser()?.id)}
+                      onClick={() => openEdit(r)}
+                    >
                       编辑
                     </button>
-                    <button type="button" className="ui-link-button" onClick={() => openPerm(r)}>
+                    <button
+                      type="button"
+                      className="ui-link-button"
+                      disabled={r.accountType === 'primary' && Number(r.id) !== Number(getUser()?.id)}
+                      onClick={() => openPerm(r)}
+                    >
                       菜单权限
                     </button>
                   </Space>
@@ -763,12 +791,13 @@ function UsersOrg() {
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item name="role" label="角色">
-                <Select options={ROLE_OPTIONS} />
+                <Select options={ROLE_OPTIONS} disabled={editing?.accountType === 'primary'} />
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item name="status" label="状态">
                 <Select
+                  disabled={editing?.accountType === 'primary'}
                   options={[
                     { value: '启用', label: '启用' },
                     { value: '停用', label: '停用' },
@@ -822,7 +851,7 @@ function UsersOrg() {
 
       {/* 新增用户 */}
       <Modal title="新增用户" open={adding} onCancel={() => setAdding(false)} onOk={addUser} okText="创建" forceRender>
-        <Form form={addForm} layout="vertical" style={{ marginTop: 12 }} initialValues={{ role: 'sales', credits: 0 }}>
+        <Form form={addForm} layout="vertical" style={{ marginTop: 12 }} initialValues={{ role: 'sales' }}>
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}>
@@ -857,11 +886,6 @@ function UsersOrg() {
           <Row gutter={12}>
             <Col span={12}>
               <UserOrgFields />
-            </Col>
-            <Col span={12}>
-              <Form.Item name="credits" label="同步增发企业共享积分">
-                <InputNumber min={0} step={100} style={{ width: '100%' }} />
-              </Form.Item>
             </Col>
           </Row>
         </Form>
@@ -1281,381 +1305,6 @@ function MarshalsAdmin() {
   );
 }
 
-// ===== ⑤ 接口管理 =====
-function ApiConfig() {
-  const [cfg, setCfg] = useState<any>(null);
-  const [baseUrl, setBaseUrl] = useState('');
-  const [h3, setH3] = useState<any>(null);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<any>(null);
-  const testConn = () => {
-    setTesting(true);
-    setTestResult(null);
-    api
-      .post('/admin/api-config/test', {})
-      .then((result: any) => {
-        setTestResult(result);
-        return load();
-      })
-      .finally(() => setTesting(false));
-  };
-  const [rt, setRt] = useState<any>(null);
-  const [bl, setBl] = useState<any>(null);
-  const load = () =>
-    api.get('/admin/api-config').then((d: any) => {
-      setCfg(d);
-      setBaseUrl(d.channel?.baseUrl || '');
-      setRt(d.routing || {});
-      setBl(d.billing || {});
-      setH3({
-        pricePer15s768p: Number(d.h3?.pricing?.pricePer15s768p || 0),
-        providerVerified: d.h3?.capability?.providerVerified === true,
-        billingVerified: d.h3?.capability?.billingVerified === true,
-        priceBasis: d.h3?.capability?.priceBasis || '',
-      });
-    });
-  useEffect(() => {
-    load();
-  }, []);
-
-  const save = () =>
-    api.put('/admin/api-config', { routing: rt, billing: bl, baseUrl, h3 }).then(() => {
-      message.success('接口配置已保存，立即生效');
-      load();
-    });
-
-  if (!cfg || !rt || !bl || !h3)
-    return <div style={{ padding: 60, textAlign: 'center', color: 'var(--ui-muted)' }}>加载中…</div>;
-
-  const setTextModel = (role: string, v: string) => setRt({ ...rt, text: { ...rt.text, [role]: v } });
-  const setTextPrice = (model: string, field: 'in' | 'out', v: any) =>
-    setBl({ ...bl, text: { ...bl.text, [model]: { ...bl.text[model], [field]: v ?? 0 } } });
-  const setImagePrice = (model: string, v: any) => setBl({ ...bl, image: { ...bl.image, [model]: v ?? 0 } });
-  const setVideoPrice = (model: string, v: any) => setBl({ ...bl, video: { ...bl.video, [model]: v ?? 0 } });
-  const setMin = (k: string, v: any) => setBl({ ...bl, minBalance: { ...bl.minBalance, [k]: v ?? 0 } });
-  const usage = cfg.usage || {};
-  const channelOf = (key: string) => cfg.readiness?.channels?.find((item: any) => item.key === key);
-  const aiReadiness =
-    cfg.channel?.readiness ||
-    channelOf('ai') ||
-    ({ effective: cfg.channel?.available ? 'configured_unverified' : 'degraded' } as any);
-  const aiState = readinessMeta(aiReadiness);
-  const searchReadiness = channelOf('web_search') || ({ effective: 'degraded', details: {} } as any);
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Row gutter={[12, 12]}>
-        {/* A. 通道 */}
-        <Col xs={24} lg={10}>
-          <Panel
-            title="A · AI通道"
-            extra={<Badge status={aiState.badge} text={<span style={{ fontSize: 12 }}>{aiState.label}</span>} />}
-          >
-            <FieldRow label="服务商">
-              <span style={{ fontWeight: 600, color: 'var(--ui-text)' }}>{cfg.channel.provider}</span>
-            </FieldRow>
-            <FieldRow label="Base URL">
-              <Input
-                value={baseUrl}
-                onChange={e => setBaseUrl(e.target.value)}
-                style={{ fontFamily: MONO, fontSize: 12.5 }}
-              />
-            </FieldRow>
-            <FieldRow label="API Key">
-              <Input
-                value={cfg.channel.key}
-                readOnly
-                suffix={
-                  <Tag
-                    color={
-                      cfg.channel.keySource === 'environment'
-                        ? 'green'
-                        : cfg.channel.keySource === 'legacy_db'
-                          ? 'orange'
-                          : 'default'
-                    }
-                  >
-                    {cfg.channel.keySource === 'environment'
-                      ? '环境变量'
-                      : cfg.channel.keySource === 'legacy_db'
-                        ? '旧配置兼容'
-                        : '未配置'}
-                  </Tag>
-                }
-                style={{ fontFamily: MONO, fontSize: 12.5 }}
-              />
-            </FieldRow>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-              <Button size="small" loading={testing} onClick={testConn}>
-                🔌 测试连接
-              </Button>
-              {testResult && (
-                <Tag color={testResult.ok ? 'green' : 'red'} style={{ margin: 0 }}>
-                  {testResult.ok ? `✓ 最近验证通过（${testResult.models}个可用模型）` : `✗ ${testResult.error}`}
-                </Tag>
-              )}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginBottom: 10 }}>
-              API Key 仅从服务端环境变量 <code>YUNWU_API_KEY</code> 读取，不在数据库保存新明文。
-              {cfg.channel.keySource === 'legacy_db' ? ' 当前正在兼容读取旧数据库配置，请尽快迁移到环境变量。' : ''}
-              Base URL 修改后请点击页面底部“保存配置”；配置存在不代表通道已连接，最近显式测试通过后才会显示验证有效。
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
-              {chip('文本调用', usage.calls)}
-              {chip('生图', usage.images)}
-              {chip('生视频', usage.videos)}
-              {chip('输入tokens', (usage.input ?? 0).toLocaleString())}
-              {chip('输出tokens', (usage.output ?? 0).toLocaleString())}
-              {chip('失败', usage.errors)}
-            </div>
-          </Panel>
-        </Col>
-
-        {/* B. 模型路由 */}
-        <Col xs={24} lg={14}>
-          <Panel title="B · 分层模型路由">
-            {[
-              ['boss', '老板'],
-              ['ops_director', '管理层'],
-              ['sales', '员工'],
-            ].map(([k, label]) => (
-              <FieldRow key={k} label={<>文本 · {label}</>}>
-                <Input
-                  value={rt.text?.[k]}
-                  onChange={e => setTextModel(k, e.target.value)}
-                  style={{ fontFamily: MONO, fontSize: 12.5 }}
-                />
-              </FieldRow>
-            ))}
-            <FieldRow label="图片模型">
-              <Input
-                value={rt.image}
-                onChange={e => setRt({ ...rt, image: e.target.value })}
-                style={{ fontFamily: MONO, fontSize: 12.5 }}
-              />
-            </FieldRow>
-            <FieldRow label="视频模型清单">
-              <Select
-                mode="tags"
-                value={rt.video || []}
-                style={{ width: '100%' }}
-                onChange={(v: string[]) =>
-                  setRt({ ...rt, video: v, videoDefault: v.includes(rt.videoDefault) ? rt.videoDefault : v[0] })
-                }
-                tokenSeparators={[',', '，']}
-                placeholder="输入模型名后回车添加"
-              />
-            </FieldRow>
-            <FieldRow label="默认视频模型">
-              <Select
-                value={rt.videoDefault}
-                style={{ width: '100%' }}
-                options={(rt.video || []).map((m: string) => ({ value: m, label: m }))}
-                onChange={(v: string) => setRt({ ...rt, videoDefault: v })}
-              />
-            </FieldRow>
-            <div
-              style={{
-                background: 'var(--ui-warning-surface)',
-                borderRadius: 8,
-                padding: '8px 10px',
-                fontSize: 12,
-                color: '#e0a253',
-              }}
-            >
-              视频模型清单等客户提供截图后在此替换，新增/删除即时生效于「内容生产仓」。
-            </div>
-          </Panel>
-        </Col>
-
-        <Col xs={24}>
-          <AdminWebSearchPanel readiness={searchReadiness} onRefresh={load} />
-        </Col>
-
-        <AdminMiniMaxH3Panel config={cfg.h3} value={h3} onChange={setH3} />
-        <AdminAmapPanel readiness={channelOf('amap')} onRefresh={load} />
-      </Row>
-
-      {/* D. 计费配置 */}
-      <Panel
-        title="D · 计费配置"
-        extra={
-          <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
-            扣减公式：credits = ceil( 成本¥ × 利润系数 ÷ 积分单价 )
-          </span>
-        }
-      >
-        <Row gutter={[12, 12]} style={{ marginBottom: 14 }}>
-          <Col xs={12} md={5}>
-            <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>积分单价（元/积分）</div>
-            <InputNumber
-              value={bl.creditYuan}
-              min={0.0001}
-              step={0.001}
-              style={{ width: '100%' }}
-              onChange={v => setBl({ ...bl, creditYuan: v ?? 0.01 })}
-            />
-          </Col>
-          <Col xs={12} md={5}>
-            <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>利润系数</div>
-            <InputNumber
-              value={bl.marginMultiplier}
-              min={1}
-              step={0.1}
-              style={{ width: '100%' }}
-              onChange={v => setBl({ ...bl, marginMultiplier: v ?? 1.5 })}
-            />
-          </Col>
-          {[
-            ['text', '文本'],
-            ['image', '图片'],
-            ['video', '视频'],
-          ].map(([k, label]) => (
-            <Col xs={8} md={4} key={k}>
-              <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>最低余额 · {label}（分）</div>
-              <InputNumber value={bl.minBalance?.[k]} min={0} style={{ width: '100%' }} onChange={v => setMin(k, v)} />
-            </Col>
-          ))}
-        </Row>
-        <Row gutter={[12, 12]}>
-          <Col xs={24} lg={10}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)', marginBottom: 8 }}>
-              文本模型价格（¥/百万token）
-            </div>
-            <Table
-              size="small"
-              rowKey="model"
-              pagination={false}
-              dataSource={Object.keys(bl.text || {}).map(m => ({ model: m }))}
-              columns={
-                [
-                  {
-                    title: '模型',
-                    dataIndex: 'model',
-                    render: (v: string) => (
-                      <span style={{ fontFamily: MONO, fontSize: 12 }}>{v === 'default' ? 'default（兜底）' : v}</span>
-                    ),
-                  },
-                  {
-                    title: '输入¥',
-                    key: 'in',
-                    width: 100,
-                    render: (_: any, r: any) => (
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        step={0.5}
-                        value={bl.text[r.model]?.in}
-                        onChange={v => setTextPrice(r.model, 'in', v)}
-                        style={{ width: '100%' }}
-                      />
-                    ),
-                  },
-                  {
-                    title: '输出¥',
-                    key: 'out',
-                    width: 100,
-                    render: (_: any, r: any) => (
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        step={0.5}
-                        value={bl.text[r.model]?.out}
-                        onChange={v => setTextPrice(r.model, 'out', v)}
-                        style={{ width: '100%' }}
-                      />
-                    ),
-                  },
-                ] as any
-              }
-            />
-          </Col>
-          <Col xs={24} lg={7}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)', marginBottom: 8 }}>
-              图片单价（¥/张）
-            </div>
-            <Table
-              size="small"
-              rowKey="model"
-              pagination={false}
-              dataSource={Object.keys(bl.image || {}).map(m => ({ model: m }))}
-              columns={
-                [
-                  {
-                    title: '模型',
-                    dataIndex: 'model',
-                    render: (v: string) => (
-                      <span style={{ fontFamily: MONO, fontSize: 12 }}>{v === 'default' ? 'default（兜底）' : v}</span>
-                    ),
-                  },
-                  {
-                    title: '单价¥',
-                    key: 'p',
-                    width: 110,
-                    render: (_: any, r: any) => (
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        step={0.1}
-                        value={bl.image[r.model]}
-                        onChange={v => setImagePrice(r.model, v)}
-                        style={{ width: '100%' }}
-                      />
-                    ),
-                  },
-                ] as any
-              }
-            />
-          </Col>
-          <Col xs={24} lg={7}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ui-text)', marginBottom: 8 }}>
-              视频单价（¥/条）
-            </div>
-            <Table
-              size="small"
-              rowKey="model"
-              pagination={false}
-              dataSource={Object.keys(bl.video || {}).map(m => ({ model: m }))}
-              columns={
-                [
-                  {
-                    title: '模型',
-                    dataIndex: 'model',
-                    render: (v: string) => (
-                      <span style={{ fontFamily: MONO, fontSize: 12 }}>{v === 'default' ? 'default（兜底）' : v}</span>
-                    ),
-                  },
-                  {
-                    title: '单价¥',
-                    key: 'p',
-                    width: 110,
-                    render: (_: any, r: any) => (
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        step={1}
-                        value={bl.video[r.model]}
-                        onChange={v => setVideoPrice(r.model, v)}
-                        style={{ width: '100%' }}
-                      />
-                    ),
-                  },
-                ] as any
-              }
-            />
-          </Col>
-        </Row>
-      </Panel>
-
-      <div style={{ textAlign: 'right' }}>
-        <Button type="primary" size="large" onClick={save}>
-          保存配置
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // ===== ⑥ 积分管理 =====
 function CreditsAdmin() {
   const [users, setUsers] = useState<any[]>([]);
@@ -1665,8 +1314,6 @@ function CreditsAdmin() {
   const [kind, setKind] = useState<string | undefined>(undefined);
   const [range, setRange] = useState<string[]>([]);
   const [page, setPage] = useState(1);
-  const [target, setTarget] = useState<any>(null);
-  const [form] = Form.useForm();
 
   const qs = () => {
     const p = new URLSearchParams();
@@ -1686,7 +1333,6 @@ function CreditsAdmin() {
       setUsers(data?.users || []);
       setPoolBalance(Number(data?.balance || 0));
     });
-  const loadLogs = () => api.get(`/admin/credits/logs?page=${page}&size=15&${qs()}`).then(setLogs);
   useEffect(() => {
     loadUsers();
   }, []);
@@ -1722,25 +1368,13 @@ function CreditsAdmin() {
     message.success(`已导出 ${rows.length} 条流水`);
   };
 
-  const doAdjust = async () => {
-    const v = await form.validateFields();
-    const res = await api.post('/admin/credits/adjust', { userId: target.id, delta: v.delta, note: v.note || '' });
-    message.success(
-      `企业共享积分池已${v.delta >= 0 ? '增加' : '扣减'} ${Math.abs(v.delta)} 分，当前余额 ${res.balance} 分`,
-    );
-    setTarget(null);
-    form.resetFields();
-    loadUsers();
-    loadLogs();
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Alert
         type="info"
         showIcon
         message="积分扣减规则"
-        description="企业内账号共用一个积分池；每次AI调用仍按实际发起账号记流水，便于核算个人消耗。管理员增加或扣减会立即作用于企业共享余额。"
+        description="企业成员共用积分池，按实际用量结算并记录各自消耗。可分配使用预算；增加余额请由老板前往充值中心。"
       />
 
       <Row gutter={[12, 12]}>
@@ -1772,23 +1406,6 @@ function CreditsAdmin() {
                     dataIndex: 'spent_credits',
                     align: 'right',
                     render: (v: number) => <b>{(v ?? 0).toLocaleString()}</b>,
-                  },
-                  {
-                    title: '操作',
-                    key: 'op',
-                    width: 100,
-                    render: (_: any, r: any) => (
-                      <button
-                        type="button"
-                        className="ui-link-button"
-                        onClick={() => {
-                          setTarget(r);
-                          form.resetFields();
-                        }}
-                      >
-                        调整共享池
-                      </button>
-                    ),
                   },
                 ] as any
               }
@@ -1912,39 +1529,6 @@ function CreditsAdmin() {
           </Panel>
         </Col>
       </Row>
-
-      <Modal
-        title={target ? `调整企业共享积分池 · 记账账号：${target.name}` : ''}
-        open={!!target}
-        onCancel={() => setTarget(null)}
-        onOk={doAdjust}
-        okText="提交"
-        forceRender
-      >
-        <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={`当前企业共享余额：${poolBalance.toLocaleString()} 分`}
-          />
-          <Form.Item
-            name="delta"
-            label="调整额度（正数增加，负数扣减）"
-            rules={[
-              { required: true, message: '请输入调整额度' },
-              {
-                validator: (_: any, v: any) => (v === 0 ? Promise.reject(new Error('额度不能为0')) : Promise.resolve()),
-              },
-            ]}
-          >
-            <InputNumber step={100} style={{ width: '100%' }} placeholder="如 1000 或 -500" />
-          </Form.Item>
-          <Form.Item name="note" label="备注">
-            <Input placeholder="如：月度充值 / 误操作回收" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 }

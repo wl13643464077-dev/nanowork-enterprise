@@ -19,7 +19,10 @@ test("平台超管前端只保留平台控制台入口，不进入企业后台�
   assert.match(app, /role === 'platform_super'.*Navigate to="\/platform"/s);
   assert.match(app, /path="\/admin".*roles=\{\['boss', 'admin'\]\}/s);
   // 批次 B 起移动端为 /m/* 子路径驱动 Tab，但仍必须整体包在 EnterpriseOnly 内
-  assert.match(app, /path="\/m\/\*"\s*element=\{\s*<EnterpriseOnly>\s*<Mobile \/>\s*<\/EnterpriseOnly>/s);
+  assert.match(
+    app,
+    /path="\/m\/\*"\s*element=\{\s*<EnterpriseOnly>\s*<Mobile \/>\s*<\/EnterpriseOnly>/s,
+  );
   assert.match(app, /<EnterpriseOnly>\s*<MainLayout \/>\s*<\/EnterpriseOnly>/);
   assert.doesNotMatch(recharge, /role !== 'boss' && role !== 'platform_super'/);
 });
@@ -59,30 +62,24 @@ test("移动端核心工作台按模块和角色过滤，销售不发起管理�
     dashboard,
     /if \(canViewManagementBriefing\).*\/dashboard\/daily-digest/s,
   );
-  assert.match(mobileContent, /\.filter\(item => item\.delivery\?\.canUse === true\)/);
+  assert.match(
+    mobileContent,
+    /\.filter\(item => item\.delivery\?\.canUse === true\)/,
+  );
   assert.match(mobileContent, /disabled=\{r\.delivery\?\.canUse !== true\}/);
 });
 
-test("内容提交审核后立即清除过期可用态并刷新权威列表", () => {
-  const contentFactory = read("web/src/pages/ContentFactory.tsx");
-
-  assert.match(
-    contentFactory,
-    /const pendingApprovalContent = \(record: any\)/,
+test("内容仓不再复制审核和历史状态，任务中心反馈以服务端回执更新", () => {
+  const factory = read("web/src/pages/ContentFactory.tsx");
+  const feedback = read("web/src/components/TaskFeedback.tsx");
+  assert.doesNotMatch(
+    factory,
+    /pendingApprovalContent|setRows|setResults|submitApproval/,
   );
-  assert.match(
-    contentFactory,
-    /canUse: false[\s\S]*canImport: false[\s\S]*canPublish: false/,
-  );
-  assert.match(
-    contentFactory,
-    /setRows\(prev => prev\.map\(x => \(x\.id === rec\.id \? pendingApprovalContent\(x\) : x\)\)\)/,
-  );
-  assert.match(
-    contentFactory,
-    /setResults\(prev => prev\.map\(x => \(x\.id === rec\.id \? pendingApprovalContent\(x\) : x\)\)\)/,
-  );
-  assert.match(contentFactory, /refreshList\(\);[\s\S]*loadPending\(\);/);
+  assert.match(factory, /全部历史 · 任务中心/);
+  assert.match(feedback, /feedbackAvailability\?\.available === true/);
+  assert.match(feedback, /onUpdated\(response\.task\)/);
+  assert.doesNotMatch(feedback, /businessUsable\s*[:=]\s*true|state:\s*'done'/);
 });
 
 test("桌面内容复制与PPT导出严格跟随权威交付门禁", () => {
@@ -116,54 +113,25 @@ test("桌面内容复制与PPT导出严格跟随权威交付门禁", () => {
     constants,
     /String\(rec\?\.status \|\| ''\) === '可使用' && !rec\?\.delivery/,
   );
-  assert.match(
+  assert.doesNotMatch(
     contentFactory,
-    /<ContentUseActions record=\{r\}>[\s\S]*?<CopyOutlined \/>[\s\S]*?disabled=\{!contentFlowReady\(r\)\}/,
+    /ContentUseActions|exportDeckHtml|exportDeckDoc/,
   );
-  assert.match(
-    contentFactory,
-    /disabled=\{!contentFlowReady\(r\)\}[\s\S]*?exportDeckHtml\(r\)/,
-  );
-  assert.match(
-    contentFactory,
-    /disabled=\{!contentFlowReady\(r\)\}[\s\S]*?exportDeckDoc\(r\)/,
-  );
-  assert.match(
-    contentFactory,
-    /<ContentUseActions key="copy" record=\{viewRec\}>[\s\S]*?disabled=\{!contentFlowReady\(viewRec\)\}/,
-  );
-  assert.equal(
-    (
-      contentFactory.match(/api\.get\(`\/content\/detail\/\$\{res\.id\}`\)/g) ||
-      []
-    ).length,
-    2,
-  );
+  assert.match(contentFactory, /全部历史 · 任务中心/);
 });
 
-test("自动化失败或未完成时卡片和桌面表格都直接显示原因", () => {
-  const contentFactory = read("web/src/pages/ContentFactory.tsx");
-  const failureReason = read("web/src/components/AutomationFailureReason.tsx");
-
-  assert.match(
-    contentFactory,
-    /const automationVisibleFailure = \(rule: ContentAutomationRule\)/,
+test("定时规则按需管理，失败原因只在统一历史详情展示", () => {
+  const factory = read("web/src/pages/ContentFactory.tsx");
+  const manager = read("web/src/components/ContentAutomationManager.tsx");
+  const task = read("web/src/pages/TaskCenter.tsx");
+  assert.doesNotMatch(
+    factory,
+    /AutomationFailureReason|automationVisibleFailure/,
   );
-  assert.match(
-    contentFactory,
-    /\['失败', '未完成', '已停用'\]\.includes\(rule\.lastStatus \|\| ''\)/,
-  );
-  assert.equal(
-    (
-      contentFactory.match(
-        /<AutomationFailureReason reason=\{automationVisibleFailure\(rule\)\}/g,
-      ) || []
-    ).length,
-    2,
-  );
-  assert.match(failureReason, /aria-label="自动化失败原因"/);
-  assert.match(failureReason, /WebkitLineClamp: 2/);
-  assert.match(failureReason, /<Tooltip title=\{reason\}>/);
+  assert.match(factory, /automationOpen && canViewCrewInternals/);
+  assert.match(manager, /停用，不会继续自动运行/);
+  assert.match(manager, /href="\/tasks"/);
+  assert.match(task, /message="执行异常" description=\{detail\.error\}/);
 });
 
 test("桌面驾驶舱名称和每日指引按老板、管理层、管理员与员工角色分流", () => {
@@ -256,7 +224,10 @@ test("移动端无驾驶舱权限也能进入已授权工作台，客户详情�
     mobile,
     /if \(tab\.key === 'home'\) return hasMobileHomeAccess\(mods, role\);/,
   );
-  assert.match(mobile, /if \(tab\.key === 'dispatch'\) return mods\.includes\('marshals'\);/);
+  assert.match(
+    mobile,
+    /if \(tab\.key === 'dispatch'\) return mods\.includes\('marshals'\);/,
+  );
   assert.match(
     mobile,
     /if \(tab\.key === 'tasks'\) return mods\.includes\('execution'\) \|\| mods\.includes\('marshals'\);/,
@@ -346,9 +317,27 @@ test("员工驾驶舱只请求和展示已授权模块，全部范围按本人�
     /canViewAnalysis && \['boss', 'ops_director', 'manager', 'admin'\]/,
   );
   assert.match(dashboard, /\? '全部'[\s\S]*\? '团队'[\s\S]*: '我的'/);
-  assert.match(roleHeader, /if \(hasModule\('execution'\)\)/);
-  assert.match(roleHeader, /if \(hasModule\('content'\)\)/);
-  assert.match(dashboard, /hasModule\('system'\) \? \(/);
+  assert.match(roleHeader, /to: '\/advisor'[\s\S]{0,100}module: 'advisor'/);
+  assert.match(
+    roleHeader,
+    /to: '\/content\?task=ai-sales-video'[\s\S]{0,100}module: 'content'/,
+  );
+  assert.match(
+    roleHeader,
+    /to: '\/content\?task=ai-xhs-note'[\s\S]{0,100}module: 'content'/,
+  );
+  assert.match(
+    roleHeader,
+    /filter\(item => modules\.includes\(item\.module\)\)/,
+  );
+  assert.match(dashboard, /canViewFeishuConfig && \(/);
+  const feishuHook = read("web/src/hooks/useDashboardFeishu.ts");
+  assert.match(
+    feishuHook,
+    /\['boss', 'ops_director', 'admin'\]\.includes\(role \|\| ''\)/,
+  );
+  assert.match(feishuHook, /modules\.includes\('activities'\)/);
+  assert.match(feishuHook, /modules\.includes\('system'\)/);
   assert.match(
     dashboard,
     /const canViewEmployeeDetail = \['boss', 'ops_director', 'manager', 'admin'\]/,
@@ -380,11 +369,17 @@ test("数字员工公开工作台是对话，技能、工具和配置收入次�
   const workbench = read("web/src/components/EmployeeWorkbench.tsx");
 
   assert.match(workbench, /className="ewb-section ewb-conversation"/u);
-  assert.match(workbench, /className="ewb-content ewb-public-conversation"[\s\S]*\{dispatchTab\}/u);
+  assert.match(
+    workbench,
+    /className="ewb-content ewb-public-conversation"[\s\S]*\{dispatchTab\}/u,
+  );
   assert.match(workbench, /className="ewb-chat-composer/u);
   assert.match(workbench, /<UnifiedFilePicker/u);
   assert.match(workbench, />\s*后台档案\s*</u);
-  assert.match(workbench, /open=\{open && backendProfileOpen\}/u);
+  assert.match(
+    workbench,
+    /open=\{open && backendProfileOpen && canViewInternalProfile\}/u,
+  );
 
   for (const key of [
     "capabilities",
@@ -417,13 +412,17 @@ test("餐饮与内容工作台用一句话派活，公开信息由联网补齐�
     /内部资料(?:有则按需补充|只是可选补充)|内部材料只是可选补充/u,
   );
 
-  // 派活步骤必须把「输入少、进度可追、结果可看」说清楚。
-  assert.match(
+  // 对话输入与任务结果本身承载操作路径，不为隐藏的旧步骤写展示契约。
+  assert.match(workbench, /className="ewb-chat-composer-row"/u);
+  assert.match(workbench, /onFinish=\{submitDispatch\}/u);
+  assert.match(workbench, /aria-label="餐饮数字员工任务列表"/u);
+  assert.match(workbench, /全部历史 · 任务中心/u);
+  assert.match(workbench, /runs\?limit=8/u);
+  assert.match(workbench, /domain === 'content' && !dedicatedContentTask/u);
+  assert.doesNotMatch(
     workbench,
-    /<Steps[\s\S]*title: '一句话派活', description: '内部材料可选'[\s\S]*title: '看进度'[\s\S]*title: '看结果'/u,
+    /ewb-dispatch-path|ewb-dispatch-guide|ewb-status-help|dispatchGuidePreferenceKey/u,
   );
-  assert.match(workbench, /数字员工和 AI 任务统一进入「任务中心」/u);
-  assert.match(workbench, /<a href="\/tasks">打开任务中心<\/a>/u);
   assert.match(layout, /key: '\/tasks',[\s\S]*label: '任务中心'/u);
 
   // 这些文案是产品契约：不得把公开资料或内部资料清单倒逼给客户准备。
@@ -439,7 +438,10 @@ test("餐饮与内容工作台用一句话派活，公开信息由联网补齐�
   const helpCard =
     layout.match(/餐饮数字员工怎么用[\s\S]*?积分规则/u)?.[0] || "";
   assert.doesNotMatch(helpCard, /去审批|打开审批中心|打开任务看板/u);
-  assert.match(workbench, /普通内部产出通过门禁后自动采用/u);
+  assert.match(
+    workbench,
+    /selectedRunPublicStatus === '已自动采用（可用于业务）'/u,
+  );
 });
 
 test("内容仓固定创作模板不冒充实时AI建议，也不会在缺少业务简报时填入虚构主题", () => {
@@ -463,62 +465,26 @@ test("内容仓固定创作模板不冒充实时AI建议，也不会在缺少业
   assert.doesNotMatch(contentFactory, /<b>数据来源：<\/b>/);
 });
 
-test("内容生产仓把十一名数字员工真实运行纳入中央任务与风险审阅入口", () => {
-  const contentFactory = read("web/src/pages/ContentFactory.tsx");
-  const taskCenter = read("web/src/components/ContentEmployeeTaskCenter.tsx");
-  const taskCenterCss = read(
-    "web/src/components/ContentEmployeeTaskCenter.css",
-  );
+test("内容生产仓员工派活统一归档到任务中心，页面不重复铺历史", () => {
+  const factory = read("web/src/pages/ContentFactory.tsx");
+  const task = read("web/src/pages/TaskCenter.tsx");
   const workbench = read("web/src/components/EmployeeWorkbench.tsx");
-
-  assert.match(contentFactory, /<ContentEmployeeTaskCenter/);
-  assert.match(
-    contentFactory,
-    /当前 auto 下，none \/ low \/ medium \/ high 普通内部结果通过质量和账务门后直接进入业务可用状态/u,
+  assert.doesNotMatch(
+    factory,
+    /ContentEmployeeTaskCenter|employeeTaskQueue|WechatDraftStudio/,
   );
-  assert.match(
-    contentFactory,
-    /employeeTaskQueue\?\.statusCounts\?\.\['待审阅'\]/,
-  );
-  assert.match(
-    contentFactory,
-    /只有显式配置的策略确认才会进入待处理。系统绝不会自动发布/u,
-  );
-  assert.match(contentFactory, /initialRunId=\{crewWorkbenchRunId\}/);
-  assert.match(taskCenter, /employee-workbench\/content\/runs/);
-  assert.match(taskCenter, /内容数字员工任务中心/);
-  assert.match(
-    taskCenter,
-    /生成中、已完成、策略要求人工确认、业务暂不可采用和失败任务/,
-  );
-  assert.match(taskCenter, /失败待处理统计只包含当前仍需查因或返工的任务/);
-  assert.match(taskCenter, /data\.presentationCounts\?\.\[key\]/);
-  assert.match(taskCenter, /historical: \{ label: '历史失败（后续已修复）'/);
-  assert.match(taskCenter, /run\.remediatedByRunId/);
-  assert.match(taskCenter, /onOpenRun\(run\)/);
-  assert.match(taskCenterCss, /data-status='review_pending'/);
-  assert.match(taskCenterCss, /data-status='execution_failed'/);
-  assert.doesNotMatch(taskCenterCss, /data-status='待审阅'/);
-  assert.match(
-    taskCenter,
-    /能力、技能、提示词、配置及岗位档案仅老板或管理员可查看/,
-  );
-  assert.match(
-    taskCenter,
-    /const maxPage = Math\.max\(1, Math\.ceil\(next\.total \/ PAGE_SIZE\)\)/,
-  );
-  assert.match(
-    taskCenter,
-    /if \(page > maxPage\) \{\s*setPage\(maxPage\);\s*return;/s,
-  );
-  assert.match(workbench, /initialRunId\?: number \| null/);
+  assert.match(factory, /全部历史 · 任务中心/);
+  assert.match(factory, /initialRunId=\{crewWorkbenchRunId\}/);
   assert.match(workbench, /loadRunDetail\(Number\(initialRunId\)\)/);
   assert.match(
     workbench,
     /<ContentEmployeeResult\s+raw=\{localizeOperationalStatus\(selectedRun\.resultMd\)\}/s,
   );
   assert.match(workbench, /run\.remediated === true/);
-  assert.match(workbench, /历史失败（后续已修复）/);
+  assert.match(task, /generated_content/);
+  assert.match(task, /value: 'failed'/);
+  assert.match(task, /value: 'rejected'/);
+  assert.match(task, /<TaskFeedback/);
 });
 
 test("内容生产仓普通内部结果不默认伪装成审批或人工审阅任务", () => {
@@ -545,9 +511,16 @@ test("内容生产仓普通内部结果不默认伪装成审批或人工审阅�
   // 历史或显式策略状态仍可展示，但必须在文案中标明来源边界。
   assert.match(
     contentFactory,
-    /历史待审任务和显式策略任务仍在这里展示；系统不会自动发布/u,
+    /所有任务的输入、结果与采纳记录，都在统一任务中心查看/u,
   );
-  assert.match(workbench, /旧策略留下的历史状态，仅作审计留档/u);
+  assert.match(
+    workbench,
+    /结果已生成，请查看下方完整内容和优化建议，再选择是否采纳/u,
+  );
+  assert.match(workbench, /restaurantTask\.reviewReady === true/u);
+  assert.match(workbench, /Boolean\(restaurantTask\.output_id\)/u);
+  assert.match(workbench, /profile\.permissions\.canReviewRuns === true/u);
+  assert.doesNotMatch(workbench, /旧策略留下的历史状态，仅作审计留档/u);
 });
 
 test("系统页仅老板、管理员和平台超管请求并展示提示词中枢", () => {
@@ -579,21 +552,38 @@ test("企业审批规则下放老板：编辑权由服务端 canEdit 决定，�
     system,
     /const canViewApprovalPolicy = \['boss', 'ops_director', 'manager', 'admin', 'platform_super'\]\.includes\(user\.role\)/,
   );
-  assert.doesNotMatch(system, /canEditApprovalPolicy/, "前端不再硬编码可编辑角色，交由服务端 canEdit");
-  assert.match(system, /canViewApprovalPolicy \? <ApprovalPolicyPanel \/> : null/);
+  assert.doesNotMatch(
+    system,
+    /canEditApprovalPolicy/,
+    "前端不再硬编码可编辑角色，交由服务端 canEdit",
+  );
+  assert.match(
+    system,
+    /canViewApprovalPolicy \? <ApprovalPolicyPanel \/> : null/,
+  );
   assert.match(system, /\{approvalPolicySection\}/);
-  assert.match(system, /r\.assignedReviewerName \|\|[\s\S]*r\.assigned_reviewer/);
+  assert.match(
+    system,
+    /r\.assignedReviewerName \|\|[\s\S]*r\.assigned_reviewer/,
+  );
 
   assert.match(panel, /\.get\('\/sys\/approval-policy', \{ silent: true \}\)/);
   assert.match(panel, /setCanEdit\(payload\?\.canEdit === true\)/);
   assert.match(panel, /if \(!canEdit\) return;/);
   assert.match(panel, /if \(!canEdit \|\| !draft\) return;/);
-  assert.match(panel, /\.put\('\/sys\/approval-policy', \{ policy: toPayload\(draft\) \}, \{ silent: true \}\)/);
+  assert.match(
+    panel,
+    /\.put\('\/sys\/approval-policy', \{ policy: toPayload\(draft\) \}, \{ silent: true \}\)/,
+  );
   // 大白话预览走服务端同一份渲染函数，300ms 防抖，前端不复制文案
   assert.match(panel, /\.post\('\/sys\/approval-policy\/preview'/);
   assert.match(panel, /window\.setTimeout\([\s\S]*300\)/);
   assert.match(panel, /用大白话说就是/);
-  for (const routeKey of ["employeeOutput", "activityPlan", "activityChecklist"]) {
+  for (const routeKey of [
+    "employeeOutput",
+    "activityPlan",
+    "activityChecklist",
+  ]) {
     assert.match(panel, new RegExp(`${routeKey}: \\{`));
   }
   assert.match(panel, /value: 'risk_based'/);
@@ -605,7 +595,11 @@ test("企业审批规则下放老板：编辑权由服务端 canEdit 决定，�
   assert.match(panel, /scope: 'employee'/);
   assert.match(panel, /在途任务继续用发起时锁定的规则/);
   assert.match(panel, /三条底线（不可关闭）/);
-  assert.doesNotMatch(panel, /safeguards[^\n]*onChange/, "三条底线不得出现可编辑控件");
+  assert.doesNotMatch(
+    panel,
+    /safeguards[^\n]*onChange/,
+    "三条底线不得出现可编辑控件",
+  );
 });
 
 test("审批中心按接口门禁分别控制通过与驳回，待对账不进入人工审核", () => {
@@ -672,7 +666,7 @@ test("餐饮员工任务动态、通知深链和任务分页都能落到对应�
     /\/restaurant\/\$\{idx\}\/tasks\?offset=\$\{page\.nextOffset\}&limit=8/,
   );
   assert.match(workbench, /加载更多（已显示/);
-  assert.match(workbench, /:\$\{tenantId\}:\$\{userId\}:restaurant`/);
+  assert.doesNotMatch(workbench, /dispatch-guide\.seen/);
   assert.match(
     layout,
     /const explicit =\s*typeof notification\?\.link === 'string'/,
@@ -680,33 +674,19 @@ test("餐饮员工任务动态、通知深链和任务分页都能落到对应�
   assert.match(layout, /const t = notificationTarget\(n\)/);
 });
 
-test("内容员工仅在真实来源、账务结算和契约均通过后开放审阅，采纳后才下载", () => {
+test("内容员工保留真实状态与下载门禁，并在聊天记录完成业务采纳和偏好学习", () => {
   const workbench = read("web/src/components/EmployeeWorkbench.tsx");
-
+  const conversationFeedback = read("web/src/components/ConversationTaskFeedback.tsx");
+  const feedback = read("web/src/components/TaskFeedback.tsx");
   assert.match(
     workbench,
     /const provided = canonicalDisplayStatus\(run\.displayStatus\);\s*if \(provided\) return provided;\s*if \(run\.status === '失败'/,
   );
-
-  assert.match(
-    workbench,
-    /const selectedRunReviewReady = selectedRun\?\.canReview === true/,
-  );
-  assert.match(
-    workbench,
-    /profile\.permissions\.canReviewRuns && selectedRunReviewReady && \(/,
-  );
-  assert.match(
-    workbench,
-    /selectedRun\.canAdopt === true && \(\s*<Button type="primary"/,
-  );
-  assert.match(
-    workbench,
-    /selectedRun\.canReject === true && \(\s*<Button\s+danger/,
-  );
   assert.match(workbench, /selectedRunDownloadReady && artifact\.downloadUrl/);
-  assert.match(
-    workbench,
-    /账务确认前不进入人工审阅，也不能采纳、下载或进入内容生产仓/,
-  );
+  assert.match(workbench, /<ConversationTaskFeedback/);
+  assert.match(workbench, /employee-workbench\/content\/.*\/review/);
+  assert.match(conversationFeedback, /await businessReview\.onSubmit/);
+  assert.match(conversationFeedback, /\/task-center\/\$\{kind\}\/\$\{taskId\}\/feedback/);
+  assert.match(feedback, /feedbackAvailability\?\.available === true/);
+  assert.match(feedback, /原任务的执行、费用和发布状态会保留/);
 });

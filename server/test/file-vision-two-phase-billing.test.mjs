@@ -90,6 +90,7 @@ async function upload(name) {
   return { response, payload };
 }
 
+let expectedPendingHolds = 0;
 const heldRows = () => db.prepare(
   `SELECT * FROM credit_holds WHERE tenant_id=? AND status='held' ORDER BY id`,
 ).all(tenantId);
@@ -103,22 +104,26 @@ test('文件识图在供应商调用前预授权，识别正文落库后按真�
   assert.ok(result.payload.billing.chargedCredits > 0);
   assert.match(result.payload.file.preview, /到店人数=28/);
   assert.equal(result.payload.file.readable, true);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
 });
 
-test('文件识图 API 返回正文但 usage 为0时，落库前阻断且正文不可引用', async () => {
+test('文件识图 API 返回正文但 usage 为0时，保留识图正文并等待账务核对', async () => {
   const before = balanceOfTenant(tenantId);
   const result = await upload('识图零token.png');
 
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
-  assert.equal(result.payload.billing.state, 'released');
-  assert.equal(result.payload.billing.chargedCredits, 0);
-  assert.equal(result.payload.file.readable, false);
-  assert.equal(result.payload.file.preview, '');
-  assert.match(result.payload.file.extract_mode, /识图待重试/);
-  assert.equal(heldRows().length, 0);
-  assert.equal(balanceOfTenant(tenantId), before);
+  assert.equal(result.payload.billing.state, 'pending_reconciliation');
+  assert.equal(result.payload.billing.chargedCredits, null);
+  assert.ok(result.payload.billing.heldCredits > 0);
+  assert.match(result.payload.billing.error, /计费用量/);
+  expectedPendingHolds += 1;
+  assert.ok(heldRows().some(row => Number(row.id) === Number(result.payload.billing.holdId)));
+  assert.equal(result.payload.file.readable, true);
+  assert.match(result.payload.file.preview, /28/);
+  assert.match(result.payload.file.extract_mode, /AI识图/);
+  assert.equal(heldRows().length, expectedPendingHolds);
+  assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.heldCredits);
 });
 
 test('文件识图正文落库失败时释放预授权并保留可重试文件', async () => {
@@ -137,7 +142,7 @@ test('文件识图正文落库失败时释放预授权并保留可重试文件',
     assert.equal(failed.payload.file.readable, false);
     assert.match(failed.payload.file.extract_mode, /识图待重试/);
     assert.equal(balanceOfTenant(tenantId), before);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_file_vision_persist_failure');
   }

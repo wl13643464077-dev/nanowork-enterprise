@@ -5,6 +5,7 @@ import { canAccessOwner } from '../engines/access.js';
 import { twoPhaseBillingSummary } from '../engines/two-phase-delivery.js';
 import { loadContentDeliveryState } from '../engines/delivery-state.js';
 import { publicVoicedSalesProgress, voicedSalesDeliveryVerified, voicedSalesRecoveryAvailable } from '../engines/ai-sales-video-presentation.js';
+import { nativeDownloadMetadata } from '../engines/native-deliverables.js';
 
 const r = Router();
 
@@ -197,8 +198,8 @@ export function validateMediaDelivery(job) {
   if (!url) return { ready: false, reason: '供应商未返回可用媒体地址，不能进入业务验收' };
   const snapshot = safeJson(job.snapshot_json, {});
   if (snapshot?.voiceMode === 'voiced' && snapshot?.workflow === 'ai_sales_video'
-    && (snapshot?.result?.url !== url || !voicedSalesDeliveryVerified(snapshot.result, job.tenant_id ?? curTenant()))) {
-    return { ready: false, reason: '有声视频缺少30秒音轨和字幕验证证据，不能进入业务验收' };
+    && (snapshot?.result?.url !== url || !voicedSalesDeliveryVerified(snapshot.result, job.tenant_id ?? curTenant(), snapshot.audioMode, snapshot.durationSeconds ?? 30))) {
+    return { ready: false, reason: '有声视频缺少对应时长的音轨和字幕验证证据，不能进入业务验收' };
   }
   if (/^(javascript|vbscript|file):/i.test(url) || /[\u0000-\u001f]/.test(url)) {
     return { ready: false, reason: '媒体地址协议不安全，不能进入业务验收' };
@@ -436,7 +437,17 @@ export function augmentMediaJob(job, user) {
         ? '仅管理角色可人工验收并导入素材库'
         : delivery.reason;
   const businessUsable = reviewed && billingReady;
-  const previewAllowed = delivery.ready && billingReady && (roleAllowed || businessUsable);
+  const nativePlan = safeJson(job.snapshot_json, {}) || {};
+  const nativeOwner = nativePlan.workflow === 'ai_sales_video' && canAccessOwner(user, job.user_id);
+  const genericEvidence = nativePlan.genericVideoProvider;
+  const genericOwner = job.kind === 'video' && genericEvidence?.provider === '360'
+    && genericEvidence?.schemaVersion === 'nanowork.generic-video-provider/1'
+    && genericEvidence?.result?.ready === true && genericEvidence.result.url === job.url
+    && Array.isArray(genericEvidence.events) && genericEvidence.events.some(event => event.ready === true && event.url === job.url)
+    && Number(job.tenant_id) === Number(curTenant())
+    && (user?.role === 'platform_super' || Number(user?.tenant_id) === Number(curTenant()))
+    && canAccessOwner(user, job.user_id);
+  const previewAllowed = delivery.ready && (nativeOwner || genericOwner || (billingReady && (roleAllowed || businessUsable)));
   const originalUrl = String(job.url || '').trim() || null;
   const recovery = aiSalesVideoRecoveryPresentation(job, billing);
   return {
@@ -446,6 +457,10 @@ export function augmentMediaJob(job, user) {
     mediaType: mediaTypeLabel(job.kind),
     mimeType: inferMediaMime(job.kind, job.url),
     previewUrl: previewAllowed ? originalUrl : null,
+    ...(genericOwner && delivery.ready ? { downloadUrl: originalUrl, downloadAvailable: true } : {}),
+    ...(nativeOwner && (delivery.ready || nativePlan.script?.shots?.length)
+      ? nativeDownloadMetadata('sales', job.id, nativePlan.input?.brandName || nativePlan.brandName || '带货视频')
+      : {}),
     urlAvailable: Boolean(String(job.url || '').trim()),
     technicalStatus: String(job.status || '未知'),
     technicalSuccess: delivery.ready,
@@ -453,7 +468,7 @@ export function augmentMediaJob(job, user) {
     reviewStatus,
     reviewRequired: delivery.ready && !billingBlocked && !reviewed,
     businessUsable,
-    canExport: businessUsable && Boolean(originalUrl),
+    canExport: (businessUsable || (genericOwner && delivery.ready)) && Boolean(originalUrl),
     isImported: Boolean(material),
     importedMaterialId: material ? Number(material.id) : null,
     reviewedBy: reviewer,
@@ -503,6 +518,7 @@ function augmentResponse(req, body) {
       mimeType: enriched.mimeType,
       url: enriched.url,
       previewUrl: enriched.previewUrl,
+      ...(enriched.downloadAvailable ? { downloadUrl: enriched.downloadUrl, downloadAvailable: true, canExport: enriched.canExport } : {}),
       urlAvailable: enriched.urlAvailable,
       technicalStatus: enriched.technicalStatus,
       technicalSuccess: enriched.technicalSuccess,

@@ -25,6 +25,30 @@ const MAX_EXISTING_SKILL_CHARS = 2400;
 const MAX_CONTROLLED_BATCHES = 3;
 const CONTROLLED_BATCH_SIZE = 8;
 const MIN_CONTROLLED_SOURCES = 3;
+const CONTENT_PUBLIC_LEARNING_TOPICS = Object.freeze({
+  0: ['内容趋势研究、热点生命周期与选题方法'],
+  1: ['公开资料检索、事实核查与原始来源交叉验证'],
+  2: ['短视频图文结构分析、真实评论研究与内容对标'],
+  3: ['品牌内容写作、标题、叙事结构与行动号召'],
+  4: ['品牌文风、人设表达与事实一致性编辑'],
+  5: ['品牌视觉素材、信息图、图片与视频制作方法'],
+  6: ['移动端内容封面、视觉钩子与标题可读性'],
+  7: ['移动端HTML内容演绎、信息设计与无障碍'],
+  8: ['平台内容适配、商业内容标识与人工发布规范'],
+  9: ['内容效果复盘、互动转化指标与小样本分析'],
+  10: ['餐饮商品短视频的开头钩子、口语脚本、分镜与行动号召',
+    '真实菜品参考图的主体、构图、动作与运镜描述，多镜头菜品外观和场景连续性；优先通义万相与MiniMax海螺官方图生视频指南',
+    '预设TTS配音的口语节奏、字幕可读性、音量与镜头剪辑衔接；优先官方音视频制作文档',
+    '短视频商业内容与商品宣传的事实核对；优先抖音电商、视频号官方内容指南并区分适用场景'],
+  11: ['面向餐饮老板的小红书图文创作：使用真实菜品、门头照片与已确认品牌信息，安排首图和图片顺序',
+    '餐饮门店小红书标题、正文、话题标签、首条评论的具体写法，整理成可复制后由用户自行发布的内容',
+    '小红书官方社区规范与内容创作指南中的事实表达、商业内容标识；广告投放规则只用于广告场景'],
+});
+
+export function skillLearningPublicTopics(domain, idx) {
+  return domain === 'content' ? [...(CONTENT_PUBLIC_LEARNING_TOPICS[Number(idx)] || ['品牌内容策划与公开平台规则'])]
+    : ['餐饮门店经营管理、营销获客、客户服务与经营分析的公开方法', '餐饮行业官方规范、平台经营规则与可核验案例'];
+}
 // WebSearch(150s) + three controlled WebFetch batches(3*20s) + final model(300s)
 // still fit comfortably inside this boundary.  `updated_at` is refreshed by
 // every progress event, so only a genuinely abandoned queued/running run is
@@ -137,6 +161,17 @@ function normalizedEmployee(employee = {}) {
 
 export function buildSkillLearningPrompt(employeeInput, { today = new Date() } = {}) {
   const employee = normalizedEmployee(employeeInput);
+  const nativeContent = employee.domain === 'content' && [10, 11].includes(employee.idx);
+  const nativeWorkflow = employee.idx === 10
+    ? '当前工作流是餐饮文本脚本、真实参考图的图生视频分镜与镜头连续性、预设TTS配音、字幕和剪辑。提炼可直接用于这些步骤的方法；不把声音克隆、口型驱动、未接入模型（如Veo）或其他产品专有能力写成当前能力。'
+    : '当前工作流是根据餐饮真实菜品或门头照片及已确认品牌信息，生成小红书标题、正文、话题标签和首条评论，供用户复制后自行发布。只学习内容创作方法，不学习开发API、抓取逆向、外部脚本装配、商业代理商政策或招商协作路线。';
+  const nativeSourceGuidance = nativeContent ? [
+    '优先仍适用的官方原文、平台内容创作指南与有明确上下文的原始案例，不限最近三个月；规则变化核对发布或更新日期，长期有效方法不因发布时间较早而忽略。',
+    employee.idx === 10
+      ? '可从 help.aliyun.com、platform.minimaxi.com、help.runwayml.com、ffmpeg.org 等公开官方资料寻找创作方法；示例不是域名白名单，仍须实际搜索并回读正文。'
+      : '优先 xiaohongshu.com 的官方社区规范和创作指南；ad.xiaohongshu.com 聚光资料属于广告场景，不能泛化为自然笔记规则。域名仅作检索示例，仍须实际搜索并回读正文。',
+    '明确来源身份和适用场景：第三方博客、工具评测或销售教程不能当作官方文档、官方API或平台政策证据；广告规则注明广告适用范围。',
+  ] : [];
   const knownTitles = employee.existingSkills.map((skill) => skill.title);
   const knownDetails = employee.existingSkills.length
     ? employee.existingSkills.map((skill) => `- 【${skill.title}】${skill.detail}`).join("\n")
@@ -155,12 +190,28 @@ export function buildSkillLearningPrompt(employeeInput, { today = new Date() } =
     knownDetails,
     "",
     "根据应用受控WebFetch返回的公开网页正文，提炼3至6条新的技能卡。每条必须具体、可立即执行，并避开已掌握技能。",
+    ...(nativeContent ? [
+      nativeWorkflow,
+      ...nativeSourceGuidance,
+      '技能卡写可移植的具体创作步骤、适用条件与检查方法，不照抄某工具的销售话术或“让某工具生成”的教程；其他工具资料只提炼当前工作流能使用的方法。',
+      '不增加自动发布、矩阵账号运营、CRM回流、声音克隆等当前未提供的执行步骤；工具评测中的“整篇降AI味”等宣传不能代替具体的事实表达与编辑方法。',
+      '来源规则只作为注明场景的创作参考与优化建议，不新增让已有内容直接失败的硬性验收门。',
+    ] : []),
     "sourceTitle和sourceUrl必须逐字来自本次受控证据；不得引用只有搜索标题、没有受控网页正文的候选；不得编造来源、平台规则、价格或效果。",
     "只输出符合employee_skill_learning_result JSON Schema的对象，不输出Markdown、底稿、能力清单或向老板索取公开资料。",
   ].join("\n");
-  const user = `请为「${employee.name}」补充最近三个月公开出现的新方法论、平台规则变化、实用工具玩法和可执行技巧；只整理下方受控证据支持的新内容。`;
+  const user = nativeContent
+    ? `请为「${employee.name}」补充当前餐饮内容制作可使用的新方法；只整理下方受控证据支持的具体步骤，保留仍适用的官方原文方法并注明来源场景，不以新工具介绍替代技能。`
+    : `请为「${employee.name}」补充最近三个月公开出现的新方法论、平台规则变化、实用工具玩法和可执行技巧；只整理下方受控证据支持的新内容。`;
   const researchQuery = [
-    `检索「${employee.name}」岗位领域最近三个月的公开方法论、平台规则变化、工具玩法与案例。`,
+    nativeContent
+      ? '检索面向餐饮老板、可用于以下工作流的具体内容制作方法与官方创作指南：'
+      : '检索以下公开业务主题最近三个月的方法论、平台规则变化、工具玩法与案例：',
+    ...skillLearningPublicTopics(employee.domain, employee.idx).map(topic => `- ${topic}`),
+    ...nativeSourceGuidance,
+    ...(nativeContent ? [
+      '聚焦内容创作，不检索开发API、抓取逆向、工具装配、招商代理或商业伙伴政策；不以工具销售教程、自动发布/CRM集成或声音克隆作为学习目标。',
+    ] : []),
     "至少执行5次针对性WebSearch，优先官方产品文档、平台规则、权威机构与可回看的原始案例。",
     "只检索公开业务主题，不携带学员职责、内部岗位手册、现有技能详情、企业知识库或租户资料。",
   ].join("\n");
@@ -895,24 +946,25 @@ export async function startSkillLearningRun({
       generateFn: dependencies.generateFn,
     });
     const persisted = await persistSkills?.(result.skills, result);
+    const added = Number(persisted?.added ?? result.skills.length);
     const total = Number(persisted?.total ?? persisted?.skillsTotal ?? current.skillsBefore + result.skills.length);
     const settled = settleHoldFn(hold, {
       usage: result.providerAttempt.usage,
       model: result.providerAttempt.model || configuredModel,
       aiMode: "api",
-      note: `数字员工全网进修完成，新增${result.skills.length}条受控来源技能`,
+      note: `数字员工全网进修完成，新增${added}条受控来源技能`,
     });
     q.run(`UPDATE employee_skill_learning_runs SET
       status='completed',skills_added=?,skills_total=?,research_json=?,provider_attempt_json=?,
       result_json=?,charged_credits=?,cost_yuan=?,web_cost_usd=?,completed_at=datetime('now','localtime'),
       updated_at=datetime('now','localtime')
       WHERE tenant_id=? AND id=?`,
-    result.skills.length, total, JSON.stringify(result.research), JSON.stringify(result.providerAttempt),
+    added, total, JSON.stringify(result.research), JSON.stringify(result.providerAttempt),
     JSON.stringify({ skills: result.skills }), Number(settled?.credits || 0), Number(settled?.costYuan || 0),
     Number(result.research.costUsd || 0), tid, id);
     appendProgress(tid, id, {
       phase: "done",
-      message: `进修完成：新增${result.skills.length}条技能，技能库共${total}条`,
+      message: `进修完成：新增${added}条技能，技能库共${total}条`,
     });
     return getSkillLearningRun({ tenantId: tid, runId: id });
   } catch (error) {

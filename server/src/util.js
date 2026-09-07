@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { q, db } from './db.js';
 import { jwtSecretStrengthError } from './security-config.js';
 import { publish } from './engines/event-bus.js';
+import { testerAccount, testerRequestAllowed } from './engines/tester-access.js';
 
 export const SESSION_COOKIE = 'nanowork_session';
 const configuredSecret = String(process.env.JWT_SECRET || '');
@@ -155,7 +156,15 @@ export function authMiddleware(req, res, next) {
     return res.status(401).json({ error: '登录状态已失效，请重新登录' });
   }
   // 权限和租户以数据库实时状态为准，避免旧令牌在停用、调岗或角色变更后继续越权。
-  req.user = { ...payload, ...current, tenant_id: Number(current.tenant_id) || 1 };
+  const tester = testerAccount(current.id);
+  if (tester && tester.status !== 'approved') {
+    return res.status(403).json({ error: '测试员账号未开通或已暂停', code: 'TESTER_INACTIVE' });
+  }
+  if (!testerRequestAllowed(tester, req)) {
+    return res.status(403).json({ error: '测试员账号仅可使用个人体验工作台，不能访问企业功能或创建子账号', code: 'TESTER_PORTAL_ONLY' });
+  }
+  req.user = { ...payload, ...current, tenant_id: Number(current.tenant_id) || 1,
+    ...(tester ? { accountType: 'tester' } : {}) };
   next();
 }
 

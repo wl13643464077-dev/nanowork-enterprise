@@ -463,6 +463,7 @@ function makeApp() {
         const fixture = deterministicFixture(employeeIdx, task);
         const contract = getRestaurantOutputContract(employeeIdx);
         fixture.decision_context.problem = `${task.title}：第一份完整候选。`;
+        fixture.deliverables[contract.deliverableKeys[0]].summary += '第一份完整候选。';
         fixture.input_audit[contract.inputKeys[0]].evidence_refs = [];
         return {
           text: JSON.stringify(fixture),
@@ -2672,7 +2673,7 @@ test("demo报告优先会确定性改写平台不合规建议并在hard guard复
       }
       assert.equal(
         status.payload.status,
-        "已完成",
+        "待审阅",
         JSON.stringify(status.payload.failure || status.payload),
       );
       const stored = q.get(
@@ -2698,7 +2699,7 @@ test("demo报告优先会确定性改写平台不合规建议并在hard guard复
         "SELECT status,body FROM contents WHERE tenant_id=1 AND id=?",
         stored.output_id,
       );
-      assert.equal(content.status, "可使用");
+      assert.equal(content.status, "待审核");
       assert.match(
         content.body,
         /平台提供的合规测试工具或沙盒|纯线下意向页或问卷/u,
@@ -2718,7 +2719,7 @@ test("demo报告优先会确定性改写平台不合规建议并在hard guard复
   });
 });
 
-test("demo#47同型保留最新完整安全候选，length截断后交付报告并正常结算", async () => {
+test("demo#47同型首份完整安全候选立即交付，一次生成一次结算并待用户采纳", async () => {
   await withServer(async (base) => {
     const previousDataMode = String(
       q.get("SELECT data_mode FROM tenants WHERE id=1")?.data_mode || "live",
@@ -2761,7 +2762,7 @@ test("demo#47同型保留最新完整安全候选，length截断后交付报告�
       }
       assert.equal(
         status.payload.status,
-        "已完成",
+        "待审阅",
         JSON.stringify(status.payload.failure || status.payload),
       );
 
@@ -2783,29 +2784,22 @@ test("demo#47同型保留最新完整安全候选，length截断后交付报告�
         /evidence_refs|verification|actual_execution|next_action/u,
       );
       assert.deepEqual(evidence.providerAttempt.usage, {
-        inputTokens: 520,
-        outputTokens: 371,
+        inputTokens: 160,
+        outputTokens: 80,
       });
       assert.equal(
         evidence.outputContract.providerAttempts.length,
-        3,
+        1,
       );
-      assert.equal(
-        evidence.outputContract.providerAttempts[2].finishReason,
-        "length",
-      );
-      assert.equal(
-        evidence.outputContract.providerAttempts[1].canonicalization.changed,
-        true,
-      );
+      assert.equal(evidence.outputContract.qualityReview.requiresUserDecision, true);
+      assert.equal(q.get("SELECT COUNT(*) n FROM credit_holds WHERE tenant_id=1 AND ref_type='agent_task' AND ref_id=?", dispatched.payload.taskId).n, 1);
       const content = q.get(
         "SELECT status,ai_mode,body FROM contents WHERE tenant_id=1 AND id=?",
         stored.output_id,
       );
-      assert.equal(content.status, "可使用");
+      assert.equal(content.status, "待审核");
       assert.equal(content.ai_mode, "api");
-      assert.match(content.body, /第二份完整候选已交付可读业务分析/u);
-      assert.doesNotMatch(content.body, /第一份完整候选/u);
+      assert.match(content.body, /第一份完整候选/u);
       assert.match(content.body, /## 决策建议与置信度/u);
       assert.doesNotMatch(content.body, /^\s*\{/u);
       assert.equal(
@@ -2814,7 +2808,7 @@ test("demo#47同型保留最新完整安全候选，length截断后交付报告�
           WHERE tenant_id=1 AND target_type='content' AND target_id=?`,
           stored.output_id,
         ).n,
-        0,
+        1,
       );
       const hold = q.get(
         `SELECT status,settled_credits FROM credit_holds
@@ -3968,7 +3962,7 @@ test("实际用量若意外超过预授权则保留hold待对账，不静默补�
       if (row?.status !== "生成中") break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    assert.equal(row.status, "失败");
+    assert.equal(row.status, "待审阅");
     assert.ok(Number(row.output_id) > 0);
     const hold = q.get(
       `SELECT id,log_id,status,held_credits,settled_credits FROM credit_holds
@@ -3988,9 +3982,9 @@ test("实际用量若意外超过预授权则保留hold待对账，不静默补�
       base,
       `/marshals/tasks/${dispatched.payload.taskId}/status`,
     );
-    assert.equal(status.payload.presentationKey, "execution_failed");
-    assert.equal(status.payload.displayStatus, "失败需处理（执行异常）");
-    assert.equal(status.payload.status, "失败");
+    assert.equal(status.payload.presentationKey, "business_blocked");
+    assert.equal(status.payload.displayStatus, "业务暂不可采用（待账务对账）");
+    assert.equal(status.payload.status, "待审阅");
     assert.equal(status.payload.reviewReady, false);
   });
 });
@@ -4054,7 +4048,8 @@ test("真实API产出缺少正Token时在业务落库前硬阻断并全额释放
       "SELECT ai_mode,credits FROM credit_logs WHERE tenant_id=1 AND id=?",
       hold.log_id,
     );
-    assert.equal(log.ai_mode, "api");
+    // 最终失败且无成果：账本记为 failed、0 积分，用户余额全额退回。
+    assert.equal(log.ai_mode, "failed");
     assert.equal(Number(log.credits), 0);
 
     const detail = await jsonCall(
@@ -4068,7 +4063,7 @@ test("真实API产出缺少正Token时在业务落库前硬阻断并全额释放
   });
 });
 
-test("已驳回任务详情统一使用rework_required并明确要求重新派活", async () => {
+test("不采纳是正常终态，原稿保留且不要求返工或重新派活", async () => {
   const previousRouting = getTenantConfig("approval_routing_policy", null, 1);
   setTenantConfig(
     "approval_routing_policy",
@@ -4129,16 +4124,17 @@ test("已驳回任务详情统一使用rework_required并明确要求重新派�
         `/marshals/tasks/${dispatched.payload.taskId}/status`,
       );
       assert.equal(detail.payload.status, "已驳回");
-      assert.equal(detail.payload.presentationKey, "rework_required");
-      assert.equal(detail.payload.reworkRequired, true);
+      assert.equal(detail.payload.presentationKey, "rejected");
+      assert.equal(detail.payload.reworkRequired, false);
       assert.equal(
         detail.payload.displayStatus,
-        "失败需返工（人工审阅未通过）",
+        "未采纳（原稿已保留）",
       );
-      assert.match(detail.payload.nextAction, /驳回意见.*重新派活/u);
+      assert.match(detail.payload.nextAction, /原稿.*已保留/u);
+      assert.doesNotMatch(detail.payload.nextAction, /返工|重新派活/u);
       assert.match(
         detail.payload.reviewBlockedReason,
-        /不能在原任务继续审阅.*重新派活/u,
+        /不会自动重新生成/u,
       );
     });
   } finally {

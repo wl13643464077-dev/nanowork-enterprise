@@ -5,7 +5,9 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 
 const CONFIG_SCHEMA_VERSION = 1;
-const DEFAULT_SERVER_URL = "http://127.0.0.1:3107";
+// Fresh installs connect to the public service once its domain/HTTPS is live.
+// Existing user-selected enterprise or local addresses remain unchanged.
+const DEFAULT_SERVER_URL = "https://xn--work-9r3ko5i.cn";
 
 class ServerUrlError extends Error {
   constructor(message) {

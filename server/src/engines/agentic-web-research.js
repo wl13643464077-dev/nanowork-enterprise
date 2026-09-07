@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getConfig } from '../db.js';
-import { yunwuApiKey } from './yunwu.js';
+import { yunwuApiKey, provider360Active } from './yunwu.js';
 import {
   tinyfishAvailable,
   tinyfishFetchPages,
@@ -61,6 +61,10 @@ export function resolveAgenticResearchCli() {
 }
 
 function claudeGatewayReadiness() {
+  if (provider360Active()) return {
+    ready: false, cliReady: false, credentialReady: false, cliPath: null,
+    model: null, provider: '360通道未启用Claude联网接口',
+  };
   const cliPath = resolveAgenticResearchCli();
   const apiKey = yunwuApiKey();
   return {

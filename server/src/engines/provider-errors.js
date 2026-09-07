@@ -13,6 +13,7 @@ function upstreamText(payload) {
 
 function providerReason(status, payload) {
   const raw = upstreamText(payload);
+  if (String(payload?.error?.code) === '1001' && /model.*模型不存在或未授权/i.test(raw)) return 'model_unavailable';
   if (status === 401 || status === 403 || /invalid token|unauthori[sz]ed|authentication|鉴权/i.test(raw)) return 'auth';
   if (status === 429 || /rate.?limit|too many requests|quota|insufficient balance|额度不足/i.test(raw)) return 'rate_limit';
   if (/audio duration is invalid/i.test(raw)) return 'audio_duration';
@@ -38,6 +39,8 @@ function publicFailure(reason, service) {
       return { status: 400, message: `${service}不支持当前图片尺寸，请改用已接入规格` };
     case 'unsupported_model':
       return { status: 400, message: `${service}暂不支持当前模型，请切换已接入模型` };
+    case 'model_unavailable':
+      return { status: 503, message: `${service}所用模型尚未向本账号开放（供应商返回“模型不存在或未授权”），需由平台联系供应商开通后才能生成；已生成的文字保留，未出图部分不收费` };
     case 'not_found':
       return { status: 502, message: `${service}任务接口暂不可用，请联系管理员检查通道配置` };
     case 'invalid_request':

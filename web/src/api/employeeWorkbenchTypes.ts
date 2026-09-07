@@ -284,6 +284,7 @@ export type EmployeeRuntimeTask = {
       valid?: boolean;
       errors?: string[];
       warnings?: string[];
+      qualityReview?: { requiresUserDecision?: boolean; message?: string; warnings?: string[] };
       qualityMode?: 'strict' | 'advisory';
       contractId?: string | null;
       repair?: Record<string, unknown> | null;
@@ -461,6 +462,7 @@ export type InternalProfileLeakage = {
 export type EmployeeRunPresentationKey =
   | 'generating'
   | 'review_pending'
+  | 'rejected'
   | 'adopted'
   | 'business_blocked'
   | 'rework_required'
@@ -539,6 +541,8 @@ export type EmployeeWorkbenchRun = {
   contract?: {
     valid: boolean;
     errors: string[];
+    warnings?: string[];
+    qualityReview?: { requiresUserDecision?: boolean; message?: string; warnings?: string[] };
     artifacts: Array<{
       kind?: string;
       primary?: boolean;

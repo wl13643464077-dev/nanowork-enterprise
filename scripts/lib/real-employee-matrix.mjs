@@ -428,6 +428,10 @@ export function summarizeWebResearchEvidence(web = null) {
       attempted: channel?.attempted === true,
       ok: channel?.ok === true,
       externalCall: evidence.externalCall === true,
+      resultCount: Array.isArray(channel?.results) ? channel.results.length : 0,
+      citedUrlCount: Array.isArray(channel?.results)
+        ? channel.results.filter((item) => /^https?:\/\//iu.test(String(item?.url || "").trim())).length
+        : 0,
       usage: { inputTokens, outputTokens, cacheReadInputTokens },
       costUsd: rawCostUsd == null ? null : roundedYuan(rawCostUsd),
     };
@@ -911,6 +915,12 @@ function providerBudgetCount(value) {
  */
 export function projectProviderBudget(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const requestedModel = providerModel(value.requestedModel);
+  const effectiveModel = providerModel(value.effectiveModel);
+  const rawFailover = value.modelFailover && typeof value.modelFailover === "object" ? value.modelFailover : null;
+  const modelFailover = rawFailover && providerModel(rawFailover.from) && providerModel(rawFailover.to)
+    ? { from: providerModel(rawFailover.from), to: providerModel(rawFailover.to), reason: providerIdentifier(rawFailover.reason), attempt: providerBudgetCount(rawFailover.attempt) }
+    : null;
   return {
     candidateLimit: providerBudgetCount(value.candidateLimit),
     transportFailureLimit: providerBudgetCount(value.transportFailureLimit),
@@ -920,6 +930,9 @@ export function projectProviderBudget(value) {
     transportFailures: providerBudgetCount(value.transportFailures),
     totalAttempts: providerBudgetCount(value.totalAttempts),
     stoppedReason: providerIdentifier(value.stoppedReason),
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(effectiveModel ? { effectiveModel } : {}),
+    ...(modelFailover ? { modelFailover } : {}),
   };
 }
 
@@ -981,11 +994,20 @@ export function projectProviderAttempts(value) {
         : typeof rawAttempt?.valid === "boolean"
           ? rawAttempt.valid
           : null;
+    const requestedModel = providerModel(rawAttempt?.requestedModel);
+    const effectiveModel = providerModel(rawAttempt?.effectiveModel) || providerModel(rawAttempt?.model);
+    const rawFailover = rawAttempt?.modelFailover && typeof rawAttempt.modelFailover === "object" ? rawAttempt.modelFailover : null;
+    const modelFailover = rawFailover && providerModel(rawFailover.from) && providerModel(rawFailover.to)
+      ? { from: providerModel(rawFailover.from), to: providerModel(rawFailover.to), reason: providerIdentifier(rawFailover.reason), attempt: providerBudgetCount(rawFailover.attempt) }
+      : null;
     return {
       number,
       phase,
       mode,
       model: providerModel(rawAttempt?.model),
+      ...(requestedModel ? { requestedModel } : {}),
+      ...(effectiveModel ? { effectiveModel } : {}),
+      ...(modelFailover ? { modelFailover } : {}),
       apiObtained:
         typeof rawAttempt?.apiObtained === "boolean"
           ? rawAttempt.apiObtained
@@ -1273,12 +1295,33 @@ export function validateAuthoritativeBillingEvidence(row = {}) {
   ) {
     errors.push("hold/log的feature/kind不一致");
   }
-  if (
-    !text(row.billingModel) ||
-    row.billingModel !== row.billingHoldModel ||
-    row.billingModel !== row.creditLogModel
-  ) {
-    errors.push("hold/log的model不一致");
+  if (!text(row.billingModel) || row.billingModel !== row.creditLogModel) {
+    errors.push("credit log模型缺失或不一致");
+  }
+  if (text(row.billingHoldModel) && row.billingHoldModel !== row.billingModel) {
+    const requested = String(row.billingHoldModel).trim();
+    const actual = String(row.billingModel).trim();
+    const attempts = Array.isArray(row.providerAttempts) ? row.providerAttempts : [];
+    const transition = row.modelFailover || row.providerAttempt?.modelFailover || null;
+    const legalFailover = transition?.from === requested && transition?.to === actual
+      && Number.isSafeInteger(Number(transition?.attempt))
+      && Number(transition.attempt) >= 2
+      && attempts.length >= Number(transition.attempt)
+      && attempts.slice(0, Number(transition.attempt) - 1).every((item) =>
+        item?.effectiveModel === requested && item?.apiObtained !== true
+        && Number(item?.usage?.inputTokens || 0) + Number(item?.usage?.outputTokens || 0) === 0
+        && item?.failure?.retryable === true)
+      && attempts.slice(Number(transition.attempt) - 1).some((item) =>
+        item?.effectiveModel === actual && item?.modelFailover?.from === requested
+        && item?.modelFailover?.to === actual
+        && Number(item?.usage?.inputTokens || 0) > 0
+        && Number(item?.usage?.outputTokens || 0) > 0);
+    const override = row.acceptanceModelOverride;
+    const legalAcceptanceOverride = override &&
+      override.requested === requested &&
+      override.effective === actual &&
+      override.reason === "acceptance_stability_override";
+    if (!legalFailover && !legalAcceptanceOverride) errors.push("hold/log的model不一致且缺少合法切换证据");
   }
   if (
     Number(row.settledCredits) !== Number(row.chargedCredits) ||
@@ -1293,7 +1336,7 @@ export function validateAuthoritativeBillingEvidence(row = {}) {
     row.billingExpectedSettlementBalance,
   );
   const expectedCurrentBalance = Number(row.billingExpectedCurrentBalance);
-  if (
+  const balanceMismatch =
     !Number.isFinite(balanceBefore) ||
     !Number.isFinite(balanceAfter) ||
     !Number.isFinite(tenantBalance) ||
@@ -1303,7 +1346,16 @@ export function validateAuthoritativeBillingEvidence(row = {}) {
     Number(row.billingBalanceWindowAmbiguousTimestampCount) !== 0 ||
     Number(row.billingBalanceWindowTargetCount) !== 1 ||
     balanceAfter !== expectedSettlementBalance ||
-    tenantBalance !== expectedCurrentBalance
+    tenantBalance !== expectedCurrentBalance;
+  // 并发派活时，另一个任务可能刚完成占扣事务、但尚未完成结算；
+  // 此刻读取到的租户余额是一个合法的中间窗口，不能把瞬时差额误判为
+  // 本任务账务损坏。批次结束后由 reconcile-only 只读重建同一窗口，
+  // 再用最终余额做闭合验收。
+  const concurrentSettlementWindow =
+    Number(row.billingBalanceWindowConcurrentHoldCount) > 0 &&
+    String(row.billingState || "") === "settled";
+  if (
+    balanceMismatch && !concurrentSettlementWindow
   ) {
     errors.push(
       "租户余额未与派活后全部hold的并发净占用/结算窗口闭合",
@@ -1510,7 +1562,7 @@ export function classifyAttempt(row) {
   // preserving the distinction between provider usage and customer billing.
   const qualityGateFailure =
     row.contractValid === false ||
-    row.businessFlowStatus === "quality_failed" ||
+    (row.businessFlowStatus === "quality_failed" && row.unifiedGate?.pass !== true) ||
     (row.generationStatus === "失败" &&
       Array.isArray(row.contractErrors) &&
       row.contractErrors.length > 0);
@@ -1528,6 +1580,7 @@ export function classifyAttempt(row) {
   const deliveryBilling = validateBusinessDeliveryBillingEvidence(row);
   const unifiedGatePresent = row.unifiedGate && typeof row.unifiedGate === "object";
   const unifiedGatePass = unifiedGatePresent && row.unifiedGate.pass === true;
+  const capabilityOnly = row.domain === "restaurant" && row.acceptanceKind === "capability" && unifiedGatePresent;
   if (unifiedGatePresent && !unifiedGatePass) {
     const failed = Array.isArray(row.unifiedGate.failedChecks)
       ? row.unifiedGate.failedChecks.join(",")
@@ -1617,7 +1670,7 @@ export function classifyAttempt(row) {
     if (row.businessFlowTerminal !== true || row.businessFlowComplete !== true) {
       reasons.push("质量门失败业务流未收敛到失败终态");
     }
-  } else if (row.domain === "restaurant") {
+  } else if (row.domain === "restaurant" && !capabilityOnly) {
     const autoAdoptedWithoutApproval =
       row.operationalReady !== false &&
       unifiedGatePass &&
@@ -1667,14 +1720,18 @@ export function classifyAttempt(row) {
         );
     }
   }
-  if (!qualityGateFailure) {
+  if (!qualityGateFailure && !capabilityOnly) {
     const expectedReviewDecision = operationalHold ? "reject" : "adopt";
     const autoAdoptedWithoutApproval =
-      row.domain === "restaurant" &&
       !operationalHold &&
       unifiedGatePass &&
-      Number(row.approvalDelta) === 0;
-    if (!autoAdoptedWithoutApproval && row.reviewDecision !== expectedReviewDecision) {
+      Number(row.approvalDelta) === 0 &&
+      ((row.domain === "restaurant" && row.operationalReady !== false) ||
+        (row.domain === "content" && row.reviewDecision === "auto_adopt"));
+    if (
+      !autoAdoptedWithoutApproval &&
+      row.reviewDecision !== expectedReviewDecision
+    ) {
       reasons.push(
         operationalHold
           ? `QA能力验收结论=${row.reviewDecision || "missing"}，业务证据未齐时必须reject以阻止生产采纳`
@@ -1701,7 +1758,7 @@ export function classifyAttempt(row) {
     reasons.push("缺少业务ID");
   if (row.externalPublish !== false)
     reasons.push("检测到或未能排除外部发布，本验收禁止对外发布");
-  if (!qualityGateFailure) {
+  if (!qualityGateFailure && !capabilityOnly) {
     const acceptedFlowStatuses = operationalHold
       ? ["review_rejected"]
       : ["approved"];
@@ -1725,11 +1782,11 @@ export function classifyAttempt(row) {
     ...evidence,
     pass,
     capabilityPass: pass,
-    businessProductionPass: pass && !operationalHold,
+    businessProductionPass: pass && !operationalHold && !capabilityOnly,
     capabilityVerdict: pass
       ? operationalHold
         ? "PASS_CAPABILITY_OPERATIONALLY_BLOCKED"
-        : "PASS_CAPABILITY_AND_BUSINESS"
+        : capabilityOnly ? "PASS_CAPABILITY_ONLY" : "PASS_CAPABILITY_AND_BUSINESS"
       : "FAIL_CAPABILITY",
     verdict: pass ? "PASS_REAL_API" : "FAIL_REAL_API",
     failureReasons: reasons,
@@ -2448,30 +2505,93 @@ export function buildRestaurantDispatch(profile, nonce, options = {}) {
       ...taskCompleteness.operationalBlockReasons,
     ]),
   ];
+  const staticRequirementLines = [
+    `任务唯一标识：${nonce}`,
+    `执行岗位：${employee.name || employee.idx}；岗位职责：${employee.duty || "以服务端完整岗位档案为准"}。`,
+    `老板真实需求：${acceptanceDemand}`,
+    "公开信息：真实联网/API核验；不反问老板，无法核验项标未知并给补查动作。",
+    "隔离QA真实云API验收：按岗位契约交付一个主产物。",
+    "业务对象：纳米Work验收数据集·门店A。",
+    "固定事实：营业额100000元、订单2000单、食材成本35000元、人工成本22000元、投诉12次；其余不补造数字。",
+    "验收截止时间：2026-08-07T18:00:00；所有行动项必须使用这一明确截止时间或更早的可验证子节点。",
+    "岗位材料：",
+  ];
+  const requirementTailLines = [
+    "证据规则：主产物必须在evidence.source或evidence.finding中引用至少一个【材料 E-岗位号-序号】。",
+    desiredOutputs.length
+      ? `期望交付：${desiredOutputs.join("；")}。`
+      : "期望交付：按岗位机器契约交付完整、可审阅主产物。",
+    "边界：仅生成隔离QA草案；缺属地/平台/私有记录不得采纳或外部执行，不得声称已发布、采购、付款、签约或改系统。",
+  ];
+  const materialLines = materials.length
+    ? materials
+    : [
+        "1. 当前没有额外岗位材料；必须明确列出待补证据并给出可执行的收集方案。",
+      ];
+  const buildRequirement = (lines, tail = requirementTailLines) =>
+    [...staticRequirementLines, ...lines, ...tail].join("\n");
+  let requirement = buildRequirement(materialLines);
+  if (requirement.length > 8000) {
+    // 只压缩请求中重复的事实字段，不截断 JSON 行。完整证据仍写入
+    // 隔离快照，验证器可在本地用同一事实重算 tags/dimensions/门禁。
+    const compactLines = requiredInputs.map((item, index) => {
+      const evidence = materialEvidence[index] || {};
+      const sourceFacts = evidence?.fields?.facts || {};
+      const facts = {};
+      for (const spec of restaurantInputFactSpecs(item)) {
+        const source = sourceFacts[spec.id];
+        if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+        const requiredKeys = new Set(spec.required || []);
+        facts[spec.id] = Object.fromEntries(
+          Object.entries(source)
+            .filter(([key, value]) => requiredKeys.has(key) || Array.isArray(value))
+            .map(([key, value]) => [
+              key,
+              Array.isArray(value)
+                ? value.slice(0, 1)
+                : typeof value === "string"
+                  ? value.slice(0, 100)
+                  : value,
+            ]),
+        );
+      }
+      const compactEvidence = {
+        schema: evidence.schema,
+        recordId: evidence.recordId,
+        inputHash: evidence.inputHash,
+        mapping: evidence.mapping,
+        tags: evidence.tags,
+        dimensions: evidence.dimensions,
+        fields: { rid: evidence?.fields?.rid, facts },
+        qaCapabilityRunnable: evidence.qaCapabilityRunnable,
+        operationalReady: evidence.operationalReady,
+        regulationBlockers: evidence.regulationBlockers || [],
+      };
+      return (
+        `${index + 1}. 【材料 E-${employee.idx}-${index + 1}】名称=${item}；` +
+        `记录批次=E-${employee.idx}-${index + 1}；证据编号:E-${employee.idx}-${index + 1}-R1；` +
+        `正文=${JSON.stringify(compactEvidence)}`
+      );
+    });
+    requirement = buildRequirement(compactLines);
+    if (process.env.DEBUG_REQUIREMENT_COMPRESSION === "1") {
+      console.error(JSON.stringify({
+        idx: employee.idx,
+        full: buildRequirement(materialLines).length,
+        compact: requirement.length,
+        static: staticRequirementLines.join("\n").length,
+        materials: compactLines.map((line) => line.length),
+        tail: requirementTailLines.join("\n").length,
+      }));
+    }
+  }
+  if (requirement.length > 8000) {
+    throw new Error(`验收输入压缩后仍超过派活上限：${requirement.length}字`);
+  }
   return {
     title: `[真实API逐岗验收] ${primaryTask}`.slice(0, 100),
     type: profile?.dispatch?.defaultTaskType || "执行方案",
-    requirement: [
-      `任务唯一标识：${nonce}`,
-      `执行岗位：${employee.name || employee.idx}；岗位职责：${employee.duty || "以服务端完整岗位档案为准"}。`,
-      `老板真实需求：${acceptanceDemand}`,
-      "公开信息：真实联网/API核验；不反问老板，无法核验项标未知并给补查动作。",
-      "隔离QA真实云API验收：按岗位契约交付一个主产物。",
-      "业务对象：纳米Work验收数据集·门店A。",
-      "统一已知事实：验收期营业额100000元，订单2000单，食材成本35000元，人工成本22000元，顾客投诉12次；除这些事实及下列材料外不得自行补造数字。",
-      "验收截止时间：2026-08-07T18:00:00；所有行动项必须使用这一明确截止时间或更早的可验证子节点。",
-      "岗位材料：",
-      ...(materials.length
-        ? materials
-        : [
-            "1. 当前没有额外岗位材料；必须明确列出待补证据并给出可执行的收集方案。",
-          ]),
-      "证据规则：主交付物必须在evidence.source或evidence.finding中引用至少一个【材料 E-岗位号-序号】；未引用不通过。",
-      desiredOutputs.length
-        ? `期望交付：${desiredOutputs.join("；")}。`
-        : "期望交付：按岗位机器契约交付完整、可审阅主产物。",
-      "边界：本次只能生成隔离QA草案/差距清单；属地、平台版本或私有记录未齐时禁止业务采纳和外部执行。不得声称已发布/采购/付款/签约/调整账号，不得泄露内部配置。",
-    ].join("\n"),
+    requirement,
     dueAt: "2026-08-07T18:00:00",
     qaCapabilityRunnable: qaBlockedEvidence.length === 0,
     operationalReady:
@@ -2730,9 +2850,18 @@ function capabilityEntries(profile, idx) {
 }
 
 function skillEntries(profile, idx) {
+  // 内容岗位的新运行快照会把技能目录放在 canonicalProfile.skills
+  // （required/catalog），而旧工作台响应使用 skillLibrary
+  // （required/historical）。两者是同一份锁定目录，验收时统一投影，
+  // 避免把“摘要快照没有重复技能数组”误判为技能未注入。
   const library = nonEmptyRecord(profile?.skillLibrary)
     ? profile.skillLibrary
-    : {};
+    : nonEmptyRecord(profile?.skills)
+      ? {
+          required: profile.skills.required,
+          historical: profile.skills.historical || profile.skills.catalog,
+        }
+      : {};
   const required = Array.isArray(library.required) ? library.required : [];
   const historical = Array.isArray(library.historical)
     ? library.historical
@@ -3289,7 +3418,7 @@ function capabilityInputs(idx, { pipeline = false, lineage = null } = {}) {
       "发布记录（仅验收数据集内）：内容ID=NW-QA-PUB-20260730-01；平台字段=小红书；数据集记录时间=2026-07-30 10:00；该记录不声称已在任何外部平台发布。",
       "真实指标（验收数据集采集值）：阅读量842，收藏量37，评论量12；数据批次=METRIC-20260731-A，不外推为真实经营成效。",
       "历史基线（同一验收数据集）：阅读量700、收藏量30、评论量10。业务目标：验证“证据链清单”结构是否便于收藏。",
-      "评论反馈：12条中4条追问领料表，3条追问盘点频率；异常情况：无外部投放数据，不得推断平台算法或自然流量权重。",
+      "评论反馈：12条中4条追问领料表，3条追问盘点频率；异常情况：无外部投放数据。只报告任务书给出的原始计数，不计算或填写任何收藏率、评论率、百分点、转化率等派生指标（统一写“待补历史基线/待核算”）；不得推断平台算法、自然流量权重或规则。",
     ],
   };
   return inputs[idx] || [];
@@ -3308,10 +3437,16 @@ export function buildContentDispatch(
   ).trim();
   const acceptanceDemand =
     explicitDemand ||
-    `请围绕${employee.name || `内容员工${idx}`}本次岗位任务核验公开信息并给出下一步可执行的业务结论。`;
+    (idx >= 0 && idx <= 2
+      ? `请围绕${employee.name || `内容员工${idx}`}本次岗位任务核验公开信息并给出下一步可执行的业务结论。`
+      : `请围绕${employee.name || `内容员工${idx}`}本次岗位任务形成可直接使用的岗位交付物，并给出下一步可执行的业务结论。`);
+  // 只有趋势/情报/拆解前三个信息型工位必须联网；撰稿、配图、封面、
+  // 演绎、发布包和复盘岗位的真实能力验收以已给材料与岗位产物为准，
+  // 不应被“无联网快照”误判为失败。
+  const publicInfoRequired = idx >= 0 && idx <= 2;
   const acceptanceGatePlan = buildUnifiedAcceptancePlan({
     demand: acceptanceDemand,
-    publicInfoRequired: true,
+    publicInfoRequired,
   });
   return {
     title:
@@ -3324,7 +3459,9 @@ export function buildContentDispatch(
       `任务唯一标识：${nonce}`,
       `验收类型：${pipeline ? "content_pipeline" : "content_capability"}；执行岗位：${employee.name || idx}。`,
       `老板真实需求：${acceptanceDemand}`,
-      "公开信息：真实联网/API核验；不反问老板，无法核验项标未知并给补查动作。",
+      publicInfoRequired
+        ? "公开信息：真实联网/API核验；不反问老板，无法核验项标未知并给补查动作。"
+        : "公开事实边界：仅使用本次输入与已给材料；没有受控来源的内容明确标未知或待确认，不补造外部事实。",
       "必须使用真实云模型并严格按本岗位最终JSON输出契约交付完整主产物；补料说明、框架或非最终交付不算完成。",
       ...CONTENT_DATASET_FACTS,
       "本岗完整输入：",
@@ -3362,8 +3499,13 @@ export function validateContentDispatchEvidence(
   } else if (acceptanceDemand && demandMatch[1].trim() !== acceptanceDemand) {
     errors.push("内容派活中的老板真实需求与dispatch.acceptanceDemand不一致");
   }
-  if (!requirement.includes("公开信息：真实联网/API核验；不反问老板")) {
-    errors.push("统一验收门禁缺少公开信息自行联网且不得反问老板边界");
+  const publicInfoRequired = Number(idx) >= 0 && Number(idx) <= 2;
+  if (publicInfoRequired) {
+    if (!requirement.includes("公开信息：真实联网/API核验；不反问老板")) {
+      errors.push("统一验收门禁缺少公开信息自行联网且不得反问老板边界");
+    }
+  } else if (!requirement.includes("公开事实边界：仅使用本次输入与已给材料")) {
+    errors.push("统一验收门禁缺少非联网岗位的事实边界");
   }
   for (const marker of CONTENT_REQUIRED_MARKERS[Number(idx)] || []) {
     if (!requirement.includes(marker))

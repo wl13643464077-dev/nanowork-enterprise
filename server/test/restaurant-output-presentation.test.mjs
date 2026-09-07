@@ -374,7 +374,7 @@ test("普通 Markdown 与无法识别的 JSON 必须原样返回，双层 JSON �
   assert.match(rendered, /#### 核心判断/u);
 });
 
-test("员工工作台用分层报告驱动老板速览、折叠全文与完整下载，不再展示 raw JSON", () => {
+test("员工工作台默认展开完整报告，方法与审计可展开，下载保留全文而非 raw JSON", () => {
   const workbench = fs.readFileSync(
     path.join(repoRoot, "web/src/components/EmployeeWorkbench.tsx"),
     "utf8",
@@ -392,10 +392,17 @@ test("员工工作台用分层报告驱动老板速览、折叠全文与完整�
   assert.match(workbench, /restaurantReportView\.inputMethodMarkdown/u);
   assert.match(workbench, /restaurantReportView\.governanceMarkdown/u);
   assert.match(workbench, /restaurantReportView\.technicalAppendixMarkdown/u);
-  assert.match(workbench, /<strong>岗位完整成果<\/strong>/u);
+  assert.match(
+    workbench,
+    /<section className="ewb-run-output ewb-report-full" aria-label="完整报告">\s*<Markdown content=\{localizeOperationalStatus\(restaurantReportView\.deliverablesMarkdown\)\} \/>\s*<\/section>/u,
+  );
   assert.match(workbench, /<strong>输入与方法执行记录<\/strong>/u);
   assert.match(workbench, /<strong>技术附录<\/strong>/u);
-  assert.match(workbench, /<strong>运行与交付记录<\/strong>/u);
+  assert.match(
+    workbench,
+    /<details className="ewb-report-details is-operational">[\s\S]*?<strong>查看详情<\/strong>[\s\S]*?<EmployeeResearchPlan evidence=\{restaurantTask\.executionSnapshot\?\.webEvidence\} \/>[\s\S]*?<\/details>/u,
+  );
+  assert.match(workbench, /<strong>本次费用<\/strong>/u);
   assert.doesNotMatch(
     workbench,
     /<Markdown content=\{localizeOperationalStatus\(restaurantOutputBody\)\}/u,

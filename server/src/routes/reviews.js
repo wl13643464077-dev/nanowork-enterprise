@@ -1,10 +1,11 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { curTenant, q } from '../db.js';
 import { logOp, pageParams, requireRole } from '../util.js';
 import { generate } from '../engines/ai.js';
 import { textModelFor, yunwuAvailable } from '../engines/yunwu.js';
 import { assertRealAiOutput } from '../engines/ai-delivery-status.js';
-import {
+import { refundHold,
   estimateCallCredits,
   holdCredits,
   precheckByRole,
@@ -300,6 +301,8 @@ r.post('/:id/ai-reply', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {

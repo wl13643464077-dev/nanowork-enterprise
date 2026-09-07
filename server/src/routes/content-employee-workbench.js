@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Router } from "express";
+import { buildTaskFeedbackContext } from "../engines/task-feedback.js";
 
 import {
   curTenant,
@@ -28,6 +29,7 @@ import {
   validateStructureCards,
   retrospectiveRuntimeFieldPromptLines,
 } from "../engines/content-output-contract.js";
+import { outputQualityReview, outputWarningText } from "../engines/output-quality-advice.js";
 import {
   insertBenchmarkCards, listBenchmarkCards, markBenchmarkCardVerified, softDeleteBenchmarkCard,
 } from "../engines/content-benchmark-cards.js";
@@ -83,7 +85,7 @@ import {
   listSkillLearningRuns,
   startSkillLearningRun,
 } from "../engines/employee-skill-learning.js";
-import { routing, textModelFor, yunwuAvailable } from "../engines/yunwu.js";
+import { routing, textModelFor, yunwuAvailable, isAllowedModel, allowedModelPreference, allowedModelCatalog } from "../engines/yunwu.js";
 import {
   attachmentRefsForStorage,
   resolveRequestedAttachments,
@@ -435,8 +437,8 @@ function cleanText(value, max, label, { required = false } = {}) {
 }
 
 function employeeIdx(value) {
-  if (!/^(?:0|[1-9]|10)$/.test(String(value))) {
-    throw new WorkbenchRouteError("内容员工编号必须是0-10之间的整数");
+  if (!/^(?:0|[1-9]|10|11)$/.test(String(value))) {
+    throw new WorkbenchRouteError("内容员工编号必须是0-11之间的整数");
   }
   const idx = Number(value);
   if (!contentEmployeeByIdx(idx)) {
@@ -470,6 +472,7 @@ function assertReviewer(user) {
 
 function permissionsFor(user, crewIdx = null) {
   const configAdmin = CONFIG_ADMIN_ROLES.has(user?.role);
+  const supportsGenericConfig = crewIdx === null || Number(crewIdx) < 10;
   const reviewer = REVIEWER_ROLES.has(user?.role);
   // 派活权限走租户策略（员工级覆盖 > 分部级规则 > 默认放行）；无 idx 上下文时保持历史行为
   const dispatchAllowed =
@@ -492,9 +495,10 @@ function permissionsFor(user, crewIdx = null) {
     canViewWorkConfig: configAdmin,
     canViewJobProfile: configAdmin,
     canViewRuntimeBindings: configAdmin,
-    canEditPrompt: configAdmin,
-    canEditConfig: configAdmin,
+    canEditPrompt: configAdmin && supportsGenericConfig,
+    canEditConfig: configAdmin && supportsGenericConfig,
     canEditSkills: configAdmin,
+    canLearn: configAdmin,
   };
 }
 
@@ -718,6 +722,11 @@ function normalizeConfigPatch(value, idx = null) {
     output.imageModel = cleanText(value.imageModel, 100, "imageModel");
   if (Object.hasOwn(value, "videoModel"))
     output.videoModel = cleanText(value.videoModel, 100, "videoModel");
+  for (const [field, kind] of [['textModel', 'text'], ['imageModel', 'image'], ['videoModel', 'video']]) {
+    if (output[field] && output[field] !== 'inherit' && !isAllowedModel(kind, output[field])) {
+      throw new WorkbenchRouteError(`${field}必须从平台已启用模型清单中选择`);
+    }
+  }
   if (Object.hasOwn(value, "outputLength")) {
     if (!OUTPUT_LENGTHS.has(value.outputLength))
       throw new WorkbenchRouteError("outputLength必须是lite、std或full");
@@ -762,6 +771,9 @@ function savedConfig(row, idx = null) {
     );
   }
   try {
+    for (const [field, kind] of [['textModel', 'text'], ['imageModel', 'image'], ['videoModel', 'video']]) {
+      if (Object.hasOwn(value, field)) value[field] = allowedModelPreference(kind, value[field], '');
+    }
     return normalizeConfigPatch(value, idx);
   } catch (error) {
     throw new WorkbenchRouteError(
@@ -817,10 +829,14 @@ function defaultConfig(profile) {
 }
 
 function effectiveConfig(profile, row) {
-  return {
+  const config = {
     ...defaultConfig(profile),
     ...savedConfig(row, profile.identity.idx),
   };
+  for (const [field, kind] of [['textModel', 'text'], ['imageModel', 'image'], ['videoModel', 'video']]) {
+    if (Object.hasOwn(config, field)) config[field] = allowedModelPreference(kind, config[field], '');
+  }
+  return config;
 }
 
 function configFields(profile = null) {
@@ -828,13 +844,15 @@ function configFields(profile = null) {
     {
       key: "textModel",
       label: "文本模型",
-      type: "text",
+      type: "select",
+      options: [{ label: '跟随企业模型', value: '' }, ...allowedModelCatalog().text.map(item => ({ label: item.label, value: item.id }))],
       description: "inherit 或留空表示跟随企业模型；不会改变岗位能力。",
     },
     {
       key: "imageModel",
       label: "视觉模型",
-      type: "text",
+      type: "select",
+      options: [{ label: '跟随企业模型', value: '' }, ...allowedModelCatalog().image.map(item => ({ label: item.label, value: item.id }))],
       description: "仅供支持视觉产出的岗位参考；不会冒充已接入连接器。",
     },
     {
@@ -1482,10 +1500,8 @@ function publicRunPresentationKey(
   if (effectiveStatus === "待账务对账") return "business_blocked";
   if (effectiveStatus === "待审阅") return "review_pending";
   if (effectiveStatus === "已完成") return "adopted";
-  if (
-    effectiveStatus === "已驳回" ||
-    publicRunQualityFailure(rawStatus, effectiveStatus, snapshot)
-  ) {
+  if (effectiveStatus === "已驳回") return "rejected";
+  if (publicRunQualityFailure(rawStatus, effectiveStatus, snapshot)) {
     return "rework_required";
   }
   return "execution_failed";
@@ -1640,8 +1656,10 @@ function publicContract(snapshot, row, user = null) {
         ? []
         : ["结果格式未通过岗位契约，请联系有权限的审阅人。"],
     warnings: Array.isArray(warnings)
-      ? warnings.map(String).filter(Boolean).slice(0, 20)
+      ? warnings.map(outputWarningText).filter(Boolean).slice(0, 20)
       : [],
+    strictValid: nested?.strictValid ?? snapshot.contractStrictValid ?? valid,
+    qualityReview: outputQualityReview(Array.isArray(warnings) ? warnings : []),
     artifacts: (Array.isArray(artifacts) ? artifacts : []).map(
       (artifact, index) => ({
         kind: artifact?.kind || "unknown",
@@ -1720,7 +1738,7 @@ function publicRunState(
                   ? "产出已按企业中央策略自动采用，可在内容生产仓继续使用和下载。"
                   : "产出已采纳，可在内容生产仓继续使用和下载。"
                 : effectiveStatus === "已驳回"
-                  ? "根据审阅意见补充材料，返工后重新派活。"
+                  ? "原稿和本次费用记录已保留，可继续查看、复制；是否另行优化由你决定。"
                   : qualityFailure
                     ? "查看岗位质检错误，补充或修正材料后重新派活。"
                     : "先查看执行失败原因，再修复输入、额度或模型通道后重新派活。";
@@ -1737,7 +1755,7 @@ function publicRunState(
               ? "该产物已经按企业中央策略自动采用，无需重复审阅"
               : "该产物已经人工采纳，无需重复审阅"
             : effectiveStatus === "已驳回"
-              ? "当前稿件已被驳回，请按意见返工并生成新修订稿"
+              ? "本次已选择不采纳，原稿仍保留；不会自动重新生成。"
               : qualityFailure
                 ? "产物未通过岗位质检，需要修正材料后返工"
                 : "执行过程发生异常，尚未形成可验收产物";
@@ -2316,6 +2334,16 @@ function buildProfile(idx, user) {
           learned: clone(learned),
           custom,
           customSkills: clone(custom),
+          summary: {
+            requiredCount: staticProfile.skillLibrary.required.length,
+            historicalCount: staticProfile.skillLibrary.historical.length,
+            learnedCount: learned.length,
+            customCount: custom.length,
+            enabledLearnedCount: learned.filter(skill => skill.enabled !== false).length,
+            enabledCustomCount: custom.filter(skill => skill.enabled !== false).length,
+            enabledCount: [...staticProfile.skillLibrary.required, ...staticProfile.skillLibrary.historical, ...learned, ...custom]
+              .filter(skill => skill.enabled !== false).length,
+          },
           boundary:
             "出厂岗位 Skill、全部核心能力与已确认技能始终锁定且默认启用；全网进修技能只接受本次WebSearch后由受控网页正文核验的来源，并在下一次派活时自动注入。企业自定义技能只能追加，不能替换岗位能力。",
         },
@@ -2354,6 +2382,13 @@ function buildProfile(idx, user) {
     runtime: {
       ...clone(staticProfile.runtime || {}),
       ...runtimeFor(idx, user),
+      ...(permissions.canViewSkills ? {
+        enabledSkillCount: [...staticProfile.skillLibrary.required, ...staticProfile.skillLibrary.historical, ...storedSkills]
+          .filter(skill => skill.enabled !== false).length,
+      } : {}),
+      skillLearning: { supported: true, endpoint: `/api/employee-workbench/content/${idx}/learn`,
+        runsEndpoint: `/api/employee-workbench/content/${idx}/learning-runs`,
+        sourcePolicy: 'controlled_public_web_evidence', appliesOn: 'next_dispatch' },
     },
     dispatch: {
       endpoint: `/api/employee-workbench/content/${idx}/dispatch`,
@@ -2400,6 +2435,8 @@ function buildProfile(idx, user) {
 }
 
 function upsertConfig(idx, user, values) {
+  if (idx >= 10 && (!Object.hasOwn(values, 'skills') || Object.keys(values).some(key => key !== 'skills')))
+    throw new WorkbenchRouteError('该员工的专用生成入口支持岗位技能；提示词与通用配置尚无执行接线，请在生成表单提供素材，在模型设置中配置生成通道', 409);
   const tenantId = tenantIdFor(user);
   const current = configRow(idx, tenantId);
   const prompt = Object.hasOwn(values, "prompt")
@@ -2484,8 +2521,8 @@ function dispatchInput(body) {
   let minimal;
   try {
     minimal = resolveMinimalEmployeeDispatchInput(body, {
-      questionMax: 20000,
-      materialsMax: 20000,
+      questionMax: 32000,
+      materialsMax: 30000,
       titleMax: 100,
       defaultType: "岗位交付",
     });
@@ -2498,7 +2535,7 @@ function dispatchInput(body) {
   // 岗位执行上下文，避免强迫用户重复填写“任务要求”。
   const requirement = cleanText(
     minimal.requirement || minimal.question,
-    20000,
+    32000,
     "requirement",
     { required: true },
   );
@@ -2703,6 +2740,7 @@ function buildEffectiveExecution(idx, user, input, attachments) {
   // 联网真实状态注入 system：本次会检索时给出真实通道可用性；不检索时明确“未启用”。
   const liveResearchReadiness = contentLiveResearchReadiness();
   const compiled = compileContentEmployeeSoloPrompt(idx, task, {
+    feedbackExperience: buildTaskFeedbackContext({ tenantId, userId: user.id, employeeIdx: idx, taskKind: 'content' }),
     xhsSales,
     liveResearch: webTriggered
       ? liveResearchReadiness
@@ -3295,7 +3333,12 @@ async function attachWorkbenchWebEvidence(
   const userPrompt = `${execution.userPrompt}${
     web.verified
       ? `\n\n${refsBlock(results)}\n\n${controlledContentRefsBlock(results)}`
-      : `\n【联网核验状态】本次已触发联网检索，但${degradedReason}；禁止生成或声称完成实时研究结论。\n`
+      : [
+          `\n【联网核验状态】本次已触发联网检索，但${degradedReason}；禁止生成或声称完成实时研究结论。\n`,
+          employeeIdx === 1
+            ? "本轮没有任何可核验公开来源：sources必须保留至少2张来源卡，但每张卡的title写明“待核验来源”，url必须填写null；严禁写example.invalid、nanowork.local或任何猜测/占位URL。facts、data_points、viewpoints只写任务材料已给事实或明确的“待核验/补查动作”。"
+            : "",
+        ].join("")
   }`;
   const effectivePrompt = `${execution.systemPrompt}\n\n${userPrompt}`;
   const promptHash = sha256(effectivePrompt);
@@ -3438,7 +3481,8 @@ export function contentEmployeeDeliveryDecision({
   web = null,
 } = {}) {
   const normalizedText = String(text || "").trim();
-  const strictContractValid = contract?.valid === true;
+  const deliverableContractValid = contract?.valid === true;
+  const strictContractValid = deliverableContractValid && contract?.strictValid !== false;
   const contractErrors = Array.isArray(contract?.errors)
     ? contract.errors.map(String).filter(Boolean)
     : [];
@@ -3489,17 +3533,21 @@ export function contentEmployeeDeliveryDecision({
   }
   const uniqueHardIssues = [...new Set(hardIssues)];
   const advisoryAccepted =
+    process.env.NANOWORK_ACCEPTANCE_FORCE_STRICT !== "1" &&
     dataMode === "demo" &&
-    !strictContractValid &&
+    !deliverableContractValid &&
     uniqueHardIssues.length === 0;
   return {
     valid:
       uniqueHardIssues.length === 0 &&
-      (strictContractValid || advisoryAccepted),
+      (deliverableContractValid || advisoryAccepted),
     strictContractValid,
     advisoryAccepted,
     hardIssues: uniqueHardIssues,
-    warnings: advisoryAccepted ? contractErrors : [],
+    warnings: [
+      ...(Array.isArray(contract?.warnings) ? contract.warnings.map(outputWarningText) : []),
+      ...(advisoryAccepted ? contractErrors : []),
+    ],
   };
 }
 
@@ -4988,6 +5036,16 @@ async function executeRun({
         Number(execution.staticProfile.identity.idx) === 5
           ? "多媒体师特别修复：必须返回非空、完整的岗位JSON；每个图片描述只使用输入事实，未知内容写“待确认”，不能返回空数组、空字符串或模板占位。"
           : "",
+        Number(execution.staticProfile.identity.idx) === 6
+          ? "封面师特别修复：上一轮封面HTML过长或JSON被截断。请只输出恰好3个covers，每个html为900字符以内的完整极简HTML（html/body + 内联style即可），禁止<style>大段CSS、脚本、base64、外部资源和重复装饰；保留清晰可见中文文案，宁可少写视觉细节也不能截断JSON。"
+          : "",
+        Number(execution.staticProfile.identity.idx) === 7
+          ? "演绎师特别修复：HTML中所有可见文字必须直接写入正文节点，删除CSS content伪文字；禁止脚本、外部资源和隐藏占位，保留完整可打开的单文件HTML。"
+          : "",
+        Number(execution.staticProfile.identity.idx) === 1 &&
+        execution.snapshot.web?.verified !== true
+          ? "情报员特别修复：本轮没有受控来源，sources数组保留至少2项但每项url只能是null，标题写“待核验来源1/2”；不得写任何http(s)链接、example.invalid、nanowork.local、内部路径或伪造来源。不要输出<think>、Markdown围栏或解释文字，只输出JSON对象。"
+          : "",
       ].join("\n");
       phase = "quality_retry";
       let retried;
@@ -5117,7 +5175,7 @@ async function executeRun({
     let specialRuntime = null;
     let specialProviderBridge = null;
     if (
-      strictContractValid &&
+      contract.valid === true &&
       CONTENT_SPECIAL_RUNTIME_EMPLOYEE_IDXS.has(
         Number(execution.staticProfile.identity.idx),
       )
@@ -5204,6 +5262,7 @@ async function executeRun({
     snapshot.contractErrors = clone(contractErrors);
     snapshot.contractStrictValid = strictContractValid;
     snapshot.contractWarnings = clone(contractWarnings);
+    snapshot.qualityReview = outputQualityReview(contractWarnings);
     snapshot.deliveryMode = {
       dataMode,
       advisoryAccepted: advisoryAccepted === true,
@@ -5222,7 +5281,7 @@ async function executeRun({
     const irreversibleAction =
       input.irreversibleAction === true ||
       snapshot.dispatch?.irreversibleAction === true;
-    const approvalRoute = resolveApprovalRoute({
+    let approvalRoute = resolveApprovalRoute({
       targetType: "content",
       riskLevel: risk.level,
       requestedLevel: snapshot.approvalPolicy?.level || null,
@@ -5234,8 +5293,20 @@ async function executeRun({
       policy:
         snapshot.approvalRoutingPolicy || loadApprovalRoutingPolicy(tenantId),
     });
+    if (snapshot.qualityReview.requiresUserDecision && !approvalRoute.requiresReview) {
+      approvalRoute = resolveApprovalRoute({
+        targetType: "content", riskLevel: risk.level,
+        requestedLevel: snapshot.approvalPolicy?.level || null,
+        externalAction, paidAction, irreversibleAction,
+        policy: {
+          ...(snapshot.approvalRoutingPolicy || loadApprovalRoutingPolicy(tenantId)),
+          employeeOutput: { mode: risk.level === "high" ? "boss" : "manager", reviewerUserId: null },
+        },
+      });
+    }
     const demoInternalAutoAdopt =
       dataMode === "demo" &&
+      !snapshot.qualityReview.requiresUserDecision &&
       risk.level !== "high" &&
       !externalAction &&
       !paidAction &&
@@ -5322,14 +5393,14 @@ async function executeRun({
     snapshot.previewMarkdown = contractValid
       ? contract.previewMarkdown || text
       : null;
-    if (contractValid && strictContractValid) {
+    if (contractValid && contract.valid === true) {
       snapshot.parsedOutput = clone(contract.parsedOutput);
       snapshot.validatedOutput = clone(contract.parsed);
     } else {
       delete snapshot.parsedOutput;
       delete snapshot.validatedOutput;
     }
-    snapshot.artifacts = contractValid && strictContractValid
+    snapshot.artifacts = contractValid && contract.valid === true
       ? mergeSpecialRuntimeArtifacts(contract.artifacts, specialRuntime)
       : advisoryAccepted
         ? [demoMarkdownArtifact(execution, runId, snapshot.previewMarkdown)]
@@ -5341,6 +5412,7 @@ async function executeRun({
       advisory: advisoryAccepted === true,
       errors: clone(contractErrors),
       warnings: clone(contractWarnings),
+      qualityReview: clone(snapshot.qualityReview),
       artifacts: clone(snapshot.artifacts),
     };
     snapshot.billing = safeBillingSummary({
@@ -5351,7 +5423,7 @@ async function executeRun({
       model: output.model || hold.model,
       note: contractValid
         ? advisoryAccepted
-          ? "真实API报告已以演示内部草稿落库，深层岗位契约问题已记录为警告；正在按真实用量结算，未执行对外发布。"
+          ? "真实API报告已完整保存，优化建议随结果展示；正在按真实用量结算，等待用户选择采纳或不采纳。"
           : "合格业务产物已落库，正在按真实用量结算；未执行对外发布。"
         : "输出格式契约未通过，正在释放预授权；本次不计为合格出活。",
     });
@@ -5479,6 +5551,7 @@ async function executeRun({
     if (
       contractValid &&
       snapshot.billing?.state === "settled" &&
+      snapshot.qualityReview?.requiresUserDecision !== true &&
       effectiveApprovalRoute.autoAdopt
     ) {
       autoAdoption = autoAdoptContentEmployeeRun({
@@ -5990,6 +6063,7 @@ export function createContentEmployeeWorkbenchRouter({
           "adopted",
           "business_blocked",
           "rework_required",
+          "rejected",
           "execution_failed",
           "historical",
         ].map((key) => [key, 0]),
@@ -6784,12 +6858,17 @@ export function createContentEmployeeWorkbenchRouter({
                   index,
                 ),
               );
-              const skills = normalizeStoredSkills(
-                [...current, ...mapped],
-                idx,
-              );
+              const ids = new Set(current.map(skill => skill.id));
+              const titles = new Set(current.map(skill => skill.title.toLocaleLowerCase('zh-CN')));
+              const additions = mapped.filter(skill => {
+                const title = skill.title.toLocaleLowerCase('zh-CN');
+                if (ids.has(skill.id) || titles.has(title)) return false;
+                ids.add(skill.id); titles.add(title); return true;
+              });
+              const skills = normalizeStoredSkills([...current, ...additions], idx);
               upsertConfig(idx, user, { skills });
               return {
+                added: additions.length,
                 total: skills.filter((skill) => skill.origin === "learned")
                   .length,
               };
@@ -6894,9 +6973,12 @@ export function createContentEmployeeWorkbenchRouter({
       const permissions = permissionsFor(req.user, idx);
       if (!permissions.canDispatch)
         throw new WorkbenchRouteError("当前账号无权派活", 403);
+      if (idx === 11) {
+        throw new WorkbenchRouteError('请通过小红书种草入口填写品牌名并上传照片', 409, 'XHS_NOTE_DEDICATED_ENTRY');
+      }
       if (idx === 10) {
         throw new WorkbenchRouteError(
-          "AI带货员使用专用30秒视频入口，请通过 /api/content/ai-sales-video 上传素材并生成；泛用内容 JSON 契约不适用该岗位。",
+          "请打开AI带货员对话，上传照片并说明主题。默认生成15秒视频，也可选择30秒；此岗位使用专用视频流程。",
           409,
         );
       }
@@ -6914,13 +6996,20 @@ export function createContentEmployeeWorkbenchRouter({
       );
       const employee = contentEmployeeByIdx(idx);
       const tenantId = tenantIdFor(req.user);
+      // 隔离真实验收可显式固定一条已核验文本通道；生产环境未设置时仍
+      // 完全遵循岗位/租户原有模型路由，不改变客户配置。
+      const acceptanceTextModel = String(
+        process.env.NANOWORK_ACCEPTANCE_TEXT_MODEL || "",
+      ).trim();
       const dataMode = tenantDataMode(tenantId);
       execution.snapshot.deliveryMode = {
         dataMode,
         reportFirst: dataMode === "demo",
       };
       const holdModel =
-        !input.image &&
+        acceptanceTextModel && !input.image
+          ? acceptanceTextModel
+          : !input.image &&
         execution.config.textModel &&
         execution.config.textModel !== "inherit"
           ? execution.config.textModel

@@ -25,7 +25,8 @@ const { db, q, initSchema, migrateV2, runWithTenant, getConfig, setConfig } = aw
 const { createVoicedSalesVideoJob, salesVideoPriceQuote, resolveSalesVoice, voicedSalesVideoOptions } =
   await import('../src/engines/ai-sales-video-native.js');
 const { countSpeechChars } = await import('../src/engines/ai-sales-video-script.js');
-const { billing, settleHold, holdCredits, releaseHold } = await import('../src/engines/credits.js');
+const { voicedSalesDeliveryVerified } = await import('../src/engines/ai-sales-video-presentation.js');
+const { billing, settleHold, holdCredits, releaseHold, getSupplierExpense } = await import('../src/engines/credits.js');
 const cards = await import('../src/engines/content-benchmark-cards.js');
 const {
   augmentMediaJob,
@@ -61,6 +62,16 @@ const snapshot = id =>
   JSON.parse(q.get('SELECT snapshot_json FROM media_jobs WHERE tenant_id=? AND id=?', 1, id).snapshot_json);
 const job = id => q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', 1, id);
 const held = id => q.get("SELECT * FROM credit_holds WHERE tenant_id=? AND ref_type='media_job' AND ref_id=?", 1, id);
+function assertFailedRefund(id, before) {
+  const hold = held(id), state = snapshot(id), expense = getSupplierExpense(hold.id, 1);
+  assert.equal(hold.status, 'settled');
+  assert.equal(hold.settled_credits, 0);
+  assert.equal(state.billing.state, 'released');
+  assert.equal(state.billing.chargedCredits, 0);
+  assert.ok(expense.refundedAt, '退款必须有独立供应商费用台账证据');
+  assert.equal(expense.refundedCredits, hold.held_credits);
+  if (before !== undefined) assert.equal(balance(), before);
+}
 const balance = () => q.get('SELECT credits FROM tenants WHERE id=1').credits;
 function script() {
   const a = '今天吃什么？' + '口味可以按自己的喜好来选。'.repeat(4);
@@ -99,7 +110,10 @@ function harness(overrides = {}) {
   const runtime = {
     kbSearch: async () => ({ text: '', refs: [], mode: 'test' }),
     scanText: () => ({ hits: [] }),
-    mediaReady: async () => ({ ffmpegPath: 'test-ffmpeg', ffprobePath: 'test-ffprobe' }),
+    mediaReady: async () => ({
+      ffmpegPath: 'test-ffmpeg',
+      ffprobePath: 'test-ffprobe',
+    }),
     prepareImages: async (images, dir) => {
       dirs.push(dir);
       return images;
@@ -120,11 +134,17 @@ function harness(overrides = {}) {
         return { audioUrl: 'https://cdn.example.com/voice.mp3' };
       },
     },
-    fetchImpl: async () => new Response(Buffer.from('isolated-audio'), { headers: { 'Content-Type': 'audio/mpeg' } }),
+    fetchImpl: async () =>
+      new Response(Buffer.from('isolated-audio'), {
+        headers: { 'Content-Type': 'audio/mpeg' },
+      }),
     runner: async (command, args) => {
       if (command === 'test-ffprobe')
         return {
-          stdout: JSON.stringify({ format: { duration: 15 }, streams: [{ codec_type: 'audio', duration: 15 }] }),
+          stdout: JSON.stringify({
+            format: { duration: 15 },
+            streams: [{ codec_type: 'audio', duration: 15 }],
+          }),
         };
       await fsp.writeFile(args.at(-1), Buffer.from('fitted-audio'));
       return { stdout: '', stderr: '' };
@@ -133,12 +153,17 @@ function harness(overrides = {}) {
     submitSegment: async params => {
       capture('video');
       assert.equal(params.duration, 15);
-      assert.equal(params.audioUrl, 'https://assets.example.com/voiced-test.mp3');
+      assert.equal(params.audioUrl, undefined);
+      assert.match(params.prompt, /普通话中文独白/u);
+      assert.match(params.prompt, /请完整说出/u);
       assert.equal(params.promptExtend, false);
       assert.equal(params.model, 'wan2.6-i2v');
       return { taskId: `voiced-task-${calls.length}` };
     },
-    querySegment: async () => ({ status: 'success', url: 'https://cdn.example.com/video.mp4' }),
+    querySegment: async () => ({
+      status: 'success',
+      url: 'https://cdn.example.com/video.mp4',
+    }),
     downloadSegment: async ({ outputDir, index }) => {
       const filePath = path.join(outputDir, `clip-${index}.mp4`);
       await fsp.writeFile(filePath, 'video');
@@ -146,7 +171,8 @@ function harness(overrides = {}) {
     },
     compose: async params => {
       assert.equal(params.requireAudio, true);
-      assert.equal(params.voiceTracks.length, 2);
+      assert.equal(params.voiceTracks, undefined);
+      assert.equal(params.audioMode, 'provider_native');
       assert.equal(params.segments.length, 2);
       assert.ok(params.subtitleCues.length > 2);
       return {
@@ -154,6 +180,8 @@ function harness(overrides = {}) {
         durationSeconds: 30,
         sha256: 'a'.repeat(64),
         audioVerified: true,
+        audioSource: 'provider_native',
+        subtitleTiming: 'script_estimated',
         subtitlesBurnedIn: true,
         audioVerification: [0, 15].map(startSeconds => ({
           startSeconds,
@@ -172,6 +200,7 @@ function harness(overrides = {}) {
 const create = runtime =>
   runWithTenant(1, () =>
     createVoicedSalesVideoJob({
+      durationSeconds: 30,
       actor,
       brief: '介绍本店菜品，邀请顾客到店咨询',
       references: [{ name: '菜品图' }],
@@ -180,6 +209,54 @@ const create = runtime =>
       runtime,
     }),
   );
+
+test('新任务未填时长默认15秒，只提交一段原生视频，结算一段费用且重复执行无新扣款', async () => {
+  const h = harness(), originalGenerate = h.runtime.generateFn, before = balance();
+  h.runtime.generateFn = async params => {
+    const response = await originalGenerate(params), value = JSON.parse(response.text);
+    const voiceover = '今天吃什么？来店里坐坐。';
+    value.shots = [{ ...value.shots[0], voiceover, subtitle: voiceover }];
+    value.cta = '来店里坐坐。'; value.total_chars = countSpeechChars(voiceover); value.estimated_seconds = 15;
+    assert.equal(params.responseSchema.schema.properties.shots.maxItems, 1);
+    return { ...response, text: JSON.stringify(value) };
+  };
+  h.runtime.compose = async params => {
+    assert.equal(params.segments.length, 1);
+    assert.equal(params.targetDurationSeconds, 15);
+    assert.equal(params.audioMode, 'provider_native');
+    assert.equal(params.voiceTracks, undefined);
+    assert.ok(params.subtitleCues.every(cue => cue.shotIndex === 1 && cue.end <= 15));
+    return { url:'/uploads/ai-sales-video/1/native-15-test.mp4',durationSeconds:15,sha256:'a'.repeat(64),
+      audioVerified:true,audioSource:'provider_native',subtitleTiming:'script_estimated',subtitlesBurnedIn:true,
+      audioVerification:[{startSeconds:0,durationSeconds:15,peakDb:-20,method:'ffmpeg-volumedetect'}] };
+  };
+  const created = await runWithTenant(1, () => createVoicedSalesVideoJob({ actor, brief:'介绍本次菜品照片',
+    references:[{name:'菜品图'}],providerImages:[image],grounding,runtime:h.runtime }));
+  assert.equal(created.response.plan.durationSeconds, 15);
+  assert.equal(created.response.plan.segmentCount, 1);
+  await created.run();
+  const state = snapshot(created.response.jobId), final = job(created.response.jobId);
+  assert.equal(final.status, '成功', JSON.stringify(state));
+  assert.deepEqual(h.calls, ['text', 'video']);
+  assert.equal(state.priceQuote.segmentCount, 1);
+  assert.equal(state.billing.state, 'settled');
+  assert.equal(voicedSalesDeliveryVerified(state.result, 1, 'provider_native', 15), true);
+  assert.equal(voicedSalesDeliveryVerified(state.result, 1, 'provider_native'), false, '历史省略时长始终按30秒验证');
+  assert.equal(voicedSalesDeliveryVerified({ ...state.result, durationSeconds:30 }, 1, 'provider_native', 15), false);
+  assert.equal(voicedSalesDeliveryVerified(state.result, 1, 'external_tts', 15), false, '新单段不得伪装旧TTS');
+  const price = state.priceQuote;
+  assert.equal(final.credits, Math.ceil((price.video + (1000 * price.text.in + 450 * price.text.out) / 1e6) * price.margin / price.creditYuan));
+  assert.equal(before - balance(), final.credits);
+  const currentBalance = balance();
+  await created.run();
+  assert.equal(balance(), currentBalance);
+  assert.deepEqual(h.calls, ['text', 'video']);
+  assert.equal(augmentMediaJob(final, actor).salesVideo.durationSeconds, 15);
+  const inputs = { actor,brief:'介绍本次照片',references:[{name:'菜品图'}],providerImages:[image],grounding,runtime:h.runtime };
+  await assert.rejects(runWithTenant(1, () => createVoicedSalesVideoJob({ ...inputs,durationSeconds:20 })), /15.*30/u);
+  await assert.rejects(runWithTenant(1, () => createVoicedSalesVideoJob({ ...inputs,durationSeconds:30,quoteFingerprint:price.fingerprint })), /报价/u);
+  assert.equal(balance(), currentBalance);
+});
 async function appFor(user, runtime) {
   const app = express();
   app.use(express.json());
@@ -201,6 +278,46 @@ async function appFor(user, runtime) {
     close: () => new Promise(resolve => server.close(resolve)),
   };
 }
+
+test('第二段提交未知且无完整成片全退，已退款仍免费取回第一段，费用不变且不重提', async () => {
+  const h = harness();
+  const submit = h.runtime.submitSegment;
+  let submissions = 0, queries = 0;
+  h.runtime.submitSegment = async params => {
+    submissions++;
+    if (submissions === 2) throw Object.assign(new Error('submit timeout'), { code: 'PROVIDER_TIMEOUT', providerResponsePhase: 'request' });
+    return submit(params);
+  };
+  h.runtime.querySegment = async () => { queries++; return { status: 'success', url: 'https://cdn.example.com/existing.mp4' }; };
+  h.runtime.runner = async () => ({ stdout: JSON.stringify({ format: { duration: 15.125 },
+    streams: [{ codec_type: 'video' }, { codec_type: 'audio' }] }) });
+  h.runtime.compose = async () => { assert.fail('缺少第二段不能合成伪完整视频'); };
+  const before = balance(), created = await create(h.runtime), id = created.response.jobId;
+  await created.run();
+  const state = snapshot(id), output = augmentMediaJob(job(id), actor);
+  assert.equal(submissions, 2); assert.equal(queries, 1);
+  assert.equal(job(id).status, '失败'); assert.equal(job(id).url, null);
+  assertFailedRefund(id, before);
+  assert.equal(state.paidExecution.filter(event => event.kind === 'video').length, 2);
+  assert.equal(state.paidExecution.at(-1).status, 'started');
+  assert.equal(state.billing.state, 'released');
+  const partial = state.partialResults[0];
+  assert.equal(partial.index, 1); assert.equal(partial.durationSeconds, 15.125);
+  assert.equal(output.salesVideo.partialResults[0].url, partial.url);
+  const file = path.resolve(import.meta.dirname, '../data', partial.url.replace(/^\//u, ''));
+  assert.equal((await fsp.readFile(file)).toString(), 'video');
+  const { recoverVoicedSalesVideoClips } = await import('../src/engines/ai-sales-video-voiced-recovery.js');
+  const beforeHold = held(id), beforeBalance = balance();
+  await runWithTenant(1, () => recoverVoicedSalesVideoClips({ actor, jobId: id, runtime: h.runtime }));
+  assert.equal(queries, 1, '本地原片存在时不再查询或下载');
+  assert.deepEqual(held(id), beforeHold); assert.equal(balance(), beforeBalance);
+  await assert.rejects(runWithTenant(2, () => recoverVoicedSalesVideoClips({ actor: other, jobId: id, runtime: h.runtime })), /无权/u);
+  await fsp.unlink(file);
+  await runWithTenant(1, () => recoverVoicedSalesVideoClips({ actor, jobId: id, runtime: h.runtime }));
+  assert.equal(queries, 2); assert.equal(submissions, 2);
+  assert.deepEqual(held(id), beforeHold);
+  await fsp.unlink(file);
+});
 async function finish(id) {
   for (let i = 0; i < 500; i++) {
     if (['失败', '成功'].includes(job(id)?.status)) return job(id);
@@ -209,7 +326,7 @@ async function finish(id) {
   assert.fail('隔离任务未到终态');
 }
 
-test('实际HTTP有声任务：先预授权→独白→2次TTS→2段Wan→字幕成片→按组合用量结算；禁止自动发布', async () => {
+test('实际HTTP有声任务：先预授权→独白→2段Wan原生声音→脚本估时字幕成片→按组合用量结算；禁止自动发布', async () => {
   const h = harness(),
     app = await appFor(actor, h.runtime),
     before = balance();
@@ -220,7 +337,12 @@ test('实际HTTP有声任务：先预授权→独白→2次TTS→2段Wan→字�
     const res = await fetch(`${app.base}/ai-sales-video`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ brief: '介绍本店菜品，邀请顾客到店咨询', mode: 'voiced', referenceImages: [image] }),
+      body: JSON.stringify({
+        durationSeconds: 30,
+        brief: '介绍本店菜品，邀请顾客到店咨询',
+        mode: 'voiced',
+        referenceImages: [image],
+      }),
     });
     assert.equal(res.status, 202);
     const response = await res.json();
@@ -235,18 +357,18 @@ test('实际HTTP有声任务：先预授权→独白→2次TTS→2段Wan→字�
     const row = await finish(response.jobId),
       state = snapshot(row.id);
     assert.equal(row.status, '成功', JSON.stringify(state));
-    assert.deepEqual(h.calls, ['text', 'tts', 'tts', 'video', 'video']);
+    assert.deepEqual(h.calls, ['text', 'video', 'video']);
     assert.equal(state.billing.state, 'settled');
     assert.equal(held(row.id).status, 'settled');
     assert.equal(before - balance(), row.credits);
     const price = state.priceQuote,
-      expectedYuan = 2 * price.video + 2 * price.tts + (1000 * price.text.in + 450 * price.text.out) / 1e6;
+      expectedYuan = 2 * price.video + (1000 * price.text.in + 450 * price.text.out) / 1e6;
     assert.equal(row.credits, Math.ceil((expectedYuan * price.margin) / price.creditYuan));
     assert.equal(
       q.get('SELECT cost_yuan FROM credit_logs WHERE tenant_id=? AND id=?', 1, held(row.id).log_id).cost_yuan,
       Math.round(expectedYuan * 10000) / 10000,
     );
-    assert.ok(held(row.id).held_credits > row.credits, '未使用的修复/精简授权退回');
+    assert.ok(held(row.id).held_credits > row.credits, '未使用的脚本修复授权退回');
     assert.ok(Number.isFinite(Date.parse(state.providerExecution.updatedAt)));
     assert.equal(state.result.audioVerified, true);
     assert.doesNotMatch(row.snapshot_json, /data:image|cdn\.example|assets\.example|nw-voiced-sales/u);
@@ -263,7 +385,7 @@ test('实际HTTP有声任务：先预授权→独白→2次TTS→2段Wan→字�
     assert.equal(media.businessUsable, false, '未审批不得业务使用');
     assert.equal(media.salesVideo.audioVerified, true);
     assert.equal(media.salesVideo.stage, 'complete');
-    assert.deepEqual(media.salesVideo.calls, { text: 1, tts: 2, video: 2 });
+    assert.deepEqual(media.salesVideo.calls, { text: 1, tts: 0, video: 2 });
     const ordinary = projectMediaJob(row, { ...actor, role: 'employee' });
     assert.equal(ordinary.snapshot_json, undefined);
     assert.equal(ordinary.salesVideo.script.shots.length, 2);
@@ -271,7 +393,10 @@ test('实际HTTP有声任务：先预授权→独白→2次TTS→2段Wan→字�
       JSON.stringify(ordinary),
       /employeeExecution|systemPrompt|priceQuote|provider_submitted.*taskId/u,
     );
-    const tampered = { ...state, result: { ...state.result, audioVerification: [] } };
+    const tampered = {
+      ...state,
+      result: { ...state.result, audioVerification: [] },
+    };
     const corrupted = { ...row, snapshot_json: JSON.stringify(tampered) };
     assert.equal(validateMediaDelivery(corrupted).ready, false);
     assert.equal(augmentMediaJob(corrupted, actor).canImport, false, '已结算也不能跳过有声交付证据');
@@ -310,11 +435,23 @@ test('M2确认卡/M5内容域有效心得从本企业DB进入idx10真实user消�
     reusable_pattern: '由真实需求过渡到行动',
     risk_flags: [],
   };
-  const own = cards.insertBenchmarkCards({ tenantId: 1, employeeRunId: 901, cards: [card] })[0];
+  const own = cards.insertBenchmarkCards({
+    tenantId: 1,
+    employeeRunId: 901,
+    cards: [card],
+  })[0];
   cards.markBenchmarkCardVerified(own.id, actor.id, { tenantId: 1 });
-  cards.insertBenchmarkCards({ tenantId: 1, employeeRunId: 902, cards: [{ ...card, opening_3s: '未确认卡禁止' }] });
+  cards.insertBenchmarkCards({
+    tenantId: 1,
+    employeeRunId: 902,
+    cards: [{ ...card, opening_3s: '未确认卡禁止' }],
+  });
   const foreign = runWithTenant(2, () =>
-    cards.insertBenchmarkCards({ tenantId: 2, employeeRunId: 903, cards: [{ ...card, opening_3s: '其它企业卡禁止' }] }),
+    cards.insertBenchmarkCards({
+      tenantId: 2,
+      employeeRunId: 903,
+      cards: [{ ...card, opening_3s: '其它企业卡禁止' }],
+    }),
   )[0];
   cards.markBenchmarkCardVerified(foreign.id, other.id, { tenantId: 2 });
   for (const [tenant, domain, status, note] of [
@@ -351,10 +488,9 @@ test('M2确认卡/M5内容域有效心得从本企业DB进入idx10真实user消�
   assert.equal(balance(), priorBalance);
 });
 
-test('未配置真实通道/公网音轨/媒体环境/合法首帧时调用数与占扣均为零', async () => {
+test('未配置真实通道/媒体环境/合法首帧时调用数与占扣均为零', async () => {
   for (const overrides of [
     { generateFn: null, submitSegment: null },
-    { publishAsset: null },
     {
       mediaReady: async () => {
         throw new Error('missing-media');
@@ -378,8 +514,8 @@ test('未配置真实通道/公网音轨/媒体环境/合法首帧时调用数�
   }
 });
 
-test('坏脚本只重试一次，不进入配音；用量不明/配音超时/视频失败均保留占扣待对账，不自动重付', async () => {
-  for (const scenario of ['script', 'unknown-usage', 'tts', 'video']) {
+test('坏脚本只重试一次不提交视频；用量不明或视频失败无成片全退，不自动重付', async () => {
+  for (const scenario of ['script', 'unknown-usage', 'video']) {
     const h = harness();
     if (scenario === 'script' || scenario === 'unknown-usage') {
       const original = h.runtime.generateFn;
@@ -387,12 +523,7 @@ test('坏脚本只重试一次，不进入配音；用量不明/配音超时/视
         const out = await original(p);
         return scenario === 'script' ? { ...out, text: '{}' } : { ...out, usage: {} };
       };
-    } else if (scenario === 'tts')
-      h.runtime.voiceClient.synthesize = async () => {
-        h.calls.push('tts-failed');
-        throw new Error('provider-secret-do-not-leak');
-      };
-    else
+    } else
       h.runtime.submitSegment = async () => {
         h.calls.push('video-failed');
         throw new Error('provider-secret-do-not-leak');
@@ -402,9 +533,7 @@ test('坏脚本只重试一次，不进入配音；用量不明/配音超时/视
     await created.run();
     const id = created.response.jobId;
     assert.equal(job(id).status, '失败', scenario);
-    assert.equal(held(id).status, 'held');
-    assert.equal(snapshot(id).billing.state, 'pending_reconciliation');
-    assert.equal(before - balance(), held(id).held_credits);
+    assertFailedRefund(id, before);
     assert.doesNotMatch(job(id).snapshot_json + job(id).error, /provider-secret/u);
     const prior = h.calls.length;
     await created.run();
@@ -414,7 +543,7 @@ test('坏脚本只重试一次，不进入配音；用量不明/配音超时/视
   }
 });
 
-test('非法成片证据不能标成功；生成成功而价格变化仍禁止使用且保留组合占扣', async () => {
+test('非法成片不成功且全退；已接受新报价调价仍按冻结价结算，旧无快照保持待核对', async () => {
   for (const invalid of [
     { durationSeconds: NaN },
     { audioVerified: false },
@@ -427,29 +556,44 @@ test('非法成片证据不能标成功；生成成功而价格变化仍禁止�
     const created = await create(h.runtime);
     await created.run();
     assert.equal(job(created.response.jobId).status, '失败');
-    assert.equal(held(created.response.jobId).status, 'held');
+    assertFailedRefund(created.response.jobId);
   }
-  const originalBilling = getConfig('billing', {}),
-    h = harness(),
-    compose = h.runtime.compose;
-  h.runtime.compose = async p => {
-    const out = await compose(p);
-    setConfig('billing', {
-      ...originalBilling,
-      video: { ...originalBilling.video, 'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1 },
-    });
-    return out;
-  };
-  try {
-    const created = await create(h.runtime);
-    await created.run();
-    const row = job(created.response.jobId);
-    assert.equal(row.status, '成功');
-    assert.equal(snapshot(row.id).billing.state, 'pending_reconciliation');
-    assert.equal(held(row.id).status, 'held');
-    assert.equal(augmentMediaJob(row, actor).businessUsable, false);
-  } finally {
-    setConfig('billing', originalBilling);
+  for (const legacy of [false, true]) {
+    const originalBilling = getConfig('billing', {}),
+      h = harness(),
+      compose = h.runtime.compose;
+    h.runtime.compose = async p => {
+      const out = await compose(p);
+      setConfig('billing', {
+        ...originalBilling,
+        video: {
+          ...originalBilling.video,
+          'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1,
+        },
+      });
+      return out;
+    };
+    try {
+      const created = await create(h.runtime);
+      if (legacy) q.run('UPDATE credit_holds SET pricing_snapshot_json=NULL WHERE id=?', held(created.response.jobId).id);
+      await created.run();
+      const row = job(created.response.jobId);
+      assert.equal(row.status, '成功');
+      if (legacy) {
+        assert.equal(snapshot(row.id).billing.state, 'pending_reconciliation');
+        assert.equal(held(row.id).status, 'held');
+        assert.equal(augmentMediaJob(row, actor).businessUsable, false);
+      } else {
+        assert.equal(snapshot(row.id).billing.state, 'settled');
+        assert.equal(held(row.id).status, 'settled');
+        const price = snapshot(row.id).priceQuote;
+        const expectedYuan = 2 * price.video + (1000 * price.text.in + 450 * price.text.out) / 1e6;
+        assert.equal(row.credits, Math.ceil(expectedYuan * price.margin / price.creditYuan));
+        assert.equal(getSupplierExpense(held(row.id).id, 1).refundedAt, null);
+      }
+    } finally {
+      setConfig('billing', originalBilling);
+    }
   }
 });
 
@@ -469,8 +613,8 @@ test('有声失败任务不能通过旧恢复入口再扣费/走错供应商；�
     beforeCalls = h.calls.length;
   try {
     const denied = await fetch(`${ownApp.base}/media-jobs/${id}/recover-ai-sales-video`, { method: 'POST' });
-    assert.equal(denied.status, 409);
-    assert.equal((await denied.json()).code, 'AI_SALES_VIDEO_RECOVERY_NOT_AVAILABLE');
+    assert.equal(denied.status, 409, '整单退款后不能走完整恢复再结算；仍可独立免费取回原片段');
+    assert.equal(snapshot(id).recovery, undefined);
     assert.equal((await fetch(`${foreignApp.base}/media-jobs/${id}`)).status, 404);
     assert.equal(
       (await fetch(`${foreignApp.base}/media-jobs/${id}/recover-ai-sales-video`, { method: 'POST' })).status,
@@ -510,16 +654,25 @@ test('组合成本覆盖仅允许绑定有声任务、正确金额和预授权�
     { credits: 20, costYuanOverride: 0.2 },
     { credits: 20, costYuanOverride: 0.1, aiMode: 'template' },
   ]) {
-    assert.throws(() => settleHold(h, opts), { code: 'BILLING_COMPOSITE_COST_INVALID' });
+    assert.throws(() => settleHold(h, opts), {
+      code: 'BILLING_COMPOSITE_COST_INVALID',
+    });
     assert.equal(balance(), before);
     assert.equal(held(id).status, 'held');
   }
   assert.throws(
-    () => settleHold(h, { credits: Math.ceil((2 * b.marginMultiplier) / b.creditYuan), costYuanOverride: 2 }),
+    () =>
+      settleHold(h, {
+        credits: Math.ceil((2 * b.marginMultiplier) / b.creditYuan),
+        costYuanOverride: 2,
+      }),
     /预授权/u,
   );
   assert.equal(balance(), before);
-  const out = settleHold(h, { credits: Math.ceil((0.1 * b.marginMultiplier) / b.creditYuan), costYuanOverride: 0.1 });
+  const out = settleHold(h, {
+    credits: Math.ceil((0.1 * b.marginMultiplier) / b.creditYuan),
+    costYuanOverride: 0.1,
+  });
   assert.equal(out.credits, 20);
   assert.equal(balance(), before + 80);
   assert.equal(settleHold(h, { credits: 20, costYuanOverride: 0.1 }), null);
@@ -539,13 +692,18 @@ test('组合成本覆盖仅允许绑定有声任务、正确金额和预授权�
 });
 
 test('音色ID、企业与价格预检不接受非法输入', async () => {
-  assert.throws(() => resolveSalesVoice(actor, 'unowned-clone'), { code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND' });
-  assert.throws(() => resolveSalesVoice(actor, '../../voice'), { code: 'AI_SALES_VIDEO_VOICE_ID_INVALID' });
+  assert.throws(() => resolveSalesVoice(actor, 'unowned-clone'), {
+    code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND',
+  });
+  assert.throws(() => resolveSalesVoice(actor, '../../voice'), {
+    code: 'AI_SALES_VIDEO_VOICE_ID_INVALID',
+  });
   assert.equal(resolveSalesVoice(actor, 'presenter_female'), 'presenter_female');
   assert.throws(() => salesVideoPriceQuote('no-exact-price'), /价格/u);
   await assert.rejects(
     runWithTenant(2, () =>
       createVoicedSalesVideoJob({
+      durationSeconds: 30,
         actor,
         brief: '测试',
         voiceId: 'presenter_female',
@@ -579,8 +737,12 @@ test('音色ID、企业与价格预检不接受非法输入', async () => {
     );
   }
   assert.equal(resolveSalesVoice(actor, 'own-ready-voice'), 'own-ready-voice');
-  assert.throws(() => resolveSalesVoice(actor, 'own-held-voice'), { code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND' });
-  assert.throws(() => resolveSalesVoice(actor, 'foreign-ready-voice'), { code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND' });
+  assert.throws(() => resolveSalesVoice(actor, 'own-held-voice'), {
+    code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND',
+  });
+  assert.throws(() => resolveSalesVoice(actor, 'foreign-ready-voice'), {
+    code: 'AI_SALES_VIDEO_VOICE_NOT_FOUND',
+  });
 });
 
 test('音量证据必须分别覆盖两半且不是静音；非整数token用量不作结算依据', async () => {
@@ -609,14 +771,18 @@ test('音量证据必须分别覆盖两半且不是静音；非整数token用量
     const created = await create(h.runtime);
     await created.run();
     assert.equal(job(created.response.jobId).status, '失败');
-    assert.equal(held(created.response.jobId).status, 'held');
+    assertFailedRefund(created.response.jobId);
   }
   const h = harness(),
     generate = h.runtime.generateFn;
-  h.runtime.generateFn = async p => ({ ...(await generate(p)), usage: { inputTokens: 1.5, outputTokens: 1 } });
+  h.runtime.generateFn = async p => ({
+    ...(await generate(p)),
+    usage: { inputTokens: 1.5, outputTokens: 1 },
+  });
   const created = await create(h.runtime);
   await created.run();
   assert.equal(job(created.response.jobId).status, '失败');
+  assertFailedRefund(created.response.jobId);
   assert.deepEqual(h.calls, ['text']);
 });
 
@@ -640,41 +806,30 @@ test('预授权后启动状态写入失败：零供应商调用，账本与快�
   }
 });
 
-test('一次脚本修复加一次音轨精简确实计入3次文本/3次配音，重复run不能再次收费', async () => {
-  const h = harness(),
-    generate = h.runtime.generateFn,
-    runner = h.runtime.runner;
+test('一次脚本修复仅计入2次文本和2段视频，未配置TTS或公网音轨仍成功且重复run不收费', async () => {
+  const h = harness({ voiceClient: null, publishAsset: null }),
+    generate = h.runtime.generateFn;
   let textCalls = 0;
   h.runtime.generateFn = async p => {
     const out = await generate(p);
-    textCalls += 1;
-    if (textCalls === 1) return { ...out, text: '{}' };
-    if (textCalls === 3) {
-      const reduced = script();
-      reduced.shots[0].voiceover = reduced.shots[0].voiceover.replace('自己的', '个人的');
-      reduced.shots[0].subtitle = reduced.shots[0].voiceover;
-      return { ...out, text: JSON.stringify(reduced) };
-    }
-    return out;
+    return ++textCalls === 1 ? { ...out, text: '{}' } : out;
   };
-  h.runtime.runner = async (cmd, args) =>
-    cmd === 'test-ffprobe' && args.at(-1).endsWith('voice-1-a-raw.mp3')
-      ? { stdout: JSON.stringify({ format: { duration: 18 }, streams: [{ codec_type: 'audio', duration: 18 }] }) }
-      : runner(cmd, args);
   const created = await create(h.runtime);
   await created.run();
   const id = created.response.jobId,
     state = snapshot(id);
   assert.equal(job(id).status, '成功', JSON.stringify(state));
-  assert.deepEqual(h.calls, ['text', 'text', 'tts', 'text', 'tts', 'tts', 'video', 'video']);
-  assert.equal(state.voiceTracks[0].condensed, true);
+  assert.deepEqual(h.calls, ['text', 'text', 'video', 'video']);
+  assert.equal(state.voiceTracks, undefined);
+  assert.equal(state.audioMode, 'provider_native');
   const price = state.priceQuote,
-    yuan = 2 * price.video + 3 * price.tts + (3000 * price.text.in + 1350 * price.text.out) / 1e6;
+    yuan = 2 * price.video + (2000 * price.text.in + 900 * price.text.out) / 1e6;
+  assert.equal(price.tts, 0);
   assert.equal(state.billing.chargedCredits, Math.ceil((yuan * price.margin) / price.creditYuan));
   const before = balance();
   await created.run();
   assert.equal(balance(), before);
-  assert.equal(h.calls.length, 8);
+  assert.equal(h.calls.length, 4);
 });
 
 test('结算数据库失败时不丢掉技术产物，也不通过人工验收入库门禁', async () => {
@@ -694,7 +849,7 @@ test('结算数据库失败时不丢掉技术产物，也不通过人工验收�
     assert.equal(media.billing.state, 'pending_reconciliation');
     assert.equal(media.businessUsable, false);
     assert.equal(media.canImport, false);
-    assert.equal(media.previewUrl, null);
+    assert.equal(media.previewUrl, row.url, '原生成品可以预览核对，待对账仍不能采纳或入库');
     assert.equal(snapshot(id).billing.pendingReconciliation, true);
   } finally {
     db.exec('DROP TRIGGER fail_voiced_settle');
@@ -702,7 +857,7 @@ test('结算数据库失败时不丢掉技术产物，也不通过人工验收�
 });
 
 test(
-  '真实本机媒体工具贯穿原生任务：透明PNG预检转9:16JPEG→配音实测→带字幕成片→组合账本',
+  '真实本机媒体工具贯穿原生任务：透明PNG预检转9:16JPEG→原音轨验证→脚本估时字幕成片→组合账本',
   { timeout: 180_000 },
   async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'nw-native-media-test-'));
@@ -771,12 +926,16 @@ test(
       };
       let rendered;
       h.runtime.compose = async params => {
-        rendered = await composeAiSalesVideo({ ...params, outputRoot: path.join(root, 'output') });
+        rendered = await composeAiSalesVideo({
+          ...params,
+          outputRoot: path.join(root, 'output'),
+        });
         return rendered;
       };
       const referenceImage = `data:image/png;base64,${(await fsp.readFile(frame)).toString('base64')}`;
       const created = await runWithTenant(1, () =>
         createVoicedSalesVideoJob({
+      durationSeconds: 30,
           actor,
           brief: '介绍本店菜品，邀请顾客到店咨询',
           references: [{ name: '合成测试图' }],
@@ -792,8 +951,10 @@ test(
       assert.equal(row.status, '成功', state.failureCode);
       assert.equal(state.billing.state, 'settled');
       assert.equal(checkedFrames, 2);
-      assert.deepEqual(h.calls, ['text', 'tts', 'tts', 'video', 'video']);
-      assert.ok(state.voiceTracks.every(track => Math.abs(track.durationSeconds - 15) < 0.25));
+      assert.deepEqual(h.calls, ['text', 'video', 'video']);
+      assert.equal(state.voiceTracks, undefined);
+      assert.equal(state.result.audioSource, 'provider_native');
+      assert.equal(state.result.subtitleTiming, 'script_estimated');
       assert.ok(state.result.audioVerification.every(check => check.peakDb > -60));
       assert.ok(state.result.subtitleCount > 2);
       assert.equal(rendered.width, 1080);
@@ -818,8 +979,14 @@ test('配置选项只读且不泄漏凭据；过期报价在创建任务和占�
     assert.equal(options.ready, true);
     assert.equal(options.canRecover, true);
     assert.match(options.quoteFingerprint, /^[a-f0-9]{64}$/u);
-    assert.ok(options.voices.some(voice => voice.id === 'presenter_female'));
-    assert.ok(!options.voices.some(voice => voice.id === 'foreign-ready-voice' || voice.id === 'own-held-voice'));
+    assert.deepEqual(options.voices, []);
+    assert.equal(options.audioMode, 'provider_native');
+    assert.equal(options.subtitleTiming, 'script_estimated');
+    assert.equal(options.durationSeconds, 15);
+    assert.deepEqual(options.limits, { text: 2, tts: 0, video: 1 });
+    assert.deepEqual(options.durationOptions.map(item => [item.durationSeconds, item.segmentCount, item.limits.video]), [[15, 1, 1], [30, 2, 2]]);
+    assert.notEqual(options.durationOptions[0].quoteFingerprint, options.durationOptions[1].quoteFingerprint);
+    assert.ok(options.durationOptions[0].estimatedMaxCredits < options.durationOptions[1].estimatedMaxCredits);
     assert.doesNotMatch(JSON.stringify(options), /apiKey|publicBaseUrl|file_path|created_by|taskId/u);
     assert.ok(options.estimatedMaxCredits > 0);
     const denied = await fetch(`${app.base}/ai-sales-video`, {
@@ -845,7 +1012,7 @@ test('配置选项只读且不泄漏凭据；过期报价在创建任务和占�
     const options = await (await fetch(`${blockedApp.base}/ai-sales-video/options`)).json();
     assert.equal(options.ready, false);
     assert.equal(options.canRecover, true);
-    assert.ok(options.blockers.length >= 3);
+    assert.equal(options.blockers.length, 1);
     assert.equal(balance(), before);
   } finally {
     await blockedApp.close();
@@ -868,7 +1035,10 @@ test('异步媒体检查期间变价时不沿用旧报价占扣，也不调用�
   h.runtime.prepareImages = async images => {
     setConfig('billing', {
       ...original,
-      video: { ...original.video, 'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1 },
+      video: {
+        ...original.video,
+        'wan2.6-i2v': billing().video['wan2.6-i2v'] + 1,
+      },
     });
     return images;
   };
@@ -881,6 +1051,59 @@ test('异步媒体检查期间变价时不沿用旧报价占扣，也不调用�
   } finally {
     setConfig('billing', original);
   }
+});
+
+function walletReceipt(requestId, amount) {
+  return { status: 'known', requestId, costYuanOverride: amount,
+    costSource: { type:'provider_receipt', provider:'openlux', requestId, currency:'USD', amount,
+      exchangeRate:1, basis:'upstream_debit', quota:amount * 500000, quotaPerUnit:500000,
+      exchangeRateSource:'https://api.openlux.ai/api/status', statusRetrievedAt:new Date().toISOString() } };
+}
+
+test('视频按每个真实回执汇总结算，超预占只补差额且快照显示真实金额', async () => {
+  const old=getConfig('supplier_cost_openlux',null), oldBase=process.env.YUNWU_BASE_URL;
+  try {
+    process.env.YUNWU_BASE_URL='https://api.openlux.ai/v1';
+    setConfig('supplier_cost_openlux',{enabled:true,basis:'upstream_debit'});
+    const h=harness(), originalGenerate=h.runtime.generateFn, originalSubmit=h.runtime.submitSegment;
+    h.runtime.generateFn=async params=>{const r=await originalGenerate(params);r.usage.supplierCosts=[walletReceipt('native-wallet-script',1)];return r;};
+    h.runtime.submitSegment=async params=>{const r=await originalSubmit(params);return {...r,providerRequestId:`native-wallet-${r.taskId}`};};
+    h.runtime.supplierRequestCost=async ({requestId})=>walletReceipt(requestId,100);
+    const before=balance(),created=await create(h.runtime), id=created.response.jobId;
+    await created.run();
+    const state=snapshot(id);
+    assert.equal(job(id).status,'成功');
+    assert.equal(state.billing.state,'settled',JSON.stringify(state.billing));
+    assert.equal(job(id).credits,40200);
+    assert.equal(before-balance(),40200);
+    assert.ok(job(id).credits>held(id).held_credits);
+    assert.equal(state.billing.costYuan,201);
+    assert.equal(state.billing.supplierCostStatus,'known');
+    await created.run();assert.equal(before-balance(),40200);assert.deepEqual(h.calls,['text','video','video']);
+  } finally {setConfig('supplier_cost_openlux',old);if(oldBase===undefined)delete process.env.YUNWU_BASE_URL;else process.env.YUNWU_BASE_URL=oldBase;}
+});
+
+test('组合视频缺一条回执不按剩余部分扣费，免费补查后复用成片结算', async () => {
+  const old=getConfig('supplier_cost_openlux',null),oldBase=process.env.YUNWU_BASE_URL;
+  try {
+    process.env.YUNWU_BASE_URL='https://api.openlux.ai/v1';setConfig('supplier_cost_openlux',{enabled:true,basis:'upstream_debit'});
+    const h=harness(), originalGenerate=h.runtime.generateFn, originalSubmit=h.runtime.submitSegment;
+    h.runtime.generateFn=async params=>{const r=await originalGenerate(params);r.usage.supplierCosts=[walletReceipt('native-late-script',0.5)];return r;};
+    h.runtime.submitSegment=async params=>{const r=await originalSubmit(params);return {...r,providerRequestId:`native-late-${r.taskId}`};};
+    let receiptReady=false;
+    h.runtime.supplierRequestCost=async ({requestId,model})=>requestId.endsWith('3')&&!receiptReady
+      ? {status:'pending',requestId,model}:walletReceipt(requestId,1);
+    const before=balance(),created=await create(h.runtime), id=created.response.jobId;await created.run();
+    assert.equal(job(id).status,'成功');assert.equal(snapshot(id).billing.state,'pending_reconciliation');
+    assert.equal(job(id).credits,null);assert.equal(held(id).status,'held');assert.equal(before-balance(),held(id).held_credits);
+    receiptReady=true;
+    const {createVoicedSalesVideoRecovery}=await import('../src/engines/ai-sales-video-voiced-recovery.js');
+    const recovery=await runWithTenant(1,()=>createVoicedSalesVideoRecovery({actor,jobId:id,runtime:{...h.runtime,verifyExistingResult:async()=>true}}));
+    await recovery.run();
+    assert.equal(snapshot(id).billing.state,'settled');assert.equal(job(id).credits,500);
+    assert.equal(before-balance(),500);assert.equal(snapshot(id).billing.costYuan,2.5);
+    assert.deepEqual(h.calls,['text','video','video'],'补查不能重新收费生成');
+  } finally {setConfig('supplier_cost_openlux',old);if(oldBase===undefined)delete process.env.YUNWU_BASE_URL;else process.env.YUNWU_BASE_URL=oldBase;}
 });
 
 after(() => {

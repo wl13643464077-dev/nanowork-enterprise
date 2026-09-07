@@ -143,6 +143,10 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
     finite(provider.inputTokens) != null && finite(provider.outputTokens) != null
       ? finite(provider.inputTokens) + finite(provider.outputTokens)
       : 0;
+  const mediaProvider = provider.kind === "media" || provider.media === true;
+  const providerInvocationEvidence = mediaProvider
+    ? Number(provider.attempts) > 0
+    : providerTokens > 0;
   const checks = [
     check(
       "single_sentence_demand",
@@ -180,8 +184,7 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
       provider.invocationValid === true &&
         provider.mode === "api" &&
         text(provider.model).length > 0 &&
-        Number(provider.inputTokens) > 0 &&
-        Number(provider.outputTokens) > 0,
+        providerInvocationEvidence,
       provider.invocationValid === true
         ? "verified_real_provider_invocation"
         : "缺少真实API模式、模型或正数输入/输出token",
@@ -191,6 +194,7 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
         inputTokens: Number(provider.inputTokens) || 0,
         outputTokens: Number(provider.outputTokens) || 0,
         attempts: Number(provider.attempts) || 0,
+        kind: mediaProvider ? "media" : "text",
       },
     ),
     check(
@@ -276,7 +280,7 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
         input.outputRecorded === true &&
         input.executionRecorded === true &&
         input.feeEvidenceRecorded === true &&
-        providerTokens > 0,
+        (providerTokens > 0 || (mediaProvider && Number(provider.attempts) > 0)),
       input.inputRecorded !== true
         ? "输入记录缺失"
         : input.outputRecorded !== true
@@ -285,7 +289,7 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
             ? "执行终态/执行力证据缺失"
             : input.feeEvidenceRecorded !== true
               ? "provider成本或客户账本费用证据缺失"
-              : providerTokens <= 0
+              : providerTokens <= 0 && !(mediaProvider && Number(provider.attempts) > 0)
                 ? "token使用量不是正数"
                 : "input_output_execution_and_fee_evidence_present",
       {
@@ -294,6 +298,7 @@ export function evaluateUnifiedAcceptanceGate(input = {}) {
         executionRecorded: input.executionRecorded === true,
         feeEvidenceRecorded: input.feeEvidenceRecorded === true,
         providerTokens,
+        providerKind: mediaProvider ? "media" : "text",
       },
     ),
   ];
@@ -339,7 +344,16 @@ export function businessResultLooksLikeAbilityList(value) {
   // unresolved placeholder on its own; never reject a substantive result just
   // because it transparently records a missing fact.
   const unresolvedOnly = body.length < 120 && UNRESOLVED_OUTPUT.test(body);
-  return body.length > 0 && !ABILITY_ONLY.test(body) && !unresolvedOnly;
+  const abilityLabel = ABILITY_ONLY.test(body);
+  // A substantive role report may legitimately contain a section named
+  // “岗位—任务—能力矩阵”. Treat that label as a rejection only when the
+  // entire body is effectively a short capability sheet; a long report with
+  // judgments, actions, owners, deadlines or verification criteria is a
+  // business result even if it also carries a capability matrix.
+  const substantive =
+    body.length >= 1000 &&
+    /(?:经营判断|核心判断|下一步|执行动作|建议|计划|截止|负责人|验收标准|风险|处置)/u.test(body);
+  return body.length > 0 && (!abilityLabel || substantive) && !unresolvedOnly;
 }
 
 export { ABILITY_ONLY, UNRESOLVED_OUTPUT, PUBLIC_INFO_USER_QUESTION };

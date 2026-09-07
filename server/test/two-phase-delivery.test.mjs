@@ -61,47 +61,29 @@ test("生成与原子落库成功后才结算，并返回真实 settled 状态",
   });
 });
 
-test("requirePositiveApiUsage 在 persist 前拦截真实 API 零用量并释放预授权", async () => {
+test("供应商漏报用量时先保存正文，保留待结算状态且不重新生成", async () => {
   const events = [];
-  await assert.rejects(
-    executeHeldDelivery({
-      hold,
-      generate: async () => {
-        events.push("generate");
-        return {
-          text: "供应商返回了正文但未返回用量",
-          usage: { inputTokens: 0, outputTokens: 0 },
-          model: "m",
-          mode: "api",
-        };
-      },
-      persist: () => {
-        events.push("persist");
-        assert.fail("零用量必须在落库前拦截");
-      },
-      settle: () => assert.fail("零用量不得结算为已交付"),
-      release: () => {
-        events.push("release");
-        return { credits: 0, balance: 100 };
-      },
-      settlement: (output) => ({
-        usage: output.usage,
-        model: output.model,
-        aiMode: output.mode,
-      }),
-      requirePositiveApiUsage: true,
-    }),
-    (error) => {
-      assert.equal(error.code, "BILLING_USAGE_MISSING");
-      assert.equal(error.status, 409);
-      assert.equal(error.retryable, false);
-      assert.equal(error.deliveryPhase, "validate_billing");
-      assert.equal(error.billing.state, "released");
-      assert.equal(error.billing.chargedCredits, 0);
-      return true;
+  const result = await executeHeldDelivery({
+    hold,
+    generate: async () => {
+      events.push("generate");
+      return { text: "供应商返回了正文但未返回用量", usage: { inputTokens: 0, outputTokens: 0 }, model: "m", mode: "api" };
     },
-  );
-  assert.deepEqual(events, ["generate", "release"]);
+    persist: output => { events.push("persist"); return { id: 101, body: output.text }; },
+    settle: () => assert.fail("缺少计费凭据不能结算"),
+    release: () => assert.fail("已交付正文不当成最终失败"),
+    refund: () => assert.fail("已交付正文不退款"),
+    settlement: (output, delivery) => {
+      assert.equal(delivery.id, 101, "先保存成果，再判断费用");
+      return { usage: output.usage, model: output.model, aiMode: output.mode };
+    },
+    requirePositiveApiUsage: true,
+  });
+  assert.deepEqual(events, ["generate", "persist"]);
+  assert.equal(result.delivery.body, "供应商返回了正文但未返回用量");
+  assert.equal(result.billing.state, "pending_reconciliation");
+  assert.equal(result.billing.chargedCredits, null);
+  assert.equal(result.billing.heldCredits, 30);
 });
 
 for (const failingPhase of ["generate", "persist"]) {

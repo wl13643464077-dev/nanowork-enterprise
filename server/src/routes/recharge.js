@@ -2,9 +2,10 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import { q, db, getTenant, runWithTenant, curTenant } from '../db.js';
 import { logOp, requireRole, notify, safeJsonParse } from '../util.js';
-import { balanceOfTenant, creditTenant, estimateCreditEquivalents, budgetSummary } from '../engines/credits.js';
-import { paymentChannels, createPayment, queryPayment, closePayment } from '../engines/payment.js';
-import { applyPlanForPaidOrderInTransaction, planSummary } from '../engines/plan.js';
+import { estimateCreditEquivalents, budgetSummary } from '../engines/credits.js';
+import { paymentChannels, createPayment, queryPayment, closePayment, yuanToFen } from '../engines/payment.js';
+import { applyPlanForPaidOrderInTransaction, creditPaidOrderInTransaction, snapshotPackageForOrder, planSummary, seatSummary } from '../engines/plan.js';
+import { seatRequestForOrder, cancelSeatRequestForOrder, orderWithSeatMetadata } from '../engines/seat-requests.js';
 
 // 在线支付扩展列（幂等迁移：首次用到时补齐，不改 db.js）
 let payColumnsReady = false;
@@ -17,6 +18,7 @@ export function ensurePayColumns() {
     ['qr_url', 'TEXT'],             // 收款二维码内容（code_url / qr_code）
     ['pay_expire_at', 'TEXT'],      // 二维码过期时间（ISO）
     ['pay_trade_no', 'TEXT'],       // 网关交易号（transaction_id / trade_no）
+    ['package_snapshot_json', 'TEXT'], // 新订单冻结购买条件，旧订单保持 NULL
   ]) {
     if (!existing.has(col)) db.exec(`ALTER TABLE recharge_orders ADD COLUMN ${col} ${def}`);
   }
@@ -26,16 +28,27 @@ export function ensurePayColumns() {
 // 支付回调幂等入账（微信/支付宝共用；也是平台超管手工确认的同一记账口径 creditTenant）。
 // 幂等范式与 content.js 发布登记一致：BEGIN IMMEDIATE 锁内重查状态 + 条件更新，
 // 订单号 UNIQUE + 状态机「待支付→已支付」单向迁移 = 同一订单重复回调只入账一次。
-export function settlePaidOrder({ orderNo, channelName, tradeNo = '', paidFen }) {
+export function settlePaidOrder({ orderNo, channel, channelName, tradeNo = '', paidFen }) {
   ensurePayColumns();
   let outcome;
   db.exec('BEGIN IMMEDIATE');
   try {
     const o = q.get('SELECT * FROM recharge_orders WHERE order_no = ?', String(orderNo || ''));
     if (!o) throw Object.assign(new Error(`充值订单不存在：${orderNo}`), { status: 404 });
+    if (seatRequestForOrder(o.id)) throw Object.assign(new Error('席位增额首版仅支持平台核对线下收款凭据，不能由在线支付回调确认'), { status: 409, code: 'SEAT_ORDER_OFFLINE_ONLY' });
+    if (!['wechat', 'alipay'].includes(channel) || o.pay_channel !== channel) {
+      throw Object.assign(new Error('支付通道与原订单不符，请平台核对'), { status: 409 });
+    }
+    if (typeof tradeNo !== 'string' || !tradeNo.trim() || tradeNo.length > 128) {
+      throw Object.assign(new Error('支付交易号缺失或无效，拒绝入账'), { status: 400 });
+    }
+    if ((o.pay_trade_no && o.pay_trade_no !== tradeNo)
+      || q.get('SELECT id FROM recharge_orders WHERE pay_channel=? AND pay_trade_no=? AND id<>?', channel, tradeNo, o.id)) {
+      throw Object.assign(new Error('支付交易号与已记录订单冲突，请平台核对'), { status: 409 });
+    }
     // 金额校验：回调实付金额（分）必须与订单应付一致，防“1分钱买万元套餐”类伪造
-    const expectFen = Math.round(Number(o.price_yuan) * 100);
-    if (!Number.isSafeInteger(paidFen) || paidFen !== expectFen) {
+    const expectFen = yuanToFen(o.price_yuan);
+    if (!Number.isSafeInteger(paidFen) || paidFen <= 0 || paidFen !== expectFen) {
       throw Object.assign(new Error(`回调金额不符：订单 ${o.order_no} 应付 ${expectFen} 分，回调实付 ${paidFen} 分，拒绝入账`), { status: 400 });
     }
     if (o.status === '已支付') {
@@ -47,12 +60,7 @@ export function settlePaidOrder({ orderNo, channelName, tradeNo = '', paidFen })
       throw Object.assign(new Error(`订单 ${o.order_no} 当前状态为「${o.status}」，不能自动入账，请平台人工核对`), { status: 409 });
     }
     // 年度套餐订单 credits 可能为 0（不含积分）：购买积分为 0 时不记 recharge 流水，只生效套餐与赠送积分
-    const bal = Number(o.credits) > 0
-      ? creditTenant({
-        tenantId: o.tenant_id, delta: Number(o.credits), userId: o.created_by,
-        feature: `充值到账·${o.package_name}`, note: `订单 ${o.order_no}`, manageTransaction: false,
-      })
-      : { balance: balanceOfTenant(o.tenant_id) };
+    const bal = creditPaidOrderInTransaction(o);
     // 套餐订单：同一事务内写 plan_code/到期日/席位并入账赠送积分（顺延逻辑见 engines/plan.js）
     const plan = applyPlanForPaidOrderInTransaction(o);
     const updated = q.run(`UPDATE recharge_orders SET status='已支付', paid_at=datetime('now','localtime'), pay_method=?, pay_trade_no=? WHERE id=? AND status='待支付'`,
@@ -126,6 +134,7 @@ r.get('/balance', (req, res) => {
   res.json({
     credits: t.credits ?? 0, totalRecharged: t.total_recharged ?? 0, totalSpent: spent,
     plan: t.id ? planSummary(t) : null, planLabel: t.plan, tenantName: t.name, logs,
+    seatSummary: t.id ? seatSummary(t.id, req.user.id) : null,
     // 月度 AI 预算摘要（与 /auth/me 同源，字段见 engines/credits.js budgetSummary）
     budget: t.id ? budgetSummary(t) : null,
   });
@@ -138,6 +147,11 @@ r.post('/orders', async (req, res) => {
   const { packageId, channel } = req.body || {};
   const pkg = q.get('SELECT * FROM recharge_packages WHERE id = ? AND enabled = 1', packageId);
   if (!pkg) return res.status(400).json({ error: '套餐不存在或已下架' });
+  let snapshot;
+  try {
+    snapshot = JSON.stringify(snapshotPackageForOrder(pkg));
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  ensurePayColumns();
   const tid = req.user.tenant_id || 1;
   const orderNo = `R${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
   const channels = paymentChannels();
@@ -152,10 +166,10 @@ r.post('/orders', async (req, res) => {
     let result;
     try {
       result = q.run(`INSERT INTO recharge_orders(
-        order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel,pay_method
-      ) VALUES(?,?,?,?,?,?, '待支付', ?,?,?)`,
+        order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel,pay_method,package_snapshot_json
+      ) VALUES(?,?,?,?,?,?, '待支付', ?,?,?,?)`,
       orderNo, tid, pkg.id, pkg.name, pkg.price_yuan, pkg.total_credits, req.user.id,
-      chosen.channel, chosen.name);
+      chosen.channel, chosen.name, snapshot);
     } catch (error) {
       console.error(`[recharge] 本地订单预写失败 order=${orderNo}：`, error?.message || error);
       safePaymentAudit(req.user, '在线支付本地预写失败', `order=${orderNo};channel=${chosen.channel}`);
@@ -247,9 +261,9 @@ r.post('/orders', async (req, res) => {
       expireAt: pay.expireAt, status: '待支付',
     });
   }
-  const result = q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by)
-    VALUES(?,?,?,?,?,?, '待支付', ?)`, orderNo, tid, pkg.id, pkg.name, pkg.price_yuan, pkg.total_credits, req.user.id);
-  logOp(req.user, '充值中心', '提交充值订单', `${pkg.name} ¥${pkg.price_yuan}`);
+  const result = q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,package_snapshot_json)
+    VALUES(?,?,?,?,?,?, '待支付', ?,?)`, orderNo, tid, pkg.id, pkg.name, pkg.price_yuan, pkg.total_credits, req.user.id, snapshot);
+  safePaymentAudit(req.user, '提交充值订单', `${pkg.name} ¥${pkg.price_yuan}`);
   res.json({
     id: result.lastInsertRowid, orderNo, package: pkg,
     payGuide: '请通过对公转账或扫描门店收款码完成支付，备注订单号；平台确认到账后积分自动到账（通常5-30分钟）。',
@@ -281,7 +295,7 @@ r.get('/orders/:orderNo/status', async (req, res) => {
       try {
         const gw = await queryPayment(o.pay_channel, orderNo);
         if (gw.paid) {
-          settlePaidOrder({ orderNo, channelName: `${CHANNEL_DISPLAY[o.pay_channel] || o.pay_channel}（对账查得）`, tradeNo: gw.tradeNo, paidFen: gw.paidFen });
+          settlePaidOrder({ orderNo, channel: o.pay_channel, channelName: `${CHANNEL_DISPLAY[o.pay_channel] || o.pay_channel}（对账查得）`, tradeNo: gw.tradeNo, paidFen: gw.paidFen });
           o = fetchOrder();
         } else if (gw.closed) {
           q.run(`UPDATE recharge_orders SET status='已取消' WHERE order_no=? AND tenant_id=? AND status='待支付'`, orderNo, tid);
@@ -315,15 +329,20 @@ r.get('/orders/:orderNo/status', async (req, res) => {
 r.get('/orders', (req, res) => {
   const tid = req.user.tenant_id || 1;
   res.json(q.all(`SELECT o.*, u.name created_name FROM recharge_orders o LEFT JOIN users u ON u.id = o.created_by
-    WHERE o.tenant_id = ? ORDER BY o.id DESC LIMIT 50`, tid));
+    WHERE o.tenant_id = ? ORDER BY o.id DESC LIMIT 50`, tid).map(orderWithSeatMetadata));
 });
 
 // 取消未支付订单
 r.post('/orders/:id/cancel', async (req, res) => {
+  ensurePayColumns();
   const tid = req.user.tenant_id || 1;
   const order = q.get(`SELECT id, order_no, status, pay_channel FROM recharge_orders
     WHERE id=? AND tenant_id=?`, req.params.id, tid);
   if (!order) return res.status(404).json({ error: '订单不存在' });
+  if (seatRequestForOrder(order.id)) {
+    try { return res.json({ ok: true, ...cancelSeatRequestForOrder(req.user, order.id) }); }
+    catch (error) { return res.status(error.status || 500).json({ error: error.status ? error.message : '席位申请取消失败，请稍后重试', code: error.code || 'SEAT_REQUEST_ERROR' }); }
+  }
   if (order.status !== '待支付') {
     return res.status(409).json({ error: `订单当前状态为“${order.status}”，不能取消` });
   }

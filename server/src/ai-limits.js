@@ -47,6 +47,8 @@ export const AI_GENERATION_ROUTES = {
   advisor: [{ method: 'POST', pattern: /^\/(chat|dispatch)$/ }],
   content: [
     { method: 'POST', pattern: /^\/(generate(-ppt|-image|-video)?|daily-pack)$/ },
+    { method: 'POST', pattern: /^\/ai-xhs-note\/?$/i },
+    { method: 'POST', pattern: /^\/native-chat\/sessions\/\d+\/(messages|confirm)\/?$/i },
     { method: 'POST', pattern: /^\/automations\/[^/]+\/run$/ },
     { method: 'POST', pattern: /^\/pipelines\/?$/i },
     {

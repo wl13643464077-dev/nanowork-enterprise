@@ -1,5 +1,6 @@
 import { db, q, curTenant, getTenant, getTenantConfig, DEFAULT_PLAN_PACKAGE } from '../db.js';
 import { creditTenant } from './credits.js';
+import { yuanToFen } from './payment.js';
 import { notify } from '../util.js';
 
 // ===== 年度套餐 / 计划模型（A4）=====
@@ -64,11 +65,48 @@ export function seatUsage(tenantId = curTenant()) {
   )?.n || 0;
   return { limit, used };
 }
-export function assertSeatAvailable(tenantId = curTenant()) {
+export function primaryAccountFor(tenantId = curTenant()) {
+  const tenant = getTenant(Number(tenantId));
+  if (!tenant) return null;
+  if (tenant.primary_user_id != null) return q.get(`SELECT id,username,name,role,status FROM users
+    WHERE id=? AND tenant_id=? AND role!='platform_super'`, tenant.primary_user_id, tenant.id) || null;
+  // 与迁移相同的唯一性规则，只读兼容迁移后导入的旧企业；绝不选择多个老板中的某一个。
+  const candidates = q.all(`SELECT id,username,name,role,status FROM users
+    WHERE tenant_id=? AND role='boss' AND status='启用' LIMIT 2`, tenant.id);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+export function primaryUserIdFor(tenantId = curTenant()) {
+  return primaryAccountFor(tenantId)?.id ?? null;
+}
+export function seatSummary(tenantId = curTenant(), userId = null) {
+  const tid = Number(tenantId);
+  const tenant = getTenant(tid);
+  if (!tenant) return null;
+  const primaryAccount = primaryAccountFor(tid);
+  const seats = seatUsage(tid);
+  const primaryEnabled = primaryAccount?.status === '启用';
+  const purchasedExtraSeats = Number(q.get(`SELECT COALESCE(SUM(additional_seats),0) n
+    FROM seat_requests WHERE tenant_id=? AND status='applied'`, tid)?.n || 0);
+  const subSeatLimit = seats.limit == null ? null : Math.max(0, seats.limit - 1);
+  const subSeatsUsed = Math.max(0, seats.used - (primaryEnabled ? 1 : 0));
+  return {
+    primaryAccount, primaryAssignmentRequired: !primaryAccount,
+    includedPrimarySeats: 1, includedSubSeats: 4, purchasedExtraSeats,
+    legacyExtraSeats: seats.limit == null ? null : Math.max(0, seats.limit - 5 - purchasedExtraSeats),
+    seatLimit: seats.limit, seatsUsed: seats.used, subSeatLimit, subSeatsUsed,
+    availableSubSeats: subSeatLimit == null ? null : Math.max(0, subSeatLimit - subSeatsUsed),
+    canRequestAdditionalSeats: tenant.status === '已开通' && primaryEnabled && primaryAccount?.role === 'boss'
+      && Number(primaryAccount.id) === Number(userId) && seats.limit != null,
+  };
+}
+export function assertSeatAvailable(tenantId = curTenant(), { userId = null } = {}) {
   const { limit, used } = seatUsage(tenantId);
-  if (limit != null && used >= limit) {
+  const summary = seatSummary(tenantId);
+  // 主位始终保留；停用主账号或尚未确认主账号，均不能多开一个免费副账号。
+  if (userId != null && Number(userId) === Number(summary?.primaryAccount?.id)) return { limit, used };
+  if (summary?.subSeatLimit != null && summary.subSeatsUsed >= summary.subSeatLimit) {
     throw Object.assign(
-      new Error(`当前套餐含 ${limit} 个账号，已用 ${used} 个；停用旧账号或联系升级`),
+      new Error(`当前可用副账号 ${summary.subSeatLimit} 个，已用 ${summary.subSeatsUsed} 个；可停用旧副账号，或由主账号申请增额并在付款确认后开通`),
       { status: 409, code: 'SEAT_LIMIT_REACHED', seatLimit: limit, seatsUsed: used },
     );
   }
@@ -93,6 +131,7 @@ export function planSummary(tenantOrId, today = localDate()) {
     daysLeft,
     bonusCredits: pkg?.bonus_credits ?? null,
     validDays: pkg?.valid_days ?? null,
+    seats: seatSummary(t.id),
   };
 }
 
@@ -123,14 +162,14 @@ export function activatePlanForTenant({
   const startedAt = rolledOver ? (t.plan_started_at || today) : today;
   const expiresAt = rolledOver ? addDays(String(t.plan_expires_at).slice(0, 10), validDays) : addDays(today, validDays);
   const bonus = Math.max(0, Math.floor(Number(pkg.bonus_credits) || 0));
-  const seatLimit = pkg.seat_limit == null ? null : Number(pkg.seat_limit);
+  const seatLimit = t.seat_limit == null ? null : Number(t.seat_limit);
 
   if (manageTransaction) db.exec('BEGIN IMMEDIATE');
   let bonusResult = null;
   try {
-    q.run(`UPDATE tenants SET plan_code=?, plan=?, plan_started_at=?, plan_expires_at=?, plan_status='active'
-      ${seatLimit != null ? ', seat_limit=?' : ''} WHERE id=?`,
-    pkg.code || `pkg-${pkg.id}`, pkg.name, startedAt, expiresAt, ...(seatLimit != null ? [seatLimit] : []), tid);
+    // 套餐只管理有效期和积分；新企业基础 5 席已在注册时设置，续费不得抹去已付增额或历史权益。
+    q.run(`UPDATE tenants SET plan_code=?, plan=?, plan_started_at=?, plan_expires_at=?, plan_status='active' WHERE id=?`,
+    pkg.code || `pkg-${pkg.id}`, pkg.name, startedAt, expiresAt, tid);
     if (bonus > 0) {
       const userId = billingUserFor(tid, operatorUserId);
       if (!userId) throw Object.assign(new Error('租户没有可用于赠送积分归属的账号'), { status: 409 });
@@ -151,10 +190,68 @@ export function activatePlanForTenant({
   };
 }
 
-// 支付成功 / 人工确认到账的共用入口：订单对应套餐为 plan 时生效套餐（在调用方事务内执行）
+// 新订单在创建时冻结购买条件；旧订单没有快照时沿用原有记录，不追溯改账。
+export function snapshotPackageForOrder(pkg) {
+  const kind = pkg?.kind || 'credits';
+  const priceFen = yuanToFen(pkg?.price_yuan);
+  const fields = ['base_credits', 'bonus_credits', 'total_credits'];
+  if (!['credits', 'plan'].includes(kind) || fields.some(key => !Number.isSafeInteger(pkg[key]) || pkg[key] < 0 || pkg[key] > 1_000_000_000)) {
+    throw Object.assign(new Error('套餐积分配置无效，请联系平台核对'), { status: 400 });
+  }
+  if ((kind === 'credits' && (pkg.base_credits !== priceFen || pkg.total_credits !== pkg.base_credits + pkg.bonus_credits))
+    || (kind === 'plan' && pkg.total_credits !== pkg.base_credits)) {
+    throw Object.assign(new Error('套餐价格与购买积分不一致；1元对应100购买积分，赠送须单独列明'), { status: 400 });
+  }
+  if (kind === 'plan' && (!Number.isInteger(pkg.valid_days) || pkg.valid_days < 1 || pkg.valid_days > 3650)) {
+    throw Object.assign(new Error('套餐有效期无效'), { status: 400 });
+  }
+  return { version: 1, id: pkg.id, code: pkg.code ?? null, name: pkg.name, kind,
+    price_yuan: priceFen / 100, base_credits: pkg.base_credits, bonus_credits: pkg.bonus_credits,
+    total_credits: pkg.total_credits, valid_days: pkg.valid_days ?? null, seat_limit: pkg.seat_limit ?? null };
+}
+
+export function packageForPaidOrder(order) {
+  if (order?.package_snapshot_json != null) {
+    let pkg;
+    try {
+      pkg = JSON.parse(order.package_snapshot_json);
+      if (pkg?.version !== 1) throw new Error('version');
+      snapshotPackageForOrder(pkg);
+      if (pkg.id !== order.package_id || pkg.name !== order.package_name
+        || yuanToFen(pkg.price_yuan) !== yuanToFen(order.price_yuan) || pkg.total_credits !== order.credits) throw new Error('mismatch');
+    } catch {
+      throw Object.assign(new Error('订单购买快照不完整或与订单不符，请平台核对'), { status: 409 });
+    }
+    return pkg;
+  }
+  return order?.package_id ? q.get('SELECT * FROM recharge_packages WHERE id = ?', order.package_id) : null;
+}
+
+export function creditPaidOrderInTransaction(order, { operatorUserId = null } = {}) {
+  yuanToFen(order.price_yuan);
+  const pkg = packageForPaidOrder(order);
+  const declaredBonus = order.package_snapshot_json != null && pkg?.kind === 'credits' ? pkg.bonus_credits : 0;
+  const purchasedCredits = Number(order.credits) - declaredBonus;
+  if (!Number.isSafeInteger(purchasedCredits) || purchasedCredits < 0) {
+    throw Object.assign(new Error('订单购买积分无效，请平台核对'), { status: 409 });
+  }
+  const userId = operatorUserId ?? order.created_by;
+  let balance = getTenant(order.tenant_id)?.credits ?? 0;
+  if (purchasedCredits > 0) {
+    balance = creditTenant({ tenantId: order.tenant_id, delta: purchasedCredits, userId,
+      feature: `充值到账·${order.package_name}`, note: `订单 ${order.order_no}`, manageTransaction: false }).balance;
+  }
+  if (declaredBonus > 0) {
+    balance = creditTenant({ tenantId: order.tenant_id, delta: declaredBonus, userId, kind: 'bonus', aiMode: 'bonus',
+      feature: '充值赠送积分', note: `订单 ${order.order_no}（已列明赠送积分）`, manageTransaction: false }).balance;
+  }
+  return { balance };
+}
+
+// 支付成功 / 人工确认到账的共用入口：按冻结套餐生效（在调用方事务内执行）
 export function applyPlanForPaidOrderInTransaction(order, { operatorUserId = null, now = new Date() } = {}) {
   if (!order?.package_id) return null;
-  const pkg = q.get('SELECT * FROM recharge_packages WHERE id = ?', order.package_id);
+  const pkg = packageForPaidOrder(order);
   if (!pkg || pkg.kind !== 'plan') return null;
   return activatePlanForTenant({
     tenantId: order.tenant_id, pkg, operatorUserId: operatorUserId ?? order.created_by, orderNo: order.order_no,

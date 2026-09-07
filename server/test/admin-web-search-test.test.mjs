@@ -89,7 +89,7 @@ q.run(`INSERT INTO tenants(id,name,status,credits)
   VALUES(1,'联网路由测试企业','已开通',10000)
   ON CONFLICT(id) DO UPDATE SET name=excluded.name,status=excluded.status`);
 const bossId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
-  VALUES('admin-web-search-boss','unused','联网验收老板','boss','启用',1)`).lastInsertRowid);
+  VALUES('admin-web-search-boss','unused','联网验收老板','platform_super','启用',1)`).lastInsertRowid);
 const boss = q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', bossId);
 
 function makeApp() {

@@ -65,6 +65,17 @@ test('CommandPalette把权威或历史待对账状态统一显示为业务暂不
   }
 });
 
+test('不采纳是用户选择，搜索结果保留原稿状态且不覆盖真实待对账', () => {
+  for (const fixture of [
+    { status: '已驳回' },
+    { status: '已驳回', delivery: { canUse: false, presentationKey: 'rejected' } },
+    { status: '已驳回', delivery: { displayStatus: '未采纳（原稿已保留）', canUse: false } },
+  ]) assert.equal(commandPaletteContentStatus(fixture), '未采纳（原稿已保留）');
+  assert.equal(commandPaletteContentStatus({ status: '已驳回', delivery: {
+    canUse: false, billing: { state: 'pending_reconciliation' },
+  } }), COMMAND_PALETTE_RECONCILIATION_STATUS);
+});
+
 test('CommandPalette搜索结果调用统一状态投影，不再直接拼接数据库raw状态', () => {
   const source = read('web/src/components/CommandPalette.tsx');
   assert.match(source, /import \{ commandPaletteContentStatus \} from '\.\/commandPaletteContentStatus\.js'/u);

@@ -845,18 +845,6 @@
   font-size: var(--font-1);
 }
 
-.m-report .md-body {
-  font-size: var(--font-2);
-  line-height: 1.75;
-  word-break: break-word;
-}
-
-.m-report .md-body table {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
 .m-fold {
   margin-top: var(--space-2);
   border: 1px solid var(--ui-border);

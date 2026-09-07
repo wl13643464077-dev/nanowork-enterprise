@@ -72,6 +72,7 @@ const EMPLOYEE_GENERATION_ENDPOINTS = Object.freeze({
   ppt: '/api/content/generate-ppt',
   sales_video_plan: '/api/content/ai-sales-video',
   sales_video_generation: '/api/content/ai-sales-video',
+  xhs_note_generation: '/api/content/ai-xhs-note',
 });
 
 function connectorBusinessEndpoint(employeeIdx, connector) {

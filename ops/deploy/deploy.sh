@@ -131,7 +131,9 @@ cleanup_on_error() {
 trap cleanup_on_error EXIT
 
 # 以 / 开头的模式只匹配仓库根下的同名目录（docs/artifacts 等文档目录不受影响）
-RSYNC_EXCLUDES=(--exclude node_modules --exclude '/server/data' --exclude '/server/.env' --exclude '.env' \
+RSYNC_EXCLUDES=(--exclude node_modules --exclude '/server/data' --exclude '.env*' \
+  --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' --exclude '*.sqlite*' \
+  --exclude '/server/backups' --exclude '/server/tmp' --exclude '/server/server' --exclude '/node:sqlite' --exclude '/交付' \
   --exclude '/desktop' --exclude '.git' --exclude '/backups' --exclude '/artifacts' --exclude '/provision-output' \
   --exclude '/web/node_modules' --exclude '/desktop/release')
 
@@ -262,9 +264,9 @@ fi
 log "7/12 数据库迁移"
 if [[ -f "${NANOWORK_DB_PATH}" ]]; then
   if [[ -d "${RELEASE_DIR}/scripts/migrations" ]]; then
-    run_as_app env NANOWORK_DB="${NANOWORK_DB_PATH}" MIGRATE_SNAPSHOT_DIR="${MIGRATE_SNAPSHOT_DIR_VALUE}" \
+    run_as_app env NANOWORK_DB="${NANOWORK_DB_PATH}" NANOWORK_DATA_DIR="${DATA_DIR}" MIGRATE_SNAPSHOT_DIR="${MIGRATE_SNAPSHOT_DIR_VALUE}" \
       "${NODE_BIN}" "${RELEASE_DIR}/scripts/migrate.mjs" status
-    run_as_app env NANOWORK_DB="${NANOWORK_DB_PATH}" MIGRATE_SNAPSHOT_DIR="${MIGRATE_SNAPSHOT_DIR_VALUE}" \
+    run_as_app env NANOWORK_DB="${NANOWORK_DB_PATH}" NANOWORK_DATA_DIR="${DATA_DIR}" MIGRATE_SNAPSHOT_DIR="${MIGRATE_SNAPSHOT_DIR_VALUE}" \
       "${NODE_BIN}" "${RELEASE_DIR}/scripts/migrate.mjs" up
     ok "版本化迁移完成（initSchema/migrateV2 的内建迁移会在服务启动时自动执行）"
   else

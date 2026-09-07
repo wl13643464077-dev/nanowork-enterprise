@@ -1,6 +1,11 @@
 import { Router } from 'express';
-import { q, curTenant, getTenant } from '../db.js';
+import { db, q, curTenant, getTenant, getConfig, setConfig } from '../db.js';
 import { logOp } from '../util.js';
+import {
+  platformDefaultProviderId,
+  platformProviderAvailability,
+  withPlatformProvider,
+} from '../engines/ai-provider-selection.js';
 import {
   routing,
   routingSources,
@@ -62,19 +67,66 @@ function catalogWithPricing() {
   return { text: decorate('text'), image: decorate('image'), vision: decorate('vision'), video: decorate('video') };
 }
 
-function routingPayload(tid) {
-  const override = tenantRoutingOverride(tid);
-  return {
-    tenantId: tid,
-    effective: routing(tid),
-    sources: routingSources(tid),
-    override: override ? override.routing : null,
-    overrideUpdatedBy: override?.updatedBy ?? null,
-    overrideUpdatedAt: override?.updatedAt ?? null,
-    defaults: defaultRouting(),
-    roles: TEXT_ROUTING_ROLES.map((role) => ({ role, label: TEXT_ROLE_LABELS[role] || role })),
-    catalog: catalogWithPricing(),
-  };
+// ===== 双供应商：企业只选择供应商与模型，平台 Key 永不下发 =====
+const tenantProviderKey = tid => `ai_provider_tenant_${Number(tid)}`;
+const publicProviders = () => platformProviderAvailability()
+  .map(item => ({ id: item.id, label: item.label, available: item.available === true }));
+
+// 企业显式选择（sys_config），未选择时为 null（跟随平台默认）。
+function tenantProviderOverride(tid) {
+  const value = getConfig(tenantProviderKey(tid), null);
+  return publicProviders().some(item => item.id === value) ? value : null;
+}
+
+// 允许查看/保存的供应商：只接受两家已定义 ID；保存时还必须已配置平台 Key。
+function requestedProvider(value, { mustBeAvailable = false } = {}) {
+  if (value === undefined || value === null || value === '') return null;
+  const id = String(value).trim();
+  const item = publicProviders().find(entry => entry.id === id);
+  if (!item) throw Object.assign(new Error('不支持的 AI 供应商，只能选择 OpenLux 或 360 智脑'), { status: 400, code: 'AI_PROVIDER_INVALID' });
+  if (mustBeAvailable && !item.available)
+    throw Object.assign(new Error(`平台尚未配置 ${item.label} 的 API Key，企业暂不能切换到该供应商`), { status: 409, code: 'AI_PROVIDER_UNAVAILABLE' });
+  return id;
+}
+
+// 预览某一家时，路由/目录/来源都在该供应商上下文里计算；GET 不改任何配置。
+function routingPayload(tid, providerId = selectedProviderIdOutsidePreview(tid)) {
+  return withPlatformProvider(providerId, () => {
+    const override = tenantRoutingOverride(tid);
+    return {
+      tenantId: tid,
+      providerId,
+      effectiveProvider: selectedProviderIdOutsidePreview(tid),
+      providerOverride: tenantProviderOverride(tid),
+      defaultProvider: platformDefaultProviderId(),
+      providers: publicProviders(),
+      effective: routing(tid),
+      sources: routingSources(tid),
+      override: override ? override.routing : null,
+      overrideUpdatedBy: override?.updatedBy ?? null,
+      overrideUpdatedAt: override?.updatedAt ?? null,
+      defaults: defaultRouting(),
+      roles: TEXT_ROUTING_ROLES.map((role) => ({ role, label: TEXT_ROLE_LABELS[role] || role })),
+      catalog: catalogWithPricing(),
+    };
+  });
+}
+
+// 企业实际生效的供应商 = 显式选择 → 平台默认；与当前预览上下文无关。
+function selectedProviderIdOutsidePreview(tid) {
+  return tenantProviderOverride(tid) || platformDefaultProviderId();
+}
+
+// 保存一家的岗位模型偏好时保留另一家的配置；旧的单层 routing_json 归入当时生效的供应商。
+function mergedProviderProfiles(tid, providerId, normalized) {
+  const raw = tenantRoutingOverride(tid)?.rawRouting;
+  const legacyOwner = selectedProviderIdOutsidePreview(tid);
+  const profiles = raw?.providerProfiles && typeof raw.providerProfiles === 'object' && !Array.isArray(raw.providerProfiles)
+    ? { ...raw.providerProfiles }
+    : raw && Object.keys(raw).length ? { [legacyOwner]: raw } : {};
+  if (Object.keys(normalized).length) profiles[providerId] = normalized;
+  else delete profiles[providerId];
+  return profiles;
 }
 
 // 校验并规范化租户路由覆盖：只接受 text(按角色)/image/vision/video/videoDefault，值必须在白名单内。
@@ -98,7 +150,7 @@ function normalizeTenantRouting(input) {
       if (!isAllowedModel('text', model)) {
         throw Object.assign(new Error(`${TEXT_ROLE_LABELS[role] || role} 的文本模型「${model}」不在允许清单内`), { status: 400 });
       }
-      text[role] = String(model);
+      text[role] = model.trim();
     }
     if (Object.keys(text).length) out.text = text;
   }
@@ -108,14 +160,14 @@ function normalizeTenantRouting(input) {
     if (!isAllowedModel(kind, value)) {
       throw Object.assign(new Error(`${kind === 'image' ? '图片' : '识图'}模型「${value}」不在允许清单内`), { status: 400 });
     }
-    out[kind] = String(value);
+    out[kind] = value.trim();
   }
   if (input.video !== undefined && input.video !== null) {
     if (!Array.isArray(input.video)) throw Object.assign(new Error('video 必须是模型清单数组'), { status: 400 });
     const video = [];
     for (const id of input.video) {
       if (!isAllowedModel('video', id)) throw Object.assign(new Error(`视频模型「${id}」不在允许清单内`), { status: 400 });
-      if (!video.includes(String(id))) video.push(String(id));
+      if (!video.includes(id.trim())) video.push(id.trim());
     }
     if (video.length) out.video = video;
   }
@@ -123,53 +175,93 @@ function normalizeTenantRouting(input) {
     if (!isAllowedModel('video', input.videoDefault)) {
       throw Object.assign(new Error(`默认视频模型「${input.videoDefault}」不在允许清单内`), { status: 400 });
     }
-    out.videoDefault = String(input.videoDefault);
+    out.videoDefault = input.videoDefault.trim();
   }
   return out;
 }
 
 // —— 模型路由 ——
+// GET ?provider= 只预览该供应商下的目录、默认与本企业保存过的偏好，不改任何配置。
 r.get('/model-routing', (req, res) => {
-  res.json(routingPayload(curTenant()));
+  const tid = curTenant();
+  let providerId;
+  try { providerId = requestedProvider(req.query?.provider) || selectedProviderIdOutsidePreview(tid); }
+  catch (error) { return res.status(error.status || 400).json({ error: error.message, code: error.code }); }
+  res.json(routingPayload(tid, providerId));
 });
 
+function resetTenantRouting(tid) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    q.run('DELETE FROM tenant_model_routing WHERE tenant_id = ?', tid);
+    q.run('DELETE FROM sys_config WHERE key = ?', tenantProviderKey(tid));
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw error;
+  }
+}
+
+// PUT {provider, routing}：供应商选择与该家的岗位模型同一事务生效，另一家的偏好原样保留。
+// PUT {reset:true}：清空企业供应商选择与全部模型覆盖，恢复平台默认。
 r.put('/model-routing', (req, res) => {
   const tid = curTenant();
   const body = req.body || {};
+  if ((body.routing !== undefined || body.reset !== undefined || body.provider !== undefined)
+    && Object.keys(body).some(key => !['routing', 'reset', 'provider'].includes(key))) {
+    return res.status(400).json({ error: '模型偏好仅接受 provider、routing 或 reset，不接受企业标识、Key 或地址配置' });
+  }
   if (body.reset === true) {
-    q.run('DELETE FROM tenant_model_routing WHERE tenant_id = ?', tid);
-    logOp(req.user, '管理后台', '恢复平台默认模型路由', `tenant#${tid}`);
+    resetTenantRouting(tid);
+    logOp(req.user, '管理后台', '恢复平台默认模型路由', `tenant#${tid}（含供应商选择）`);
     return res.json({ ok: true, ...routingPayload(tid) });
   }
+  let providerId;
   let normalized;
   try {
-    normalized = normalizeTenantRouting(body.routing ?? body);
+    providerId = requestedProvider(body.provider, { mustBeAvailable: true }) || selectedProviderIdOutsidePreview(tid);
+    // 模型白名单必须按目标供应商的目录校验，而不是当前环境残留的那一家。
+    normalized = withPlatformProvider(providerId, () => normalizeTenantRouting(body.routing ?? (body.provider !== undefined ? {} : body)));
   } catch (error) {
-    return res.status(error.status || 400).json({ error: error.message });
+    return res.status(error.status || 400).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
   }
-  if (!Object.keys(normalized).length) {
-    q.run('DELETE FROM tenant_model_routing WHERE tenant_id = ?', tid);
-    logOp(req.user, '管理后台', '清空企业模型路由覆盖', `tenant#${tid}`);
-    return res.json({ ok: true, ...routingPayload(tid) });
+  const previousProvider = selectedProviderIdOutsidePreview(tid);
+  const profiles = withPlatformProvider(providerId, () => mergedProviderProfiles(tid, providerId, normalized));
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (Object.keys(profiles).length) {
+      q.run(`INSERT INTO tenant_model_routing(tenant_id,routing_json,updated_by,updated_at)
+        VALUES(?,?,?,datetime('now','localtime'))
+        ON CONFLICT(tenant_id) DO UPDATE SET routing_json=excluded.routing_json, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+      tid, JSON.stringify({ providerProfiles: profiles }), req.user?.id ?? null);
+    } else {
+      q.run('DELETE FROM tenant_model_routing WHERE tenant_id = ?', tid);
+    }
+    if (providerId === platformDefaultProviderId() && body.provider === undefined) {
+      /* 未显式选择供应商时不写入选择，继续跟随平台默认 */
+    } else {
+      setConfig(tenantProviderKey(tid), providerId);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw error;
   }
-  q.run(`INSERT INTO tenant_model_routing(tenant_id,routing_json,updated_by,updated_at)
-    VALUES(?,?,?,datetime('now','localtime'))
-    ON CONFLICT(tenant_id) DO UPDATE SET routing_json=excluded.routing_json, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
-  tid, JSON.stringify(normalized), req.user?.id ?? null);
   const parts = [
+    previousProvider !== providerId && `供应商 ${previousProvider}→${providerId}`,
     normalized.text && `文本(${Object.keys(normalized.text).map((k) => TEXT_ROLE_LABELS[k] || k).join('/')})`,
     normalized.image && '图片',
     normalized.vision && '识图',
     (normalized.video || normalized.videoDefault) && '视频',
   ].filter(Boolean).join('+');
-  logOp(req.user, '管理后台', '修改企业模型路由', parts || '（空）');
+  logOp(req.user, '管理后台', '修改企业模型路由', parts || `（${providerId} 空偏好）`);
   res.json({ ok: true, ...routingPayload(tid) });
 });
 
 r.delete('/model-routing', (req, res) => {
   const tid = curTenant();
-  q.run('DELETE FROM tenant_model_routing WHERE tenant_id = ?', tid);
-  logOp(req.user, '管理后台', '恢复平台默认模型路由', `tenant#${tid}`);
+  resetTenantRouting(tid);
+  logOp(req.user, '管理后台', '恢复平台默认模型路由', `tenant#${tid}（含供应商选择）`);
   res.json({ ok: true, ...routingPayload(tid) });
 });
 

@@ -150,6 +150,7 @@ function providerBillingOf(invocation) {
 function providerBillingAllowsDependentCall(billing) {
   if (!billing) return true;
   return (
+    billing.automaticRetryAllowed !== false &&
     billing.pendingReconciliation !== true &&
     TERMINAL_PROVIDER_BILLING_STATES.has(billing.state)
   );
@@ -858,7 +859,9 @@ export async function executeContentSpecialHandlerRuntime({
         },
       };
       throw runtimeFailure(
-        `授权素材账务尚未终结（state=${materialBilling.state}），已在GPT Image 2补图前停止；不会叠加新的图片预授权，请先完成当前素材占扣对账后重试`,
+        materialBilling.automaticRetryAllowed === false
+          ? '授权素材本次未交付，用户积分已退回；供应商成本由平台核对，已停止自动付费补图，请确认后再发起新任务'
+          : `授权素材账务尚未终结（state=${materialBilling.state}），已在GPT Image 2补图前停止；不会叠加新的图片预授权，请先完成当前素材占扣对账后重试`,
         partialEvidence,
         409,
         materialBilling,

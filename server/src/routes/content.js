@@ -1,4 +1,9 @@
+import { selectedProviderId, withTaskProvider, providerForModel } from '../engines/ai-provider-selection.js';
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
+import { aggregateSupplierCosts } from '../engines/provider-cost-receipts.js';
 import { Router } from 'express';
+import { buildNativeContentSkillContext, compactNativeVideoSkillPrompt } from '../engines/native-content-skill-context.js';
+import { buildTaskFeedbackContext } from '../engines/task-feedback.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -37,6 +42,7 @@ import {
   holdCredits,
   settleHold,
   releaseHold,
+  refundHold,
   findHoldByRef,
   balanceOfTenant,
 } from '../engines/credits.js';
@@ -72,6 +78,7 @@ import {
   buildAiSalesVideoPlan,
   blockedAiSalesVideoResponse,
   executeAiSalesVideoPlan,
+  aiSalesVideoNeedsWeb,
 } from '../engines/ai-sales-video.js';
 import { MINIMAX_H3_MODEL, MINIMAX_HAILUO_MODELS } from '../engines/minimax-video.js';
 import {
@@ -84,7 +91,7 @@ import {
   waitForProviderVideo,
 } from '../engines/video-provider-download.js';
 import { recoverAiSalesVideoFromExistingTasks } from '../engines/ai-sales-video-recovery.js';
-import { createVoicedSalesVideoJob, voicedSalesVideoOptions, AI_SALES_VOICED_MODEL } from '../engines/ai-sales-video-native.js';
+import { createVoicedSalesVideoJob, voicedSalesVideoOptions, aiSalesVoicedModel } from '../engines/ai-sales-video-native.js';
 import { createVoicedSalesVideoRecovery } from '../engines/ai-sales-video-voiced-recovery.js';
 import {
   contentEmployeeByIdx,
@@ -208,7 +215,7 @@ function publicContentDelivery(row) {
     DELIVERY_REVIEW_PENDING: '已形成可验收产物，正在等待有权限的人员人工审阅',
     DELIVERY_HUMAN_APPROVAL_REQUIRED: '机器质检已通过，现可提交人工审阅；人工采纳前仅供内部预览',
     DELIVERY_APPROVAL_MISSING: '已形成可验收产物，但人工审阅单缺失；补建后才能进入人工审阅',
-    DELIVERY_APPROVAL_NOT_PASSED: '最近一次人工审阅未通过，原稿不能采用，需要按意见形成新修订稿',
+    DELIVERY_APPROVAL_NOT_PASSED: '本稿未采纳，原稿与审阅意见已保留',
     DELIVERY_STATUS_NOT_READY: '内容尚未完成生成、质检和必要的人工审阅',
   };
   const nextActionByCode = {
@@ -222,7 +229,7 @@ function publicContentDelivery(row) {
     DELIVERY_REVIEW_PENDING: '由有权限的人员完成人工审阅',
     DELIVERY_HUMAN_APPROVAL_REQUIRED: '提交人工审阅',
     DELIVERY_APPROVAL_MISSING: '补建人工审阅单后完成人工审阅',
-    DELIVERY_APPROVAL_NOT_PASSED: '按审阅意见返工并提交新修订稿',
+    DELIVERY_APPROVAL_NOT_PASSED: '可查看原稿；如需调整，可另存修订稿再审阅',
     DELIVERY_STATUS_NOT_READY: '完成生成和质检后再提交人工审阅',
   };
   let publicReason = reasonByCode[state.code] || state.reason || '';
@@ -267,7 +274,7 @@ function publicContentDelivery(row) {
     presentationKey = 'business_blocked';
     displayStatus = BUSINESS_DELIVERY_LABELS.businessBlocked;
   } else if (state.code === 'DELIVERY_APPROVAL_NOT_PASSED' || rawStatus === '已驳回') {
-    presentationKey = 'rework_required';
+    presentationKey = 'rejected';
     displayStatus = BUSINESS_DELIVERY_LABELS.reviewRejected;
   } else if (rawStatus === '草稿') {
     presentationKey = 'draft';
@@ -857,6 +864,7 @@ function contentConnectorExecution(
   connectorKind,
   task,
   tenantOverlay = connectorTenantOverlay(employee.idx),
+  userId,
 ) {
   const contract = CONTENT_CONNECTOR_CONTRACTS[connectorKind];
   if (!contract) throw automationError(`不支持内容连接器：${connectorKind}`);
@@ -864,6 +872,7 @@ function contentConnectorExecution(
     connectorKind,
     connectorContract: contract,
     tenantOverlay,
+    feedbackExperience: buildTaskFeedbackContext({ userId, employeeIdx: employee.idx, taskKind: 'content' }),
   });
   return {
     ...execution,
@@ -1822,6 +1831,7 @@ function automationExecution(employee, rule, trigger, profile, resolveRuntimeSet
     },
     {
       // B5 运行期能力说明：自动化链路不触发真联网检索，明确告知模型，避免自称已抓榜/已核验。
+      feedbackExperience: buildTaskFeedbackContext({ userId: rule.created_by, employeeIdx: employee.idx, taskKind: 'content' }),
       liveResearch: {
         configured: false,
         summary: '内容自动化不触发联网检索；需要实时来源请在内容员工工作台或流水线派活',
@@ -2643,6 +2653,8 @@ export async function executeContentAutomationRun({
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: activeHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(activeHold),
       generate: async () => {
         const builtHandlerContext = await buildHandlerContextFn({
           mode: 'solo',
@@ -3001,6 +3013,9 @@ export async function executeContentAutomationRun({
             resolveProviderAttemptFn: specialProviderAttemptStore.resolve,
             claimProviderAttemptFn: specialProviderAttemptStore.claim,
             persistProviderOutputFn: specialProviderAttemptStore.persist,
+            hasProviderDeliveryFn: ({ tenantId, attemptId }) => Boolean(q.get(`SELECT id
+              FROM content_automation_special_provider_attempts WHERE tenant_id=? AND attempt_id=?
+              AND output_json IS NOT NULL AND delivery_json IS NOT NULL`, tenantId, attemptId)),
             finalizeProviderAttemptFn: specialProviderAttemptStore.finalize,
           });
         }
@@ -3758,66 +3773,128 @@ function materialDeletePolicy(req, material) {
 
 // ===== BE-H1 视频任务异步终态记账 =====
 // 提交时只占扣（holdCredits，ref 指向 media_job），终态在此结算：
-// 成功 → 按提交时报价确认实扣；失败 → 全额退分并冲正流水。任意时刻 Σ流水 ≡ 余额变动 恒等。
-export function settleVideoJobSuccess(job, url) {
-  const hold = findHoldByRef('media_job', job.id, curTenant());
-  if (hold) {
-    try {
-      settleHold(hold, {
-        credits: hold.credits,
-        note: `视频任务${job.task_id || job.id}生成成功，确认实扣`,
-      });
-    } catch (e) {
-      console.error('[credits] 视频任务实扣结算失败，保留占扣待人工对账:', e?.message);
-    }
+// 360提交与轮询属于同一视频任务。保留每阶段证据，按回执ID去重，
+// 同一回执金额矛盾时继续待核实，不能用报价替代或把缺失金额记成0。
+function genericVideoEvidence(job, output = {}, phase = 'poll') {
+  const fresh = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), job.id);
+  if (!fresh) throw Object.assign(new Error('视频任务不存在或不属于当前企业'), { status: 404 });
+  const snapshot = safeJsonValue(fresh.snapshot_json, {}) || {};
+  const previous = snapshot.genericVideoProvider || {};
+  const event = { phase, taskId: output.taskId || fresh.task_id || null, model: output.model || fresh.model,
+    provider: output.providerId || output.provider || previous.provider || providerForModel(fresh.model),
+    ready: output.ready === true, status: output.status || null, url: output.ready ? output.url || fresh.url || null : null,
+    supplierCosts: Array.isArray(output.supplierCosts) ? output.supplierCosts : [] };
+  const events = Array.isArray(previous.events) ? [...previous.events] : [];
+  const fingerprint = value => JSON.stringify({ ...value, observedAt: undefined });
+  if (!events.some(value => fingerprint(value) === fingerprint(event))) events.push({ ...event, observedAt: new Date().toISOString() });
+  const known = new Map(); const pending = []; let conflicting = false;
+  for (const cost of events.flatMap(value => Array.isArray(value.supplierCosts) ? value.supplierCosts : [])) {
+    const id = cost?.costSource?.requestId || cost?.requestId || null;
+    if (cost?.status === 'known' && id) {
+      const existing = known.get(id);
+      if (existing && (existing.costYuanOverride !== cost.costYuanOverride
+        || existing.costSource?.provider !== cost.costSource?.provider)) conflicting = true;
+      else known.set(id, cost);
+    } else pending.push(cost);
   }
-  const materialIds = materialReferenceIdsFromSnapshot(job.snapshot_json);
-  recordMaterialReferences({
-    targetType: 'media_job',
-    targetId: Number(job.id),
-    materials: materialIds,
-    createdBy: Number(job.user_id) || 0,
+  const unresolved = pending.filter(cost => {
+    const id = cost?.costSource?.requestId || cost?.requestId || null;
+    return id ? !known.has(id) : known.size === 0;
   });
-  q.run(`UPDATE media_jobs SET status='成功', url=?, error=NULL WHERE tenant_id=? AND id=?`, url, curTenant(), job.id);
+  const supplierCosts = [...known.values(), ...unresolved,
+    ...(conflicting ? [{ status: 'pending', model: fresh.model, reason: 'conflicting_receipt' }] : [])];
+  const evidence = { ...previous, schemaVersion: 'nanowork.generic-video-provider/1', provider: event.provider,
+    events, supplierCosts,
+    ...(event.ready && event.url ? { result: { ready: true, url: event.url, taskId: event.taskId } } : {}) };
+  q.run('UPDATE media_jobs SET snapshot_json=? WHERE tenant_id=? AND id=?', JSON.stringify({ ...snapshot, genericVideoProvider: evidence }), curTenant(), job.id);
+  return { ...fresh, snapshot_json: JSON.stringify({ ...snapshot, genericVideoProvider: evidence }), evidence };
 }
 
-export function refundVideoJobFailure(job, reason = '云雾视频任务生成失败，请换模型或调整提示词后重试') {
+function storeGenericVideoBilling(jobId, state) {
+  const row = q.get('SELECT snapshot_json FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), jobId);
+  const snapshot = safeJsonValue(row?.snapshot_json, {}) || {};
+  q.run('UPDATE media_jobs SET snapshot_json=?,credits=? WHERE tenant_id=? AND id=?',
+    JSON.stringify({ ...snapshot, genericVideoProvider: { ...(snapshot.genericVideoProvider || {}), billing: state } }),
+    state.chargedCredits ?? null, curTenant(), jobId);
+}
+
+// 成功先保存可交付视频，再按上游真实回执结算；金额缺失时产物仍可查看。
+export function settleVideoJobSuccess(job, url, output = {}) {
+  const current = genericVideoEvidence(job, { ...output, ready: true, url }, output.phase || 'poll');
+  q.run(`UPDATE media_jobs SET status='成功',url=?,error=NULL WHERE tenant_id=? AND id=?`, url, curTenant(), job.id);
   const hold = findHoldByRef('media_job', job.id, curTenant());
-  let note = reason;
+  let bill = current.evidence.billing || null;
   if (hold) {
     try {
-      releaseHold(hold, `视频任务${job.task_id || job.id}上游失败，${hold.credits}积分全额退回`);
+      const settled = settleHold(hold, {
+        credits: hold.credits,
+        ...(current.evidence.supplierCosts.length ? { usage: { supplierCosts: current.evidence.supplierCosts } } : {}),
+        note: `视频任务${job.task_id || job.id}生成成功，确认实扣`,
+      });
+      bill = twoPhaseBillingSummary({ state: 'settled', hold, settled, note: '视频已生成，按已核实供应商费用结算。' });
+    } catch (e) {
+      console.error('[credits] 视频任务实扣结算失败，保留占扣待人工对账:', e?.message);
+      bill = twoPhaseBillingSummary({ state: 'pending_reconciliation', hold, error: e,
+        note: '视频已保留，可预览和下载；供应商实际费用待核实，预授权尚未实扣。' });
+    }
+  }
+  if (bill) storeGenericVideoBilling(job.id, bill);
+  const materialIds = materialReferenceIdsFromSnapshot(current.snapshot_json);
+  try { recordMaterialReferences({ targetType: 'media_job', targetId: Number(job.id), materials: materialIds,
+    createdBy: Number(current.user_id) || 0 }); }
+  catch (error) { console.error('[media] 视频已保留，素材关联待补充:', error?.code || 'MATERIAL_LINK_FAILED'); }
+  return bill;
+}
+
+export function refundVideoJobFailure(job, reason = '视频任务生成失败，请调整提示词后重试', output = {}) {
+  const current = genericVideoEvidence(job, output, output.phase || 'poll');
+  if (current.status === '成功' && current.url) return current.evidence.billing || null;
+  const hold = findHoldByRef('media_job', job.id, curTenant());
+  let note = reason;
+  let bill = current.evidence.billing || null;
+  if (hold) {
+    try {
+      const cost = aggregateSupplierCosts(current.evidence.supplierCosts);
+      const refunded = refundHold(hold, { note: `视频任务${job.task_id || job.id}上游失败，积分全额退回`,
+        ...(cost?.status === 'known' ? { supplierCostYuan: cost.costYuanOverride, costSource: cost.costSource } : {}) });
       note = `${reason}；已退回${hold.credits}积分`;
-      q.run(`UPDATE media_jobs SET credits=0 WHERE tenant_id=? AND id=?`, curTenant(), job.id);
+      bill = twoPhaseBillingSummary({ state: 'released', hold, settled: refunded, note });
+      storeGenericVideoBilling(job.id, bill);
     } catch (e) {
       console.error('[credits] 视频任务退分失败，留待人工对账:', e?.message);
     }
   }
   q.run(`UPDATE media_jobs SET status='失败', error=? WHERE tenant_id=? AND id=?`, note, curTenant(), job.id);
+  return bill;
 }
 
-async function refreshProcessingVideoJobs(rows = []) {
-  if (!yunwuAvailable()) return false;
+export async function refreshProcessingVideoJobs(rows = []) {
   let changed = false;
-  const targets = rows.filter(j => j.kind === 'video' && j.status === '处理中' && j.task_id).slice(0, 8);
+  const targets = rows.filter(j => j.kind === 'video' && j.task_id && (j.status === '处理中'
+    || (j.status === '成功' && safeJsonValue(j.snapshot_json, {})?.genericVideoProvider?.billing?.state === 'pending_reconciliation'))).slice(0, 8);
   for (const job of targets) {
     try {
+      const saved = safeJsonValue(job.snapshot_json, {}) || {};
+      await withTaskProvider({ model: job.model, providerId: saved.providerId || saved.genericVideoProvider?.provider }, async () => {
+      if (!yunwuAvailable()) return;
       const out = await fetchVideoTask({
         taskId: job.task_id,
         model: job.model,
       });
-      if (!out) continue;
+      if (!out) return;
       if (out.ready) {
-        settleVideoJobSuccess(job, out.url);
+        settleVideoJobSuccess(job, out.url, out);
         changed = true;
       } else if (out.status === 'Fail') {
-        refundVideoJobFailure(job);
+        refundVideoJobFailure(job, undefined, out);
         changed = true;
       } else {
+        genericVideoEvidence(job, out);
         const note = `任务${job.task_id}仍在生成中，状态：${out.status || '处理中'}；请稍后刷新`;
         q.run(`UPDATE media_jobs SET error=? WHERE tenant_id=? AND id=?`, note, curTenant(), job.id);
         changed = true;
       }
+      });
     } catch {
       // 查询失败不把任务置为失败，避免因上游短暂抖动误伤用户任务。
     }
@@ -3904,12 +3981,24 @@ r.get('/crew', (req, res) => {
         ...publicEmployee
       } = employee;
       const capabilitySummary = contentCrewCapabilitySummary(employee.idx);
+      let skillCount = capabilitySummary.skillCount;
+      let skillCountUnavailable = false;
+      if ([10, 11].includes(employee.idx)) {
+        try {
+          // 原生岗位使用本企业当前启用的技能，不能进入跨请求的静态目录缓存。
+          skillCount = buildNativeContentSkillContext(employee.idx).skills.length;
+        } catch {
+          // 单个岗位的技能配置异常不影响浏览其他员工；仍展示可确认的出厂技能数。
+          skillCountUnavailable = true;
+        }
+      }
       return {
         ...(canViewInternalProfile ? employee : publicEmployee),
         // 目录卡片摘要：能力/技能数量对全员展示；能力名与内部档案同级，
         // 仅管理角色可见（与既有 crew 脱敏契约一致）。
         capabilityCount: capabilitySummary.capabilityCount,
-        skillCount: capabilitySummary.skillCount,
+        skillCount,
+        ...(skillCountUnavailable ? { skillCountUnavailable: true } : {}),
         capabilityNames: canViewInternalProfile ? capabilitySummary.capabilityNames : [],
         taskTypes: contentEmployeeTaskTypes(employee.idx),
         runtime: {
@@ -3936,7 +4025,8 @@ function contentCrewCapabilitySummary(idx) {
     summary = {
       capabilityCount: names.length,
       capabilityNames: names.slice(0, 4),
-      skillCount: profile.skills?.catalog?.length ?? 0,
+      skillCount: (profile.skills?.catalog?.length ?? 0)
+        + ([10, 11].includes(key) ? (profile.skills?.required?.length ?? 0) : 0),
     };
   } catch {
     /* 岗位未纳入统一员工对象时保持零摘要，不编数字 */
@@ -4568,7 +4658,7 @@ r.post('/generate', async (req, res) => {
           materialReferences,
         ),
         feedback: '本连接器只生成可审阅草稿；事实、价格、优惠、库存、食安和对外发布均须按岗位边界人工核验审批。',
-      }),
+      }, undefined, req.user.id),
       materialReferences,
     );
     precheckByRole(req.user.id, 'text', req.user.role);
@@ -4630,6 +4720,8 @@ r.post('/generate', async (req, res) => {
             try {
               const delivered = await executeHeldDelivery({
                 hold: queuedHold,
+                refund: refundHold,
+                hasDeliverable: () => hasStoredAiDelivery(queuedHold),
                 generate: () =>
                   generateContent({
                     type,
@@ -4773,6 +4865,8 @@ r.post('/generate', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: activeHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(activeHold),
       generate: () =>
         generateContent({
           type,
@@ -4874,7 +4968,7 @@ r.post('/generate-ppt', async (req, res) => {
           materialReferences,
         ),
         feedback: '演绎师HTML仍是岗位原生主产物；本次只调用PPT附加连接器，输出须经人工审阅并采纳后使用。',
-      }),
+      }, undefined, req.user.id),
       materialReferences,
     );
     precheckByRole(req.user.id, 'text', req.user.role);
@@ -4922,6 +5016,8 @@ r.post('/generate-ppt', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: activeHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(activeHold),
       generate: async () => {
         const out = await generateDeck({
           kind: 'ppt',
@@ -5121,7 +5217,7 @@ r.post('/generate-image', async (req, res) => {
           materialReferences,
         ),
         feedback: '只生成本次图片素材；品牌、菜品、价格、文字、版权与外发使用必须按多媒体师岗位边界人工核验审批。',
-      }),
+      }, undefined, req.user.id),
       materialReferences,
     );
     const model =
@@ -5187,6 +5283,8 @@ ${visualPrompt}
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: activeHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(activeHold),
       generate: async () => {
         const out = images.length
           ? await editImage({
@@ -5350,7 +5448,7 @@ function aiSalesVideoPriceConfigured(model) {
 
 function aiSalesVideoModelAllowed(model) {
   const id = String(model || '').trim();
-  if (id === AI_SALES_VOICED_MODEL) return true;
+  if (id === aiSalesVoicedModel()) return true;
   if (MINIMAX_HAILUO_MODELS.includes(id)) return true;
   return id === MINIMAX_H3_MODEL && miniMaxH3Enabled();
 }
@@ -5461,7 +5559,6 @@ function aiSalesVideoSnapshot(plan, {
   });
 }
 
-const AI_SALES_VIDEO_WEB_TRIGGER_RE = /(?:最新|实时|当前|官方|联网|热点|趋势|平台规则|竞品)/u;
 
 function aiSalesVideoGroundingEvidence({ brief, kb, web, webTriggered }) {
   const webResults = (Array.isArray(web?.results) ? web.results : [])
@@ -5537,7 +5634,7 @@ async function collectAiSalesVideoGrounding({ brief, role, runtime = {}, signal,
   } catch (error) {
     kb = { text: '', refs: [], degraded: true, mode: 'unavailable', error: error?.message };
   }
-  const webTriggered = AI_SALES_VIDEO_WEB_TRIGGER_RE.test(String(brief || ''));
+  const webTriggered = aiSalesVideoNeedsWeb(brief);
   let web = { ok: false, results: [], note: '未触发联网' };
   if (webTriggered) {
     try {
@@ -5643,6 +5740,7 @@ async function executeAiSalesVideoJob({
   runtime = {},
   employeeExecution,
   grounding,
+  skillContext,
 }) {
   let tempDir = null;
   let result = null;
@@ -5682,8 +5780,35 @@ async function executeAiSalesVideoJob({
         const images = model === MINIMAX_H3_MODEL
           ? providerImages
           : [providerImages[(Number(segment?.index || 1) - 1) % providerImages.length]];
+        // Hailuo's upstream adapter rejects long image/video descriptions even
+        // though the general Yunwu gateway accepts larger prompts. Keep the
+        // model-specific request compact while retaining the start of the
+        // business brief and fact-boundary instructions. Other video adapters
+        // keep the larger grounding envelope.
+        const isHailuo = /^MiniMax-Hailuo-/iu.test(String(model || ''));
+        const promptLimit = isHailuo ? 900 : 7000;
+        const baseProviderPrompt = isHailuo
+          // Keep tenant grounding in the audit snapshot, but do not forward
+          // the free-form knowledge-store text to Hailuo: its safety filter
+          // rejects otherwise valid jobs when unrelated retrieved text is
+          // appended to the visual description.
+          ? String(prompt || '').slice(0, promptLimit)
+          : `${prompt}\n\n${grounding.promptContext}`.slice(0, promptLimit);
+        const skillApplication = compactNativeVideoSkillPrompt(skillContext, baseProviderPrompt, { limit: promptLimit });
+        const providerPrompt = skillApplication.prompt;
+        employeeExecution.appliedSkills = {
+          ...skillContext.evidence,
+          injectionMode: 'compact_video_prompt',
+          appliedSkillIds: skillApplication.appliedSkillIds,
+          omittedSkillIds: skillApplication.omittedSkillIds,
+          providerPromptHashes: {
+            ...employeeExecution.appliedSkills?.providerPromptHashes,
+            [segment.index]: createHash('sha256').update(providerPrompt).digest('hex'),
+          },
+        };
+        persistProviderExecution(providerExecution);
         return submitSegment({
-          prompt: `${prompt}\n\n${grounding.promptContext}`.slice(0, 7000),
+          prompt: providerPrompt,
           model,
           images,
           duration: durationSeconds,
@@ -6120,13 +6245,15 @@ async function executeAiSalesVideoRecoveryJob({
   }
 }
 
-// AI带货员：H3使用2×15秒，海螺2.3使用3×10秒，服务器合成固定30秒竖版成片。
+// AI带货员：Wan原生有声默认15秒，明确选择30秒时使用两段；历史其他模型任务保持原恢复路径。
 // 路由在任何付费调用前校验凭证和后台核价，并一次性预授权全部分段上限。
 r.get('/ai-sales-video/options', async (req, res) => {
   try {
     const flags = getTenantConfig('feature_flags', {});
     if (flags['content.video'] && !flags['content.video'].includes(req.user.role)) return res.status(403).json({ error: '当前角色未开通带货视频' });
-    res.json(await voicedSalesVideoOptions(req.user, req.app?.locals?.aiSalesVideoRuntime || {}));
+    const durationSeconds = req.query.durationSeconds === undefined ? 15 : Number(req.query.durationSeconds);
+    if (![15, 30].includes(durationSeconds)) return res.status(400).json({ error: '请选择15秒或30秒视频' });
+    res.json(await voicedSalesVideoOptions(req.user, req.app?.locals?.aiSalesVideoRuntime || {}, { durationSeconds }));
   } catch (error) { res.status(error.status || 500).json({ error: '带货视频配置暂不可用，请稍后重试' }); }
 });
 
@@ -6141,7 +6268,7 @@ r.post('/ai-sales-video', async (req, res) => {
     const runtime = req.app?.locals?.aiSalesVideoRuntime || {};
     const brief = String(body.brief ?? body.prompt ?? '').trim();
     const model = String(
-      (body.mode === 'voiced' ? AI_SALES_VOICED_MODEL : body.model)
+      (body.mode === 'voiced' ? aiSalesVoicedModel() : body.model)
       || getTenantConfig('ai_sales_video', {})?.model
       || 'MiniMax-Hailuo-2.3',
     ).trim();
@@ -6182,9 +6309,9 @@ r.post('/ai-sales-video', async (req, res) => {
         ? body.dishNames.map(name => String(name || '').trim()).filter(Boolean).slice(0, 8)
         : [],
     });
-    if (model === AI_SALES_VOICED_MODEL) {
+    if (model === aiSalesVoicedModel()) {
       const created = await createVoicedSalesVideoJob({
-        actor: req.user, brief, references, grounding, voiceId: body.voiceId, audience: body.audience, quoteFingerprint: body.quoteFingerprint,
+        actor: req.user, brief, references, grounding, voiceId: body.voiceId, audience: body.audience, quoteFingerprint: body.quoteFingerprint, durationSeconds: body.durationSeconds,
         providerImages: [...attachments.map(aiSalesVideoAttachmentDataUrl), ...inline.map(image => image.dataUrl)], runtime,
       });
       res.status(202).json(created.response);
@@ -6192,9 +6319,11 @@ r.post('/ai-sales-video', async (req, res) => {
       return undefined;
     }
     const plan = buildAiSalesVideoPlan({ brief, references, model });
-    const nativeEmployeeProfile = buildContentEmployeeWorkbenchProfile(AI_SALES_VIDEO_EMPLOYEE.idx);
+    const skillContext = buildNativeContentSkillContext(AI_SALES_VIDEO_EMPLOYEE.idx, { userId: req.user.id });
+    const nativeEmployeeProfile = skillContext.profile;
     const employeeExecution = {
       ...nativeEmployeeProfile,
+      appliedSkills: { ...skillContext.evidence, injectionMode: 'compact_video_prompt', appliedSkillIds: [], providerPromptHashes: {} },
       selectedRuntime: {
         workflow: AI_SALES_VIDEO_WORKFLOW,
         model,
@@ -6223,7 +6352,7 @@ r.post('/ai-sales-video', async (req, res) => {
       employeeExecution,
       grounding: grounding.evidence,
     });
-    const promptHash = createHash('sha256').update(`${model}\n${brief}`, 'utf8').digest('hex');
+    const promptHash = createHash('sha256').update(`${model}\n${brief}\n${skillContext.evidence.promptHash}`, 'utf8').digest('hex');
     const jobR = q.run(
       `INSERT INTO media_jobs(
         user_id,kind,model,prompt,status,error,
@@ -6351,6 +6480,7 @@ r.post('/ai-sales-video', async (req, res) => {
       runtime,
       employeeExecution,
       grounding,
+      skillContext,
     })));
     return undefined;
   } catch (e) {
@@ -6595,7 +6725,7 @@ r.post('/generate-video', async (req, res) => {
           materialReferences,
         ),
         feedback: '视频只是多媒体师完整岗位能力之上的附加连接器；品牌、食安、版权、事实和外发使用必须人工核验审批。',
-      }),
+      }, undefined, req.user.id),
       materialReferences,
     );
     const m = model || routing().videoDefault;
@@ -6665,35 +6795,28 @@ ${vidStyle ? `平台视频补充规范：${vidStyle}` : ''}`;
       // 任务已提交成功：占扣移交异步结算（或即时结算），后续本地错误不再误退
       const settlingHold = hold;
       hold = null;
+      q.run(`UPDATE media_jobs SET status='处理中',url=?,task_id=? WHERE tenant_id=? AND id=?`,
+        out.ready ? out.url : null, out.taskId || null, curTenant(), jobR.lastInsertRowid);
+      const submittedJob = genericVideoEvidence({ id: jobR.lastInsertRowid }, out, 'submit');
       let bill;
       if (out.ready) {
-        try {
-          bill = settleHold(settlingHold, {
-            credits: settlingHold.credits,
-            note: '视频生成即时完成，确认实扣',
-          }) || {
-            credits: settlingHold.credits,
-            balance: settlingHold.balance,
-          };
-        } catch (settleError) {
-          console.error('[credits] 视频即时结算失败，保留预授权占扣待人工对账:', settleError?.message);
-          bill = {
-            credits: settlingHold.credits,
-            balance: settlingHold.balance,
-          };
-        }
+        bill = settleVideoJobSuccess(submittedJob, out.url, { ...out, phase: 'submit' });
+      } else if (out.status === 'Fail') {
+        bill = refundVideoJobFailure(submittedJob, undefined, { ...out, phase: 'submit' });
       } else {
         // 转异步：保持占扣，轮询到终态时结算/退分（见 settleVideoJobSuccess / refundVideoJobFailure）
-        bill = { credits: settlingHold.credits, balance: settlingHold.balance };
+        bill = twoPhaseBillingSummary({ state: 'held', hold: settlingHold,
+          note: '视频任务已提交，目前仅预授权；完成后按供应商实际费用结算。' });
+        storeGenericVideoBilling(jobR.lastInsertRowid, bill);
       }
       const note = `已提交任务${out.taskId ? `(${out.taskId})` : ''}，状态：${out.status || '处理中'}；视频生成需数分钟，稍后在列表刷新查看`;
       q.run(
         `UPDATE media_jobs SET status=?, url=?, task_id=?, credits=?, error=? WHERE id=?`,
-        out.ready ? '成功' : '处理中',
-        out.url,
+        out.ready ? '成功' : out.status === 'Fail' ? '失败' : '处理中',
+        out.ready ? out.url : null,
         out.taskId || null,
-        bill.credits,
-        out.ready ? null : note,
+        bill?.chargedCredits ?? null,
+        out.ready ? null : out.status === 'Fail' ? bill?.note || '视频生成失败，积分已退回' : note,
         jobR.lastInsertRowid,
       );
       const materialTrace = out.ready
@@ -6729,10 +6852,18 @@ ${vidStyle ? `平台视频补充规范：${vidStyle}` : ''}`;
       // 提交失败（未产生任何视频任务）：全额退回占扣，客户不为失败付费
       if (hold) {
         try {
-          releaseHold(hold, `视频任务提交失败（${String(e?.message || '').slice(0, 60)}），预授权全额退回`);
+          refundVideoJobFailure({ id: jobR.lastInsertRowid }, '视频任务提交失败，预授权全额退回',
+            { phase: 'submit_failed', model: m, supplierCosts: e?.supplierCosts || [] });
         } catch {
           /* 释放失败留待人工对账 */
         }
+      }
+      const persisted = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), jobR.lastInsertRowid);
+      if (!hold && persisted && (persisted.task_id || (persisted.status === '成功' && persisted.url))) {
+        return res.status(persisted.status === '成功' ? 200 : 202).json({ jobId: persisted.id,
+          taskId: persisted.task_id, url: persisted.url || null, status: persisted.status,
+          billing: safeJsonValue(persisted.snapshot_json, {})?.genericVideoProvider?.billing || null,
+          message: '视频任务已保存，请在任务历史中查看结果。' });
       }
       recordVideoModelFailure(m, e.message);
       q.run(
@@ -6961,6 +7092,7 @@ r.post('/daily-pack', async (req, res) => {
             feedback: '当前只完成本子任务，不得冒充三类日更内容均已完成；事实与对外发布仍须人工核验审批。',
           },
           dailyPackOverlay,
+          req.user.id,
         ),
         materialReferences,
       );
@@ -6981,6 +7113,8 @@ r.post('/daily-pack', async (req, res) => {
         itemHold = null;
         const delivered = await executeHeldDelivery({
           hold: activeHold,
+          refund: refundHold,
+          hasDeliverable: () => hasStoredAiDelivery(activeHold),
           generate: () =>
             generateContent({
               type,

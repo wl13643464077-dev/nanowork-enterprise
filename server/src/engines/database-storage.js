@@ -18,17 +18,34 @@ function usesWalHeader(databasePath) {
   } finally { fs.closeSync(descriptor); }
 }
 
-export function prepareDatabaseStorage({ databasePath, dataDirectory, protectDataDirectory = true }) {
+export function prepareDatabaseStorage({ databasePath, dataDirectory, protectDataDirectory = true,
+  trustedDataDirectory = process.env.NANOWORK_DATA_DIR || null }) {
   process.umask(0o077);
-  if (protectDataDirectory) ensurePrivateDataDirectory(dataDirectory);
+  const ownedDirectory = protectDataDirectory
+    ? ensurePrivateDataDirectory(dataDirectory, { trustedDirectory: trustedDataDirectory }) : null;
   if (databasePath === ':memory:') return;
   const absolute = path.resolve(databasePath);
-  if (!protectDataDirectory && insideDirectory(absolute, dataDirectory)) {
+  let realParent = null;
+  try { realParent = fs.realpathSync(path.dirname(absolute)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let realData = ownedDirectory;
+  if (!realData) {
+    try { realData = fs.realpathSync(dataDirectory); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (!protectDataDirectory && (insideDirectory(absolute, dataDirectory) ||
+    (realData && realParent && insideDirectory(realParent, realData)))) {
     throw new Error('Isolated test database must not use the application data directory');
+  }
+  if (ownedDirectory && realParent &&
+    (insideDirectory(absolute, dataDirectory) || insideDirectory(absolute, ownedDirectory)) &&
+    !insideDirectory(realParent, ownedDirectory)) {
+    throw new Error('Database directory must not escape the owned application data directory');
   }
   // The owned application directory is protected independently of NANOWORK_DB.
   // A custom database's containing directory is never changed.
-  const existing = ['', '-wal', '-shm', '-journal'].map(suffix => absolute + suffix).filter(file => fs.existsSync(file));
+  const existing = ['', '-wal', '-shm', '-journal'].map(suffix => absolute + suffix).filter(file => {
+    // existsSync follows links and misses a dangling malicious database/sidecar.
+    try { fs.lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  });
   if (process.platform === 'win32') {
     // SQLite deletes WAL/SHM on last close. Re-establish protected empty files
     // before each opener can put database bytes into them, preserving any hot WAL.

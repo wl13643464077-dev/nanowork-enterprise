@@ -56,6 +56,7 @@ type ToolRun = {
   inputSummary?: string;
   resultMd?: string;
   assumptions?: string[];
+  reviewSuggestions?: string[];
   evidence?: { label?: string; source?: string; url?: string }[];
   progress?: {
     phase?: string;
@@ -420,7 +421,8 @@ export default function Toolbox() {
   const [automationConfigs, setAutomationConfigs] = useState<
     Partial<Record<ToolboxAutomationKey, ToolboxAutomationConfig>>
   >({});
-  const [automationLoading, setAutomationLoading] = useState(true);
+  const [automationLoading, setAutomationLoading] = useState(false);
+  const [expandedAutomationKey, setExpandedAutomationKey] = useState<ToolboxAutomationKey | null>(null);
   const [automationError, setAutomationError] = useState('');
   const [automationSavingKey, setAutomationSavingKey] = useState<ToolboxAutomationKey | null>(null);
   const [automationRunningKey, setAutomationRunningKey] = useState<ToolboxAutomationKey | null>(null);
@@ -430,6 +432,9 @@ export default function Toolbox() {
   const active = useMemo(() => toolByKey(activeKey), [activeKey]);
   const requestedTool = params.get('tool');
   const textVideoStudioOpen = params.get('studio') === 'text-video';
+  const automationKey = textVideoStudioOpen ? null : automationKeyForTool(active.key);
+  const automationExpanded = automationKey != null && expandedAutomationKey === automationKey;
+  const automationConfig = automationKey ? automationConfigs[automationKey] : null;
 
   const loadAutomations = useCallback(async (quiet = false) => {
     if (!quiet) setAutomationLoading(true);
@@ -449,43 +454,50 @@ export default function Toolbox() {
     }
   }, []);
 
-  const loadRuns = useCallback(
-    (quiet = false) => {
-      if (!quiet) setLoadingRuns(true);
-      api
-        .get('/toolbox/runs?limit=20')
-        .then((data: any) => {
-          const nextRuns = Array.isArray(data) ? data : data.runs || [];
-          setRuns(nextRuns);
-          void loadAutomations(true);
-          setViewRun(current => {
-            if (!current) return null;
-            return nextRuns.find((item: ToolRun) => item.id === current.id) || current;
-          });
-        })
-        .catch(() => {
-          // 读取失败保留已有列表，避免“像从没跑过一样”的空白闪断。
-          if (!quiet) message.error('运行记录读取失败，可点“刷新”重试');
-        })
-        .finally(() => {
-          if (!quiet) setLoadingRuns(false);
+  const loadRuns = useCallback((quiet = false) => {
+    if (!quiet) setLoadingRuns(true);
+    api
+      .get('/toolbox/runs?limit=20')
+      .then((data: any) => {
+        const nextRuns = Array.isArray(data) ? data : data.runs || [];
+        setRuns(nextRuns);
+        setViewRun(current => {
+          if (!current) return null;
+          return nextRuns.find((item: ToolRun) => item.id === current.id) || current;
         });
-    },
-    [loadAutomations],
-  );
+      })
+      .catch(() => {
+        // 读取失败保留已有列表，避免“像从没跑过一样”的空白闪断。
+        if (!quiet) message.error('运行记录读取失败，可点“刷新”重试');
+      })
+      .finally(() => {
+        if (!quiet) setLoadingRuns(false);
+      });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) {
         void loadRuns();
-        void loadAutomations();
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [loadAutomations, loadRuns]);
+  }, [loadRuns]);
+
+  // 仅支持定时任务的工具读取一次状态；运行记录轮询不反复拉取或覆盖未保存配置。
+  useEffect(() => {
+    if (!automationKey) return undefined;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadAutomations();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [automationKey, loadAutomations]);
 
   const hasActiveRuns = runs.some(runIsActive);
   useEffect(() => {
@@ -1043,8 +1055,6 @@ export default function Toolbox() {
     );
   })();
 
-  const automationKey = automationKeyForTool(active.key);
-  const automationConfig = automationKey ? automationConfigs[automationKey] : null;
   const automationPanel = automationKey ? (
     <section className="toolbox-automation" aria-labelledby="toolbox-automation-title">
       <div className="toolbox-automation-head">
@@ -1254,7 +1264,6 @@ export default function Toolbox() {
                       <small>自动保存到工具运行记录</small>
                     </div>
                   </div>
-                  {automationPanel}
                   <Form form={form} layout="vertical" requiredMark={false} className="toolbox-form">
                     {fields}
                     <Alert
@@ -1275,6 +1284,28 @@ export default function Toolbox() {
                       </Button>
                     </div>
                   </Form>
+                  {automationKey && (
+                    <details
+                      key={automationKey}
+                      open={automationExpanded}
+                      onToggle={event => setExpandedAutomationKey(event.currentTarget.open ? automationKey : null)}
+                      style={{ marginTop: 16 }}
+                    >
+                      <summary style={{ cursor: 'pointer', color: 'var(--ui-text-2)', fontSize: 13 }}>
+                        自动执行设置
+                        <span style={{ marginLeft: 8, color: 'var(--ui-muted)' }}>
+                          {automationLoading
+                            ? '读取状态中…'
+                            : automationError
+                              ? '状态暂时不可用'
+                              : automationConfig?.enabled
+                                ? `已启用 · ${automationConfig.schedule}`
+                                : '按需开启'}
+                        </span>
+                      </summary>
+                      {automationExpanded && automationPanel}
+                    </details>
+                  )}
                 </>
               )}
             </>
@@ -1468,11 +1499,19 @@ export default function Toolbox() {
             {viewRun.error?.message && (
               <Alert type="error" showIcon message={viewRun.error.message} description={viewRun.error.code || ''} />
             )}
+            {viewRun.canUse && !!viewRun.reviewSuggestions?.length && (
+              <Alert
+                type="info"
+                showIcon
+                message="结果已生成，以下建议可按需优化"
+                description={viewRun.reviewSuggestions.join('；')}
+              />
+            )}
             {!viewRun.canUse && !runIsActive(viewRun) && (viewRun.provenance?.contract?.errors?.length ?? 0) > 0 && (
               <Alert
                 type="warning"
                 showIcon
-                message="差这些没过验收（本轮已退款，可免费重试）"
+                message="本次交付还有待处理项，请结合费用状态处理"
                 description={
                   <ul className="tool-result-quality-gaps">
                     {(viewRun.provenance?.contract?.errors || []).slice(0, 12).map((item, index) => (

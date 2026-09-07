@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { Router } from "express";
 import { db, q, runWithTenant } from "../db.js";
@@ -22,7 +22,7 @@ import {
   toolboxJobActive,
   TOOLBOX_JOB_TIMEOUT_MS,
 } from "../engines/toolbox-job-runner.js";
-import { toolboxResultQuality } from "../engines/toolbox-quality.js";
+import { toolboxDeliveryQuality } from "../engines/toolbox-quality.js";
 import { aiAvailable } from "../engines/ai.js";
 import { yunwuAvailable } from "../engines/yunwu.js";
 import {
@@ -30,6 +30,7 @@ import {
   estimateMaxCredits,
   holdCredits,
   releaseHold,
+  refundHold,
   settleHold,
 } from "../engines/credits.js";
 import { twoPhaseBillingSummary } from "../engines/two-phase-delivery.js";
@@ -516,8 +517,7 @@ function storedLeakageAuditClear(provenance, resultMd) {
   );
 }
 
-// 交付质检（toolboxResultQuality）已抽到 engines/toolbox-quality.js，
-// 与生成循环的定向返工共用同一套口径。
+// 普通质量缺项作为审阅建议；可使用状态继续核验真实产物与权威账务。
 
 function authoritativeBillingState(row, provenance, user) {
   if (
@@ -546,6 +546,7 @@ function authoritativeBillingState(row, provenance, user) {
     ? normalizedState(provenance.executionKind)
     : "text";
   const textExecution = expectedKind === "text";
+  const claimedState = normalizedState(provenance.billing?.state);
   const settledPositive = rows.filter(
     (item) =>
       item.hold_status === "settled" &&
@@ -572,7 +573,9 @@ function authoritativeBillingState(row, provenance, user) {
         Number(item.output_tokens) ===
           Number(provenance.usage?.outputTokens)) &&
       Number(item.hold_id) === Number(provenance.billing?.holdId) &&
-      Number(item.log_credits) === Number(provenance.billing?.chargedCredits),
+      (claimedState !== "settled" ||
+        Number(item.log_credits) ===
+          Number(provenance.billing?.chargedCredits)),
   );
   const released = rows.filter(
     (item) =>
@@ -594,7 +597,6 @@ function authoritativeBillingState(row, provenance, user) {
     settledPositive.length === 1 &&
     settledPositive.length + released.length === rows.length;
   const releasedCleanly = rows.length > 0 && released.length === rows.length;
-  const claimedState = normalizedState(provenance.billing?.state);
   const ledgerConflict =
     (rows.some(
       (item) =>
@@ -602,13 +604,6 @@ function authoritativeBillingState(row, provenance, user) {
     ) &&
       !settled) ||
     (claimedState === "settled" && !settled) ||
-    (settled &&
-      [
-        "held",
-        "unsettled",
-        "pending_reconciliation",
-        "pending_settlement",
-      ].includes(claimedState)) ||
     (claimedState === "released" && !releasedCleanly);
   return {
     settled,
@@ -616,13 +611,25 @@ function authoritativeBillingState(row, provenance, user) {
     pendingReconciliation:
       rows.some((item) => item.hold_status === "held") || ledgerConflict,
     ledgerConflict,
+    ...(settled
+      ? {
+          billing: {
+            ...jsonObject(provenance.billing),
+            state: "settled",
+            pendingReconciliation: false,
+            holdId: Number(settledPositive[0].hold_id),
+            chargedCredits: Number(settledPositive[0].settled_credits),
+            note: "工具结果已交付，实际用量已从账本确认结算。",
+          },
+        }
+      : {}),
   };
 }
 
 function storedRunDeliveryState(row, provenance, internalProfileLeakage, user) {
   const mode = normalizedState(provenance.mode, "unknown");
   const input = jsonObject(row.input_json);
-  const resultQuality = toolboxResultQuality(
+  const resultQuality = toolboxDeliveryQuality(
     row.tool_key,
     input,
     row.result_md,
@@ -641,7 +648,10 @@ function storedRunDeliveryState(row, provenance, internalProfileLeakage, user) {
     !internalProfileLeakage &&
     storedLeakageAuditClear(provenance, row.result_md) &&
     resultQuality.valid;
-  const verified = qualityValid && authoritativeBilling.settled;
+  const verified =
+    qualityValid &&
+    authoritativeBilling.settled &&
+    !authoritativeBilling.pendingReconciliation;
   // 质检失败后的预授权“释放”同样可能失败。只要账务明确处于待处理态，
   // 就必须优先显示待对账，不能因为质量无效而把冻结积分藏进普通失败状态。
   const needsReconciliation =
@@ -654,7 +664,13 @@ function storedRunDeliveryState(row, provenance, internalProfileLeakage, user) {
       BLOCKED_DELIVERY_MODES.has(mode) ||
       internalProfileLeakage ||
       jsonObject(provenance.contract).valid === false);
-  return { verified, needsReconciliation, qualityFailure };
+  return {
+    verified,
+    needsReconciliation,
+    qualityFailure,
+    reviewSuggestions: resultQuality.warnings,
+    billing: authoritativeBilling.billing,
+  };
 }
 
 function toolboxDeliveryContract(
@@ -768,17 +784,18 @@ function toolboxDeliveryContract(
   if (!String(resultMd || "").trim()) errors.push("工具产物正文为空");
   if (internalProfileLeakage?.detected)
     errors.push("工具产物触发内部档案泄漏质检");
-  errors.push(
-    ...toolboxResultQuality(definition.key, inputs, resultMd, {
-      strictActions: mode === "api",
-    }).errors,
-  );
+  const quality = toolboxDeliveryQuality(definition.key, inputs, resultMd, {
+    strictActions: mode === "api",
+  });
+  errors.push(...quality.errors);
   return {
     validator: "toolbox-delivery-contract",
     status: errors.length ? "invalid" : "valid",
     valid: errors.length === 0,
     requiresManualRepair: errors.length > 0,
     errors,
+    warnings: quality.warnings,
+    qualityValid: quality.qualityValid,
   };
 }
 
@@ -865,13 +882,21 @@ function toRun(row, user) {
           ? EXECUTION_FAILED_STATUS
           : BUSINESS_DELIVERY_LABELS.generating;
   const nextAction = deliveryState.verified
-    ? "查看并核对工具结果"
+    ? deliveryState.reviewSuggestions.length
+      ? "结果已生成，可直接使用，也可按建议自行优化"
+      : "查看并核对工具结果"
     : deliveryState.needsReconciliation
       ? RECONCILIATION_ACTION
       : row.status === "running"
         ? "等待生成完成"
         : `${RETRY_ACTION}；当前正文只作为审计记录`;
   const pcalState = latestPrivateCalendarState(row, user.tenant_id);
+  const provenance = visibleProvenance(row.provenance_json, user);
+  if (deliveryState.billing) {
+    provenance.billing = { ...deliveryState.billing };
+    if (!INTERNAL_PROFILE_ROLES.has(user?.role))
+      delete provenance.billing.requestedModel;
+  }
   return {
     id: row.id,
     toolKey: row.tool_key,
@@ -888,7 +913,7 @@ function toRun(row, user) {
     ),
     assumptions: jsonArray(row.assumptions_json),
     evidence: jsonArray(row.evidence_json),
-    provenance: visibleProvenance(row.provenance_json, user),
+    provenance,
     progress: jsonArray(row.progress_json),
     error: row.error_json ? jsonObject(row.error_json) : null,
     retryCount: Number(row.retry_count || 0),
@@ -911,6 +936,7 @@ function toRun(row, user) {
     displayStatus,
     verified: deliveryState.verified,
     canUse: deliveryState.verified,
+    reviewSuggestions: deliveryState.reviewSuggestions,
     nextAction,
     ...(internalProfileLeakage ? { internalProfileLeakage } : {}),
     createdAt: row.created_at,
@@ -962,6 +988,13 @@ function recordToolProgress(runId, tenantId, event) {
   );
 }
 
+function ownedToolboxRun(context) {
+  const row = q.get("SELECT * FROM tool_runs WHERE tenant_id=? AND id=?", context.user.tenant_id, context.runId);
+  return row && row.created_by === context.user.id
+    && Number(row.retry_count || 0) === Number(context.retryCount || 0)
+    && jsonObject(row.provenance_json).workerToken === context.workerToken ? row : null;
+}
+
 async function finalizeToolboxRun(context, draft) {
   const {
     input,
@@ -972,11 +1005,8 @@ async function finalizeToolboxRun(context, draft) {
     requestedModel,
     holdModel,
   } = context;
-  const storedBeforeFinish = q.get(
-    "SELECT provenance_json FROM tool_runs WHERE tenant_id=? AND id=?",
-    user.tenant_id,
-    runId,
-  );
+  const storedBeforeFinish = ownedToolboxRun(context);
+  if (!storedBeforeFinish || storedBeforeFinish.status !== "running") return;
   const automationSnapshot =
     context.automation ||
     jsonObject(storedBeforeFinish?.provenance_json).automation ||
@@ -998,6 +1028,7 @@ async function finalizeToolboxRun(context, draft) {
   const runStatus = contract.valid ? "done" : "failed";
   const provenance = {
     ...draft.provenance,
+    workerToken: context.workerToken,
     internalProfileLeakage,
     ...(internalProfileLeakage.detected
       ? {
@@ -1020,7 +1051,7 @@ async function finalizeToolboxRun(context, draft) {
       `UPDATE tool_runs SET
         status=?,execution_state=?,input_summary=?,result_md=?,assumptions_json=?,evidence_json=?,
         provenance_json=?,error_json=NULL,updated_at=datetime('now','localtime')
-      WHERE tenant_id=? AND id=? AND status='running'`,
+      WHERE tenant_id=? AND id=? AND status='running' AND json_extract(provenance_json,'$.workerToken')=?`,
       runStatus,
       runStatus,
       draft.inputSummary,
@@ -1030,6 +1061,7 @@ async function finalizeToolboxRun(context, draft) {
       JSON.stringify(provenance),
       user.tenant_id,
       runId,
+      context.workerToken,
     );
     if (Number(finished.changes) !== 1)
       throw new Error("工具运行未完成本次落库确认");
@@ -1069,12 +1101,15 @@ async function finalizeToolboxRun(context, draft) {
               aiMode: "api",
               note: "工具产物已落库并通过质检，按真实用量结算",
             })
-          : releaseHold(
-              context.hold,
-              internalProfileLeakage.detected
+          : (context.providerStarted ? refundHold(context.hold, {
+              note: internalProfileLeakage.detected
                 ? "工具结果触发内部档案泄漏质检，未形成正式交付并全额退回"
                 : "工具产物未通过交付门槛，未形成正式交付并全额退回",
-            );
+              assertRefundable: () => {
+                const current = ownedToolboxRun(context);
+                return current?.status === "failed" && !jsonObject(current.provenance_json).contract?.valid;
+              },
+            }) : releaseHold(context.hold, "工具未发起供应商调用，预授权退回"));
       if (!settled) throw new Error("工具箱预授权未完成本次结算");
       billing = {
         ...twoPhaseBillingSummary({
@@ -1115,7 +1150,7 @@ async function finalizeToolboxRun(context, draft) {
     phase: runStatus === "done" ? "completed" : "quality_failed",
     message:
       runStatus === "done"
-        ? "工具结果已通过质量门并完成结算"
+        ? "工具结果已生成并完成结算，可查看结果与优化建议"
         : "工具结果未通过质量门，预授权已处理",
   });
   logOp(
@@ -1129,13 +1164,21 @@ async function finalizeToolboxRun(context, draft) {
 
 async function failToolboxRun(context, error) {
   const { input, user, runId, requestedModel } = context;
+  const existing = ownedToolboxRun(context);
+  if (!existing || existing.status !== "running"
+    || jsonObject(existing.provenance_json).persisted === true) return;
   let failureBilling = context.initialBilling;
   if (context.hold) {
     try {
-      const released = releaseHold(
-        context.hold,
-        "工具箱后台任务未交付，预授权全额退回",
-      );
+      const released = context.providerStarted
+        ? refundHold(context.hold, {
+          note: "工具箱后台任务最终未交付，用户积分全退，供应商成本由平台承担",
+          assertRefundable: () => {
+            const current = ownedToolboxRun(context);
+            return current?.status === "running" && !jsonObject(current.provenance_json).persisted;
+          },
+        })
+        : releaseHold(context.hold, "工具未发起供应商调用，预授权退回");
       if (!released) throw new Error("工具箱预授权未完成本次释放");
       failureBilling = {
         ...twoPhaseBillingSummary({
@@ -1159,13 +1202,7 @@ async function failToolboxRun(context, error) {
     }
     context.hold = null;
   }
-  const existing = q.get(
-    "SELECT * FROM tool_runs WHERE tenant_id=? AND id=?",
-    user.tenant_id,
-    runId,
-  );
-  if (!existing || ["done", "failed"].includes(existing.execution_state))
-    return;
+  if (!ownedToolboxRun(context) || ownedToolboxRun(context).status !== "running") return;
   const failureProvenance = {
     ...jsonObject(existing.provenance_json),
     completionState: "failed",
@@ -1188,7 +1225,7 @@ async function failToolboxRun(context, error) {
   q.run(
     `UPDATE tool_runs SET status='failed',execution_state='failed',result_md='',
       assumptions_json='[]',evidence_json='[]',provenance_json=?,error_json=?,
-      updated_at=datetime('now','localtime') WHERE tenant_id=? AND id=?`,
+      updated_at=datetime('now','localtime') WHERE tenant_id=? AND id=? AND status='running' AND json_extract(provenance_json,'$.workerToken')=?`,
     JSON.stringify(failureProvenance),
     JSON.stringify({
       code: String(error?.code || "TOOLBOX_EXECUTION_FAILED").slice(0, 120),
@@ -1196,6 +1233,7 @@ async function failToolboxRun(context, error) {
     }),
     user.tenant_id,
     runId,
+    context.workerToken,
   );
   recordToolProgress(runId, user.tenant_id, {
     phase: "failed",
@@ -1220,6 +1258,10 @@ async function failToolboxRun(context, error) {
 }
 
 function enqueueToolboxContext(context) {
+  context.workerToken = randomUUID();
+  const row = q.get("SELECT provenance_json FROM tool_runs WHERE tenant_id=? AND id=?", context.user.tenant_id, context.runId);
+  q.run("UPDATE tool_runs SET provenance_json=? WHERE tenant_id=? AND id=?",
+    JSON.stringify({ ...jsonObject(row?.provenance_json), workerToken: context.workerToken }), context.user.tenant_id, context.runId);
   q.run(
     `UPDATE tool_runs SET execution_state=?,last_heartbeat_at=datetime('now','localtime'),
       timeout_at=datetime('now','+12 minutes'),updated_at=datetime('now','localtime')
@@ -1237,31 +1279,47 @@ function enqueueToolboxContext(context) {
 function buildToolboxStoreContext(tenantId) {
   try {
     const lines = [];
-    const soldout = db.prepare(
-      `SELECT DISTINCT d.name FROM dish_soldout_marks m JOIN dishes d ON d.id=m.dish_id
+    const soldout = db
+      .prepare(
+        `SELECT DISTINCT d.name FROM dish_soldout_marks m JOIN dishes d ON d.id=m.dish_id
        WHERE m.tenant_id=? AND m.date=? AND m.soldout=1
          AND m.id IN (SELECT MAX(id) FROM dish_soldout_marks WHERE tenant_id=? AND date=? GROUP BY dish_id)
        LIMIT 6`,
-    ).all(tenantId, today(), tenantId, today());
-    if (soldout.length) lines.push(`今日已沽清菜品：${soldout.map(row => row.name).join('、')}（选题避开或做成"手慢无"话题）`);
-    const badCategories = db.prepare(
-      `SELECT category, COUNT(*) n FROM store_reviews
+      )
+      .all(tenantId, today(), tenantId, today());
+    if (soldout.length)
+      lines.push(
+        `今日已沽清菜品：${soldout.map((row) => row.name).join("、")}（选题避开或做成"手慢无"话题）`,
+      );
+    const badCategories = db
+      .prepare(
+        `SELECT category, COUNT(*) n FROM store_reviews
        WHERE tenant_id=? AND rating<=3 AND category IS NOT NULL
          AND created_at >= datetime('now','localtime','-7 days')
        GROUP BY category ORDER BY n DESC LIMIT 2`,
-    ).all(tenantId);
+      )
+      .all(tenantId);
     if (badCategories.length) {
-      lines.push(`近7天差评集中在：${badCategories.map(row => `${row.category}(${row.n}条)`).join('、')}（内容里可主动展示对应改进，别踩雷区）`);
+      lines.push(
+        `近7天差评集中在：${badCategories.map((row) => `${row.category}(${row.n}条)`).join("、")}（内容里可主动展示对应改进，别踩雷区）`,
+      );
     }
     // 只统计生日雷达真正识别得了的格式（MM-DD / YYYY-MM-DD），避免「登记了 N 位」与雷达显示数对不上
-    const birthdayCount = db.prepare(
-      `SELECT COUNT(*) n FROM leads WHERE tenant_id=? AND birthday LIKE '%-%'
+    const birthdayCount =
+      db
+        .prepare(
+          `SELECT COUNT(*) n FROM leads WHERE tenant_id=? AND birthday LIKE '%-%'
        AND stage NOT IN ('已流失')`,
-    ).get(tenantId)?.n || 0;
-    if (birthdayCount > 0) lines.push(`会员档案里有 ${birthdayCount} 位客户登记了生日（可做生日到店福利选题）`);
+        )
+        .get(tenantId)?.n || 0;
+    if (birthdayCount > 0)
+      lines.push(
+        `会员档案里有 ${birthdayCount} 位客户登记了生日（可做生日到店福利选题）`,
+      );
     // 与沽清看板同口径：按「每菜每天最后一条标记」判定当日收盘态，排除已下架菜
-    const soldFrequent = db.prepare(
-      `SELECT d.name, COUNT(*) days FROM (
+    const soldFrequent = db
+      .prepare(
+        `SELECT d.name, COUNT(*) days FROM (
          SELECT dish_id, date, MAX(id) mid FROM dish_soldout_marks
          WHERE tenant_id=? AND date >= ? GROUP BY dish_id, date
        ) lastm
@@ -1269,14 +1327,17 @@ function buildToolboxStoreContext(tenantId) {
        JOIN dishes d ON d.id = lastm.dish_id
        WHERE d.status IS NULL OR d.status != '下架'
        GROUP BY lastm.dish_id HAVING days >= 3 ORDER BY days DESC LIMIT 3`,
-    ).all(tenantId, daysAgo(6));
+      )
+      .all(tenantId, daysAgo(6));
     if (soldFrequent.length) {
-      lines.push(`近7天频繁卖断的菜：${soldFrequent.map(row => row.name).join('、')}（天然的爆款素材，可写"每天卖断"的真实稀缺）`);
+      lines.push(
+        `近7天频繁卖断的菜：${soldFrequent.map((row) => row.name).join("、")}（天然的爆款素材，可写"每天卖断"的真实稀缺）`,
+      );
     }
-    return lines.length ? lines.join('\n') : '';
+    return lines.length ? lines.join("\n") : "";
   } catch {
     // 实况组装失败不阻塞工具执行（工具没有实况也能跑）
-    return '';
+    return "";
   }
 }
 
@@ -1289,6 +1350,8 @@ function enqueueToolboxRunWithContext(context) {
     retrying: context.retrying,
     timeoutMs: TOOLBOX_JOB_TIMEOUT_MS,
     generationOptions: {
+      tenantId: context.user.tenant_id,
+      userId: context.user.id,
       employeeExecution: context.employeeExecution,
       role: context.user.role,
       storeContext: buildToolboxStoreContext(context.user.tenant_id),
@@ -1322,8 +1385,13 @@ function enqueueToolboxRunWithContext(context) {
       agenticWebResearchFn: context.appLocals.employeeAgenticWebResearch,
       controlledWebFetchFn: context.appLocals.employeeControlledWebFetch,
     },
-    onProgress: (event) =>
-      recordToolProgress(context.runId, context.user.tenant_id, event),
+    onProgress: (event) => {
+      const row = ownedToolboxRun(context);
+      if (!row || row.status !== "running") return;
+      if (["provider", "provider_retry", "link_provider", "link_provider_retry", "vision_provider", "media_provider"].includes(event.phase))
+        context.providerStarted = true;
+      recordToolProgress(context.runId, context.user.tenant_id, event);
+    },
     onSuccess: (draft) => finalizeToolboxRun(context, draft),
     onFailure: (error) => failToolboxRun(context, error),
   });

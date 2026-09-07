@@ -118,9 +118,9 @@ test('结算只使用数据库权威行，伪造租户、流水或占扣金额�
   assert.deepEqual(ledgerSnapshot(tenantA.tenantId), beforeA);
   assert.deepEqual(ledgerSnapshot(tenantB.tenantId), beforeB);
 
-  const settled = settleHold(holdA, { credits: 30, note: '权威行正常结算' });
-  assert.equal(settled.credits, 30);
-  assert.equal(balanceOfTenant(tenantA.tenantId), beforeA.balance + 70);
+  const settled = settleHold(holdA, { usage:{inputTokens:1000,outputTokens:1000}, note: '权威行正常结算' });
+  assert.ok(settled.credits > 0 && settled.credits <= 100);
+  assert.equal(balanceOfTenant(tenantA.tenantId), beforeA.balance + 100 - settled.credits);
   assert.equal(balanceOfTenant(tenantB.tenantId), beforeB.balance);
   assertLedgerInvariant(tenantA.tenantId);
   assertLedgerInvariant(tenantB.tenantId);

@@ -56,7 +56,7 @@ const statusColor: Record<string, string> = {
   '人工审核未通过（可重跑）': 'red',
   '失败需处理（执行异常）': 'red',
   '失败需返工（质检未通过）': 'red',
-  '失败需返工（人工审阅未通过）': 'red',
+  '未采纳（原稿已保留）': 'default',
   '历史未通过（后续已修复）': 'blue',
   '历史失败（后续已修复）': 'blue',
   待人工审核: 'gold',
@@ -90,8 +90,8 @@ const PUBLIC_STATUS_LABELS: Record<string, string> = {
   '执行失败（可重跑）': '失败需处理（执行异常）',
   '质检失败（可重跑）': '失败需返工（质检未通过）',
   '质检未通过（可重跑）': '失败需返工（质检未通过）',
-  '审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
-  '人工审核未通过（可重跑）': '失败需返工（人工审阅未通过）',
+  '审核未通过（可重跑）': '未采纳（原稿已保留）',
+  '人工审核未通过（可重跑）': '未采纳（原稿已保留）',
   待账务对账: '业务暂不可采用（待账务对账）',
   '质检通过，待发布决策': '可验收（待提交人工审阅）',
   '历史未通过（后续已修复）': '历史失败（后续已修复）',
@@ -278,8 +278,8 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
     { label: '已有产出', value: hasData ? summary.withOutput || 0 : '—', color: 'var(--ui-primary)' },
     { label: '完成 / 采纳', value: hasData ? summary.completed || 0 : '—', color: '#16a34a' },
     { label: '待处理', value: hasData ? summary.pending || 0 : '—', color: '#d97706' },
-    { label: '当前失败 / 未通过', value: hasData ? summary.failed || 0 : '—', color: '#dc2626' },
-    { label: '历史未通过已修复', value: hasData ? summary.remediated || 0 : '—', color: '#2563eb' },
+    { label: '执行或质检失败', value: hasData ? summary.failed || 0 : '—', color: '#dc2626' },
+    { label: '未采纳', value: hasData ? summary.rejected || 0 : '—', color: 'var(--ui-text-2)' },
   ];
 
   return (

@@ -17,6 +17,7 @@
 #        /var/cache/nanowork      npm 缓存
 #        /etc/nanowork            server.env（0750，root:nanowork）
 #   4. 安装 systemd 单元与 Caddyfile 骨架（不覆盖已存在的配置）
+#   5. 启用每日北京时间 03:00 的本机 DB + uploads 备份定时器；尚无 current 时跳过备份
 #
 # 不做什么：不生成任何密钥、不写域名、不启动业务服务。后续步骤见 docs/演示环境上线清单-2026-09.md。
 set -euo pipefail
@@ -190,6 +191,20 @@ if [[ -f "${SCRIPT_DIR}/nanowork.service" ]]; then
   fi
 else
   warn "未找到 ${SCRIPT_DIR}/nanowork.service，跳过"
+fi
+
+if [[ -f "${SCRIPT_DIR}/nanowork-backup.service" && -f "${SCRIPT_DIR}/nanowork-backup.timer" ]]; then
+  for unit in nanowork-backup.service nanowork-backup.timer; do
+    if ! cmp -s "${SCRIPT_DIR}/${unit}" "/etc/systemd/system/${unit}"; then
+      install -m 0644 -o root -g root "${SCRIPT_DIR}/${unit}" "/etc/systemd/system/${unit}"
+    fi
+  done
+  systemctl daemon-reload
+  # 只启动定时器，不直接 start 备份服务；service 的条件会跳过尚无 current 的初装。
+  systemctl enable --now nanowork-backup.timer
+  ok "本机备份定时器已启用：每天北京时间 03:00（仅 DB + uploads；未配置异地备份）"
+else
+  warn "缺少 nanowork-backup.service/timer，未启用定时备份"
 fi
 
 if [[ -f /etc/caddy/Caddyfile ]] && grep -q "127.0.0.1:3107" /etc/caddy/Caddyfile; then

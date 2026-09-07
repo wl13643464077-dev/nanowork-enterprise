@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -8,7 +8,13 @@ import {
 import {
   EMPLOYEE_SKILL_OWNER_VERIFICATION_STATUS,
 } from '../src/catalog/employee-skills-verification.js';
-import {
+// 模型白名单读取平台开关；使用独立内存配置，直跑本文件也不会触及业务库。
+process.env.NANOWORK_DB = ':memory:';
+const { db, initSchema } = await import('../src/db.js');
+initSchema();
+after(() => db.close());
+
+const {
   CONTENT_EMPLOYEE_TASK_LIMITS,
   ContentEmployeeWorkbenchInputError,
   buildContentEmployeeConnectorExecution,
@@ -16,7 +22,7 @@ import {
   compileContentEmployeeSoloPrompt,
   executeContentDailyPackParts,
   resolveContentEmployeeWorkConfig,
-} from '../src/engines/content-employee-workbench.js';
+} = await import('../src/engines/content-employee-workbench.js');
 
 const PACKAGE_TEMPLATE_PLACEHOLDERS = new Set([
   'required_capabilities',
@@ -296,6 +302,9 @@ test('撰稿人出厂默认使用gpt-5.5，企业显式模型覆盖继续生效'
   assert.equal(resolveContentEmployeeWorkConfig(3, {
     textModel: 'deepseek-v4-flash',
   }).textModel, 'deepseek-v4-flash');
+  assert.equal(resolveContentEmployeeWorkConfig(3, {
+    textModel: 'tenant-copy-model',
+  }).textModel, '', '历史非法模型不能进入实际执行配置');
 });
 
 test('复盘官技能进入system供主动运用，之后追加当前事实核验覆盖层', () => {
@@ -491,7 +500,7 @@ test('专用连接器执行上下文保留完整岗位能力并追加企业覆�
   const tenantOverlay = {
     revision: 7,
     workConfig: {
-      textModel: 'tenant-copy-model',
+      textModel: 'deepseek-v4-flash',
       outputLength: 'full',
       approvalMode: '老板审核',
       timeoutSeconds: 180,
@@ -529,7 +538,7 @@ test('专用连接器执行上下文保留完整岗位能力并追加企业覆�
   assert.equal(result.connector.kind, 'copy');
   assert.equal(result.connector.primary, true);
   assert.equal(result.connector.addon, false);
-  assert.equal(result.config.textModel, 'tenant-copy-model');
+  assert.equal(result.config.textModel, 'deepseek-v4-flash');
   assert.equal(result.config.outputLength, 'full');
   assert.equal(result.config.timeoutSeconds, 180);
   assert.match(result.prompt, /A店补充：只使用本店已书面确认/u);
@@ -583,7 +592,7 @@ test('专用连接器按租户覆盖隔离且PPT明确只是演绎师HTML主能�
     ...baseOptions,
     tenantOverlay: {
       revision: 2,
-      workConfig: { outputLength: 'full' },
+      workConfig: { outputLength: 'full', textModel: 'deepseek-v4-flash' },
       promptOverride: 'A企业专属演绎规范',
       customSkills: [{ title: 'A企业演绎技能', detail: '只在A企业使用', source: 'A企业', enabled: true }],
     },
@@ -592,13 +601,17 @@ test('专用连接器按租户覆盖隔离且PPT明确只是演绎师HTML主能�
     ...baseOptions,
     tenantOverlay: {
       revision: 4,
-      workConfig: { outputLength: 'lite' },
+      workConfig: { outputLength: 'lite', textModel: 'gpt-5.5' },
       promptOverride: 'B企业秘密演绎规范',
       customSkills: [{ title: 'B企业私有技能', detail: '不得进入A企业', source: 'B企业', enabled: true }],
     },
   });
 
   assert.notEqual(tenantA.promptHash, tenantB.promptHash);
+  assert.equal(tenantA.config.textModel, 'deepseek-v4-flash');
+  assert.equal(tenantB.config.textModel, 'gpt-5.5');
+  assert.equal(tenantA.config.outputLength, 'full');
+  assert.equal(tenantB.config.outputLength, 'lite');
   assert.match(tenantA.prompt, /A企业专属演绎规范/u);
   assert.doesNotMatch(tenantA.prompt, /B企业秘密演绎规范|B企业私有技能/u);
   assert.equal(tenantA.connector.kind, 'ppt');
@@ -714,9 +727,15 @@ test('任务输入逐字段限长限型，模板与敏感占位符保持原文�
     else process.env.OPENAI_API_KEY = previous;
   }
 
+  const longDirection = `${'请按现有材料梳理业务判断并保留证据缺口。'.repeat(500)}方向末尾完整标记`;
+  assert.ok(longDirection.length > 9000);
+  const longInput = compileContentEmployeeSoloPrompt(0, { direction: longDirection });
+  assert.ok(longInput.prompt.includes(longDirection), '9000字任务方向不得截断');
+  assert.equal(CONTENT_EMPLOYEE_TASK_LIMITS.direction, 32000);
+
   const invalidCases = [
     () => buildContentEmployeeWorkbenchProfile('0'),
-    () => buildContentEmployeeWorkbenchProfile(11),
+    () => buildContentEmployeeWorkbenchProfile(12),
     () => compileContentEmployeeSoloPrompt(0, null),
     () => compileContentEmployeeSoloPrompt(0, new Date()),
     () => compileContentEmployeeSoloPrompt(0, { direction: '' }),

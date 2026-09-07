@@ -49,7 +49,7 @@ async function request(base, route, method, body) {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 }
 
-test('账号创建：角色和积分严格校验，账号与积分写入保持原子性', async () => {
+test('账号创建拒绝角色越权与增发积分，失败时不会留下账号或账目', async () => {
   await withServer(async base => {
     const decimal = await request(base, '/admin/users', 'POST', {
       username: 'decimal_credit_user', password: 'Password123', name: '小数积分', role: 'sales', credits: 1.5,
@@ -63,13 +63,19 @@ test('账号创建：角色和积分严格校验，账号与积分写入保持�
     assert.equal(invalidRole.status, 400);
     assert.equal(q.get(`SELECT COUNT(*) n FROM users WHERE username='invalid_role_user'`).n, 0);
 
-    const created = await request(base, '/admin/users', 'POST', {
+    const injectedCredits = await request(base, '/admin/users', 'POST', {
       username: 'atomic_credit_user', password: 'Password123', name: '原子账号', role: 'sales', credits: 25,
+    });
+    assert.equal(injectedCredits.status, 403);
+    assert.equal(q.get("SELECT COUNT(*) n FROM users WHERE username='atomic_credit_user'").n, 0);
+    assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, 100);
+    const created = await request(base, '/admin/users', 'POST', {
+      username: 'atomic_credit_user', password: 'Password123', name: '原子账号', role: 'sales',
     });
     assert.equal(created.status, 200);
     assert.equal(q.get(`SELECT role FROM users WHERE id=?`, created.json.id).role, 'sales');
-    assert.equal(q.get(`SELECT credits FROM tenants WHERE id=1`).credits, 125);
-    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1 AND user_id=?`, created.json.id).n, 1);
+    assert.equal(q.get(`SELECT credits FROM tenants WHERE id=1`).credits, 100);
+    assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1 AND user_id=?`, created.json.id).n, 0);
 
     const invalidUpdate = await request(base, `/admin/users/${created.json.id}`, 'PUT', { role: 'platform_super' });
     assert.equal(invalidUpdate.status, 400);
@@ -84,7 +90,7 @@ test('账号创建：角色和积分严格校验，账号与积分写入保持�
     const missingUserAdjustment = await request(base, '/admin/credits/adjust', 'POST', {
       userId: 999999, delta: 50, note: '不应写入',
     });
-    assert.equal(missingUserAdjustment.status, 404);
+    assert.equal(missingUserAdjustment.status, 403);
     assert.equal(q.get(`SELECT credits FROM tenants WHERE id=1`).credits, balanceBeforeMissingUser);
     assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=1 AND user_id=999999`).n, 0);
   });

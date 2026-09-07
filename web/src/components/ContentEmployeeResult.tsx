@@ -493,7 +493,11 @@ export default function ContentEmployeeResult({
             );
           })()}
           <ResultCards title={FIELD_LABELS.benchmarks} value={structured.benchmarks} />
-          <SourceList value={structured.sources} />
+          {Array.isArray(structured.sources) && structured.sources.length > 0 && (
+            <ResultFold title="核验来源" count={structured.sources.length}>
+              <SourceList value={structured.sources} />
+            </ResultFold>
+          )}
           <PlatformVersions value={structured.versions} />
           <MediaArtifacts title={FIELD_LABELS.images} value={structured.images} />
           <MediaArtifacts title={FIELD_LABELS.covers} value={structured.covers} />

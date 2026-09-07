@@ -18,6 +18,7 @@ import { webSearchProviders } from './websearch.js';
 import {
   yunwuApiKey,
   yunwuKeySource,
+  provider360Active,
 } from './yunwu.js';
 
 const DEFAULT_CHECK_TTL_MS = 15 * 60 * 1000;
@@ -73,6 +74,7 @@ function processCheckKey(channelKey, tenantId) {
 }
 
 function yunwuBaseUrl() {
+  if (provider360Active()) return 'https://api.360.cn/v1';
   return getConfig('yunwu_base_url', null)
     || process.env.YUNWU_BASE_URL
     || 'https://yunwu.ai/v1';
@@ -91,10 +93,10 @@ function publicBaseUrl(value) {
 
 function aiConfigurationFacts() {
   const yunwuKey = String(yunwuApiKey() || '').trim();
-  const anthropicKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
+  const anthropicKey = provider360Active() ? '' : String(process.env.ANTHROPIC_API_KEY || '').trim();
   if (yunwuKey) {
     return {
-      provider: 'yunwu',
+      provider: provider360Active() ? '360' : 'yunwu',
       keySource: yunwuKeySource(),
       baseUrl: yunwuBaseUrl(),
       secret: yunwuKey,
@@ -863,12 +865,14 @@ function contentConnectorsReadiness(ai, search) {
       canPerformExternalAction: false,
     };
   });
-  const registryReady = counts.total === 15
+  const registryReady = counts.total > 0
+    && new Set(items.map(item => item.kind)).size === counts.total
+    && CONTENT_CONNECTOR_REGISTRY.every(item => item.businessEndpoint)
     && items.every(item => item.catalogStatus && item.catalogStatus !== 'catalog_only');
   return readinessItem({
     key: 'content_connectors',
     label: '内容连接器',
-    description: '15 项连接器登记完整；原 Paihuo 13 项保持不变，AI 带货员追加 2 项。本地辅助、调用方实时数据与员工生成链均不等同于外部平台已连接。',
+    description: `${counts.total} 项连接器已登记。本地辅助、实时数据与模型生成分别检查可用性，外部发布仍需用户操作。`,
     implementation: registryReady ? 'ready' : 'partial',
     configuration: registryReady ? 'ready' : 'partial',
     activation: 'enabled',
@@ -897,6 +901,7 @@ function contentConnectorsReadiness(ai, search) {
 export function buildRuntimeReadiness({
   tenantId = 0,
   now = Date.now(),
+  viewerRole,
 } = {}) {
   const generatedAt = nowMs(now);
   const ai = aiReadiness({ tenantId, now: generatedAt });
@@ -923,7 +928,7 @@ export function buildRuntimeReadiness({
     manualOnly: channels.filter(item => item.effective === 'manual_only').length,
     disabled: channels.filter(item => item.effective === 'disabled').length,
   };
-  return {
+  const result = {
     schemaVersion: 'runtime-readiness.v1',
     generatedAt: new Date(generatedAt).toISOString(),
     scope: 'process',
@@ -932,4 +937,24 @@ export function buildRuntimeReadiness({
     summary,
     channels,
   };
+  if (viewerRole !== undefined && viewerRole !== 'platform_super') {
+    result.scope = 'tenant';
+    result.notice = '服务可用性由平台维护；企业仅查看当前可用状态。';
+    result.channels = channels.map(item => ({
+      key: item.key, label: item.label,
+      scope: 'tenant', implementation: item.implementation,
+      configured: item.configured, connected: item.connected,
+      configuration: item.configuration, activation: item.activation,
+      effective: item.effective, verification: item.verification,
+      verified: item.verified, canExecute: item.canExecute,
+      canGenerateLocalDraft: item.canGenerateLocalDraft,
+      canDeliverForHumanReview: item.canDeliverForHumanReview,
+      canPerformExternalAction: item.canPerformExternalAction,
+      description: item.canExecute ? '服务可用，实际交付以任务结果为准。' : '服务暂不可用，请联系平台。',
+      capabilitySummary: item.canExecute ? '可使用' : '暂不可用',
+      nextAction: item.canExecute ? '可继续使用企业功能。' : '联系平台处理服务配置。',
+      conditions: [], missing: [], details: {}, lastCheck: null,
+    }));
+  }
+  return result;
 }

@@ -1,0 +1,31 @@
+.register-modes {
+  margin-bottom: 22px;
+}
+.register-invitation {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.register-invitation > .ant-form-item {
+  margin-bottom: 0;
+}
+.register-code-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.register-code-row > .ant-input {
+  min-width: 0;
+  flex: 1;
+}
+.register-error {
+  margin-bottom: 18px;
+}
+@media (max-width: 420px) {
+  .register-code-row {
+    flex-direction: column;
+  }
+  .register-code-row > .ant-input {
+    flex: auto;
+  }
+}

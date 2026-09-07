@@ -21,9 +21,8 @@ process.env.NANOWORK_ARTIFACT_DIR = artifactDir;
 const { initSchema, migrateV2, q, runWithTenant } =
   await import("../src/db.js");
 const taskCenterRoutes = (await import("../src/routes/task-center.js")).default;
-const { taskCenterPublicErrorResponse } = await import(
-  "../src/engines/task-center.js"
-);
+const { taskCenterPublicErrorResponse } =
+  await import("../src/engines/task-center.js");
 initSchema();
 migrateV2();
 
@@ -131,7 +130,12 @@ fs.symlinkSync(
   process.platform === "win32" ? "junction" : "file",
 );
 // Both are actual reparse/symbolic-link entries, never a substituted regular file.
-assert.equal(fs.lstatSync(path.join(tenantArtifactDir, "restaurant-link.pdf")).isSymbolicLink(), true);
+assert.equal(
+  fs
+    .lstatSync(path.join(tenantArtifactDir, "restaurant-link.pdf"))
+    .isSymbolicLink(),
+  true,
+);
 
 const restaurantArtifactId = Number(
   q.run(
@@ -363,6 +367,57 @@ test("六类详情均在任务中心内可读，跨员工详情返回404", async
   });
 });
 
+test("人工不采纳单独统计为rejected，保留正文且不混入失败返工", async () => {
+  const original = q.get(
+    "SELECT status,snapshot_json FROM content_employee_runs WHERE id=?",
+    contentRunId,
+  );
+  await withServer(owner, async (base) => {
+    const before = await get(base, "/task-center?pageSize=100");
+    try {
+      q.run(
+        "UPDATE content_employee_runs SET status='已驳回',snapshot_json=? WHERE id=?",
+        JSON.stringify({
+          ...JSON.parse(original.snapshot_json || "{}"),
+          review: { decision: "reject" },
+        }),
+        contentRunId,
+      );
+      const listed = await get(base, "/task-center?pageSize=100");
+      assert.equal(listed.body.summary.failed, before.body.summary.failed);
+      assert.equal(listed.body.summary.rework, before.body.summary.rework);
+      assert.equal(
+        listed.body.summary.rejected,
+        before.body.summary.rejected + 1,
+      );
+      const filtered = await get(base, "/task-center?state=rejected");
+      assert.ok(
+        filtered.body.items.some(
+          (item) => item.kind === "content" && item.id === contentRunId,
+        ),
+      );
+      const detail = await get(base, `/task-center/content/${contentRunId}`);
+      assert.equal(detail.body.state, "rejected");
+      assert.equal(detail.body.displayStatus, "未采纳（原稿已保留）");
+      assert.equal(detail.body.adoptionContext.terminal, true);
+      assert.equal(
+        detail.body.businessUsable,
+        false,
+        "不采纳不能变成已授权发布",
+      );
+      assert.match(detail.body.output, /推文结果/u);
+      assert.equal(detail.body.currentStep, "未采纳（原稿已保留）");
+    } finally {
+      q.run(
+        "UPDATE content_employee_runs SET status=?,snapshot_json=? WHERE id=?",
+        original.status,
+        original.snapshot_json,
+        contentRunId,
+      );
+    }
+  });
+});
+
 test("非法任务来源和编号返回可行动的安全领域错误", async () => {
   await withServer(owner, async (base) => {
     const invalidKind = await get(base, "/task-center/overview/1");
@@ -374,6 +429,7 @@ test("非法任务来源和编号返回可行动的安全领域错误", async ()
         "manual",
         "restaurant",
         "content",
+        "generated_content",
         "content_pipeline",
         "skill_learning",
         "advisor",

@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { curTenant, q } from '../db.js';
 import { logOp, monthStart, notify, requireRole } from '../util.js';
@@ -17,7 +18,7 @@ import {
   assertRealAiOutput,
   releaseFailedAiHold,
 } from '../engines/ai-delivery-status.js';
-import {
+import { refundHold,
   estimateCallCredits,
   holdCredits,
   precheck,
@@ -320,6 +321,8 @@ export async function matchTeamByText(req, rawText) {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         // 上游瞬时限流时退避重试一次；两次都失败才按未交付退款。
         let output = null;
@@ -442,6 +445,8 @@ r.post('/voice-intent', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -723,6 +728,8 @@ r.post('/team-plan', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         let attempts = 0;
@@ -964,6 +971,8 @@ r.post('/team-summary', async (req, res) => {
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -1186,6 +1195,8 @@ r.post('/evolution/:specialistId/propose', requireRole(...EVOLUTION_ROLES), asyn
     hold = null;
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
+      refund: refundHold,
+      hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {

@@ -184,6 +184,17 @@ export function compilePromptWorkflow(workflow) {
  */
 export function parseAgentImport(input) {
   const source = parseImportSource(input);
+  const inspect = (value, depth = 0) => {
+    if (!value || typeof value !== 'object') return;
+    if (depth > 40) throw importError('工作流嵌套过深');
+    for (const [key, item] of Object.entries(value)) {
+      if (/^(?:apikey|baseurl|provider|gateway|proxy|modelrouting|modelcatalog|enabledmodels|authorization|secret|password)$/iu.test(key.replace(/[_-]/gu, ''))) {
+        throw importError('智能体导入仅支持提示词与步骤，不接受供应商凭证、接口或平台模型配置', 'AGENT_IMPORT_PROVIDER_CONFIG_FORBIDDEN');
+      }
+      inspect(item, depth + 1);
+    }
+  };
+  inspect(source);
   if (source.schemaVersion === AGENT_EXPORT_SCHEMA || record(source.agent)) {
     if (source.schemaVersion !== undefined && source.schemaVersion !== AGENT_EXPORT_SCHEMA) {
       throw importError(`不支持的导出版本：${String(source.schemaVersion)}`, 'AGENT_IMPORT_SCHEMA_UNSUPPORTED');

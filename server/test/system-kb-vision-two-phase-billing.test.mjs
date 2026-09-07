@@ -115,6 +115,7 @@ async function upload(name) {
   return { response, payload };
 }
 
+let expectedPendingHolds = 0;
 const heldRows = () => db.prepare(
   `SELECT * FROM credit_holds WHERE tenant_id=? AND status='held' ORDER BY id`,
 ).all(tenantId);
@@ -138,26 +139,30 @@ test('知识库图片在供应商调用前占额，文档与资产原子入库�
   ).get(tenantId, result.payload.id);
   assert.match(doc.body, /到店人数 28/);
   assert.ok(asset);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
   assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.chargedCredits);
 });
 
-test('知识库识图 API 返回正文但 usage 为0时，仅保留待重试空档案', async () => {
+test('知识库识图 API 返回正文但 usage 为0时，保留知识正文并等待账务核对', async () => {
   const before = balanceOfTenant(tenantId);
   const result = await upload('识图零token.png');
 
   assert.equal(result.response.status, 200, JSON.stringify(result.payload));
-  assert.equal(result.payload.billing.state, 'released');
-  assert.equal(result.payload.billing.chargedCredits, 0);
-  assert.equal(result.payload.body, '');
-  assert.equal(result.payload.enabled, 0);
-  assert.match(result.payload.extractMode, /识图待重试/);
+  assert.equal(result.payload.billing.state, 'pending_reconciliation');
+  assert.equal(result.payload.billing.chargedCredits, null);
+  assert.ok(result.payload.billing.heldCredits > 0);
+  assert.match(result.payload.billing.error, /计费用量/);
+  expectedPendingHolds += 1;
+  assert.ok(heldRows().some(row => Number(row.id) === Number(result.payload.billing.holdId)));
+  assert.match(result.payload.body, /到店人数 28/);
+  assert.equal(result.payload.enabled, 1);
+  assert.match(result.payload.extractMode, /AI识图/);
   const doc = db.prepare('SELECT body,enabled FROM kb_docs WHERE tenant_id=? AND id=?')
     .get(tenantId, result.payload.id);
-  assert.equal(doc.body, '');
-  assert.equal(doc.enabled, 0);
-  assert.equal(heldRows().length, 0);
-  assert.equal(balanceOfTenant(tenantId), before);
+  assert.match(doc.body, /到店人数 28/);
+  assert.equal(doc.enabled, 1);
+  assert.equal(heldRows().length, expectedPendingHolds);
+  assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.heldCredits);
 });
 
 test('知识库图片识别失败会释放占额，文件和待重试档案仍保留', async () => {
@@ -178,7 +183,7 @@ test('知识库图片识别失败会释放占额，文件和待重试档案仍�
   assert.equal(doc.body, '');
   assert.match(asset.note, /识图待重试/);
   assert.equal(balanceOfTenant(tenantId), before);
-  assert.equal(heldRows().length, 0);
+  assert.equal(heldRows().length, expectedPendingHolds);
 });
 
 test('识图正文原子落库失败会释放占额，并改存为明确的待重试档案', async () => {
@@ -206,7 +211,7 @@ test('识图正文原子落库失败会释放占额，并改存为明确的待�
        WHERE tenant_id=? AND source_type='kb' AND source_id=?`,
     ).get(tenantId, docs[0].id).n, 1);
     assert.equal(balanceOfTenant(tenantId), before);
-    assert.equal(heldRows().length, 0);
+    assert.equal(heldRows().length, expectedPendingHolds);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_system_kb_vision_persist_failure');
   }
@@ -233,7 +238,7 @@ test('知识已交付但结算失败时保留待对账，不把占额冒充实�
     assert.ok(db.prepare(
       `SELECT id FROM biz_assets WHERE tenant_id=? AND source_type='kb' AND source_id=?`,
     ).get(tenantId, result.payload.id));
-    assert.equal(heldRows().length, 1);
+    assert.equal(heldRows().length, expectedPendingHolds + 1);
     assert.equal(balanceOfTenant(tenantId), before - result.payload.billing.heldCredits);
   } finally {
     db.exec('DROP TRIGGER IF EXISTS injected_system_kb_vision_settlement_failure');

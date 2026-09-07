@@ -932,25 +932,33 @@ async function main() {
         MATRIX_BASE_URL: baseUrl,
         MATRIX_DB: databasePath,
         ENABLE_SCHEDULER: "false",
+        MATRIX_ALLOW_COMPAT_GATEWAY: "1",
+        // 真实验收仍同时发起 TinyFish/Claude 与免 Key 灾备；并行只用于
+        // 防止联网 CLI 长连接阻塞可用来源，不改变来源质量门或输出契约。
+        NANOWORK_ACCEPTANCE_PARALLEL_WEB_FALLBACK: "1",
+        NANOWORK_ENABLE_BROAD_WEB_FALLBACK: "1",
       };
-      const employeeArgs = ["--no-warnings", "scripts/run-real-employee-matrix.mjs", "--base-url", baseUrl, "--db", databasePath, "--out", employeeMatrixPath, "--concurrency", "1"];
+      const matrixConcurrency = String(process.env.MATRIX_CONCURRENCY || "1").trim();
+      const employeeArgs = ["--no-warnings", "scripts/run-real-employee-matrix.mjs", "--base-url", baseUrl, "--db", databasePath, "--out", employeeMatrixPath, "--concurrency", matrixConcurrency];
       if (options.only) employeeArgs.push("--only", options.only);
       if (options.force) employeeArgs.push("--force");
       if (options.timeoutMs) employeeArgs.push("--timeout-ms", options.timeoutMs);
       const employeeResult = await runCommand(employeeArgs, commonEnv, path.join(runtimeDir, "employee-runner.log"));
       if (employeeResult.code !== 0) process.stderr.write(`员工矩阵退出码=${employeeResult.code}；证据仍保留\n`);
       if (!options.skipFeatures) {
-        const featureArgs = ["--no-warnings", "scripts/run-real-feature-matrix.mjs", "--base-url", baseUrl, "--db", databasePath, "--out", featureMatrixPath, "--concurrency", "1"];
+        const featureConcurrency = String(Math.min(3, Math.max(1, Number(matrixConcurrency) || 1)));
+        const featureArgs = ["--no-warnings", "scripts/run-real-feature-matrix.mjs", "--base-url", baseUrl, "--db", databasePath, "--out", featureMatrixPath, "--concurrency", featureConcurrency];
         if (options.featureOnly) featureArgs.push("--only", options.featureOnly);
         if (options.timeoutMs) featureArgs.push("--timeout-ms", options.timeoutMs);
         const featureResult = await runCommand(featureArgs, {
           ...commonEnv,
-          MATRIX_BOSS_USERNAME: commonEnv.MATRIX_USERNAME,
-          MATRIX_BOSS_PASSWORD: commonEnv.MATRIX_PASSWORD,
-          MATRIX_MANAGER_USERNAME: commonEnv.MATRIX_USERNAME,
-          MATRIX_MANAGER_PASSWORD: commonEnv.MATRIX_PASSWORD,
-          MATRIX_EMPLOYEE_USERNAME: commonEnv.MATRIX_USERNAME,
-          MATRIX_EMPLOYEE_PASSWORD: commonEnv.MATRIX_PASSWORD,
+          MATRIX_ALLOW_COMPAT_GATEWAY: "1",
+          MATRIX_BOSS_USERNAME: process.env.MATRIX_BOSS_USERNAME || commonEnv.MATRIX_USERNAME,
+          MATRIX_BOSS_PASSWORD: process.env.MATRIX_BOSS_PASSWORD || commonEnv.MATRIX_PASSWORD,
+          MATRIX_MANAGER_USERNAME: process.env.MATRIX_MANAGER_USERNAME || "yunying",
+          MATRIX_MANAGER_PASSWORD: process.env.MATRIX_MANAGER_PASSWORD || commonEnv.MATRIX_PASSWORD,
+          MATRIX_EMPLOYEE_USERNAME: process.env.MATRIX_EMPLOYEE_USERNAME || "sales1",
+          MATRIX_EMPLOYEE_PASSWORD: process.env.MATRIX_EMPLOYEE_PASSWORD || commonEnv.MATRIX_PASSWORD,
         }, path.join(runtimeDir, "feature-runner.log"));
         if (featureResult.code !== 0) process.stderr.write(`功能矩阵退出码=${featureResult.code}；证据仍保留\n`);
       }

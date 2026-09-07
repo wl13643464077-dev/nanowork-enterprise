@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { modulesFor, q, getTenant, runWithTenant } from './db.js';
 import { authMiddleware, csrfOriginGuard } from './util.js';
+import { selectedProviderId, withPlatformProvider } from './engines/ai-provider-selection.js';
 import { storeScope } from './engines/store-scope.js';
 import adminRoutes from './routes/admin.js';
 import rechargeRoutes from './routes/recharge.js';
@@ -17,6 +18,9 @@ import storeOpsRoutes from './routes/store-ops.js';
 import reviewsRoutes from './routes/reviews.js';
 import growthRoutes from './routes/growth.js';
 import contentRoutes from './routes/content.js';
+import aiXhsNoteRoutes from './routes/ai-xhs-note.js';
+import nativeCreativeChatRoutes from './routes/native-creative-chat.js';
+import nativeDeliverableRoutes from './routes/native-deliverables.js';
 import contentSamplesRoutes from './routes/content-samples.js';
 import mediaReviewRoutes from './routes/media-review.js';
 import toolboxRoutes from './routes/toolbox.js';
@@ -53,6 +57,8 @@ import { uploadAccessGuard } from './engines/upload-access.js';
 import { serveAvatarProviderAsset } from './engines/avatar-provider-assets.js';
 import { serveAiSalesVideoProviderAsset } from './engines/ai-sales-video-provider-assets.js';
 import { createAiGuard } from './ai-limits.js';
+import clientDownloadRoutes from './routes/client-downloads.js';
+import testerRoutes, { publicTrialRouter } from './routes/testers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GUARDED_MODULES = new Set([
@@ -87,7 +93,7 @@ export function moduleGuard(moduleId) {
 // 租户数据作用域：把当前请求的 tenant_id 注入 AsyncLocalStorage，使所有写入自动带租户、读取可按租户过滤。
 // 多门店：租户上下文就位后再解析可选请求头 X-Store-Id（engines/store-scope.js），未传头=全店不过滤。
 export function tenantScope(req, res, next) {
-  runWithTenant(req.user?.tenant_id || 1, () => storeScope(req, res, next));
+  runWithTenant(req.user?.tenant_id || 1, () => withPlatformProvider(selectedProviderId(), () => storeScope(req, res, next)));
 }
 
 // 租户态守卫（SaaS）：企业账号须「已开通」才能用业务模块；平台超管豁免。
@@ -265,6 +271,7 @@ export function createApp({
   app.use('/api/recharge/notify', rechargeNotifyRoutes);
   app.use(express.json({ limit: '32mb' }));
   app.use(requestLifecycle);
+  app.use(clientDownloadRoutes);
 
   app.get('/api/avatar/provider-assets/:token', serveAvatarProviderAsset);
   // AI带货员 TTS 音轨 / 9:16 首帧：签名限时令牌，供云雾/百炼拉取（与 avatar 同机制）
@@ -272,6 +279,8 @@ export function createApp({
   mountPublicRoutes(app);
 
   app.use('/api/auth', authRoutes);
+  app.use('/api/tester', testerRoutes);
+  app.use('/api/trial', publicTrialRouter);
   app.use('/api/platform', authMiddleware, platformRoutes);
   app.use('/api/recharge', authMiddleware, tenantScope, rechargeRoutes);
   app.use('/api/meta', authMiddleware, tenantScope, metaRoutes);
@@ -289,6 +298,7 @@ export function createApp({
   app.use('/api/growth', authMiddleware, tenantScope, tenantGate, moduleGuard('growth'), guardFor('growth'), growthRoutes);
   // 样片库：登录即可读（销售现场演示用），不走 AI 限流；先于 /api/content 挂载以免被模块守卫拦截。
   app.use('/api/content/samples', authMiddleware, tenantScope, tenantGate, contentSamplesRoutes);
+  app.use('/api/content/native-deliverables', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), nativeDeliverableRoutes);
   app.use(
     '/api/content',
     authMiddleware,
@@ -299,6 +309,8 @@ export function createApp({
     guardFor('content'),
     contentPipelineScheduleRouter,
     contentProductionPipelineRouter,
+    aiXhsNoteRoutes,
+    nativeCreativeChatRoutes,
     contentRoutes,
   );
   app.use('/api/toolbox', authMiddleware, tenantScope, tenantGate, moduleGuard('content'), guardFor('toolbox'), toolboxRoutes);

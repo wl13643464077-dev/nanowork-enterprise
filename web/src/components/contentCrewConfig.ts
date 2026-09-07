@@ -9,7 +9,8 @@ export type ContentCrewKey =
   | 'deck'
   | 'publish'
   | 'retro'
-  | 'commerce_video';
+  | 'commerce_video'
+  | 'xhs_note';
 
 export type ContentCrewCapability = { name?: string; emoji?: string; desc?: string };
 
@@ -184,10 +185,24 @@ export const CONTENT_CREW_STATIONS: ContentCrewStation[] = [
     person: null,
     optional: false,
     employeeIdx: 10,
-    duty: '根据人物、菜品或商品、门店图片，完成30秒带货脚本、分镜与成片任务',
+    duty: '根据人物、菜品或商品、门店图片，完成15秒带货视频，可选30秒两段',
     intro:
-      '上传人物、菜品或商品、门头等真实素材，再说一句这次要卖什么，AI带货员会自动补齐脚本、三段镜头、字幕和视频生成流程。',
+      '上传人物、菜品或商品、门头等真实素材，再说一句这次要卖什么。AI带货员先写脚本和镜头方案，你确认后再生成声音、画面与字幕；默认15秒一段，可选30秒两段。',
     approval: 'auto',
-    taskTypes: ['30秒带货视频', '菜品口播视频', '门店探店转化视频'],
+    taskTypes: ['15秒带货视频', '30秒带货视频（可选）', '菜品口播视频', '门店探店转化视频'],
+  },
+  {
+    order: 11,
+    key: 'xhs_note',
+    name: 'AI小红书种草员',
+    group: '增长转化部',
+    emoji: '📷',
+    person: null,
+    optional: false,
+    employeeIdx: 11,
+    duty: '根据菜品、门头照片和品牌名生成小红书图文发布包',
+    intro: '上传菜品、门头照片，填上品牌名，一键生成标题、正文、标签、首评和配图顺序，复制后即可手动发布。',
+    approval: 'review',
+    taskTypes: ['小红书种草图文', '标题与标签', '评论区首评'],
   },
 ];

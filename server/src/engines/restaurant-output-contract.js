@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { loadRestaurantCatalog } from "../catalog/restaurant.js";
 import { renderRestaurantOutputForExport } from "./restaurant-output-export.js";
+import { outputQualityReview } from "./output-quality-advice.js";
 import {
   classifyContractRule,
   normalizeContractTier,
@@ -3001,6 +3002,11 @@ function rewriteUnsafePlatformActionText(value, path, changes) {
 export function rewriteUnsafeRestaurantPlatformActions(rawOutput) {
   const parsedResult = parseOutput(rawOutput);
   const changes = [];
+  // A claim that an external action already occurred is an evidence failure.
+  // Never rewrite it into a proposal and thereby erase the blocking evidence.
+  if (hasUnauthorizedExternalActionClaim(typeof rawOutput === "string" ? rawOutput : JSON.stringify(rawOutput))) {
+    return { changed: false, text: typeof rawOutput === "string" ? rawOutput : JSON.stringify(rawOutput), parsed: parsedResult.parsed, changes, parseError: parsedResult.error };
+  }
   if (!parsedResult.parsed) {
     const text = rewriteUnsafePlatformActionText(rawOutput, "$", changes);
     return {
@@ -3056,6 +3062,10 @@ export function restaurantEmployeeHardDeliveryDecision({
   const errors = [];
 
   if (!normalizedText) errors.push("餐饮数字员工没有返回可保存的报告正文。");
+  if (/^(?:(?:好的|收到|明白|了解|没问题)[，,。！!\s]*)+(?:(?:我(?:会|将)|马上|正在|即将)[^。！!\n]*[。！!]?\s*)*$/u.test(normalizedText)
+    || /^(?:太短[，,]?\s*)?(?:不构成岗位报告|暂无(?:报告|业务正文|结果)|没有(?:报告|业务正文|结果))[。！!\s]*$/u.test(normalizedText)) {
+    errors.push("餐饮数字员工只确认了任务，尚未返回业务正文。");
+  }
   if (normalizedMode !== "api") {
     errors.push("餐饮数字员工未取得真实API结果，模板或降级输出不得交付。");
   }
@@ -3701,6 +3711,8 @@ export function validateRestaurantEmployeeOutputContract(
     parsed,
     errors: [],
     warnings,
+    strictValid: warnings.length === 0,
+    qualityReview: outputQualityReview(warnings),
     // qualityMode 保留二值语义供旧调用方与审计快照使用；档位细节由 contractTier 表达。
     qualityMode: contractTier === "strict" ? "strict" : "advisory",
     contractTier,

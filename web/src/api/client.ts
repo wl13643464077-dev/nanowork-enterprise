@@ -30,6 +30,7 @@ export const getUser = (): any => currentUser;
 
 let lastNetErrAt = 0;
 function timeoutFor(url: string) {
+  if (/^\/content\/native-chat\/sessions\/\d+\/messages$/.test(url)) return 150000;
   if (/\/content\/generate-video/.test(url)) return 95000;
   if (/\/content\/generate-image/.test(url)) return 125000;
   if (/\/(advisor|marshals|agents)\/.*(chat|skill-file)|\/advisor\/chat/.test(url)) return 135000;

@@ -22,7 +22,7 @@ const { db, initSchema, migrateV2, q, runWithTenant } =
   await import("../src/db.js");
 const { ensureBaselineCatalogs } = await import("../src/baseline.js");
 const { hashPassword } = await import("../src/util.js");
-const { estimateCallCredits, holdCredits, releaseHold, settleHold } =
+const { estimateCallCredits, holdCredits, releaseHold, settleHold, getSupplierExpense } =
   await import("../src/engines/credits.js");
 const { textModelFor } = await import("../src/engines/yunwu.js");
 const {
@@ -534,7 +534,6 @@ function insertToolboxRunFixture({
         usage: { inputTokens: 100, outputTokens: 50 },
         model: "gpt-5.5",
         aiMode: "api",
-        credits: 5,
         note: "工具箱测试结算",
       }).credits;
     } else if (billingState === "released") {
@@ -637,7 +636,7 @@ test("媒体工具 remix 先创建视频任务再轮询至 ready artifact（离�
     },
   );
   assert.equal(calls[0].type, "create");
-  assert.equal(calls[0].args.model, "happyhorse-1.0-t2v:floor");
+  assert.equal(calls[0].args.model, "wan2.6-i2v");
   assert.deepEqual(
     calls.slice(1).map((item) => item.type),
     ["poll", "poll"],
@@ -680,7 +679,7 @@ test("媒体工具路由返回202并在TaskCenter/Toolbox可用，图片视频�
     toolboxGenerateVideo: async () => ({
       taskId: "offline-route-video-task",
       status: "submitted",
-      model: "happyhorse-1.0-t2v:floor",
+      model: "wan2.6-i2v",
     }),
     toolboxFetchVideoTask: async ({ taskId }) => {
       videoPolls += 1;
@@ -692,7 +691,7 @@ test("媒体工具路由返回202并在TaskCenter/Toolbox可用，图片视频�
             ready: true,
             url: "https://cdn.example.test/route-remix.mp4",
             mimeType: "video/mp4",
-            model: "happyhorse-1.0-t2v:floor",
+            model: "wan2.6-i2v",
           };
     },
     toolboxVideoPollMs: 10,
@@ -828,6 +827,10 @@ test("媒体供应商失败后台闭环全额退款且不产生artifact（离线
         assert.equal(hold.kind, "image");
         assert.equal(hold.status, "settled");
         assert.equal(Number(hold.settled_credits), 0);
+        assert.ok(getSupplierExpense(hold.id,1)?.refundedAt);
+        assert.equal(getSupplierExpense(hold.id,1)?.status,'pending');
+        assert.equal(getSupplierExpense(hold.id,1)?.costYuan,null);
+        assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,100000);
         const task = await request(
           base,
           `/api/task-center/tool/${queued.body.run.id}`,
@@ -1655,14 +1658,11 @@ test("历史done记录只有api、有效契约、已落库且已结算才允许�
         authoritativeBilling: false,
       }),
     },
-    {
-      label: "非空但没有完整工作成果",
-      id: insertToolboxRunFixture({
-        title: "历史伪成功-正文过短",
-        resultMd: "# 有内容\n\n这不是完整工作成果。",
-      }),
-    },
   ];
+  const shortResultId = insertToolboxRunFixture({
+    title: "历史真实短正文",
+    resultMd: "# 有内容\n\n这不是完整工作成果。",
+  });
   const validId = insertToolboxRunFixture({ title: "四道门槛全部通过" });
   const duplicateBillingId = insertToolboxRunFixture({
     title: "历史伪成功-重复实扣账本",
@@ -1697,7 +1697,6 @@ test("历史done记录只有api、有效契约、已落库且已结算才允许�
       usage: { inputTokens: 100, outputTokens: 50 },
       model: "gpt-5.5",
       aiMode: "api",
-      credits: 5,
     });
     q.run(
       "UPDATE tool_runs SET created_by=? WHERE id=?",
@@ -1815,6 +1814,10 @@ test("历史done记录只有api、有效契约、已落库且已结算才允许�
     assert.equal(valid.body.run.canUse, true);
     assert.equal(valid.body.run.displayStatus, "已完成");
     assert.equal(valid.body.run.nextAction, "查看并核对工具结果");
+    const shortResult = await request(base, `/toolbox/runs/${shortResultId}`);
+    assert.equal(shortResult.body.run.canUse, true);
+    assert.ok(shortResult.body.run.reviewSuggestions.length > 0);
+    assert.match(shortResult.body.run.resultMd, /这不是完整工作成果/u);
   });
 });
 
@@ -2024,17 +2027,17 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
       200,
       JSON.stringify(lowQuality.body),
     );
-    assert.equal(lowQuality.body.run.status, "failed");
-    assert.equal(lowQuality.body.run.canUse, false);
+    assert.equal(lowQuality.body.run.status, "done");
+    assert.equal(lowQuality.body.run.canUse, true);
     assert.match(
-      lowQuality.body.run.provenance.contract.errors.join("；"),
+      lowQuality.body.run.reviewSuggestions.join("；"),
       /不足180字|清晰章节|可执行动作/u,
     );
-    assert.equal(lowQuality.body.billing.state, "released");
-    assert.equal(lowQuality.body.billing.chargedCredits, 0);
+    assert.equal(lowQuality.body.billing.state, "settled");
+    assert.ok(lowQuality.body.billing.chargedCredits > 0);
     assert.equal(
       q.get("SELECT credits FROM tenants WHERE id=?", 1).credits,
-      beforeLowQuality,
+      beforeLowQuality - lowQuality.body.billing.chargedCredits,
     );
 
     const beforeSemanticShell = q.get(
@@ -2055,17 +2058,17 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
       200,
       JSON.stringify(semanticShell.body),
     );
-    assert.equal(semanticShell.body.run.status, "failed");
-    assert.equal(semanticShell.body.run.canUse, false);
+    assert.equal(semanticShell.body.run.status, "done");
+    assert.equal(semanticShell.body.run.canUse, true);
     assert.match(
-      semanticShell.body.run.provenance.contract.errors.join("；"),
+      semanticShell.body.run.reviewSuggestions.join("；"),
       /占位|空话|执行责任表/u,
     );
-    assert.equal(semanticShell.body.billing.state, "released");
-    assert.equal(semanticShell.body.billing.chargedCredits, 0);
+    assert.equal(semanticShell.body.billing.state, "settled");
+    assert.ok(semanticShell.body.billing.chargedCredits > 0);
     assert.equal(
       q.get("SELECT credits FROM tenants WHERE id=?", 1).credits,
-      beforeSemanticShell,
+      beforeSemanticShell - semanticShell.body.billing.chargedCredits,
     );
 
     const beforeStructuredShell = q.get(
@@ -2089,17 +2092,17 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
       200,
       JSON.stringify(structuredShell.body),
     );
-    assert.equal(structuredShell.body.run.status, "failed");
-    assert.equal(structuredShell.body.run.canUse, false);
+    assert.equal(structuredShell.body.run.status, "done");
+    assert.equal(structuredShell.body.run.canUse, true);
     assert.match(
-      structuredShell.body.run.provenance.contract.errors.join("；"),
+      structuredShell.body.run.reviewSuggestions.join("；"),
       /具体选题|执行责任表/u,
     );
-    assert.equal(structuredShell.body.billing.state, "released");
-    assert.equal(structuredShell.body.billing.chargedCredits, 0);
+    assert.equal(structuredShell.body.billing.state, "settled");
+    assert.ok(structuredShell.body.billing.chargedCredits > 0);
     assert.equal(
       q.get("SELECT credits FROM tenants WHERE id=?", 1).credits,
-      beforeStructuredShell,
+      beforeStructuredShell - structuredShell.body.billing.chargedCredits,
     );
 
     const runCountBeforeLinkFailure = q.get(
@@ -2257,11 +2260,13 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
     await withServer(userOne, async (base) => {
       const visible = await request(base, `/toolbox/runs/${paidRow.id}`);
       assert.equal(visible.response.status, 200);
+      assert.equal(visible.body.run.displayStatus, "已完成");
+      assert.equal(visible.body.run.canUse, true);
+      assert.equal(visible.body.run.provenance.billing.state, "settled");
       assert.equal(
-        visible.body.run.displayStatus,
-        "业务暂不可采用（待账务对账）",
+        visible.body.run.provenance.billing.chargedCredits,
+        Number(paidHold.settled_credits),
       );
-      assert.equal(visible.body.run.canUse, false);
       assert.match(visible.body.run.resultMd, /真实工具交付/u);
     });
 
@@ -2286,13 +2291,8 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
       assert.equal(blocked.body.billing.state, "released");
       assert.equal(blocked.body.billing.chargedCredits, 0);
     });
-    // 4 个坏产物场景（低质、语义空壳、结构化空壳、档案回显）各触发一次
-    // 环内定向返工（同样的坏响应第二轮仍失败），因此 7 次业务调用变 11 次。
-    assert.equal(
-      upstreamCalls,
-      11,
-      "预授权尚未绑定可见运行时不得调用外部模型",
-    );
+    // 普通质量缺项不追加付费重写；尚未绑定运行的预授权也不应触发模型。
+    assert.equal(upstreamCalls, 7, "预授权尚未绑定可见运行时不得调用外部模型");
     const storedLeak = q.get(
       "SELECT result_md,provenance_json FROM tool_runs WHERE tenant_id=1 AND id=?",
       leakedRunId,
@@ -2350,7 +2350,7 @@ test("工具箱真实AI调用必须先占扣，余额不足不触发上游，成
       200,
       JSON.stringify(failedAfterProvider.body),
     );
-    assert.equal(upstreamCalls, 12, "运行记录和预授权完成绑定后才允许外部调用");
+    assert.equal(upstreamCalls, 8, "运行记录和预授权完成绑定后才允许外部调用");
     const failedRow = q.get(
       `SELECT * FROM tool_runs WHERE tenant_id=1 AND title='外部调用后落库异常'`,
     );
@@ -2468,16 +2468,19 @@ test("上游返回正文但没有正token证据时不得交付，运行、失败
   }
 });
 
-test("首轮真实产出缺质检项时按缺项定向返工，第二轮达标后正常交付结算", async () => {
+test("首轮真实产出缺责任表时先交付并提示优化，不自动发起第二次付费生成", async () => {
   // 首轮：完整正文但缺执行责任表（历史上这会整单判失败并退款）。
-  const firstDraftMissingTable = VALID_HOT_AI_RESULT.split("## 执行责任表")[0].trim();
+  const firstDraftMissingTable =
+    VALID_HOT_AI_RESULT.split("## 执行责任表")[0].trim();
   const upstreamRequests = [];
   const upstream = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     upstreamRequests.push(raw);
     const body =
-      upstreamRequests.length === 1 ? firstDraftMissingTable : VALID_HOT_AI_RESULT;
+      upstreamRequests.length === 1
+        ? firstDraftMissingTable
+        : VALID_HOT_AI_RESULT;
     res.writeHead(200, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
@@ -2503,16 +2506,10 @@ test("首轮真实产出缺质检项时按缺项定向返工，第二轮达标�
     });
 
     assert.equal(created.response.status, 200, JSON.stringify(created.body));
-    assert.equal(upstreamRequests.length, 2, "缺质检项必须触发第二轮返工");
-    assert.match(
-      upstreamRequests[1],
-      /定向返工·质检缺项/u,
-      "第二轮提示词必须携带定向返工块",
-    );
-    assert.match(
-      upstreamRequests[1],
-      /执行责任表/u,
-      "第二轮提示词必须点名缺失的执行责任表",
+    assert.equal(
+      upstreamRequests.length,
+      1,
+      "普通质量缺项不得自动追加付费返工",
     );
     assert.doesNotMatch(
       upstreamRequests[0],
@@ -2524,15 +2521,24 @@ test("首轮真实产出缺质检项时按缺项定向返工，第二轮达标�
     assert.equal(created.body.run.canUse, true);
     assert.equal(created.body.run.verified, true);
     assert.equal(created.body.run.displayStatus, "已完成");
+    assert.equal(created.body.run.resultMd, firstDraftMissingTable);
+    assert.ok(
+      created.body.run.reviewSuggestions.some((message) =>
+        message.includes("执行责任表"),
+      ),
+    );
+    assert.ok(
+      created.body.run.assumptions.some((message) =>
+        message.startsWith("可选优化："),
+      ),
+    );
     const attempts = created.body.run.provenance.attempts;
-    assert.equal(attempts.length, 2);
-    assert.equal(attempts[0].outcome, "retryable_failure");
-    assert.equal(attempts[0].reason, "quality_gate");
-    assert.equal(attempts[1].outcome, "accepted");
-    // 两轮真实用量累计计入同一账本。
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0].outcome, "accepted");
+    // 只结算已交付首轮的真实用量。
     assert.deepEqual(created.body.run.provenance.usage, {
-      inputTokens: 1200,
-      outputTokens: 1400,
+      inputTokens: 600,
+      outputTokens: 700,
     });
     assert.equal(created.body.billing.state, "settled");
     assert.ok(created.body.billing.chargedCredits > 0);
@@ -2826,6 +2832,37 @@ test("数据库CHECK约束拒绝第9种工具键", () => {
       ),
     /CHECK constraint failed/,
   );
+});
+
+test("旧工具worker失败不能退款新owner或清掉已保存正文", async () => {
+  for (const mode of ['takeover','delivered']) {
+    q.run('UPDATE tenants SET credits=100000 WHERE id=1');
+    let entered;
+    const happened = new Promise(resolve=>{entered=resolve;});
+    let runId;
+    await withServer(userOne, async base=>{
+      const response = await request(base,'/toolbox/runs','POST',{toolKey:'shot',employeeIdx:140,title:'隔离接管保护',inputs:VALID_PAYLOADS.shot.inputs});
+      runId=response.body.run.id;
+      assert.equal(response.response.status,202);
+      await happened; await new Promise(resolve=>setTimeout(resolve,10));
+      const row=q.get('SELECT * FROM tool_runs WHERE tenant_id=1 AND id=?',runId);
+      assert.equal(row.status,mode==='delivered'?'done':'running');
+      assert.equal(JSON.parse(row.provenance_json).workerToken,'next-worker');
+      if(mode==='delivered') assert.equal(row.result_md,'# 已保存最终正文');
+      const hold=q.get("SELECT * FROM credit_holds WHERE tenant_id=1 AND ref_type='tool_run' AND ref_id=?",runId);
+      assert.equal(hold.status,'held');
+      assert.equal(getSupplierExpense(hold.id,1),null);
+      assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,100000-hold.held_credits);
+    },{toolboxMediaAvailable:()=>true,toolboxGenerateImage:async()=>{
+      const row=q.get('SELECT * FROM tool_runs WHERE tenant_id=1 ORDER BY id DESC LIMIT 1');
+      const provenance=JSON.parse(row.provenance_json);
+      q.run('UPDATE tool_runs SET status=?,provenance_json=?,result_md=? WHERE tenant_id=1 AND id=?',
+        mode==='delivered'?'done':'running',JSON.stringify({...provenance,workerToken:'next-worker',persisted:mode==='delivered'}),
+        mode==='delivered'?'# 已保存最终正文':row.result_md,row.id);
+      entered(); throw new Error('old worker failure');
+    }});
+    cleanupToolboxRuns([runId]);
+  }
 });
 
 test("cleanup", () => {

@@ -422,7 +422,7 @@ test("业务流与交付门禁使用全局员工档案，不把非总部任务�
     const response = await fetch(
       `${base}/business-flow/restaurant_task/${businessTaskId}`,
     );
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, response.status !== 200 ? await response.clone().text() : '');
     const flow = await response.json();
     assert.equal(
       flow.status.code,

@@ -37,66 +37,30 @@ export function dashboardRoleView(role?: string) {
 }
 
 export function buildDashboardGuide(role: string | undefined, modules: string[]): DashboardGuideStep[] {
-  const steps: DashboardGuideStep[] = [];
-  const hasModule = (module: string) => modules.includes(module);
-  const isManagement = ['boss', 'ops_director', 'manager', 'admin'].includes(role || '');
-  if (role === 'boss') {
-    steps.push({ icon: '💳', title: '充值积分', desc: '统一管理企业AI调用额度和充值记录', to: '/recharge' });
-  }
-  if (hasModule('execution')) {
-    steps.push({
-      icon: '✅',
-      title: isManagement ? '处理团队任务' : '处理我的任务',
-      desc: isManagement
-        ? '查看待执行、进行中和待人工验收的经营任务，跟到结果回流'
-        : '接单、执行并提交结果，随后查看验收状态',
-      to: '/execution',
-    });
-  }
-  if (hasModule('growth')) {
-    steps.push({
-      icon: '👥',
-      title: isManagement ? '跟进客户经营' : '跟进我的客户',
-      desc: isManagement ? '查看授权团队的客户、跟进与成交进度' : '维护本人负责客户并记录下一步动作',
-      to: '/growth',
-    });
-  }
-  if (hasModule('marshals')) {
-    steps.push({
-      icon: '🧑‍💼',
-      title: '给数字员工派活',
-      desc: '按经营问题选择岗位，提交真实材料并跟进审阅',
-      to: '/employees',
-    });
-  }
-  if (hasModule('activities')) {
-    steps.push({
-      icon: '📅',
-      title: isManagement ? '推进营销活动' : '处理我的活动',
-      desc: '查看本人授权范围内的筹备、邀约、执行与复盘进度',
-      to: '/activities',
-    });
-  }
-  if (hasModule('content')) {
-    steps.push({
-      icon: '✍️',
-      title: isManagement ? '管理内容生产' : '处理我的内容任务',
-      desc: '进入内容生产仓查看生成、待人工审阅、业务暂不可采用、人工采纳与发布决策状态',
-      to: '/content',
-    });
-  }
-  if (hasModule('analysis')) {
-    steps.push({
-      icon: '📊',
-      title: '查看经营复盘',
-      desc: '从真实经营记录穿刺到问题、原因和下一步动作',
-      to: '/analysis',
-    });
-  }
-  if (hasModule('system') && ['boss', 'admin'].includes(role || '')) {
-    steps.push({ icon: '📚', title: '维护企业配置', desc: '管理知识库、权限、提示词和外部集成配置', to: '/system' });
-  }
-  return steps.map((step, index) => ({ ...step, title: `${index + 1}. ${step.title}` }));
+  if (!['boss', 'ops_director', 'manager', 'sales', 'partner', 'admin'].includes(role || '')) return [];
+  return [
+    {
+      icon: '💡',
+      title: '获得经营建议',
+      desc: '说清门店遇到的问题，先拿到一份可执行的建议。',
+      to: '/advisor',
+      module: 'advisor',
+    },
+    {
+      icon: '🎬',
+      title: '生成带货视频',
+      desc: '上传菜品或门店照片，说一句卖点，制作带货成片。',
+      to: '/content?task=ai-sales-video',
+      module: 'content',
+    },
+    {
+      icon: '📸',
+      title: '生成小红书图文',
+      desc: '上传照片和品牌名，生成标题、正文、标签与评论区文案。',
+      to: '/content?task=ai-xhs-note',
+      module: 'content',
+    },
+  ].filter(item => modules.includes(item.module));
 }
 
 export default function DashboardRoleHeader({
@@ -132,7 +96,7 @@ export default function DashboardRoleHeader({
         </div>
         <div style={{ fontSize: 13, color: 'var(--ui-text-2)', marginTop: 5 }}>{summary}</div>
       </div>
-      {isEmpty && (
+      {isEmpty && guide.length > 0 && (
         <div
           style={{
             background: 'var(--ui-surface)',
@@ -141,15 +105,13 @@ export default function DashboardRoleHeader({
             padding: '16px 18px',
           }}
         >
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)', marginBottom: 4 }}>
-            欢迎使用纳米Work行业版！按下面 {guide.length} 步快速上手
-          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)', marginBottom: 4 }}>先完成一件事</div>
           <div style={{ fontSize: 12.5, color: 'var(--ui-muted)', marginBottom: 14 }}>
-            系统已按当前账号权限整理可执行入口，跟着引导完成第一轮经营闭环
+            选择这次要拿到的结果，准备好问题或照片就可以开始。
           </div>
           <Row gutter={[12, 12]}>
             {guide.map(step => (
-              <Col xs={12} md={role === 'boss' ? 8 : 6} key={step.title}>
+              <Col xs={24} md={8} key={step.title}>
                 <button
                   type="button"
                   onClick={() => onNavigate(step.to)}

@@ -22,10 +22,17 @@ function payError(message, status = 502) {
 // ===== 金额换算（分/元）=====
 // 数据库订单金额为元（REAL）；微信按“分”计价、支付宝按“元字符串（两位小数）”计价。
 export function yuanToFen(yuan) {
+  if ((typeof yuan !== 'number' && typeof yuan !== 'string')
+    || (typeof yuan === 'string' && !/^\d+(?:\.\d{1,2})?$/.test(yuan.trim()))) {
+    throw payError('支付金额必须是最多保留两位小数的数字', 400);
+  }
   const n = Number(yuan);
   if (!Number.isFinite(n) || n <= 0) throw payError('支付金额必须是大于0的数字', 400);
   const fen = Math.round(n * 100);
-  if (Math.abs(n * 100 - fen) > 0.001) throw payError('支付金额最多保留两位小数', 400);
+  if (!Number.isSafeInteger(fen) || fen <= 0
+    || Math.abs(n * 100 - fen) > Number.EPSILON * Math.max(1, n * 100) * 4) {
+    throw payError('支付金额至少为1分且最多保留两位小数', 400);
+  }
   if (fen > 1_000_000_000) throw payError('单笔支付金额超出上限', 400);
   return fen;
 }
@@ -90,7 +97,7 @@ function alipayConfig() {
 // 已配置的支付通道列表（前端据此展示通道选择；空数组 = 走原有对公转账流程）
 export function paymentChannels() {
   const list = [];
-  if (wechatConfig()) list.push({ channel: 'wechat', name: '微信支付' });
+  if (wechatConfig() && hasWechatVerificationKey()) list.push({ channel: 'wechat', name: '微信支付' });
   if (alipayConfig()) list.push({ channel: 'alipay', name: '支付宝' });
   return list;
 }
@@ -202,6 +209,18 @@ function wechatPlatformPublicKey(serial = '') {
   return parseWechatPlatformPublicKey(raw, 'WXPAY_PLATFORM_CERT');
 }
 
+function hasWechatVerificationKey() {
+  try {
+    const rawMap = String(process.env.WXPAY_PLATFORM_CERTS || '').trim();
+    if (!rawMap) return Boolean(wechatPlatformPublicKey());
+    const map = JSON.parse(rawMap);
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return false;
+    return Object.keys(map).some(serial => {
+      try { return Boolean(wechatPlatformPublicKey(serial)); } catch { return false; }
+    });
+  } catch { return false; }
+}
+
 function responseHeader(headers, name) {
   if (typeof headers?.get === 'function') return String(headers.get(name) || '').trim();
   const wanted = name.toLowerCase();
@@ -300,7 +319,14 @@ export function verifyWechatNotify(headers, rawBody) {
   if (!ok) throw payError('微信回调验签失败，拒绝', 401);
   let payload;
   try { payload = JSON.parse(bodyStr); } catch { throw payError('微信回调报文不是合法 JSON', 400); }
+  if (payload.resource?.algorithm !== 'AEAD_AES_256_GCM') throw payError('微信回调加密算法不支持', 400);
   const data = JSON.parse(decryptWechatResource(cfg.apiV3Key, payload.resource || {}));
+  if (payload.event_type === 'TRANSACTION.SUCCESS') {
+    if (data.appid !== cfg.appid || data.mchid !== cfg.mchid) {
+      throw payError('微信回调交易不属于本应用或商户，拒绝入账', 401);
+    }
+    if (data.amount?.currency !== 'CNY') throw payError('微信回调币种必须为CNY，拒绝入账', 400);
+  }
   return { eventType: String(payload.event_type || ''), data };
 }
 
@@ -520,7 +546,7 @@ async function wechatQuery(cfg, orderNo) {
   if (String(data.mchid || '') !== cfg.mchid || String(data.appid || '') !== cfg.appid) {
     throw payError('微信支付查询应答商户身份不匹配，拒绝采用网关结果');
   }
-  if (data?.amount?.currency && String(data.amount.currency) !== 'CNY') {
+  if ((data.trade_state === 'SUCCESS' || data?.amount?.currency) && data.amount?.currency !== 'CNY') {
     throw payError('微信支付查询应答币种不匹配，拒绝采用网关结果');
   }
   const state = String(data.trade_state || '');
@@ -530,7 +556,7 @@ async function wechatQuery(cfg, orderNo) {
     tradeNo: String(data.transaction_id || ''),
     // 订单入账应核对商户订单总额 total；payer_total 是优惠后的付款人实付，
     // 可能小于 total，不能拿它误判成订单少付。
-    paidFen: Number(data?.amount?.total ?? 0),
+    paidFen: data?.amount?.total ?? 0,
   };
 }
 

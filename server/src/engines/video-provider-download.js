@@ -70,9 +70,30 @@ export async function waitForProviderVideo({
     throw downloadError('视频任务轮询参数不完整', 500, 'VIDEO_PROVIDER_POLL_INVALID');
   }
   const startedAt = Date.now();
+  let transientQueryFailures = 0;
+  const transientRetryLimit = Math.max(
+    0,
+    Number(process.env.NANOWORK_VIDEO_TRANSIENT_QUERY_RETRY_LIMIT ?? 3),
+  );
   while (Date.now() - startedAt <= timeoutMs) {
     if (signal?.aborted) throw downloadError('视频任务已取消', 499, 'VIDEO_PROVIDER_POLL_CANCELLED');
-    const result = await query({ taskId, model, signal });
+    let result;
+    try {
+      result = await query({ taskId, model, signal });
+      transientQueryFailures = 0;
+    } catch (error) {
+      // Provider gateways occasionally return a transient 5xx/timeout while
+      // an async video task is still being prepared. Do not turn that into a
+      // terminal job failure; retry a small, bounded number of polls and then
+      // surface the original error for reconciliation.
+      const retryable = ['network', 'timeout', 'upstream', 'rate_limit'].includes(
+        String(error?.providerReason || '').toLowerCase(),
+      ) || [429, 500, 502, 503, 504].includes(Number(error?.providerStatus || error?.status));
+      if (!retryable || transientQueryFailures >= transientRetryLimit) throw error;
+      transientQueryFailures += 1;
+      await sleep(Math.max(500, Number(intervalMs) || 5000));
+      continue;
+    }
     const status = String(result?.status || '').toLowerCase();
     if (result?.url) return result;
     if (['fail', 'failed', 'error', 'cancelled', 'canceled'].includes(status)) {

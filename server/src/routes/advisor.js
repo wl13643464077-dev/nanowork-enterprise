@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
 import { db, q, curTenant, mergeMarshal, mergeMarshals } from '../db.js';
@@ -8,7 +9,7 @@ import { recordKbCitations } from '../engines/rag.js';
 import { funnel } from '../engines/scoring.js';
 import { healthScore } from '../engines/health.js';
 import { nextFestival } from '../engines/plans.js';
-import { precheckByRole, estimateCallCredits, holdCredits, settleHold } from '../engines/credits.js';
+import { refundHold, precheckByRole, estimateCallCredits, holdCredits, settleHold } from '../engines/credits.js';
 import { textModelFor, routing } from '../engines/yunwu.js';
 import { webSearch } from '../engines/websearch.js';
 import { attachmentRefsForStorage, rehydrateMessageHistory, resolveAttachments } from '../engines/filehub.js';
@@ -132,6 +133,7 @@ const ADVISOR_CHAT_DEPS = Object.freeze({
   precheckByRoleFn: precheckByRole,
   recordKbCitationsFn: recordKbCitations,
   releaseHoldFn: releaseFailedAiHold,
+  refundHoldFn: refundHold,
   settleHoldFn: settleHold,
   webSearchFn: webSearch,
 });
@@ -317,6 +319,8 @@ export function createAdvisorChatHandler(overrides = {}) {
       hold = null;
       const delivered = await executeHeldDelivery({
         hold: deliveryHold,
+        refund: deps.refundHoldFn,
+        hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
         generate: async () => {
           let webRefs = [];
           let webNote = null;
@@ -326,6 +330,8 @@ export function createAdvisorChatHandler(overrides = {}) {
             webNote = search?.note || null;
           }
           const output = await deps.advisorReplyFn({
+            tenantId: req.user.tenant_id,
+            userId: req.user.id,
             diagType,
             question,
             dataSummary: s,

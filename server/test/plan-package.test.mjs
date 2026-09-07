@@ -25,7 +25,7 @@ const {
 } = await import('../src/engines/credits.js');
 const plan = await import('../src/engines/plan.js');
 const rechargeRoutes = (await import('../src/routes/recharge.js')).default;
-const { settlePaidOrder } = await import('../src/routes/recharge.js');
+const { settlePaidOrder, ensurePayColumns } = await import('../src/routes/recharge.js');
 const platformRoutes = (await import('../src/routes/platform.js')).default;
 const adminRoutes = (await import('../src/routes/admin.js')).default;
 const { runScheduledJobs } = await import('../src/engines/scheduler.js');
@@ -89,18 +89,18 @@ test('默认年度套餐种子：字段齐全且重复迁移不重复插入', ()
   }
 });
 
-test('平台 activate：写到期日/席位、赠送积分独立 bonus 入账；再次开通按原到期日顺延', async () => {
+test('平台 activate：写到期日但保留原席位，赠送积分独立 bonus 入账；再次开通按原到期日顺延', async () => {
   const p = planPkg();
   const app = makeApp(superUser, '/api/platform', platformRoutes);
   await withServer(app, async (base) => {
-    const bad = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: 999999 });
+    const bad = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: 999999, requestKey: 'plan-invalid-id' });
     assert.equal(bad.status, 400);
     const creditsPkg = q.get(`SELECT id FROM recharge_packages WHERE COALESCE(kind,'credits')='credits' LIMIT 1`);
-    const wrongKind = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: creditsPkg.id });
+    const wrongKind = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: creditsPkg.id, requestKey: 'plan-invalid-kind' });
     assert.equal(wrongKind.status, 400);
     assert.match(wrongKind.json.error, /年度套餐/);
 
-    const first = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: p.id });
+    const first = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: p.id, requestKey: 'plan-first-purchase' });
     assert.equal(first.status, 200, JSON.stringify(first.json));
     const today = plan.localDate();
     assert.equal(first.json.startedAt, today);
@@ -108,13 +108,13 @@ test('平台 activate：写到期日/席位、赠送积分独立 bonus 入账；
     assert.equal(first.json.rolledOver, false);
     assert.equal(first.json.bonusCredits, 60000);
     assert.equal(first.json.plan.status, 'active');
-    assert.equal(first.json.plan.seatLimit, 5);
+    assert.equal(first.json.plan.seatLimit, 10, '开通不能抹去既有额度');
     assert.equal(first.json.plan.seatsUsed, 2, '老板+管理员=2 个启用账号');
 
     const t = getTenant(tenantId);
     assert.equal(t.plan_code, DEFAULT_PLAN_PACKAGE.code);
     assert.equal(t.plan_status, 'active');
-    assert.equal(t.seat_limit, 5);
+    assert.equal(t.seat_limit, 10);
     assert.equal(t.plan, '餐饮版年度套餐', '旧 plan 文本标签同步为套餐名');
     assert.equal(t.credits, 60000);
     assert.equal(t.total_recharged, 60000);
@@ -128,11 +128,12 @@ test('平台 activate：写到期日/席位、赠送积分独立 bonus 入账；
     assert.ok(notifCount(bossId, '%已开通%') >= 1, '老板应收到开通通知');
 
     // 未到期再次开通 → 顺延 365 天、开始日不变、再送一次赠分
-    const second = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: p.id });
+    const second = await call(base, 'POST', `/api/platform/tenants/${tenantId}/plan/activate`, { packageId: p.id, requestKey: 'plan-second-purchase' });
     assert.equal(second.status, 200);
     assert.equal(second.json.rolledOver, true);
     assert.equal(second.json.startedAt, today);
     assert.equal(second.json.expiresAt, plan.addDays(today, 730));
+    assert.equal(second.json.seatLimit, 10, '续费不重置席位');
     assert.equal(getTenant(tenantId).credits, 120000);
     assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=? AND kind='bonus'`, tenantId).n, 2);
   });
@@ -151,12 +152,13 @@ test('已过期租户再次开通：从今天起算，不从旧到期日顺延',
 });
 
 test('支付成功入账（settlePaidOrder）对套餐订单：credits=0 不记购买流水、生效套餐并入账赠分；重复回调幂等', () => {
+  ensurePayColumns();
   const tid = Number(q.run(`INSERT INTO tenants(name,status,plan,credits,seat_limit) VALUES('扫码开通餐饮','已开通','标准版',0,5)`).lastInsertRowid);
   const uid = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id) VALUES('pay_plan_boss','x','老板','boss','启用',?)`, tid).lastInsertRowid);
   const p = planPkg();
-  q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by)
-    VALUES('RPLAN1',?,?,?,?,?,'待支付',?)`, tid, p.id, p.name, p.price_yuan, p.total_credits, uid);
-  const r1 = settlePaidOrder({ orderNo: 'RPLAN1', channelName: '微信支付', tradeNo: 'T1', paidFen: 980000 });
+  q.run(`INSERT INTO recharge_orders(order_no,tenant_id,package_id,package_name,price_yuan,credits,status,created_by,pay_channel)
+    VALUES('RPLAN1',?,?,?,?,?,'待支付',?,'wechat')`, tid, p.id, p.name, p.price_yuan, p.total_credits, uid);
+  const r1 = settlePaidOrder({ orderNo: 'RPLAN1', channel: 'wechat', channelName: '微信支付', tradeNo: 'T1', paidFen: 980000 });
   assert.equal(r1.duplicated, false);
   assert.equal(r1.plan.expiresAt, plan.addDays(plan.localDate(), 365));
   assert.equal(r1.balance, 60000);
@@ -166,7 +168,7 @@ test('支付成功入账（settlePaidOrder）对套餐订单：credits=0 不记�
   assert.equal(q.get(`SELECT status FROM recharge_orders WHERE order_no='RPLAN1'`).status, '已支付');
   assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=? AND kind='recharge'`, tid).n, 0);
   assert.equal(q.get(`SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=? AND kind='bonus'`, tid).n, 1);
-  const r2 = settlePaidOrder({ orderNo: 'RPLAN1', channelName: '微信支付', tradeNo: 'T1', paidFen: 980000 });
+  const r2 = settlePaidOrder({ orderNo: 'RPLAN1', channel: 'wechat', channelName: '微信支付', tradeNo: 'T1', paidFen: 980000 });
   assert.equal(r2.duplicated, true);
   assert.equal(getTenant(tid).credits, 60000, '重复回调不得二次入账/二次顺延');
   assert.equal(getTenant(tid).plan_expires_at, t.plan_expires_at);
@@ -191,7 +193,8 @@ test('平台人工确认到账对套餐订单同样生效套餐', async () => {
 });
 
 test('席位限制：启用账号达上限时建用户返回 409 可读信息；停用账号不占席位；平台超管不受限', async () => {
-  // 当前租户 seat_limit=5，已启用 2（老板+管理员）
+  // 独立标准额度 fixture：已启用 2（主账号+副管理员），共 1 主 + 4 副。
+  q.run('UPDATE tenants SET seat_limit=5 WHERE id=?', tenantId);
   await withServer(makeApp(boss, '/api/admin', adminRoutes), async (base) => {
     for (const i of [1, 2, 3]) {
       const r = await call(base, 'POST', '/api/admin/users', { username: `seat_u${i}`, password: 'password123', name: `员工${i}` });
@@ -199,7 +202,8 @@ test('席位限制：启用账号达上限时建用户返回 409 可读信息；
     }
     const over = await call(base, 'POST', '/api/admin/users', { username: 'seat_u4', password: 'password123', name: '员工4' });
     assert.equal(over.status, 409);
-    assert.equal(over.json.error, '当前套餐含 5 个账号，已用 5 个；停用旧账号或联系升级');
+    assert.match(over.json.error, /副账号 4 个，已用 4 个/u);
+    assert.match(over.json.error, /主账号申请增额并在付款确认后开通/u);
     assert.equal(over.json.code, 'SEAT_LIMIT_REACHED');
     // 停用一个后可再建
     q.run(`UPDATE users SET status='停用' WHERE username='seat_u3'`);
@@ -261,7 +265,7 @@ test('estimateCreditEquivalents：从价目表反算，假设可读，不写死 
   const out = estimateCreditEquivalents(60000);
   const imageCredits = Math.ceil((b.image[out.models.image] ?? b.image.default) * b.marginMultiplier / b.creditYuan);
   const segment = b.video[out.models.video] ?? b.video.default;
-  const videoCredits = Math.ceil(segment * 3 * b.marginMultiplier / b.creditYuan);
+  const videoCredits = Math.ceil(segment * b.marginMultiplier / b.creditYuan);
   const tp = b.text[out.models.text] || b.text.default;
   const textCredits = Math.max(1, Math.ceil(((EQUIVALENT_TEXT_INPUT_TOKENS * tp.in + EQUIVALENT_TEXT_OUTPUT_TOKENS * tp.out) / 1e6) * b.marginMultiplier / b.creditYuan));
   assert.equal(out.unit.imageCredits, imageCredits);
@@ -272,16 +276,17 @@ test('estimateCreditEquivalents：从价目表反算，假设可读，不写死 
   assert.equal(out.textTasks, Math.floor(60000 / textCredits));
   assert.equal(out.assumptions.text.inputTokens, 2000);
   assert.equal(out.assumptions.text.outputTokens, 1000);
-  assert.equal(out.assumptions.video.segmentCount, 3);
-  assert.equal(out.assumptions.video.segmentSeconds, 10);
-  assert.equal(out.assumptions.video.durationSeconds, 30);
+  assert.equal(out.models.video, 'wan2.6-i2v');
+  assert.equal(out.assumptions.video.segmentCount, 1);
+  assert.equal(out.assumptions.video.segmentSeconds, 15);
+  assert.equal(out.assumptions.video.durationSeconds, 15);
   assert.equal(out.assumptions.marginMultiplier, b.marginMultiplier);
   assert.match(out.assumptions.formula, /marginMultiplier/);
   // 人民币口径：单位成本 = 价目表成本；总供应商成本 = 积分面值 ÷ 毛利系数（6 万积分 → ¥400）
   const textYuan = (EQUIVALENT_TEXT_INPUT_TOKENS * tp.in + EQUIVALENT_TEXT_OUTPUT_TOKENS * tp.out) / 1e6;
   assert.equal(out.unit.textTaskCostYuan, Math.round(textYuan * 10000) / 10000);
   assert.equal(out.unit.imageCostYuan, b.image[out.models.image] ?? b.image.default);
-  assert.equal(out.unit.videoCostYuan, Math.round(segment * 3 * 10000) / 10000);
+  assert.equal(out.unit.videoCostYuan, Math.round(segment * 10000) / 10000);
   assert.equal(out.supplierCostYuan, Math.round(60000 * b.creditYuan / b.marginMultiplier * 100) / 100);
   assert.equal(out.marginFactor, b.marginMultiplier);
   assert.equal(out.basis, 'price_table');
@@ -425,17 +430,24 @@ test('scheduler 09:00 挂载 daily_plan_and_balance_check 且 runOnce 幂等', a
   assert.equal(third.results.find(x => x.tenantId === tenantId).dailyPlanAndBalanceCheck, undefined, '非 09:00 不触发');
 });
 
-test('平台套餐 CRUD 支持 kind/seat_limit/valid_days/bonus_credits/is_active', async () => {
+test('平台套餐 CRUD 固定1主4副，拒绝用套餐编辑增减席位并保留其他套餐字段', async () => {
   await withServer(makeApp(superUser, '/api/platform', platformRoutes), async (base) => {
     const bad = await call(base, 'POST', '/api/platform/packages', { name: '缺字段年包', price_yuan: 100, kind: 'plan' });
     assert.equal(bad.status, 400);
+    for (const seatLimit of [2, 8]) {
+      const invalidSeats = await call(base, 'POST', '/api/platform/packages', {
+        name: '不可变更基础席位', price_yuan: 980, kind: 'plan', seat_limit: seatLimit, valid_days: 30,
+      });
+      assert.equal(invalidSeats.status, 400);
+      assert.match(invalidSeats.json.error, /1 个主账号和 4 个副账号/u);
+    }
     const created = await call(base, 'POST', '/api/platform/packages', {
-      name: '试用月包', price_yuan: 980, kind: 'plan', seat_limit: 2, valid_days: 30, bonus_credits: 5000, is_active: false, sort_order: 3, code: 'trial_monthly',
+      name: '试用月包', price_yuan: 980, kind: 'plan', seat_limit: 5, valid_days: 30, bonus_credits: 5000, is_active: false, sort_order: 3, code: 'trial_monthly',
     });
     assert.equal(created.status, 200, JSON.stringify(created.json));
     const row = q.get('SELECT * FROM recharge_packages WHERE id = ?', created.json.id);
     assert.equal(row.kind, 'plan');
-    assert.equal(row.seat_limit, 2);
+    assert.equal(row.seat_limit, 5);
     assert.equal(row.valid_days, 30);
     assert.equal(row.bonus_credits, 5000);
     assert.equal(row.total_credits, 0);
@@ -443,10 +455,13 @@ test('平台套餐 CRUD 支持 kind/seat_limit/valid_days/bonus_credits/is_activ
     assert.equal(row.sort, 3);
     const dup = await call(base, 'POST', '/api/platform/packages', { name: '重复编码', price_yuan: 1, kind: 'credits', code: 'trial_monthly' });
     assert.equal(dup.status, 409);
-    const updated = await call(base, 'PUT', `/api/platform/packages/${row.id}`, { seat_limit: 3, enabled: true });
+    const invalidUpdate = await call(base, 'PUT', `/api/platform/packages/${row.id}`, { seat_limit: 3, enabled: true });
+    assert.equal(invalidUpdate.status, 400);
+    assert.equal(q.get('SELECT enabled FROM recharge_packages WHERE id=?', row.id).enabled, 0, '无效席位修改不能先修改其他字段');
+    const updated = await call(base, 'PUT', `/api/platform/packages/${row.id}`, { seat_limit: 5, enabled: true });
     assert.equal(updated.status, 200);
     const row2 = q.get('SELECT * FROM recharge_packages WHERE id = ?', row.id);
-    assert.equal(row2.seat_limit, 3);
+    assert.equal(row2.seat_limit, 5);
     assert.equal(row2.enabled, 1);
     assert.equal(row2.valid_days, 30, '未传字段保持原值');
     // 积分包沿用旧口径：到账 = 价格×100 + 赠送
@@ -458,5 +473,27 @@ test('平台套餐 CRUD 支持 kind/seat_limit/valid_days/bonus_credits/is_activ
     const found = list.json.find(x => x.id === row.id);
     assert.equal(found.is_active, 1);
     assert.equal(found.sort_order, 3);
+  });
+});
+
+test('年度订单按下单快照发放：套餐下架删除后仍交付原期限与赠分，不改变席位', async () => {
+  const packageId = Number(q.run(`INSERT INTO recharge_packages(name,kind,price_yuan,base_credits,bonus_credits,total_credits,seat_limit,valid_days,enabled)
+    VALUES('冻结30天套餐','plan',60,0,321,0,5,30,1)`).lastInsertRowid);
+  let order;
+  await withServer(makeApp(boss, '/api/recharge', rechargeRoutes), async base => {
+    const created = await call(base, 'POST', '/api/recharge/orders', { packageId });
+    assert.equal(created.status, 200);
+    order = q.get('SELECT * FROM recharge_orders WHERE id=?', created.json.id);
+  });
+  const before = getTenant(tenantId);
+  q.run('DELETE FROM recharge_packages WHERE id=?', packageId);
+  await withServer(makeApp(superUser, '/api/platform', platformRoutes), async base => {
+    const paid = await call(base, 'POST', `/api/platform/recharge-orders/${order.id}/confirm`, {});
+    assert.equal(paid.status, 200);
+    assert.equal(paid.json.plan.bonusCredits, 321);
+    assert.equal(paid.json.plan.expiresAt, plan.addDays(before.plan_expires_at, 30));
+    assert.equal(paid.json.plan.seatLimit, before.seat_limit);
+    assert.equal(getTenant(tenantId).credits, before.credits + 321);
+    assert.equal(q.get('SELECT package_snapshot_json FROM recharge_orders WHERE id=?', order.id).package_snapshot_json, order.package_snapshot_json);
   });
 });

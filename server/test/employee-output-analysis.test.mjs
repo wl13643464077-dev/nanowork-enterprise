@@ -257,7 +257,9 @@ function settledApiProof({
 }) {
   return runWithTenant(tenantId, () => {
     const currentCredits = Number(q.get('SELECT credits FROM tenants WHERE id=?', tenantId)?.credits || 0);
-    const testTopUp = Math.max(5, 5 - currentCredits);
+    // 预授权必须覆盖任一测试模型按真实用量结算的费用，否则会转待对账而不是结算。
+    const holdCreditsAmount = 20;
+    const testTopUp = Math.max(holdCreditsAmount + 5, holdCreditsAmount + 5 - currentCredits);
     q.run('UPDATE tenants SET credits=credits+? WHERE id=?', testTopUp, tenantId);
     const feature = proofFeature(refType, refId, tenantId);
     const hold = holdCredits({
@@ -265,14 +267,14 @@ function settledApiProof({
       feature,
       kind: 'text',
       model: holdModel,
-      credits: 2,
+      credits: holdCreditsAmount,
       refType,
       refId,
     });
+    // Text settles from the real usage passed in; fixed credit figures are rejected.
     settleHold(hold, {
       model: actualModel,
       aiMode: 'api',
-      credits: 1,
       usage,
       note: '真实API正用量结算测试',
     });
@@ -613,6 +615,7 @@ test('统一聚合数字员工任务、经营工具与内容员工单独派活�
       completed: 1,
       pending: 3,
       failed: 1,
+      rejected: 0,
       remediated: 0,
     });
     const pendingTask = data.rows.find(row => row.ref === `task:${taskA}`);
@@ -635,6 +638,34 @@ test('统一聚合数字员工任务、经营工具与内容员工单独派活�
     assert.ok(data.dataset.store.name);
     assert.equal(data.calculation.unit, '一条持久化运行记录');
   });
+});
+
+test('不采纳独立统计，保留原稿与费用，不计入失败或待返工', async () => {
+  const original = q.get('SELECT status,snapshot_json,result_md FROM content_employee_runs WHERE id=?', soloReadyA);
+  const originalLogs = q.get('SELECT COUNT(*) n FROM credit_logs').n;
+  try {
+    await withServer(bossA, async base => {
+      const endpoint = `${base}/employee-outputs?start=2026-07-01&end=2026-07-31&source=content_solo&dimension=status`;
+      const before = await fetch(endpoint).then(response => response.json());
+      const snapshot = JSON.parse(original.snapshot_json);
+      snapshot.review = { decision: 'reject', opinion: '本次暂不采用，保留参考' };
+      q.run("UPDATE content_employee_runs SET status='已驳回',snapshot_json=? WHERE id=?", JSON.stringify(snapshot), soloReadyA);
+      const after = await fetch(endpoint).then(response => response.json());
+      assert.equal(after.summary.failed, before.summary.failed);
+      assert.equal(after.summary.pending, before.summary.pending - 1);
+      assert.equal(after.summary.rejected, before.summary.rejected + 1);
+      assert.equal(after.summary.withOutput, before.summary.withOutput);
+      const row = after.rows.find(item => item.ref === `content_solo:${soloReadyA}`);
+      assert.equal(row.displayStatus, '未采纳（原稿已保留）');
+      assert.doesNotMatch(row.nextAction, /返工后重新派活|必须|重新付费/u);
+      assert.equal(after.pivot.find(item => item.label === row.status).rejected, 1);
+      const detail = await fetch(`${base}/employee-outputs/drill/content_solo/${soloReadyA}`).then(response => response.json());
+      assert.equal(detail.output.body, original.result_md);
+      assert.equal(q.get('SELECT COUNT(*) n FROM credit_logs').n, originalLogs);
+    });
+  } finally {
+    q.run('UPDATE content_employee_runs SET status=?,snapshot_json=? WHERE id=?', original.status, original.snapshot_json, soloReadyA);
+  }
 });
 
 test('内容员工聚合列表仅对老板、管理员和平台超管保留内部版本与提示词哈希', async () => {
@@ -1080,7 +1111,7 @@ test('系统收口的餐饮模板底稿在员工任务列表仍显示质检失�
       assert.ok(row);
       assert.equal(row.status, '质检失败（可重跑）');
       assert.equal(row.displayStatus, '失败需返工（质检未通过）');
-      assert.notEqual(row.displayStatus, '失败需返工（人工审阅未通过）');
+      assert.notEqual(row.displayStatus, '未采纳（原稿已保留）');
       assert.equal(row.nextAction, '查看岗位质检错误，补充或修正材料后重新派活');
     });
   } finally {

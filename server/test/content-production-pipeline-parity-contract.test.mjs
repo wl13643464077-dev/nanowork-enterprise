@@ -386,8 +386,8 @@ test("内容10站流水线必须进入统一TaskCenter，并保留稳定详情�
   );
   requirePattern(
     taskCenterPageSource,
-    /10 工位执行链/u,
-    "任务中心详情未展示10工位执行链",
+    /<details className="task-center-disclosure">\s*<summary>查看执行详情<\/summary>[\s\S]*?detail\.pipeline\.stations[\s\S]*?station\.phaseEvents[\s\S]*?<\/details>/u,
+    "任务中心须在默认关闭的执行详情中保留各工位与真实阶段记录",
   );
 });
 

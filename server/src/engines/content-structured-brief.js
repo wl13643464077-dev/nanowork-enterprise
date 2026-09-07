@@ -50,9 +50,9 @@ const FIELD_LIMITS = Object.freeze({
   visual: 4_000,
   brand: 500,
   business: 4_000,
-  direction: 2_000,
+  direction: 32_000,
   industry: 120,
-  material: 20_000,
+  material: 30_000,
   refLink: 2_000,
   template: 120,
 });

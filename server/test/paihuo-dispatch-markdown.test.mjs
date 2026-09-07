@@ -226,7 +226,7 @@ async function dispatchAndWait(base, body) {
         taskId,
       ),
     );
-    if (row?.status === "已完成" || row?.status === "失败") break;
+    if (["已完成", "待审阅", "失败"].includes(row?.status)) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   return { taskId, row };
@@ -254,7 +254,7 @@ test("HTTP派活默认按派活AI逻辑执行并直接交付老板可读Markdown
     const earlySnapshot = JSON.parse(row?.employee_web_snapshot || "{}");
     assert.equal(
       row?.status,
-      "已完成",
+      "待审阅",
       `任务应完成，实际=${row?.status}；failure=${JSON.stringify(earlySnapshot.failure || null)}；contractErrors=${JSON.stringify(earlySnapshot.outputContract?.errors || null)}`,
     );
 
@@ -276,7 +276,7 @@ test("HTTP派活默认按派活AI逻辑执行并直接交付老板可读Markdown
     const snapshot = JSON.parse(row.employee_web_snapshot || "{}");
     assert.equal(
       row.status,
-      "已完成",
+      "待审阅",
       `任务应完成，实际=${row.status}；failure=${JSON.stringify(snapshot.failure || null)}；errors=${JSON.stringify(snapshot.outputContract?.errors || null)}`,
     );
     assert.equal(String(row.body || "").trim(), PAIHUO_MARKDOWN.trim());
@@ -307,23 +307,16 @@ test("HTTP派活默认按派活AI逻辑执行并直接交付老板可读Markdown
   }
 });
 
-test("首轮候选过短时重新完整生成，多轮尝试的聚合用量仍通过采用门（真实任务#53回归）", async () => {
-  const { app, generated } = bootApp((args, attempt) =>
-    attempt === 1
-      ? {
-          text: "太短，不构成岗位报告。",
+for (const finishReason of ['stop', 'length', 'max_tokens']) {
+test(`首轮短稿以${finishReason}结束时单次保存全文并供用户采纳，不自动付费重写`, async () => {
+  const shortReport = '建议先用现有营业记录核对晚市客流与两人用餐需求，明确套餐中菜品的成本和出餐安排。资料不足的结论应保留为待验证假设，再由店长决定是否试行。';
+  const { app, generated } = bootApp(args => ({
+          text: shortReport,
           mode: "api",
           model: args.model,
           usage: { inputTokens: 900, outputTokens: 40 },
-          finishReason: "stop",
-        }
-      : {
-          text: PAIHUO_MARKDOWN,
-          mode: "api",
-          model: args.model,
-          usage: { inputTokens: 1100, outputTokens: 700 },
-          finishReason: "stop",
-        },
+          finishReason,
+        }),
   );
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
@@ -337,19 +330,21 @@ test("首轮候选过短时重新完整生成，多轮尝试的聚合用量仍�
     const snapshot = JSON.parse(row?.employee_web_snapshot || "{}");
     assert.equal(
       row?.status,
-      "已完成",
-      `多轮尝试后应完成，实际=${row?.status}；failure=${JSON.stringify(snapshot.failure || null)}`,
+      "待审阅",
+      `首轮短稿应交付待审阅，实际=${row?.status}；failure=${JSON.stringify(snapshot.failure || null)}`,
     );
-    assert.equal(generated.length, 2, "首轮过短应触发一次完整重新生成");
-    // 派活模式没有契约修复器：第二次请求必须仍是全新生成，不是修复提示。
-    assert.doesNotMatch(generated[1].kind || "", /contract-repair/u);
+    assert.equal(generated.length, 1, "首轮短稿不能自动付费重新生成");
+    assert.equal(row.body, shortReport);
     const audit = snapshot.outputContract;
     assert.equal(audit.valid, true);
     assert.equal(audit.deliveryStyle, "paihuo_markdown");
+    assert.equal(audit.qualityReview.requiresUserDecision, true);
+    assert.ok(audit.warnings.some(warning => /正文较短/u.test(warning)));
+    if (finishReason !== 'stop') assert.ok(audit.warnings.some(warning => warning.includes(`finish_reason=${finishReason}`)));
     // 最终硬门必须以聚合用量为证据，与providerAttempt.usage一致。
     const hardUsage = audit.hardDelivery?.provider?.usage || {};
-    assert.equal(Number(hardUsage.inputTokens), 2000);
-    assert.equal(Number(hardUsage.outputTokens), 740);
+    assert.equal(Number(hardUsage.inputTokens), 900);
+    assert.equal(Number(hardUsage.outputTokens), 40);
     const adoption = inspectStructuredReportFirstEvidence({
       dataMode: "live",
       content: { body: row.body, ai_mode: row.ai_mode },
@@ -362,7 +357,14 @@ test("首轮候选过短时重新完整生成，多轮尝试的聚合用量仍�
       executionEvidence: row.employee_web_snapshot,
     });
     assert.equal(adoption.valid, true, adoption.errors.join("；"));
+    const review = await fetch(`${base}/marshals/outputs/${row.output_id}/review`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'adopt', reason: '已阅读本轮全文，先采纳现有建议。' }),
+    });
+    assert.equal(review.status, 200, await review.text());
+    assert.equal(generated.length, 1, '采纳不能再次调用provider');
   } finally {
     server.close();
   }
 });
+}

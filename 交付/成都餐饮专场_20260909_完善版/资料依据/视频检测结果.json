@@ -1,0 +1,119 @@
+{
+  "product-reel-v2.mp4": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1920,
+        "height": 1080,
+        "pix_fmt": "yuv420p",
+        "r_frame_rate": "30/1",
+        "avg_frame_rate": "30/1",
+        "duration": "45.000000",
+        "nb_frames": "1350"
+      },
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "avg_frame_rate": "0/0",
+        "duration": "45.000000",
+        "nb_frames": "2111"
+      }
+    ],
+    "format": {
+      "start_time": "0.000000",
+      "duration": "45.000000",
+      "size": "6887364"
+    },
+    "sha256": "2704afdabe4b4b6ccaed127574fe99a8b4bc841925b0250cfedf8354ff5c1045",
+    "fastStartMoovBeforeMdat": true,
+    "decodeReturnCode": 0,
+    "audioLevels": [
+      "[Parsed_volumedetect_0 @ 0xadac0de00] mean_volume: -17.9 dB",
+      "[Parsed_volumedetect_0 @ 0xadac0de00] max_volume: -1.5 dB"
+    ]
+  },
+  "sales-sample-v2.mp4": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1920,
+        "height": 1080,
+        "pix_fmt": "yuv420p",
+        "r_frame_rate": "30/1",
+        "avg_frame_rate": "30/1",
+        "duration": "30.000000",
+        "nb_frames": "900"
+      },
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "avg_frame_rate": "0/0",
+        "duration": "30.000000",
+        "nb_frames": "1408"
+      }
+    ],
+    "format": {
+      "start_time": "0.000000",
+      "duration": "30.000000",
+      "size": "21571233"
+    },
+    "sha256": "0092994972802d27a5005fdbc146529cb9f5a32dbbe899fc5a4152732149ac4b",
+    "fastStartMoovBeforeMdat": true,
+    "decodeReturnCode": 0,
+    "audioLevels": [
+      "[Parsed_volumedetect_0 @ 0xa5b0218c0] mean_volume: -18.0 dB",
+      "[Parsed_volumedetect_0 @ 0xa5b0218c0] max_volume: -1.5 dB"
+    ]
+  },
+  "sales-sample-portrait-v2.mp4": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "pix_fmt": "yuv420p",
+        "r_frame_rate": "30/1",
+        "avg_frame_rate": "30/1",
+        "duration": "30.000000",
+        "nb_frames": "900"
+      },
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "avg_frame_rate": "0/0",
+        "duration": "30.000000",
+        "nb_frames": "1408"
+      }
+    ],
+    "format": {
+      "start_time": "0.000000",
+      "duration": "30.000000",
+      "size": "12265630"
+    },
+    "sha256": "9986ef43ed2be70db336c9a6419b5f995046caaace611af8fbee7de7246cf7e6",
+    "fastStartMoovBeforeMdat": true,
+    "decodeReturnCode": 0,
+    "audioLevels": [
+      "[Parsed_volumedetect_0 @ 0xadac0de00] mean_volume: -18.0 dB",
+      "[Parsed_volumedetect_0 @ 0xadac0de00] max_volume: -1.5 dB"
+    ]
+  }
+}

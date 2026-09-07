@@ -51,7 +51,7 @@ test('无租户覆盖时路由与历史行为完全一致（DEFAULT_ROUTING 锁�
   assert.deepEqual(r.text, DEFAULT_TEXT);
   assert.equal(r.image, 'gpt-image-2');
   assert.equal(r.vision, 'gemini-3.1-flash-lite');
-  assert.equal(r.videoDefault, 'happyhorse-1.0-t2v:floor');
+  assert.equal(r.videoDefault, 'wan2.6-i2v');
   assert.equal(r.deepThink, 'gpt-5.5');
   assert.ok(r.video.includes('MiniMax-Hailuo-2.3'));
   assert.equal(textModelFor('boss', T2), 'gpt-5.5');
@@ -73,7 +73,9 @@ test('白名单由 yunwu 导出：文本/图片/识图/视频四类，video 与 
   assert.deepEqual(catalog.video.map(m => m.id).sort(), routing(T2).video.slice().sort());
   assert.equal(isAllowedModel('text', 'gpt-5.5'), true);
   assert.equal(isAllowedModel('text', 'gpt-99-ultra'), false);
-  assert.equal(isAllowedModel('video', 'kling-video'), true);
+  assert.equal(isAllowedModel('video', 'MiniMax-Hailuo-2.3'), true);
+  assert.equal(isAllowedModel('video', 'kling-arbitrary-private'), false);
+  assert.equal(isAllowedModel('video', 'kling-video'), false, '尚未接入的目录项不能成为租户选择');
   assert.equal(isAllowedModel('video', 'sora-x'), false);
   assert.equal(isAllowedModel('image', ''), false);
 });
@@ -145,7 +147,7 @@ test('库中残留白名单外模型时回落上一层，不把无效模型送�
   const r = routing(T3);
   assert.equal(r.text.boss, 'gpt-5.5');
   assert.equal(r.image, 'gpt-image-2');
-  assert.equal(r.videoDefault, 'happyhorse-1.0-t2v:floor');
+  assert.equal(r.videoDefault, 'wan2.6-i2v');
   qRaw.run('DELETE FROM tenant_model_routing WHERE tenant_id=?', T3);
 });
 

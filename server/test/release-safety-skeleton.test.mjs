@@ -38,7 +38,7 @@ q.run(`INSERT INTO tenants(id,name,status,credits)
   VALUES(1,'发布安全测试企业','已开通',10000)
   ON CONFLICT(id) DO UPDATE SET name=excluded.name,status=excluded.status`);
 const bossId = Number(q.run(`INSERT INTO users(username,password_hash,name,role,status,tenant_id)
-  VALUES('release-safety-boss','unused','发布安全负责人','boss','启用',1)`).lastInsertRowid);
+  VALUES('release-safety-boss','unused','发布安全负责人','platform_super','启用',1)`).lastInsertRowid);
 const boss = q.get('SELECT id,name,username,role,tenant_id FROM users WHERE id=?', bossId);
 
 function makeAdminApp() {
@@ -161,7 +161,7 @@ test('Scheduler 自动任务使用全局并发池，默认最大在途为2且可
   );
 });
 
-test('管理员不能再把新 API Key 写入 sys_config，环境变量优先但旧库值仍可兼容读取', async () => {
+test('平台超管不能再把新 API Key 写入 sys_config，环境变量优先但旧库值仍可兼容读取', async () => {
   const legacyKey = 'sk-legacy-storage-123456789';
   const attemptedKey = 'sk-new-plaintext-must-not-persist';
   setConfig('yunwu_api_key', legacyKey);
@@ -242,7 +242,7 @@ test('Yunwu 错误响应被脱敏，Canary 不进入错误消息、堆栈、序�
   }
 });
 
-test('管理员连接测试不会把上游 Canary 通过 HTTP 返回', async () => {
+test('平台超管连接测试不会把上游 Canary 通过 HTTP 返回', async () => {
   const canary = 'CANARY_ADMIN_HTTP_SECRET_sk-never-return-456';
   const originalFetch = globalThis.fetch;
   process.env.YUNWU_API_KEY = 'sk-fake-admin-connection-test';

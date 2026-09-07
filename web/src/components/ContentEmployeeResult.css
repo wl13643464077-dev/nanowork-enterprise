@@ -66,12 +66,10 @@
   content: '';
 }
 
-.content-result-section .md-body,
-.content-result-section p,
-.content-result-section li {
+.content-result-section {
   color: var(--ui-text-2);
-  font-size: 12px;
-  line-height: 1.75;
+  font-size: 16px;
+  line-height: 1.85;
 }
 
 .content-result-section .md-body > :first-child,

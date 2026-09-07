@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { q, curTenant, modulesFor } from "../db.js";
+import { db, q, curTenant, modulesFor } from "../db.js";
 import { userScopeClause } from "./access.js";
 import { generationProgressFromSnapshot } from "./employee-generation-progress.js";
 import {
@@ -11,11 +11,17 @@ import {
 } from "./delivery-state.js";
 import { augmentMediaJob } from "../routes/media-review.js";
 import { humanizeContractFailures } from "./contract-tiers.js";
+import { taskFeedbackFor, publicTaskFeedback } from "./task-feedback.js";
+import { xhsNoteMarkdown, XHS_STYLES, XHS_COVER_LAYOUTS } from "./ai-xhs-note.js";
+import { approvedNativeChatPlan, nativeChatJson } from "./native-creative-chat-store.js";
+import { nativeDownloadMetadata, nativeSalesScriptText } from "./native-deliverables.js";
+import { parseProviderMediaUrl } from "./provider-media-download.js";
 
 export const TASK_CENTER_KINDS = Object.freeze([
   "manual",
   "restaurant",
   "content",
+  "generated_content",
   "content_pipeline",
   "skill_learning",
   "advisor",
@@ -44,6 +50,26 @@ const TASK_CENTER_PUBLIC_ERRORS = Object.freeze({
     error: "任务不存在或无权查看",
     code: "TASK_NOT_ACCESSIBLE",
   }),
+  TASK_FEEDBACK_INVALID: Object.freeze({
+    status: 400,
+    error: "请选择采纳或不采纳，反馈最多2000字",
+    code: "TASK_FEEDBACK_INVALID",
+  }),
+  TASK_FEEDBACK_NOT_READY: Object.freeze({
+    status: 409,
+    error: "任务尚无可反馈的最终结果，或该选择须先完成原岗位审阅",
+    code: "TASK_FEEDBACK_NOT_READY",
+  }),
+  TASK_FEEDBACK_CONFLICT: Object.freeze({
+    status: 409,
+    error: "该结果已有明确选择，不能重复更改或复用其他任务的提交标识",
+    code: "TASK_FEEDBACK_CONFLICT",
+  }),
+  TASK_FEEDBACK_VERSION_CHANGED: Object.freeze({
+    status: 409,
+    error: "成果已更新，请刷新后对最新版本选择；无需重新生成",
+    code: "TASK_FEEDBACK_VERSION_CHANGED",
+  }),
 });
 const SOURCE_SCAN_LIMIT = 501;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +81,13 @@ const WORKFLOWS = {
   manual: ["等待开始", "执行任务", "人工验收", "交付完成"],
   restaurant: ["任务受理", "员工生成", "账务确认", "结果采用", "交付完成"],
   content: ["任务受理", "内容生成", "账务确认", "结果采用", "交付完成"],
+  generated_content: [
+    "任务受理",
+    "内容生成",
+    "账务确认",
+    "结果采用",
+    "交付完成",
+  ],
   content_pipeline: [
     "趋势",
     "情报",
@@ -443,7 +476,6 @@ function structuredReportMarkdown(value, depth = 2) {
   }
   if (Array.isArray(value)) {
     return value
-      .slice(0, 100)
       .map((item, index) => {
         if (item != null && typeof item === "object") {
           const nested = structuredReportMarkdown(item, Math.min(5, depth + 1));
@@ -456,7 +488,6 @@ function structuredReportMarkdown(value, depth = 2) {
       .join("\n\n");
   }
   return Object.entries(value)
-    .slice(0, 100)
     .map(([key, item]) => {
       if (item == null || item === "") return "";
       const label = reportFieldLabel(key);
@@ -495,7 +526,7 @@ function readableReportMarkdown(value, title) {
     return /^#\s/u.test(report) ? report : `# ${title}\n\n${report}`;
   }
   const report = structuredReportMarkdown(parsed);
-  return report ? `# ${title}\n\n${report}`.slice(0, 120_000) : "";
+  return report ? `# ${title}\n\n${report}` : "";
 }
 
 function sourceArtifactFileReady(artifact) {
@@ -842,7 +873,7 @@ function adoptionContextFor(kind, status, snapshot, routing, evidence = {}) {
     decision === "reject" ||
     approvalStatus === "已驳回" ||
     contentStatus === "已驳回" ||
-    raw === "rework"
+    raw === "rejected"
   ) {
     return {
       kind: "rejected",
@@ -857,7 +888,7 @@ function adoptionContextFor(kind, status, snapshot, routing, evidence = {}) {
               ? "content_record"
               : "task_state",
       decisionKind: decision || decisionKind || null,
-      label: "失败需返工（人工审阅未通过）",
+      label: BUSINESS_DELIVERY_LABELS.reviewRejected,
     };
   }
   if (decision === "adopt" || approvalStatus === "已通过") {
@@ -881,7 +912,7 @@ function adoptionContextFor(kind, status, snapshot, routing, evidence = {}) {
     };
   }
   if (
-    !["failed", "rework", "blocked"].includes(raw) &&
+    !["failed", "rework", "rejected", "blocked"].includes(raw) &&
     (approvalStatus === "待审核" ||
       contentStatus === "待审核" ||
       raw === "review" ||
@@ -970,7 +1001,7 @@ function stateWithAdoption(state, adoptionContext) {
   ) {
     return "review";
   }
-  if (adoptionContext.kind === "rejected") return "rework";
+  if (adoptionContext.kind === "rejected") return "rejected";
   return state;
 }
 
@@ -979,7 +1010,10 @@ function displayStatusFor(status, state, adoptionContext) {
     return BUSINESS_DELIVERY_LABELS.draftPending;
   if (String(status || "") === DRAFT_ACCEPTED_STATUS)
     return BUSINESS_DELIVERY_LABELS.draftAccepted;
-  if (state === "blocked") return "业务暂不可采用（待账务对账）";
+  if (state === "blocked")
+    return /阻塞|受阻/u.test(String(status))
+      ? "任务受阻，需处理"
+      : "业务暂不可采用（待账务对账）";
   if (
     adoptionContext.kind !== "not_applicable" &&
     adoptionContext.kind !== "not_adopted"
@@ -987,19 +1021,39 @@ function displayStatusFor(status, state, adoptionContext) {
     return adoptionContext.label;
   }
   if (state === "failed") return "失败需处理（执行异常）";
-  if (state === "rework") return "失败需返工（人工审阅未通过）";
+  if (state === "rejected") return BUSINESS_DELIVERY_LABELS.reviewRejected;
+  if (state === "rework") return "待返工";
   if (state === "review") return "待人工审阅";
   return cleanText(status, 80) || "状态待确认";
 }
 
-function elapsed(start, end) {
-  const started = Date.parse(String(start || "").replace(" ", "T"));
-  const finished = Date.parse(String(end || "").replace(" ", "T"));
-  if (!Number.isFinite(started)) return null;
-  return Math.max(
-    0,
-    (Number.isFinite(finished) ? finished : Date.now()) - started,
+function isExecutingStatus(status) {
+  return /^(?:running|processing|executing|in_progress|执行中|生成中|进行中|处理中|合成中|制作中)$/iu.test(
+    String(status || "").trim(),
   );
+}
+
+function knownFinishedAt(row, snapshotValue = row.snapshot_json) {
+  const snapshot = parseObject(snapshotValue);
+  return (
+    row.done_at ||
+    row.finished_at ||
+    row.completed_at ||
+    snapshot.finishedAt ||
+    snapshot.completedAt ||
+    null
+  );
+}
+
+function elapsed(start, end, status) {
+  const started = Date.parse(String(start || "").replace(" ", "T"));
+  // Waiting for a choice, blocked billing and old records with no completion
+  // timestamp are not still generating. Only explicit active execution ticks.
+  const finished = isExecutingStatus(status)
+    ? Date.now()
+    : Date.parse(String(end || "").replace(" ", "T"));
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return null;
+  return Math.max(0, finished - started);
 }
 
 function loadBillingContext() {
@@ -1193,12 +1247,13 @@ function rawState(status) {
   if (value === DRAFT_PENDING_STATUS) return "rework";
   if (value === DRAFT_ACCEPTED_STATUS) return "done";
   if (
-    /pending_reconciliation|billing_pending|待账务对账|待对账|blocked|阻断|暂不可/.test(
+    /pending_reconciliation|billing_pending|待账务对账|待对账|blocked|阻断|阻塞|受阻|暂不可/.test(
       value,
     )
   )
     return "blocked";
-  if (/rework|返工|已驳回/.test(value)) return "rework";
+  if (/已驳回|rejected|未采纳/.test(value)) return "rejected";
+  if (/rework|返工/.test(value)) return "rework";
   if (/paused|已暂停/.test(value)) return "pending";
   if (/待执行|pending|queued|排队|未开始/.test(value)) return "pending";
   if (
@@ -1215,7 +1270,7 @@ function rawState(status) {
 
 function projectedState(status, billing) {
   const raw = rawState(status);
-  if (["failed", "pending", "rework"].includes(raw)) return raw;
+  if (["failed", "pending", "rework", "rejected"].includes(raw)) return raw;
   if (
     ["unavailable", "missing", "pending_reconciliation"].includes(
       billing.state,
@@ -1273,7 +1328,7 @@ function workflowStep(kind, status, state, billing, snapshot) {
   const stored = snapshotStep(snapshot, steps.length);
   let index;
   if (state === "pending") index = 1;
-  else if (state === "done") index = steps.length;
+  else if (["done", "rejected"].includes(state)) index = steps.length;
   else if (state === "review") index = Math.max(2, steps.length - 1);
   else if (
     state === "blocked" &&
@@ -1306,6 +1361,7 @@ function workflowStep(kind, status, state, billing, snapshot) {
     const generation = generationProgressFromSnapshot(snapshot);
     if (generation?.currentLabel) label = generation.currentLabel;
   }
+  if (state === "rejected") label = BUSINESS_DELIVERY_LABELS.reviewRejected;
   const progress =
     steps.length <= 1
       ? 100
@@ -1370,10 +1426,7 @@ function project(input, billingContext) {
     executionProgress: generationProgressFromSnapshot(input.snapshot),
     state,
     ...step,
-    elapsedMs:
-      ["done", "failed"].includes(state) && !input.finishedAt
-        ? null
-        : elapsed(input.createdAt, input.finishedAt),
+    elapsedMs: elapsed(input.createdAt, input.finishedAt, input.status),
     billing,
     businessUsable:
       typeof businessUsableOverride === "boolean"
@@ -1620,7 +1673,249 @@ function pipelineBilling(pipelineId) {
   };
 }
 
-function loadSources(user) {
+// Generated contents not already represented by an authoritative parent run.
+// Keep orphaned historical outputs visible instead of excluding by source label.
+const GENERATED_CONTENT_FILTER = `AND NOT EXISTS(SELECT 1 FROM agent_tasks a WHERE a.tenant_id=c.tenant_id AND a.output_id=c.id)
+  AND NOT EXISTS(SELECT 1 FROM content_employee_runs r WHERE r.tenant_id=c.tenant_id AND c.source_type='content_employee_run' AND c.source_id=r.id)
+  AND NOT EXISTS(SELECT 1 FROM media_jobs m WHERE m.tenant_id=c.tenant_id AND m.result_id=c.id)
+  AND NOT EXISTS(SELECT 1 FROM content_automation_runs a WHERE a.tenant_id=c.tenant_id AND a.content_id=c.id)`;
+const MEDIA_CHILD_FILTER = `AND NOT EXISTS(SELECT 1 FROM contents c WHERE c.tenant_id=j.tenant_id AND c.source_type='ai_xhs_note'
+  AND c.id=CASE WHEN json_valid(j.snapshot_json) THEN json_extract(j.snapshot_json,'$.contentId') END
+  AND CASE WHEN json_valid(j.snapshot_json) THEN json_extract(j.snapshot_json,'$.source') END='ai_xhs_note_image')`;
+
+function generatedContentStatus(row) {
+  const snapshot = parseObject(row.snapshot_json);
+  if (row.source_type === "ai_xhs_note") {
+    if (snapshot.status === "running") return "生成中";
+    if (snapshot.status === "failed") return "失败";
+    if (snapshot.status === "success") return "待审阅";
+  }
+  if (
+    ["草稿", "可使用", "已发布"].includes(row.status) &&
+    String(row.body || "").trim()
+  )
+    return row.status === "草稿" ? "待审阅" : "已完成";
+  return row.status;
+}
+
+function taskMediaUrl(value) {
+  const url = String(value || "").trim();
+  if (url.startsWith("/uploads/"))
+    return q.get(
+      "SELECT id FROM uploaded_files WHERE tenant_id=? AND file_url=?",
+      curTenant(),
+      url,
+    )
+      ? url
+      : null;
+  try {
+    return parseProviderMediaUrl(url).href;
+  } catch {
+    return null;
+  }
+}
+
+function taskInputFiles(ownerId, refs) {
+  if (!Array.isArray(refs)) return [];
+  const ids = [
+    ...new Set(
+      refs
+        .map((ref) =>
+          Number(typeof ref === "object" ? (ref?.fileId ?? ref?.id) : ref),
+        )
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  return ids
+    .map((id) =>
+      q.get(
+        "SELECT id,name,file_url FROM uploaded_files WHERE tenant_id=? AND user_id=? AND id=?",
+        curTenant(),
+        ownerId,
+        id,
+      ),
+    )
+    .filter(Boolean)
+    .map((file) => ({ id: file.id, name: file.name, url: file.file_url }));
+}
+
+function businessInputDisplay(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const labels = {
+    brandName: "品牌",
+    brand: "品牌",
+    brief: "需求",
+    title: "标题",
+    topic: "主题",
+    type: "交付形式",
+    requirement: "具体要求",
+    direction: "创作方向",
+    industry: "行业",
+    material: "提供材料",
+    feedback: "补充意见",
+    length: "篇幅要求",
+    tone: "表达风格",
+    audience: "面向人群",
+    platform: "发布平台",
+    dishNames: "菜品",
+    dishes: "菜品",
+    productName: "产品",
+    productInfo: "产品资料",
+    context: "补充背景",
+    imageCount: "图片张数",
+  };
+  const display = Object.fromEntries(
+    Object.entries(labels)
+      .filter(
+        ([key]) =>
+          value[key] !== undefined && value[key] !== null && value[key] !== "",
+      )
+      .map(([key, label]) => [label, value[key]]),
+  );
+  if (value.generateImages !== undefined)
+    display["配图选择"] = value.generateImages
+      ? "生成AI创意配图"
+      : "仅生成文案";
+  if (value.includeDiner === true)
+    display["用餐人物"] = "成年AI人物（创意配图）";
+  if (value.style)
+    display["图文风格"] = XHS_STYLES.find((item) => item.id === value.style)?.label || value.style;
+  if (value.coverLayout)
+    display["封面版式"] = XHS_COVER_LAYOUTS.find((item) => item.id === value.coverLayout)?.label || value.coverLayout;
+  return Object.keys(display).length ? structuredReportMarkdown(display) : null;
+}
+
+function generatedContentBilling(row, context = null) {
+  const snapshot = parseObject(row.snapshot_json);
+  if (row.source_type !== "ai_xhs_note" || !snapshot.billingReference)
+    return null;
+  // Reusing a confirmed chat draft must reuse its actual charge, but a saved
+  // snapshot alone cannot authorize billing against someone else's message.
+  const missing = () => billingFor("native_chat_message", -1, { context });
+  const provenance = snapshot.chatProvenance;
+  if (snapshot.billingReference.refType !== "native_chat_message" || !provenance)
+    return missing();
+  try {
+    const actor = { id: row.creator_id, tenant_id: curTenant() };
+    const approved = approvedNativeChatPlan({ actor, sessionId: provenance.sessionId,
+      planVersion: provenance.planVersion, employeeIdx: 11 });
+    const stored = q.get("SELECT generation_json FROM native_chat_plans WHERE tenant_id=? AND user_id=? AND session_id=? AND version=?",
+      curTenant(), actor.id, provenance.sessionId, provenance.planVersion);
+    const generation = nativeChatJson(stored?.generation_json);
+    if (generation.kind !== "xhs" || Number(generation.jobId) !== Number(row.id)
+      || Number(snapshot.billingReference.refId) !== Number(approved.messageId)
+      || approved.provenance.planHash !== provenance.planHash
+      || approved.provenance.outputHash !== provenance.outputHash)
+      return missing();
+    return billingFor("native_chat_message", approved.messageId, { context });
+  } catch {
+    return missing();
+  }
+}
+
+function generatedContentDetail(row) {
+  const snapshot = parseObject(row.snapshot_json);
+  const input = snapshot.input ||
+    snapshot.task ||
+    snapshot.dispatch || {
+      topic: row.topic || "",
+      brand: row.brand || "",
+      type: row.type,
+    };
+  const xhs = row.source_type === "ai_xhs_note";
+  const output =
+    xhs && (snapshot.editedOutput || snapshot.output)
+      ? xhsNoteMarkdown(snapshot.editedOutput || snapshot.output)
+      : row.body || "";
+  const media = [];
+  let imageGeneration;
+  if (xhs) {
+    const images = q.all(
+      `SELECT id,url,status,error,snapshot_json FROM media_jobs WHERE tenant_id=?
+      AND CASE WHEN json_valid(snapshot_json) THEN json_extract(snapshot_json,'$.source') END='ai_xhs_note_image'
+      AND CASE WHEN json_valid(snapshot_json) THEN json_extract(snapshot_json,'$.contentId') END=? ORDER BY id`,
+      curTenant(),
+      row.id,
+    );
+    const items = images.map((image) => {
+      const state = parseObject(image.snapshot_json),
+        url = taskMediaUrl(image.url);
+      const item = {
+        id: state.role,
+        mediaJobId: image.id,
+        kind: "image",
+        url,
+        downloadUrl: url,
+        label: cleanText(state.label, 120) ||
+          { cover: "封面", detail: "菜品特写", scene: "用餐场景" }[
+            state.role
+          ] || "配图",
+        status: state.status,
+        error: cleanText(state.error || image.error, 500) || null,
+        warning: cleanText(state.warning, 500) || null,
+        billing: billingFor("media_job", image.id),
+      };
+      media.push(item);
+      return item;
+    });
+    imageGeneration = {
+      items,
+      status:
+        snapshot.input?.generateImages === false
+          ? "disabled"
+          : items.some((item) => ["pending", "running"].includes(item.status))
+            ? "running"
+            : !items.length
+              ? snapshot.status === "success"
+                ? "pending"
+                : "disabled"
+              : items.every((item) => item.status === "success")
+                ? "success"
+                : items.some((item) => item.status === "success")
+                  ? "partial"
+                  : "failed",
+    };
+  }
+  const urls = [
+    snapshot.url,
+    snapshot.resultUrl,
+    snapshot.outputUrl,
+    ...(Array.isArray(snapshot.images) ? snapshot.images : []),
+  ];
+  for (const value of urls) {
+    const url = taskMediaUrl(typeof value === "string" ? value : value?.url);
+    if (url && !media.some((item) => item.url === url))
+      media.push({
+        kind: /视频/u.test(row.type)
+          ? "video"
+          : /音频/u.test(row.type)
+            ? "audio"
+            : "image",
+        url,
+        downloadUrl: url,
+        label: row.type,
+      });
+  }
+  const inputFiles = taskInputFiles(row.creator_id, input.fileIds);
+  return {
+    input: structuredReportMarkdown(input),
+    inputDisplay: businessInputDisplay(input),
+    inputFiles,
+    output,
+    originalOutput:
+      xhs && snapshot.output
+        ? xhsNoteMarkdown(snapshot.output)
+        : row.body || "",
+    error: cleanText(snapshot.error, 500) || null,
+    media,
+    ...(xhs && output ? nativeDownloadMetadata("xhs", row.id, input.brandName) : {}),
+    ...(imageGeneration ? { imageGeneration } : {}),
+  };
+}
+
+function loadSources(user, scanLimit = SOURCE_SCAN_LIMIT) {
+  const SOURCE_SCAN_LIMIT = scanLimit;
   const tenant = curTenant();
   const billingContext = loadBillingContext();
   const sourceFlags = [];
@@ -1734,12 +2029,45 @@ function loadSources(user) {
         status: row.status,
         createdAt: row.created_at,
         snapshot: row.snapshot,
-        finishedAt: ["done", "failed"].includes(rawState(row.status))
-          ? row.updated_at
-          : null,
+        finishedAt:
+          knownFinishedAt(row, row.snapshot) ||
+          (["done", "failed", "rejected"].includes(rawState(row.status))
+            ? row.updated_at
+            : null),
         dueAt: row.due_at,
         hasOutput: Boolean(row.has_output),
         billingRefType: "content_employee_run",
+      },
+      billingContext,
+    ),
+  );
+
+  const generatedScope = scoped("c.creator_id");
+  const generated = withLimit(
+    q.all(
+      `SELECT c.* FROM contents c WHERE c.tenant_id=?${generatedScope.sql}
+    ${GENERATED_CONTENT_FILTER} ORDER BY c.id DESC LIMIT ?`,
+      tenant,
+      ...generatedScope.params,
+      SOURCE_SCAN_LIMIT,
+    ),
+  ).map((row) =>
+    project(
+      {
+        id: row.id,
+        kind: "generated_content",
+        category:
+          row.source_type === "ai_xhs_note" ? "AI小红书种草图文" : "生成内容",
+        title: row.title || row.type,
+        employee: row.content_employee_name || "内容生成",
+        status: generatedContentStatus(row),
+        createdAt: row.created_at,
+        finishedAt: knownFinishedAt(row),
+        snapshot: row.snapshot_json,
+        hasOutput: Boolean(String(row.body || "").trim()),
+        billingRefType: "content",
+        billingOverride: generatedContentBilling(row, billingContext),
+        billable: row.ai_mode === "api",
       },
       billingContext,
     ),
@@ -1985,7 +2313,7 @@ function loadSources(user) {
   const media = withLimit(
     q.all(
       `SELECT j.*,j.snapshot_json snapshot
-    FROM media_jobs j WHERE j.tenant_id=?${mediaScope.sql} ORDER BY j.id DESC LIMIT ?`,
+    FROM media_jobs j WHERE j.tenant_id=?${mediaScope.sql} ${MEDIA_CHILD_FILTER} ORDER BY j.id DESC LIMIT ?`,
       tenant,
       ...mediaScope.params,
       SOURCE_SCAN_LIMIT,
@@ -2003,6 +2331,7 @@ function loadSources(user) {
         createdAt: row.created_at,
         snapshot: row.snapshot,
         hasOutput: Boolean(row.url),
+        finishedAt: knownFinishedAt(row),
         businessUsableOverride: authority.businessUsable === true,
         billingRefType: "media_job",
       },
@@ -2093,6 +2422,7 @@ function loadSources(user) {
       ...manual,
       ...restaurant,
       ...content,
+      ...generated,
       ...pipelines,
       ...skillLearning,
       ...advisor,
@@ -2116,7 +2446,26 @@ export function listUnifiedTasks(user, options = {}) {
   const requestedState = cleanText(options.state, 30);
   const kind = cleanText(options.kind, 30);
   const search = cleanText(options.search, 100).toLowerCase();
-  const source = loadSources(user);
+  const matches = (row) =>
+    (!requestedState ||
+      requestedState === "all" ||
+      row.state === requestedState) &&
+    (!kind || kind === "all" || row.kind === kind) &&
+    (!search ||
+      `${row.title} ${row.employee} ${row.category}`
+        .toLowerCase()
+        .includes(search));
+  let scanLimit = Math.max(SOURCE_SCAN_LIMIT, page * pageSize + 1);
+  let source = loadSources(user, scanLimit);
+  // Search and later pages can reach old history; the previous hard 500-per-kind
+  // window made older runs permanently unreachable even though they existed.
+  while (
+    source.truncated &&
+    source.items.filter(matches).length < page * pageSize
+  ) {
+    scanLimit *= 2;
+    source = loadSources(user, scanLimit);
+  }
   const matched = source.items
     .filter(
       (row) =>
@@ -2145,7 +2494,18 @@ export function listUnifiedTasks(user, options = {}) {
         billable,
         hasOutput,
         ...row
-      }) => row,
+      }) => {
+        const feedback = taskFeedbackFor(row.kind, row.id)
+          ? getUnifiedTaskDetail(user, row.kind, row.id).feedback
+          : null;
+        return {
+          ...row,
+          feedback,
+          ...(feedback?.currentVersion && feedback?.decision === "reject"
+            ? { businessUsable: false }
+            : {}),
+        };
+      },
     );
   const count = (state) => matched.filter((row) => row.state === state).length;
   return {
@@ -2158,6 +2518,7 @@ export function listUnifiedTasks(user, options = {}) {
       review: count("review"),
       blocked: count("blocked"),
       rework: count("rework"),
+      rejected: count("rejected"),
       failed: count("failed"),
       done: count("done"),
       superseded: count("superseded"),
@@ -2174,9 +2535,9 @@ export function listUnifiedTasks(user, options = {}) {
       returned: items.length,
       matched: matched.length,
       scanned: source.items.length,
-      sourceLimitPerKind: SOURCE_SCAN_LIMIT - 1,
+      sourceLimitPerKind: scanLimit - 1,
       truncated: source.truncated,
-      hasMore: offset + items.length < matched.length,
+      hasMore: offset + items.length < matched.length || source.truncated,
     },
   };
 }
@@ -2206,6 +2567,243 @@ function assertKind(kind) {
 function scopedOne(user, sql, params, scopeColumn) {
   const scope = userScopeClause(user, scopeColumn);
   return q.get(`${sql}${scope.sql}`, ...params, ...scope.params);
+}
+
+const FEEDBACK_SUBJECT = Symbol("taskFeedbackSubject");
+function taskResultVersion(task) {
+  const output = ["media", "avatar", "text_video"].includes(task.kind)
+    ? ""
+    : String(task.output || "");
+  const media = (task.media || [])
+    .filter((item) => item.url)
+    .map((item) => ({ kind: item.kind, url: item.url }));
+  const digest = (value) =>
+    createHash("sha256").update(String(value)).digest("hex");
+  return {
+    inputHash: digest(task.input || ""),
+    outputHash: digest(JSON.stringify({ output, media })),
+  };
+}
+
+function feedbackAtVersion(existing, version) {
+  const feedback = publicTaskFeedback(existing);
+  if (!feedback) return null;
+  const currentVersion =
+    existing.input_hash === version.inputHash &&
+    existing.output_hash === version.outputHash;
+  return {
+    ...feedback,
+    currentVersion,
+    versionLabel: currentVersion
+      ? "针对当前结果的选择"
+      : "旧版本选择：当前结果已变化",
+  };
+}
+
+function attachTaskFeedback(task, row, user, snapshotValue, supersededBy) {
+  const snapshot = parseObject(snapshotValue);
+  const kind = task.kind;
+  const ownerId = Number(
+    row.feedback_owner_id ||
+      row.creator_id ||
+      row.created_by ||
+      row.user_id ||
+      row.assignee_id,
+  );
+  const employeeIdx =
+    row.employee_idx ??
+    row.content_employee_idx ??
+    snapshot.employeeIdx ??
+    snapshot.employeeExecution?.employeeIdx;
+  const domain =
+    kind === "restaurant"
+      ? "restaurant"
+      : kind === "tool"
+        ? "tool"
+        : kind === "advisor"
+          ? "advisor"
+          : kind === "skill_learning"
+            ? row.domain
+            : [
+                  "content",
+                  "generated_content",
+                  "content_pipeline",
+                  "media",
+                  "automation",
+                ].includes(kind)
+              ? "content"
+              : kind;
+  task.resultVersion = taskResultVersion(task);
+  const currentFeedback = taskFeedbackFor(kind, row.id, task.resultVersion);
+  const existing = currentFeedback || taskFeedbackFor(kind, row.id);
+  const hasOutput = Boolean(
+    String(task.output || "").trim() || task.media?.some((item) => item.url),
+  );
+  const executionEnded = !["running", "pending"].includes(rawState(row.status));
+  const available =
+    !currentFeedback &&
+    !supersededBy &&
+    hasOutput &&
+    executionEnded &&
+    Number.isSafeInteger(ownerId) &&
+    ownerId > 0;
+  task.feedback = feedbackAtVersion(existing, task.resultVersion);
+  task.feedbackAvailability = {
+    available,
+    allowedDecisions: available ? ["adopt", "reject"] : [],
+    reason: currentFeedback
+      ? "本次选择已保存；原结果与执行记录保留"
+      : supersededBy
+        ? "请对修订后的最终结果反馈"
+        : !hasOutput
+          ? "尚无可阅读或预览的结果"
+          : !executionEnded
+            ? "结果仍在生成，请等待本次输出结束"
+            : !Number.isSafeInteger(ownerId) || ownerId <= 0
+              ? "历史任务缺少所属账号，暂不能写入偏好经验"
+              : existing
+                ? "原选择属于旧版本，可直接对当前结果重新选择，无需再次生成"
+                : null,
+  };
+  if (currentFeedback?.decision === "reject") task.businessUsable = false;
+  Object.defineProperty(task, FEEDBACK_SUBJECT, {
+    value: {
+      ownerId,
+      domain,
+      employeeIdx:
+        employeeIdx != null &&
+        Number.isSafeInteger(Number(employeeIdx)) &&
+        Number(employeeIdx) >= 0
+          ? Number(employeeIdx)
+          : null,
+      specialistId: Number(row.specialist_id) || null,
+      toolKey: row.tool_key || null,
+      employeeName: row.employee || row.employee_name || "数字员工",
+    },
+  });
+}
+
+export function recordUnifiedTaskFeedback(user, kind, rawId, body = {}) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    !["adopt", "reject"].includes(body.decision) ||
+    (body.note !== undefined && typeof body.note !== "string") ||
+    String(body.note || "").length > 2000 ||
+    /\u0000/u.test(String(body.note || "")) ||
+    (body.requestKey !== undefined &&
+      (typeof body.requestKey !== "string" ||
+        !/^[a-zA-Z0-9:_.-]{8,120}$/u.test(body.requestKey)))
+  )
+    throw taskCenterDomainError("TASK_FEEDBACK_INVALID");
+  if (
+    !Number.isSafeInteger(Number(user?.id)) ||
+    Number(user.id) <= 0 ||
+    Number(user?.tenant_id) !== Number(curTenant())
+  )
+    throw taskCenterDomainError("TASK_NOT_ACCESSIBLE");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const task = getUnifiedTaskDetail(user, kind, rawId);
+    if (
+      body.resultVersion !== undefined &&
+      (body.resultVersion?.inputHash !== task.resultVersion.inputHash ||
+        body.resultVersion?.outputHash !== task.resultVersion.outputHash)
+    )
+      throw taskCenterDomainError("TASK_FEEDBACK_VERSION_CHANGED");
+    const existing = taskFeedbackFor(kind, task.id, task.resultVersion);
+    const note = String(body.note || "").trim();
+    if (existing) {
+      if (
+        existing.decision !== body.decision ||
+        (note && existing.note !== note)
+      )
+        throw taskCenterDomainError("TASK_FEEDBACK_CONFLICT");
+      db.exec("COMMIT");
+      return {
+        ok: true,
+        duplicated: true,
+        feedback: task.feedback,
+        task,
+      };
+    }
+    if (!task.feedbackAvailability?.available)
+      throw taskCenterDomainError("TASK_FEEDBACK_NOT_READY");
+    const subject = task[FEEDBACK_SUBJECT];
+    const versionKey = createHash("sha256")
+      .update(JSON.stringify(task.resultVersion))
+      .digest("hex");
+    const requestKey = body.requestKey || `${kind}:${task.id}:${versionKey}`;
+    if (
+      q.get(
+        "SELECT id FROM task_feedback WHERE tenant_id=? AND reviewer_id=? AND request_key=?",
+        curTenant(),
+        user.id,
+        requestKey,
+      )
+    )
+      throw taskCenterDomainError("TASK_FEEDBACK_CONFLICT");
+    const output = String(task.output || "");
+    const media = (task.media || [])
+      .filter((item) => item.url)
+      .map((item) => ({ kind: item.kind, url: item.url }));
+    const features = {
+      characterCount: output.length,
+      paragraphCount: output.trim()
+        ? output.trim().split(/\n\s*\n/u).length
+        : 0,
+      hasTable: /^\s*\|.*\|\s*$/mu.test(output),
+      mediaKinds: [...new Set(media.map((item) => item.kind))],
+      mediaCount: media.length,
+    };
+    q.run(
+      `INSERT INTO task_feedback(tenant_id,source_kind,source_id,owner_id,reviewer_id,employee_domain,employee_idx,specialist_id,tool_key,employee_name,
+      decision,note,input_hash,output_hash,output_features_json,task_title,request_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      curTenant(),
+      kind,
+      task.id,
+      subject.ownerId,
+      user.id,
+      subject.domain,
+      subject.employeeIdx,
+      subject.specialistId,
+      subject.toolKey,
+      subject.employeeName,
+      body.decision,
+      note,
+      task.resultVersion.inputHash,
+      task.resultVersion.outputHash,
+      JSON.stringify(features),
+      task.title,
+      requestKey,
+    );
+    task.feedback = feedbackAtVersion(
+      taskFeedbackFor(kind, task.id, task.resultVersion),
+      task.resultVersion,
+    );
+    task.feedbackAvailability = {
+      available: false,
+      allowedDecisions: [],
+      reason: "本次选择已保存；原结果与执行记录保留",
+    };
+    if (body.decision === "reject") task.businessUsable = false;
+    const result = {
+      ok: true,
+      duplicated: false,
+      feedback: task.feedback,
+      task,
+    };
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* transaction already committed */
+    }
+    throw error;
+  }
 }
 
 export function getUnifiedTaskDetail(user, kind, rawId) {
@@ -2261,6 +2859,10 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
         input: row.requirement || "未填写任务要求",
         output: supersededBy ? "" : row.output || "",
         dueAt: row.due_at,
+        inputFiles: taskInputFiles(
+          row.created_by,
+          parseObject(row.employee_input_snapshot).attachments,
+        ),
       };
       // P0-1：未达标草稿的老板可读信息（不含契约 ID/指纹/字段路径等技术词）
       if (
@@ -2311,12 +2913,40 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
       [tenant, id],
       "r.created_by",
     );
-    if (row)
+    if (row) {
+      const originalTask = parseObject(parseObject(row.snapshot_json).task);
       detail = {
-        input: row.requirement || "未填写任务要求",
+        input: Object.keys(originalTask).length
+          ? structuredReportMarkdown(originalTask)
+          : row.requirement || "未填写任务要求",
+        inputDisplay:
+          businessInputDisplay(originalTask) ||
+          row.requirement ||
+          "未填写任务要求",
         output: row.result_md || "",
         dueAt: row.due_at,
+        inputFiles: taskInputFiles(
+          row.created_by,
+          originalTask.attachmentRefs ||
+            parseObject(parseObject(row.snapshot_json).dispatch).attachments,
+        ),
       };
+    }
+  } else if (kind === "generated_content") {
+    row = scopedOne(
+      user,
+      `SELECT c.*,COALESCE(c.content_employee_name,'内容生成') employee
+      FROM contents c WHERE c.tenant_id=? AND c.id=? ${GENERATED_CONTENT_FILTER}`,
+      [tenant, id],
+      "c.creator_id",
+    );
+    if (row) {
+      detail = generatedContentDetail(row);
+      row.status = generatedContentStatus(row);
+      row._billingOverride = generatedContentBilling(row) || billingFor("content", id, {
+        billable: row.ai_mode === "api",
+      });
+    }
   } else if (kind === "content_pipeline") {
     row = scopedOne(
       user,
@@ -2843,9 +3473,25 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     if (row) {
       mediaAuthority = augmentMediaJob(row, user);
       detail = {
-        input: row.prompt || "未填写媒体要求",
+        input: parseObject(row.snapshot_json).input
+          ? readableReportMarkdown(
+              JSON.stringify(parseObject(row.snapshot_json).input),
+              "最终输入",
+            )
+          : row.prompt || "未填写媒体要求",
+        inputDisplay:
+          businessInputDisplay(parseObject(row.snapshot_json).input) ||
+          parseObject(row.snapshot_json).brief ||
+          row.prompt ||
+          "未填写媒体要求",
         output: "",
         error: cleanText(row.error, 300),
+        inputFiles: taskInputFiles(
+          row.user_id,
+          parseObject(row.snapshot_json).references ||
+            parseObject(parseObject(row.snapshot_json).input).fileIds,
+        ),
+        media: [],
       };
     }
   } else if (kind === "automation") {
@@ -2853,6 +3499,7 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
       user,
       `SELECT r.*,a.name title,a.topic,a.requirement,
       COALESCE(o.content_employee_name,c.employee_name,'内容自动化') employee,
+      COALESCE(o.content_employee_idx,c.employee_idx) employee_idx,COALESCE(r.initiated_by,a.created_by) feedback_owner_id,
       COALESCE(o.body,c.result_md,'') output,
       COALESCE(o.status,'') adoption_content_status,
       ap.status adoption_approval_status,
@@ -2897,8 +3544,14 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
         ...toolProgressSnapshot(progress),
       };
       detail = {
-        input: row.input_summary || "未填写工具输入",
-        output: row.status === "done" ? row.result_md || "" : "",
+        input: row.input_json
+          ? structuredReportMarkdown(parseObject(row.input_json))
+          : row.input_summary || "未填写工具输入",
+        inputDisplay:
+          businessInputDisplay(parseObject(row.input_json)) ||
+          row.input_summary ||
+          "未填写工具输入",
+        output: row.result_md || "",
         error: cleanText(parseObject(row.error_json)?.message, 300),
         tool: {
           progress,
@@ -2918,6 +3571,7 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     manual: "task",
     restaurant: "agent_task",
     content: "content_employee_run",
+    generated_content: "content",
     content_pipeline: "content_production_pipeline_station",
     skill_learning: "employee_skill_learning_run",
     advisor: "ai_message",
@@ -2956,10 +3610,42 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
   const mediaBusinessUsable =
     kind === "media" && mediaAuthority?.businessUsable === true;
   if (kind === "media") {
-    detail.output = mediaBusinessUsable
+    const nativePlan = parseObject(row.snapshot_json);
+    const nativeSales = nativePlan.workflow === "ai_sales_video";
+    const nativeScript = nativeSales ? nativeSalesScriptText(nativePlan.script) : "";
+    // Native compositions are owned by media_jobs, not uploaded_files. Only use
+    // the authorized delivery projection; a raw row URL must not bypass review
+    // or tenant boundaries for unrelated historical media.
+    const authorizedPreview = mediaAuthority?.previewUrl || mediaAuthority?.url;
+    const fullPreview = nativeSales && new RegExp(
+      `^/uploads/ai-sales-video/${tenant}/[a-zA-Z0-9_-]+\\.mp4$`, "u",
+    ).test(String(authorizedPreview || ""))
+      ? authorizedPreview
+      : taskMediaUrl(authorizedPreview);
+    detail.previewUrl = fullPreview || null;
+    detail.media = fullPreview ? [{
+      kind: row.kind,
+      url: fullPreview,
+      downloadUrl: fullPreview,
+      label: nativeSales ? "带货完整成片" : row.kind === "video" ? "生成视频" : "生成图片",
+      status: row.status,
+      billing,
+    }] : [];
+    detail.output = nativeScript || (mediaBusinessUsable
       ? String(mediaAuthority?.url || "")
-      : "";
-    detail.resultUnavailableReason = mediaBusinessUsable
+      : "");
+    if (mediaAuthority?.downloadUrl) {
+      detail.downloadUrl = mediaAuthority.downloadUrl;
+      detail.downloadName = mediaAuthority.downloadName;
+    }
+    if (!detail.media?.length && mediaAuthority?.salesVideo?.partialResults?.length) {
+      detail.media = mediaAuthority.salesVideo.partialResults.map((part) => ({
+        kind: "video", url: part.url, downloadUrl: part.url,
+        label: `第${part.index}段原始片段（${part.durationSeconds}秒，完整视频待补齐）`,
+        status: "部分成果", billing,
+      }));
+    }
+    detail.resultUnavailableReason = fullPreview
       ? ""
       : `${cleanText(mediaAuthority?.reviewStatus || mediaAuthority?.canImportReason || "媒体结果暂不可用", 180)}；费用状态：${billing.label}`;
   }
@@ -2970,6 +3656,19 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     avatarArtifactReady;
   if (kind === "avatar") {
     detail.output = avatarBusinessUsable ? String(row.result_url || "") : "";
+    const url = avatarArtifactReady ? taskMediaUrl(row.result_url) : null;
+    detail.media = url
+      ? [
+          {
+            kind: "video",
+            url,
+            downloadUrl: url,
+            label: "数字人成片",
+            status: row.status,
+            billing,
+          },
+        ]
+      : [];
     detail.resultUnavailableReason = avatarBusinessUsable
       ? ""
       : `数字人成片只有在真实文件落库且账务结算后可用；当前费用状态：${billing.label}`;
@@ -2981,6 +3680,19 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     textVideoArtifactReady;
   if (kind === "text_video") {
     detail.output = textVideoBusinessUsable ? String(row.result_url || "") : "";
+    const url = textVideoArtifactReady ? taskMediaUrl(row.result_url) : null;
+    detail.media = url
+      ? [
+          {
+            kind: "video",
+            url,
+            downloadUrl: url,
+            label: "图文素材成片",
+            status: row.status,
+            billing,
+          },
+        ]
+      : [];
     detail.resultUnavailableReason = textVideoBusinessUsable
       ? ""
       : `成片只有在真实MP4落库并完成账务结算后可用；当前费用状态：${billing.label}`;
@@ -2991,6 +3703,8 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     manual: "人工任务",
     restaurant: "餐饮员工",
     content: "内容员工",
+    generated_content:
+      row.source_type === "ai_xhs_note" ? "AI小红书种草图文" : "生成内容",
     content_pipeline: "内容团队流水线",
     skill_learning: "员工全网进修",
     advisor: "老板参谋会诊",
@@ -3002,11 +3716,13 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     tool: "经营工具",
   }[kind];
   const finishedAt =
-    row.done_at ||
-    row.finished_at ||
-    row.completed_at ||
-    row.updated_at ||
-    null;
+    knownFinishedAt(row, snapshot) ||
+    (kind === "advisor"
+      ? row.created_at
+      : ["content", "content_pipeline", "tool"].includes(kind) &&
+          ["done", "failed", "rejected"].includes(rawState(status))
+        ? row.updated_at
+        : null);
   const title = row.title || cleanText(row.prompt, 100) || `${kind} #${id}`;
   const conversationDeepLink = supersededBy
     ? replacementRestaurantDeepLink(supersededBy)
@@ -3030,9 +3746,14 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
         : `当前账号未开通${conversationModule === "marshals" ? "餐饮数字员工" : "内容"}模块`
       : "当前任务没有可打开的数字员工对话",
   };
-  const reportMarkdown = ["restaurant", "content", "content_pipeline"].includes(
-    kind,
-  )
+  const reportMarkdown = [
+    "restaurant",
+    "content",
+    "content_pipeline",
+    "generated_content",
+    "tool",
+    "advisor",
+  ].includes(kind)
     ? readableReportMarkdown(detail.output, title)
     : "";
   const deliverables =
@@ -3077,10 +3798,7 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     adoptionContext,
     createdAt: row.created_at || row.started_at,
     finishedAt,
-    elapsedMs:
-      ["done", "failed"].includes(state) && !finishedAt
-        ? null
-        : elapsed(row.created_at || row.started_at, finishedAt),
+    elapsedMs: elapsed(row.created_at || row.started_at, finishedAt, status),
     billing,
     businessUsable:
       kind === "media"
@@ -3110,6 +3828,7 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     deliverableAvailability,
     ...detail,
   };
+  attachTaskFeedback(result, row, user, snapshot, supersededBy);
   if (!supersededBy) return result;
   const unavailableReason = `旧任务已由安全修订任务 #${supersededBy.taskId} 取代，请使用修订版报告与交付文件`;
   return {
@@ -3117,11 +3836,14 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     ...supersededRestaurantProjection(supersededBy),
     conversationDeepLink,
     conversationAvailability: {
-      available: Boolean(conversationDeepLink && effectiveModules.has("marshals")),
+      available: Boolean(
+        conversationDeepLink && effectiveModules.has("marshals"),
+      ),
       requiredModule: "marshals",
-      reason: conversationDeepLink && effectiveModules.has("marshals")
-        ? null
-        : "当前账号未开通餐饮数字员工模块",
+      reason:
+        conversationDeepLink && effectiveModules.has("marshals")
+          ? null
+          : "当前账号未开通餐饮数字员工模块",
     },
     researchEvidence: null,
     policyContext: {

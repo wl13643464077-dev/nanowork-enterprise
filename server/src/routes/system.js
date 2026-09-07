@@ -1,3 +1,4 @@
+import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { Router } from "express";
 import os from "node:os";
 import fs from "node:fs";
@@ -14,6 +15,7 @@ import {
   DB_PATH,
   backupDatabase,
   curTenant,
+  runWithTenant,
   getTenant,
   promptOverride,
   mergeMarshal,
@@ -54,14 +56,19 @@ import {
   loadContentDeliveryState,
   loadKbDocSupersession,
 } from "../engines/delivery-state.js";
-import {
+import { refundHold,
   precheck,
   estimateCallCredits,
   holdCredits,
   settleHold,
   releaseHold,
 } from "../engines/credits.js";
-import { assertSeatAvailable, seatUsage } from "../engines/plan.js";
+import {
+  assertSeatAvailable,
+  seatUsage,
+  primaryUserIdFor,
+} from "../engines/plan.js";
+import { assertUserSeatMutation } from "../engines/user-seat-policy.js";
 import {
   executeHeldDelivery,
   twoPhaseBillingSummary,
@@ -129,7 +136,10 @@ function publishReconciledTaskStatus(kind, refId) {
       },
     });
   } catch (error) {
-    console.error("[reconciliation] 实时事件发布失败:", error?.message || error);
+    console.error(
+      "[reconciliation] 实时事件发布失败:",
+      error?.message || error,
+    );
   }
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -169,7 +179,6 @@ const USER_MODULE_SET = new Set([
   "assets",
   "system",
 ]);
-const TENANT_ADMIN_ROLES = new Set(["boss", "admin"]);
 const RESTAURANT_CATALOG = loadRestaurantCatalog();
 const RESTAURANT_DEPARTMENTS = RESTAURANT_CATALOG.groups.map(
   (group, index) => ({
@@ -180,11 +189,14 @@ const RESTAURANT_DEPARTMENTS = RESTAURANT_CATALOG.groups.map(
 );
 
 function requirePlatformOperator(req, res, next) {
-  const allowed =
-    req.user.role === "platform_super" ||
-    (curTenant() === 1 && ["boss", "admin"].includes(req.user.role));
+  const allowed = req.user.role === "platform_super";
   if (!allowed)
-    return res.status(403).json({ error: "整库备份仅平台总部运维人员可操作" });
+    return res
+      .status(403)
+      .json({
+        error: "整库备份仅平台超级管理员可操作",
+        code: "PLATFORM_SUPER_REQUIRED",
+      });
   next();
 }
 
@@ -441,7 +453,9 @@ function markApprovalDecision(approval, user, pass, reason) {
   try {
     publish({
       roles: ["ops_director", "manager"],
-      userIds: [approval.submitter_id, approval.assigned_reviewer_id].filter(Boolean),
+      userIds: [approval.submitter_id, approval.assigned_reviewer_id].filter(
+        Boolean,
+      ),
       type: "approval.decided",
       payload: {
         approvalId: Number(approval.id),
@@ -851,12 +865,25 @@ function recordAiReconciliationOutcome(item, action, settled, actor, reason) {
 }
 
 // ===== AI 预授权对账中心 =====
+function reconciliationTenantScope(req, res, next) {
+  const raw = req.method === "GET" ? req.query.tenantId : req.body?.tenantId;
+  if (raw === undefined) return next();
+  const tenantId = Number(raw);
+  if (!Number.isSafeInteger(tenantId) || tenantId < 1)
+    return res.status(400).json({ error: "企业标识无效" });
+  if (req.user.role !== "platform_super" && tenantId !== curTenant())
+    return res.status(403).json({ error: "无权查看其他企业的对账记录" });
+  if (!getTenant(tenantId))
+    return res.status(404).json({ error: "企业不存在" });
+  return runWithTenant(tenantId, next);
+}
 // 只允许依据已落库的业务主产物、运行时质量门、供应商模型与真实 token
 // 做两种确定性处理：有效交付按证据结算；无效/无交付全额释放。未知业务
 // 类型、重复 hold、缺流水或仍在正常执行窗口内的记录一律阻断，不靠人猜。
 r.get(
   "/billing/reconciliation",
   requireRole("boss", "ops_director", "admin", "platform_super"),
+  reconciliationTenantScope,
   (req, res) => {
     const result = listAiReconciliationHolds({
       tenantId: curTenant(),
@@ -864,25 +891,25 @@ r.get(
     });
     res.json({
       ...result,
-      canResolve: ["boss", "admin", "platform_super"].includes(req.user.role),
+      tenantId: curTenant(),
+      canResolve: req.user.role === "platform_super",
     });
   },
 );
 
 r.post(
   "/billing/reconciliation/:id/resolve",
-  requireRole("boss", "admin", "platform_super"),
+  requireRole("platform_super"),
+  reconciliationTenantScope,
   (req, res) => {
     const action = String(req.body?.action || "").trim();
     const reason = String(req.body?.reason || "").trim();
     const suppliedHash = String(req.body?.evidenceHash || "").trim();
     if (!["settle", "release"].includes(action)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "对账动作必须明确选择按证据结算，或确认没有通过交付门禁的产物并退款",
-        });
+      return res.status(400).json({
+        error:
+          "对账动作必须明确选择按证据结算，或确认没有通过交付门禁的产物并退款",
+      });
     }
     if (reason.length < 6 || reason.length > 300) {
       return res.status(400).json({ error: "请填写6到300字的对账依据" });
@@ -896,11 +923,9 @@ r.post(
       !/^[a-f0-9]{64}$/u.test(suppliedHash) ||
       suppliedHash !== item.evidenceHash
     ) {
-      return res
-        .status(409)
-        .json({
-          error: "对账证据已变化，请刷新后重新核对，系统未执行扣费或退款",
-        });
+      return res.status(409).json({
+        error: "对账证据已变化，请刷新后重新核对，系统未执行扣费或退款",
+      });
     }
     if (!item.availableActions.includes(action)) {
       return res
@@ -1026,7 +1051,8 @@ function assertConfiguredApprovalReviewers(policy) {
 // 全局 key 仅作为默认回落）。platform_super 仍在当前租户上下文中操作，
 // 不从请求体接受任意 tenant_id，避免跨租户配置越权。
 const APPROVAL_POLICY_EDIT_ROLES = new Set(["boss", "admin", "platform_super"]);
-const APPROVAL_POLICY_CATALOG_INDEX = approvalPolicyCatalogIndex(RESTAURANT_CATALOG);
+const APPROVAL_POLICY_CATALOG_INDEX =
+  approvalPolicyCatalogIndex(RESTAURANT_CATALOG);
 const IMMUTABLE_APPROVAL_SAFEGUARDS = Object.freeze([
   "对外发布/发送始终需要老板执行授权",
   "真实付费动作始终需要老板执行授权",
@@ -1068,7 +1094,9 @@ r.get(
 // 前端 300ms 防抖调用。两者共用服务端同一份纯函数，前端不复制文案。
 function approvalPolicyPreviewPayload(policyInput) {
   const policy = normalizeApprovalRoutingPolicy(
-    policyInput && typeof policyInput === "object" && !Array.isArray(policyInput)
+    policyInput &&
+      typeof policyInput === "object" &&
+      !Array.isArray(policyInput)
       ? { ...policyInput, schemaVersion: APPROVAL_ROUTING_SCHEMA }
       : policyInput,
   );
@@ -1109,54 +1137,62 @@ r.post(
   },
 );
 
-r.put("/approval-policy", requireRole(...APPROVAL_POLICY_EDIT_ROLES), (req, res) => {
-  try {
-    const updatedAt = new Date().toISOString();
-    const requestedPolicy = req.body?.policy ?? req.body;
-    // 三条底线服务端硬编码；客户端显式传 false 直接 400，而不是静默纠正。
-    assertApprovalSafeguardsNotDisabled(requestedPolicy);
-    // API writes always emit v2. v1 is accepted by the read path/snapshot
-    // parser only; an old client cannot accidentally persist a legacy mode.
-    const policyInput =
-      requestedPolicy &&
-      typeof requestedPolicy === "object" &&
-      !Array.isArray(requestedPolicy)
-        ? { ...requestedPolicy, schemaVersion: APPROVAL_ROUTING_SCHEMA }
-        : requestedPolicy;
-    const policy = normalizeApprovalRoutingPolicy(policyInput, {
-      configuredBy: {
-        id: req.user.id,
-        name: req.user.name,
-        role: req.user.role,
-      },
-      updatedAt,
-    });
-    // 保存的是企业默认规则，不允许把某次派活的解析结果误存成策略。
-    delete policy.employeeOutput.resolved;
-    assertApprovalPolicyExceptionsInCatalog(policy, APPROVAL_POLICY_CATALOG_INDEX);
-    assertConfiguredApprovalReviewers(policy);
-    setTenantConfig(APPROVAL_ROUTING_POLICY_KEY, policy);
-    logOp(
-      req.user,
-      "审批中心",
-      "更新企业审批规则",
-      `规则版本=${policy.schemaVersion}`,
-    );
-    return res.json({
-      ok: true,
-      policy,
-      preview: renderApprovalPolicyPlainText(policy, {
-        catalogIndex: APPROVAL_POLICY_CATALOG_INDEX,
-        reviewerNames: approvalReviewerNameMap(),
-      }),
-      message: "审批规则已保存；新任务按新规则流转，在途任务继续使用原规则快照",
-    });
-  } catch (error) {
-    return res
-      .status(error.status || 400)
-      .json({ error: error.message, code: error.code });
-  }
-});
+r.put(
+  "/approval-policy",
+  requireRole(...APPROVAL_POLICY_EDIT_ROLES),
+  (req, res) => {
+    try {
+      const updatedAt = new Date().toISOString();
+      const requestedPolicy = req.body?.policy ?? req.body;
+      // 三条底线服务端硬编码；客户端显式传 false 直接 400，而不是静默纠正。
+      assertApprovalSafeguardsNotDisabled(requestedPolicy);
+      // API writes always emit v2. v1 is accepted by the read path/snapshot
+      // parser only; an old client cannot accidentally persist a legacy mode.
+      const policyInput =
+        requestedPolicy &&
+        typeof requestedPolicy === "object" &&
+        !Array.isArray(requestedPolicy)
+          ? { ...requestedPolicy, schemaVersion: APPROVAL_ROUTING_SCHEMA }
+          : requestedPolicy;
+      const policy = normalizeApprovalRoutingPolicy(policyInput, {
+        configuredBy: {
+          id: req.user.id,
+          name: req.user.name,
+          role: req.user.role,
+        },
+        updatedAt,
+      });
+      // 保存的是企业默认规则，不允许把某次派活的解析结果误存成策略。
+      delete policy.employeeOutput.resolved;
+      assertApprovalPolicyExceptionsInCatalog(
+        policy,
+        APPROVAL_POLICY_CATALOG_INDEX,
+      );
+      assertConfiguredApprovalReviewers(policy);
+      setTenantConfig(APPROVAL_ROUTING_POLICY_KEY, policy);
+      logOp(
+        req.user,
+        "审批中心",
+        "更新企业审批规则",
+        `规则版本=${policy.schemaVersion}`,
+      );
+      return res.json({
+        ok: true,
+        policy,
+        preview: renderApprovalPolicyPlainText(policy, {
+          catalogIndex: APPROVAL_POLICY_CATALOG_INDEX,
+          reviewerNames: approvalReviewerNameMap(),
+        }),
+        message:
+          "审批规则已保存；新任务按新规则流转，在途任务继续使用原规则快照",
+      });
+    } catch (error) {
+      return res
+        .status(error.status || 400)
+        .json({ error: error.message, code: error.code });
+    }
+  },
+);
 
 // ===== 审批中心（CTRL-04 横切）=====
 r.get(
@@ -1199,8 +1235,7 @@ r.get(
       )
       .map((row) => {
         const availability = approvalDecisionAvailability(row, req.user);
-        const superseded =
-          availability.deliveryState === "DELIVERY_SUPERSEDED";
+        const superseded = availability.deliveryState === "DELIVERY_SUPERSEDED";
         return {
           ...row,
           ...(superseded
@@ -1253,9 +1288,7 @@ r.post(
       return res.status(blocked.status).json({
         error: blocked.reason,
         ...(blocked.code ? { code: blocked.code } : {}),
-        ...(blocked.supersededBy
-          ? { supersededBy: blocked.supersededBy }
-          : {}),
+        ...(blocked.supersededBy ? { supersededBy: blocked.supersededBy } : {}),
       });
     }
     if (a.target_type === "content") {
@@ -1274,9 +1307,7 @@ r.post(
         return res.status(error.status || 500).json({
           error: error.message,
           ...(error.code ? { code: error.code } : {}),
-          ...(error.supersededBy
-            ? { supersededBy: error.supersededBy }
-            : {}),
+          ...(error.supersededBy ? { supersededBy: error.supersededBy } : {}),
         });
       }
     }
@@ -1557,11 +1588,9 @@ r.post(
         payload.plan &&
         JSON.stringify(payload.plan) !== JSON.stringify(currentPlan)
       ) {
-        return res
-          .status(409)
-          .json({
-            error: "活动方案在提交审批后已被修改，请重新提交，系统未批准旧稿",
-          });
+        return res.status(409).json({
+          error: "活动方案在提交审批后已被修改，请重新提交，系统未批准旧稿",
+        });
       }
       if (!pass) {
         immediateTransaction(() => {
@@ -2167,11 +2196,9 @@ r.post("/kb/upload", async (req, res) => {
     const { extractText, IMAGE_EXTS, ALLOWED_EXTS } =
       await import("../engines/extract.js");
     if (!ALLOWED_EXTS.includes(ext))
-      return res
-        .status(400)
-        .json({
-          error: `不支持的格式 .${ext}（支持：docx/xlsx/pdf/txt/md/csv/json/png/jpg/webp）`,
-        });
+      return res.status(400).json({
+        error: `不支持的格式 .${ext}（支持：docx/xlsx/pdf/txt/md/csv/json/png/jpg/webp）`,
+      });
     const buf = decodeBase64File(b64, MAX_FILE_BYTES);
     const normalizeRoles = (value, label) => {
       if (value === undefined || value === null) return null;
@@ -2280,6 +2307,8 @@ r.post("/kb/upload", async (req, res) => {
         hold = null;
         const delivered = await executeHeldDelivery({
           hold: activeHold,
+          refund: refundHold,
+          hasDeliverable: () => hasStoredAiDelivery(activeHold),
           generate: () =>
             yunwu.chat({
               model: holdModel,
@@ -2536,10 +2565,14 @@ r.get("/kb/readiness", (req, res) => {
 
 // 知识库健康（P0-2）：文档总数 / 已向量化 / 待回填 / 24h 查询向量化失败 / 最近回填 / 红点与建议。
 // 不返回知识正文；供系统页“知识库健康”卡与侧栏红点读取。
-r.get("/kb/health", requireRole("boss", "admin", "platform_super"), (req, res) => {
-  res.set("Cache-Control", "private, no-store");
-  res.json(kbHealthSummary({ providerConfigured: aiAvailable() }));
-});
+r.get(
+  "/kb/health",
+  requireRole("boss", "admin", "platform_super"),
+  (req, res) => {
+    res.set("Cache-Control", "private, no-store");
+    res.json(kbHealthSummary({ providerConfigured: aiAvailable() }));
+  },
+);
 
 // “立即回填全部待处理”：与每日 04:00 扫描同一入口（同一配额、hold 计费与去重），
 // 单次最多 20 条，其余由后续调用或次日扫描继续。
@@ -2553,7 +2586,9 @@ r.post("/kb/backfill", requireRole("boss", "admin"), (req, res) => {
     });
   }
   if (!health.providerConfigured) {
-    return res.status(409).json({ error: "AI 向量服务未配置，不能开始回填", health });
+    return res
+      .status(409)
+      .json({ error: "AI 向量服务未配置，不能开始回填", health });
   }
   const summary = runKbVectorBackfillSweep({
     tenantId: curTenant(),
@@ -2846,16 +2881,22 @@ r.put(
 r.get("/users", requireRole("boss", "ops_director", "admin"), (req, res) => {
   const tid = curTenant();
   const seats = seatUsage(tid);
+  const primaryId = primaryUserIdFor(tid);
   const scope = userScopeClause(req.user, "id");
   res.json({
     seatLimit: seats.limit,
     seatUsed: seats.used,
-    users: q.all(
-      `SELECT id,username,name,role,dept,phone,status,modules,manager_id,last_login_at,created_at
+    users: q
+      .all(
+        `SELECT id,username,name,role,dept,phone,status,modules,manager_id,last_login_at,created_at
       FROM users WHERE tenant_id = ? AND role != 'platform_super'${scope.sql} ORDER BY id`,
-      tid,
-      ...scope.params,
-    ),
+        tid,
+        ...scope.params,
+      )
+      .map((user) => ({
+        ...user,
+        accountType: Number(user.id) === Number(primaryId) ? "primary" : "sub",
+      })),
   });
 });
 r.post("/users", requireRole("admin", "boss"), (req, res) => {
@@ -2878,17 +2919,6 @@ r.post("/users", requireRole("admin", "boss"), (req, res) => {
   if (!USER_ROLE_SET.has(userRole))
     return res.status(400).json({ error: "账号角色无效" });
   const tid = curTenant();
-  // 席位校验：只统计启用中的用户端账号（停用不占席位；平台超管不计），超限 409 + 可读提示
-  try {
-    assertSeatAvailable(tid);
-  } catch (error) {
-    return res.status(error.status || 409).json({
-      error: error.message,
-      code: error.code,
-      seatLimit: error.seatLimit,
-      seatsUsed: error.seatsUsed,
-    });
-  }
   let displayName;
   let managerId;
   let normalizedModules;
@@ -2899,7 +2929,11 @@ r.post("/users", requireRole("admin", "boss"), (req, res) => {
   } catch (error) {
     return res.status(error.status || 400).json({ error: error.message });
   }
+  let transactionOpen = false;
   try {
+    db.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    assertSeatAvailable(tid);
     const result = q.run(
       "INSERT INTO users(username,password_hash,name,role,dept,phone,modules,tenant_id,manager_id) VALUES(?,?,?,?,?,?,?,?,?)",
       account,
@@ -2917,16 +2951,20 @@ r.post("/users", requireRole("admin", "boss"), (req, res) => {
       managerId,
     );
     logOp(req.user, "系统管理", "新增账号", account);
+    db.exec("COMMIT");
+    transactionOpen = false;
     res.json({ id: result.lastInsertRowid });
   } catch (error) {
+    if (transactionOpen) db.exec("ROLLBACK");
     const duplicate = String(error?.message || "").includes(
       "UNIQUE constraint failed: users.username",
     );
-    res
-      .status(400)
-      .json({
-        error: duplicate ? "用户名已存在" : error?.message || "新增账号失败",
-      });
+    res.status(error.status || 400).json({
+      error: duplicate ? "用户名已存在" : error?.message || "新增账号失败",
+      code: error.code,
+      seatLimit: error.seatLimit,
+      seatsUsed: error.seatsUsed,
+    });
   }
 });
 r.put("/users/:id", requireRole("admin", "boss"), (req, res) => {
@@ -3001,15 +3039,43 @@ r.put("/users/:id", requireRole("admin", "boss"), (req, res) => {
     add("password_hash", hashPassword(password));
     updates.push("auth_version=COALESCE(auth_version,0)+1");
   }
-  if (updates.length)
-    q.run(
-      `UPDATE users SET ${updates.join(",")} WHERE id=? AND tenant_id=?`,
-      ...values,
+  let transactionOpen = false;
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    const fresh = q.get(
+      "SELECT id,role,status FROM users WHERE id=? AND tenant_id=?",
       req.params.id,
       tid,
     );
-  logOp(req.user, "系统管理", "修改账号", `user#${req.params.id}`);
-  res.json({ ok: true });
+    assertUserSeatMutation({
+      tenantId: tid,
+      actorId: req.user.id,
+      target: fresh,
+      changes: req.body,
+    });
+    if (updates.length)
+      q.run(
+        `UPDATE users SET ${updates.join(",")} WHERE id=? AND tenant_id=?`,
+        ...values,
+        req.params.id,
+        tid,
+      );
+    logOp(req.user, "系统管理", "修改账号", `user#${req.params.id}`);
+    db.exec("COMMIT");
+    transactionOpen = false;
+    res.json({ ok: true });
+  } catch (error) {
+    if (transactionOpen) db.exec("ROLLBACK");
+    res
+      .status(error.status || 400)
+      .json({
+        error: error.message || "修改账号失败",
+        code: error.code,
+        seatLimit: error.seatLimit,
+        seatsUsed: error.seatsUsed,
+      });
+  }
 });
 // 停用账号（软删除）：保留用户主键与全部历史归属，同时关闭其仍启用的内容自动任务。
 r.delete("/users/:id", requireRole("admin", "boss"), (req, res) => {
@@ -3035,21 +3101,12 @@ r.delete("/users/:id", requireRole("admin", "boss"), (req, res) => {
     if (target.role === "platform_super") {
       throw userDisableError("不可停用平台超级管理员", 403);
     }
-    if (target.status === "启用" && TENANT_ADMIN_ROLES.has(target.role)) {
-      const enabledAdmins = Number(
-        q.get(
-          `SELECT COUNT(*) n FROM users
-          WHERE tenant_id=? AND status='启用' AND role IN ('boss','admin')`,
-          tid,
-        )?.n || 0,
-      );
-      if (enabledAdmins <= 1) {
-        throw userDisableError(
-          "不能停用企业最后一个启用的老板/管理员账号",
-          409,
-        );
-      }
-    }
+    assertUserSeatMutation({
+      tenantId: tid,
+      actorId: req.user.id,
+      target,
+      changes: { status: "停用" },
+    });
 
     const alreadyDisabled = target.status === "停用";
     const dependencyCounts = userDependencyCounts(tid, targetId);
@@ -3070,15 +3127,14 @@ r.delete("/users/:id", requireRole("admin", "boss"), (req, res) => {
       targetId,
     );
     const disabledAutomationRules = Number(automationUpdate.changes || 0);
-    db.exec("COMMIT");
-    inTransaction = false;
-
     logOp(
       req.user,
       "系统管理",
       "停用账号",
       `user#${targetId}:${target.name || ""};alreadyDisabled=${alreadyDisabled};disabledAutomationRules=${disabledAutomationRules};历史归属保留`,
     );
+    db.exec("COMMIT");
+    inTransaction = false;
     return res.json({
       ok: true,
       userId: targetId,
@@ -3103,6 +3159,7 @@ r.delete("/users/:id", requireRole("admin", "boss"), (req, res) => {
       error: error.status
         ? error.message
         : "停用账号失败，账号与自动任务均未更改",
+      code: error.code,
     });
   }
 });
@@ -3186,7 +3243,12 @@ r.get(
   requireRole("boss", "ops_director", "admin", "platform_super"),
   (req, res) => {
     res.set("Cache-Control", "no-store");
-    res.json(buildRuntimeReadiness({ tenantId: curTenant() }));
+    res.json(
+      buildRuntimeReadiness({
+        tenantId: curTenant(),
+        viewerRole: req.user.role,
+      }),
+    );
   },
 );
 
@@ -3206,9 +3268,7 @@ r.get(
       0,
       Math.min(100, Math.round((1 - os.freemem() / os.totalmem()) * 100)),
     );
-    const canViewAiDetail = ["boss", "admin", "platform_super"].includes(
-      req.user.role,
-    );
+    const canViewAiDetail = req.user.role === "platform_super";
     const healthStatus =
       memory >= 90 || cpu >= 95
         ? "danger"
@@ -3228,7 +3288,10 @@ r.get(
           ? "CPU或内存偏高，建议关注后续波动"
           : "核心资源处于安全区间";
     const usage = getTokenUsage();
-    const readiness = buildRuntimeReadiness({ tenantId: curTenant() });
+    const readiness = buildRuntimeReadiness({
+      tenantId: curTenant(),
+      viewerRole: req.user.role,
+    });
     res.json({
       users:
         q.get(`SELECT COUNT(*) n FROM users WHERE tenant_id = ${curTenant()}`)
@@ -3246,11 +3309,11 @@ r.get(
         q.get(
           `SELECT COUNT(*) n FROM contents WHERE tenant_id = ${curTenant()}`,
         )?.n || 0,
-      dbSizeKB: dbSize,
-      cpu,
-      memory,
-      heapMB: Math.round(mem.heapUsed / 1048576),
-      uptimeMin: Math.round(process.uptime() / 60),
+      dbSizeKB: canViewAiDetail ? dbSize : null,
+      cpu: canViewAiDetail ? cpu : null,
+      memory: canViewAiDetail ? memory : null,
+      heapMB: canViewAiDetail ? Math.round(mem.heapUsed / 1048576) : null,
+      uptimeMin: canViewAiDetail ? Math.round(process.uptime() / 60) : null,
       healthStatus,
       healthLabel,
       healthReason,
@@ -3501,17 +3564,13 @@ r.put("/feishu", requireRole("boss", "ops_director", "admin"), (req, res) => {
     next.enabled &&
     (!effectiveAppId || !effectiveAppSecret || !next.receiveId)
   )
-    return res
-      .status(400)
-      .json({
-        error: "启用飞书应用机器人前，请填写 App ID、App Secret 和接收人 ID",
-      });
+    return res.status(400).json({
+      error: "启用飞书应用机器人前，请填写 App ID、App Secret 和接收人 ID",
+    });
   if (!["open_id", "user_id", "union_id", "email"].includes(next.receiveIdType))
-    return res
-      .status(400)
-      .json({
-        error: "接收人 ID 类型仅支持 open_id / user_id / union_id / email",
-      });
+    return res.status(400).json({
+      error: "接收人 ID 类型仅支持 open_id / user_id / union_id / email",
+    });
   setTenantConfig("feishu", next);
   logOp(
     req.user,

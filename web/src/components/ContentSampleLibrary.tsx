@@ -39,7 +39,7 @@ export const SAMPLE_EMPTY_TEXT = '还没有样片，平台上线后会陆续添�
 export function sampleBriefFromSample(sample: ContentSample): string {
   const tags = sample.tags.length ? `业态/场景：${sample.tags.join('、')}。` : '';
   const note = sample.note ? `参考讲解：${sample.note}` : '';
-  return [`照样片「${sample.name}」的风格做一条30秒带货视频。`, tags, note].filter(Boolean).join('\n');
+  return [`照样片「${sample.name}」的风格做一条15秒带货视频。`, tags, note].filter(Boolean).join('\n');
 }
 
 function formatDuration(seconds: number | null) {

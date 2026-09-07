@@ -34,6 +34,19 @@ test('字幕无重叠、无越界，SRT毫秒正确进位', () => {
   assert.match(srt, /00:01:00,000 --> 00:01:00,100/u);
 });
 
+test('新原生字幕随短独白估时留白，保留15秒分段起点及旧任务时间轴', () => {
+  const script = { shots: [{ index: 1, voiceover: '看看这一桌。欢迎到店。' }, { index: 2, voiceover: '今晚和朋友吃顿热乎的吧。' }] };
+  const current = voice.buildAiSalesVideoSubtitleCues({ script, timing: 'native_pause_v1' });
+  assert.equal(current[0].start, 0.3);
+  assert.equal(current.find(cue => cue.shotIndex === 2).start, 15.3);
+  assert.ok(current.filter(cue => cue.shotIndex === 1).at(-1).end < 14);
+  assert.ok(current.at(-1).end < 29);
+  const legacy = voice.buildAiSalesVideoSubtitleCues({ script });
+  assert.equal(legacy[0].start, 0);
+  assert.equal(legacy.find(cue => cue.shotIndex === 2).start, 15);
+  assert.equal(legacy.at(-1).end, 30);
+});
+
 async function fixture(run, { durations = [8, 15.012, 9, 15.012], audioUrl = 'https://voice.example/output.mp3', condenseShot } = {}) {
   const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nw-m4-voice-'));
   const events = [];

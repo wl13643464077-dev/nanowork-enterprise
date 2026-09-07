@@ -1173,46 +1173,6 @@
   letter-spacing: 0.12em;
 }
 
-.cpw-assistant-report .content-result-section .md-body,
-.cpw-assistant-report .content-result-markdown .md-body {
-  color: var(--ui-text);
-  font-size: 13.5px;
-  line-height: 1.85;
-}
-
-.cpw-assistant-report .md-body p {
-  margin: 0 0 14px;
-}
-
-.cpw-assistant-report .md-body h1,
-.cpw-assistant-report .md-body h2,
-.cpw-assistant-report .md-body h3,
-.cpw-assistant-report .md-body h4 {
-  color: var(--ui-text);
-  margin: 18px 0 8px;
-  letter-spacing: -0.02em;
-}
-
-.cpw-assistant-report .md-body h2 {
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--ui-border);
-}
-
-.cpw-assistant-report .md-body ul,
-.cpw-assistant-report .md-body ol {
-  margin: 0 0 14px;
-}
-
-.cpw-assistant-report .md-body li {
-  margin: 4px 0;
-}
-
-.cpw-assistant-report .md-body table {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
 .cpw-assistant-report + .cpw-artifact,
 .cpw-assistant-report + .cpw-provider-assets {
   margin-top: 12px;

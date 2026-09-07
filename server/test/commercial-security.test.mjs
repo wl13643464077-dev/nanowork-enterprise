@@ -77,8 +77,10 @@ test('平台模型密钥与计费配置不能被客户租户修改，BaseURL 拒
     await request(base, '/admin/api-config', 'PUT', { apiKey: 'attacker-controlled-secret', billing: { creditYuan: 999 } }, 403);
   });
   assert.notEqual(getConfig('yunwu_api_key', ''), 'attacker-controlled-secret');
-  await withServer(hqBoss, async base => {
+  await withServer(platformSuper, async base => {
     await request(base, '/admin/api-config', 'PUT', { baseUrl: 'http://127.0.0.1:9999/v1' }, 400);
+  });
+  await withServer(hqBoss, async base => {
     await request(base, '/sys/config', 'PUT', { arbitrary_global_key: 'forbidden' }, 400);
   });
 });
@@ -148,7 +150,7 @@ test('整库备份仅总部运维可执行，快照包含 WAL 最新数据且完
   await withServer(tenantBoss, async base => {
     await request(base, '/sys/backup', 'POST', undefined, 403);
   });
-  await withServer(hqBoss, async base => {
+  await withServer(platformSuper, async base => {
     const result = await request(base, '/sys/backup', 'POST');
     assert.equal(result.integrity, 'ok');
     const backupPath = path.join(path.dirname(DBP), result.file);

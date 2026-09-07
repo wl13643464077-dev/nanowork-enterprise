@@ -14,6 +14,7 @@ import { resolveWriterTitleCountRequirement } from './content-title-count.js';
 import { resolveXhsSalesContext } from './content-xhs-playbook.js';
 import { xhsSalesOutputSchema, validateXhsSalesOutput, renderXhsSalesMarkdown } from './content-xhs-output.js';
 import { selectedXhsPipelineVersion } from './content-xhs-pipeline.js';
+import { outputQualityReview, splitOutputQualityIssues } from './output-quality-advice.js';
 
 const ARTIFACT_EXTENSIONS = Object.freeze({
   json: 'json',
@@ -101,9 +102,23 @@ function jsonFence(value) {
 }
 
 function unwrapJsonFence(value) {
-  const trimmed = value.trim();
+  let trimmed = value.trim();
+  // 部分兼容网关会把模型的隐藏推理包在 <think>…</think> 中，即使
+  // 请求了 JSON Schema 也可能把这段包装原样透传。推理不是岗位产物，
+  // 只剥离包裹层，绝不从正文补字段或改写事实。
+  if (/^<think\b/iu.test(trimmed)) {
+    const end = trimmed.search(/<\/think\s*>/iu);
+    trimmed = end >= 0
+      ? trimmed.slice(end + trimmed.slice(end).match(/^<\/think\s*>/iu)[0].length).trim()
+      : trimmed.replace(/^<think\b[^>]*>/iu, '').trim();
+  }
   const fenced = trimmed.match(/^```json(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)(?:\r?\n)?```$/iu);
-  return fenced ? fenced[1].trim() : trimmed;
+  if (fenced) return fenced[1].trim();
+  // 兼容“解释文字 + JSON”或“JSON +解释文字”的供应商包装；只有在
+  // 首尾确实存在对象边界时才截取，避免把普通文本误当 JSON。
+  const start = trimmed.indexOf('{');
+  const finish = trimmed.lastIndexOf('}');
+  return start > 0 && finish > start ? trimmed.slice(start, finish + 1).trim() : trimmed;
 }
 
 function parseOutput(rawOutput) {
@@ -265,6 +280,9 @@ function validateArray(value, path, errors, {
     errors.push(`字段“${path}”必须是数组。`);
     return false;
   }
+  if (value.length === 0 && (min > 0 || exact > 0)) {
+    errors.push(`字段“${path}”不能是空数组。`);
+  }
   if (exact !== null && value.length !== exact) {
     errors.push(`字段“${path}”必须恰好包含${exact}项。`);
   } else if (max !== null && (value.length < min || value.length > max)) {
@@ -406,10 +424,11 @@ const CONTENT_EMPLOYEE_OUTPUT_SCHEMAS = Object.freeze([
     }), { minItems: MINIMUM_ITEMS.sourceCoverage }),
     sources: schemaArray(schemaObject({
       title: schemaString({ minLength: MINIMUM_TEXT.title }),
-      url: schemaString({
+      url: {
+        type: ['string', 'null'],
         pattern: '^https?://',
-        description: '必须是可核验的 http(s) 来源链接。',
-      }),
+        description: '有受控来源时必须是可核验的 http(s) 链接；没有受控来源时必须为 null。',
+      },
     }), { minItems: MINIMUM_ITEMS.sources }),
   }),
   schemaObject({
@@ -919,7 +938,13 @@ const OUTPUT_VALIDATORS = Object.freeze([
     validateUniqueObjectField(value.source_coverage, 'source_coverage', errors, 'channel');
     validateObjectArray(value.sources, 'sources', errors, {
       title: minimumTextField(MINIMUM_TEXT.title),
-      url: validateHttpUrl,
+      // 无法取得受控公开来源时，sources 仍保留岗位要求的“来源卡”
+      // 槽位，但 URL 必须明确为 null；联网证据门会把它标成待核验，
+      // 禁止用 example.invalid 等伪链接凑数。
+      url: (url, path, targetErrors) => {
+        if (url === null) return;
+        validateHttpUrl(url, path, targetErrors);
+      },
     }, { min: MINIMUM_ITEMS.sources });
     validateUniqueEvidenceUrlIdentities(value.sources, 'sources', errors);
   },
@@ -2141,6 +2166,11 @@ function retrospectiveClaimSupported(claim, evidenceClaims) {
   return evidenceClaims.some(evidence => (
     evidence.value === claim.value
     && (
+      // 同一任务书中的原始计数/百分比可能带有“阅读量/阅读指标”等
+      // 不同标签。只要原始数值与单位完整相同，就允许沿用该事实；
+      // 未出现在证据文本中的新数值仍会被严格拦截。
+      evidence.raw === claim.raw
+      ||
       evidence.metric === claim.metric
       || evidence.metric === '未标注指标'
       || claim.metric === '未标注指标'
@@ -3251,7 +3281,7 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
   const xhsSales = resolveXhsSalesContext(profile.identity.idx, context);
   const requiredKeys = xhsSales.salesMode ? ['versions', 'image_plan'] : profile.jobProfile.outputSchema.keys;
   const { parsed, parseError, rawPreview } = parseOutput(rawOutput);
-  const errors = [];
+  let errors = [];
   const storeFactClosureEnabled = STORE_FACT_CLOSURE_STATIONS.has(profile.identity.idx)
     && isPlainObject(context?.storeFacts);
   let storeFactClosure = null;
@@ -3354,8 +3384,18 @@ export function validateContentEmployeeOutputContract(idx, rawOutput, context = 
     if (!xhsSales.salesMode) validateFactGrounding(profile.identity.idx, parsed, context, errors);
   }
 
-  const warnings = storeFactClosure ? storeFactClosure.warnings.map(item => ({ ...item })) : [];
-  const advisory = storeFactClosure ? { storeFactClosure, warnings } : { warnings };
+  const qualityIssues = splitOutputQualityIssues(errors);
+  errors = qualityIssues.errors;
+  const warnings = [
+    ...(storeFactClosure ? storeFactClosure.warnings.map(item => ({ ...item })) : []),
+    ...qualityIssues.warnings,
+  ];
+  const advisory = {
+    ...(storeFactClosure ? { storeFactClosure } : {}),
+    warnings,
+    strictValid: errors.length === 0 && warnings.length === 0,
+    qualityReview: outputQualityReview(warnings),
+  };
 
   if (errors.length) {
     return {

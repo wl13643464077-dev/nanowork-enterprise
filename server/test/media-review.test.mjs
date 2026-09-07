@@ -132,6 +132,31 @@ test('媒体人工验收角色和媒体交付地址使用白名单语义', () =>
   assert.match(validateMediaDelivery({ status: '成功', kind: 'image', url: '/a.mp4' }).reason, /声明为图片/);
 });
 
+test('原生完整成片向本人提供previewUrl但不改变业务url/导出/验收账务门禁', async () => {
+  const url='/uploads/ai-sales-video/1/native-preview.mp4';
+  const snapshot={workflow:'ai_sales_video',voiceMode:'voiced',audioMode:'provider_native',durationSeconds:15,
+    result:{url,durationSeconds:15,sha256:'a'.repeat(64),audioVerified:true,audioSource:'provider_native',subtitleTiming:'script_estimated',subtitlesBurnedIn:true,
+      audioVerification:[{startSeconds:0,durationSeconds:15,peakDb:-20,method:'ffmpeg-volumedetect'}]}};
+  const jobId=insertJob(1,staff.id,{kind:'video',model:'wan2.6-i2v',url,snapshotJson:JSON.stringify(snapshot)});
+  const before=q.get('SELECT total_changes() n').n;
+  await withServer(staff,async base=>{
+    const {data,response}=await request(base,`/content/media-jobs/${jobId}`);
+    assert.equal(response.status,200);
+    assert.equal(data.previewUrl,url);
+    assert.equal(data.url,null);
+    assert.equal(data.businessUsable,false);
+    assert.equal(data.canExport,false);
+    assert.equal(data.canImport,false);
+    assert.equal(data.billing.state,'missing');
+    assert.match(data.downloadUrl,/native-deliverables\/sales/u);
+  });
+  assert.equal(q.get('SELECT total_changes() n').n,before);
+  const strangerId=insertUser(1,'媒体无关同事','sales');
+  for(const actor of [{id:strangerId,tenant_id:1,role:'sales'},otherTenantBoss]) {
+    await withServer(actor,async base=>assert.equal((await request(base,`/content/media-jobs/${jobId}`)).response.status,404));
+  }
+});
+
 test('媒体列表和详情只向老板类角色公开完整执行档案', async () => {
   const cases = [
     { user: staff, marker: '__MEDIA_STAFF_INTERNAL_PROFILE_SECRET__' },

@@ -197,8 +197,8 @@ test('人工采纳内容只继承同租户来源运行的结算凭证，显式�
           refType: 'content_employee_run',
           refId: runId,
         });
+        // Text settles from real usage (120+40 tokens → 1 credit); fixed figures are rejected.
         settleHold(hold, {
-          credits: Number(billing.chargedCredits),
           aiMode: 'api',
           model: 'test-model',
           usage: { inputTokens: 120, outputTokens: 40 },
@@ -222,7 +222,7 @@ test('人工采纳内容只继承同租户来源运行的结算凭证，显式�
       ) VALUES('平台发布包',?,'已人工采纳正文','可使用','api',?,'content_employee_run',?,?)`,
       title, userId, runId, JSON.stringify(snapshot)).lastInsertRowid);
 
-    const settledRunId = insertRun({ state: 'settled', chargedCredits: 4 });
+    const settledRunId = insertRun({ state: 'settled', chargedCredits: 1 });
     const settledContentId = insertDerived(settledRunId, '继承已结算凭证');
     approveContent(settledContentId);
     const settled = loadContentDeliveryState(settledContentId);
@@ -236,7 +236,7 @@ test('人工采纳内容只继承同租户来源运行的结算凭证，显式�
     assert.equal(loadContentDeliveryState(pendingContentId).code, 'DELIVERY_BILLING_UNSETTLED');
     assert.equal(loadContentAdoptionAvailability(pendingContentId).canAdopt, false);
 
-    const secondSettledRunId = insertRun({ state: 'settled', chargedCredits: 4 });
+    const secondSettledRunId = insertRun({ state: 'settled', chargedCredits: 1 });
     const explicitPendingId = insertDerived(secondSettledRunId, '下游显式待对账', {
       contract: { status: 'valid', valid: true },
       billing: { state: 'held' },
@@ -298,7 +298,6 @@ test('餐饮任务只接受权威任务账本，快照自报不得覆盖结算�
 
     const settled = insertLinked('餐饮任务已结算');
     settleHold(createHold(settled.taskId), {
-      credits: 2,
       aiMode: 'api',
       model: 'test-model',
       usage: { inputTokens: 120, outputTokens: 40 },
@@ -330,7 +329,6 @@ test('餐饮任务只接受权威任务账本，快照自报不得覆盖结算�
       billing: null,
     });
     settleHold(createHold(malformed.taskId), {
-      credits: 2,
       aiMode: 'api',
       model: 'test-model',
       usage: { inputTokens: 100, outputTokens: 30 },

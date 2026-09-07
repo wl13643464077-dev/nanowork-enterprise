@@ -69,16 +69,8 @@ demo.example.com {
 		}
 	}
 
-	log {
-		output file /var/log/caddy/nanowork-access.log {
-			roll_size 50MiB
-			roll_keep 7
-			roll_keep_for 336h
-		}
-		format json
-		# 不记录 Cookie / Authorization，避免会话令牌落日志
-		# （Caddy 默认已对 Cookie/Authorization/Set-Cookie 做 REDACTED）
-	}
+	# 不启用逐请求访问日志：避免记录 URL 中的订阅/素材令牌，也避免日志文件属主不符阻塞重载。
+	# Caddy 服务运行事件仍由 systemd/journald 管理：journalctl -u caddy。
 }
 
 # 可选：把裸域或 www 跳转到主域名

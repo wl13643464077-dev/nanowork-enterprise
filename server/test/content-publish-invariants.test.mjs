@@ -946,10 +946,10 @@ test('内容列表使用真实交付门禁决定状态、审核入口和发布�
     assert.match(qualityRejected.delivery.reason, /模板|质检/u);
 
     const humanRejected = byId.get(humanRejectedId);
-    assert.equal(humanRejected.delivery.presentationKey, 'rework_required');
-    assert.equal(humanRejected.delivery.displayStatus, '失败需返工（人工审阅未通过）');
+    assert.equal(humanRejected.delivery.presentationKey, 'rejected');
+    assert.equal(humanRejected.delivery.displayStatus, '未采纳（原稿已保留）');
     assert.equal(humanRejected.delivery.canUse, false);
-    assert.match(humanRejected.delivery.reason, /人工审阅未通过/u);
+    assert.match(humanRejected.delivery.reason, /未采纳.*原稿.*保留/u);
 
     const draft = byId.get(draftId);
     assert.equal(draft.delivery.presentationKey, 'draft');

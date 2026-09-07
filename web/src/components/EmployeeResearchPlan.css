@@ -1,51 +1,24 @@
 .employee-research-plan {
   margin: 14px 0;
-  border: 1px solid #dbe4ef;
+  border: 1px solid var(--ui-border);
   border-radius: 16px;
-  background: #f8fafc;
+  background: var(--ui-surface);
   overflow: hidden;
 }
 
-.employee-research-plan > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px 10px;
-}
-
-.employee-research-plan > header div {
-  display: grid;
-  gap: 3px;
-}
-
-.employee-research-plan > header span {
-  color: #64748b;
-  font:
-    600 10px/1.2 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
-  letter-spacing: 0.12em;
-}
-
-.employee-research-plan > header strong {
-  color: #172033;
-  font-size: 15px;
-}
-
-.employee-research-plan > header em {
-  color: #315ca8;
-  font-size: 12px;
-  font-style: normal;
+.employee-research-plan > summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--ui-muted);
+  font-size: 13px;
 }
 
 .employee-research-lanes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 1px;
-  background: #e5eaf0;
-  border-top: 1px solid #e5eaf0;
+  background: var(--ui-border);
+  border-top: 1px solid var(--ui-border);
 }
 
 .employee-research-lane {
@@ -54,11 +27,11 @@
   gap: 9px;
   min-height: 46px;
   padding: 9px 13px;
-  background: #fff;
+  background: var(--ui-surface);
 }
 
 .employee-research-lane i {
-  color: #94a3b8;
+  color: var(--ui-muted);
   font:
     600 10px/1 ui-monospace,
     SFMono-Regular,
@@ -68,7 +41,7 @@
 }
 
 .employee-research-lane span {
-  color: #334155;
+  color: var(--ui-text);
   font-size: 12px;
   font-weight: 600;
 }
@@ -79,7 +52,7 @@
   flex-wrap: wrap;
   gap: 10px 16px;
   padding: 10px 14px;
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 12px;
 }
 
@@ -89,11 +62,11 @@
 }
 
 .employee-research-plan > footer .is-pass {
-  color: #07845b;
+  color: var(--ok);
 }
 
 .employee-research-plan > footer .is-wait {
-  color: #b7791f;
+  color: var(--warning);
 }
 
 .employee-research-plan.is-compact {

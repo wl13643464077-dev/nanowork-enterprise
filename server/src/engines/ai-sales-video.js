@@ -1,5 +1,14 @@
 import crypto from 'node:crypto';
 
+// Brand copy such as “官方账号” is not a request for live research. Negated
+// claims (“不要编造最新优惠”) must not start a long unrelated web search either.
+export function aiSalesVideoNeedsWeb(brief) {
+  return String(brief || '').split(/[，,。！？!?；;\n]/u).some(clause => {
+    if (/(?:不要|无需|不必|不需要|禁止|不得|避免).*(?:最新|实时|联网|热点|趋势|规则|竞品|搜索)/u.test(clause)) return false;
+    return /(?:最新|实时|联网|热点|趋势|平台规则|竞品|搜索|查询)/u.test(clause);
+  });
+}
+
 export const AI_SALES_VIDEO_WORKFLOW = 'ai_sales_video';
 export const AI_SALES_VIDEO_EMPLOYEE = Object.freeze({
   idx: 10,

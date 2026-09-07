@@ -32,7 +32,7 @@ const {
   recoverStaleMediaJobs,
   runScheduledJobs,
 } = await import('../src/engines/scheduler.js');
-const { creditTenant, holdCredits, releaseHold } = await import('../src/engines/credits.js');
+const { creditTenant, holdCredits, releaseHold, getSupplierExpense } = await import('../src/engines/credits.js');
 const { createSkillLearningRun } = await import('../src/engines/employee-skill-learning.js');
 const { ensureContentAutomationSpecialProviderAttemptSchema } = await import(
   '../src/routes/content.js'
@@ -553,21 +553,26 @@ test('恢复超时媒体任务：无交付且无调用证据退款；已有产�
   ));
   assert.equal(recovered.find(item => item.jobId === emptyJobId)?.billingState, 'released');
   assert.equal(recovered.find(item => item.jobId === deliveredJobId)?.billingState, 'pending_reconciliation');
-  assert.equal(recovered.find(item => item.jobId === videoJobId)?.billingState, 'pending_reconciliation');
-  assert.equal(recovered.find(item => item.jobId === videoJobId)?.action, 'continue_existing_provider_work');
+  assert.equal(recovered.find(item => item.jobId === videoJobId)?.billingState, 'released');
+  assert.equal(recovered.find(item => item.jobId === videoJobId)?.action, 'retrieve_existing_results_only');
   assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', emptyJobId).status, '失败');
   assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', deliveredJobId).status, '成功');
   assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?', videoJobId).status, '失败');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', emptyHold.holdId).status, 'settled');
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', deliveredHold.holdId).status, 'held');
-  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', videoHold.holdId).status, 'held');
-  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 37 - 41);
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', videoHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, before - 37);
+  assert.ok(getSupplierExpense(videoHold.holdId, 1).refundedAt);
+  assert.equal(getSupplierExpense(videoHold.holdId, 1).costYuan, null);
+  const afterRefund = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  runWithTenant(1, () => recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z')));
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits, afterRefund);
   releaseHold(deliveredHold, '测试结束清理已有产物待对账占扣');
   releaseHold(videoHold, '测试结束清理视频供应商任务占扣');
   q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id=?`, videoJobId);
 });
 
-test('媒体恢复读取providerExecution：snapshot任务号或invocationStarted均禁止退款', () => {
+test('媒体恢复终止超时无成果任务：退款后保留原供应商任务号且只允许免费取回', () => {
   const staleAt = '2026-07-23 08:00:00';
   const insertJob = (prompt, providerExecution) => runWithTenant(1, () => Number(q.run(
     `INSERT INTO media_jobs(user_id,kind,model,prompt,status,snapshot_json,created_at)
@@ -622,14 +627,14 @@ test('媒体恢复读取providerExecution：snapshot任务号或invocationStarte
   ));
   for (const jobId of [snapshotTaskJobId, invocationOnlyJobId]) {
     const item = recovered.find(candidate => candidate.jobId === jobId);
-    assert.equal(item?.billingState, 'pending_reconciliation');
-    assert.equal(item?.action, 'continue_existing_provider_work');
+    assert.equal(item?.billingState, 'released');
+    assert.equal(item?.action, 'retrieve_existing_results_only');
     const row = q.get('SELECT status,snapshot_json FROM media_jobs WHERE id=?', jobId);
     assert.equal(row.status, '失败');
-    assert.equal(JSON.parse(row.snapshot_json).providerRecovery.action, 'continue_existing_provider_work');
+    assert.equal(JSON.parse(row.snapshot_json).providerRecovery.action, 'retrieve_existing_results_only');
   }
-  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', snapshotTaskHold.holdId).status, 'held');
-  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', invocationOnlyHold.holdId).status, 'held');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', snapshotTaskHold.holdId).status, 'settled');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', invocationOnlyHold.holdId).status, 'settled');
   assert.equal(
     recovered.find(item => item.jobId === noInvocationJobId)?.billingState,
     'released',
@@ -641,6 +646,24 @@ test('媒体恢复读取providerExecution：snapshot任务号或invocationStarte
   releaseHold(invocationOnlyHold, '清理已外调无任务号恢复测试占扣');
   q.run(`UPDATE media_jobs SET status='失败' WHERE tenant_id=1 AND id IN (?,?)`,
     snapshotTaskJobId, invocationOnlyJobId);
+});
+
+test('供应商已完成且留有原结果等待下载，恢复器保留任务与预授权', () => {
+  const jobId = runWithTenant(1, () => Number(q.run(
+    `INSERT INTO media_jobs(user_id,kind,model,prompt,status,snapshot_json,created_at)
+      VALUES(?,'video','kling-video','等待下载','处理中',?,'2026-07-23 08:00:00')`, creatorId,
+    JSON.stringify({providerExecution:{invocationStarted:true,segments:[{taskId:'finished-task',status:'succeeded',url:'https://example.invalid/completed.mp4'}]}}),
+  ).lastInsertRowid));
+  const hold = holdCredits({userId:creatorId,feature:'已完成待下载',kind:'video',model:'kling-video',credits:41,refType:'media_job',refId:jobId});
+  const before = q.get('SELECT credits FROM tenants WHERE id=1').credits;
+  const result = runWithTenant(1, () => recoverStaleMediaJobs(new Date('2026-07-23T02:00:00.000Z')));
+  assert.equal(result.find(item => item.jobId === jobId)?.action, 'preserve_completed_provider_result');
+  assert.equal(q.get('SELECT status FROM media_jobs WHERE id=?',jobId).status,'处理中');
+  assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?',hold.holdId).status,'held');
+  assert.equal(q.get('SELECT credits FROM tenants WHERE id=1').credits,before);
+  assert.equal(getSupplierExpense(hold.holdId,1),null);
+  releaseHold(hold,'清理隔离测试');
+  q.run("UPDATE media_jobs SET status='失败' WHERE id=?",jobId);
 });
 
 test('媒体恢复优先使用providerExecution ISO心跳，长视频仍活跃时不误杀', () => {

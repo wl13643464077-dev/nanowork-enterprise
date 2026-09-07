@@ -14,11 +14,14 @@ process.env.JWT_SECRET = 'auth-rate-limit-test-secret';
 process.env.LOGIN_ACCOUNT_MAX_FAILURES = '8';
 process.env.LOGIN_IP_MAX_FAILURES = '3';
 process.env.REGISTER_IP_MAX_ATTEMPTS = '2';
+process.env.INVITATION_REGISTER_IP_MAX_ATTEMPTS = '9';
+process.env.INVITATION_PREVIEW_IP_MAX_ATTEMPTS = '2';
 
 const { initSchema, migrateV2, q } = await import('../src/db.js');
 const authRoutes = (await import('../src/routes/auth.js')).default;
 initSchema();
 migrateV2();
+const { createInvitation } = await import('../src/engines/invitations.js');
 
 async function withServer(fn) {
   const app = express();
@@ -63,6 +66,60 @@ test('企业注册原子落库并按 IP 限制批量滥用', async () => {
     assert.equal(blocked.status, 429);
     assert.equal(q.get(`SELECT COUNT(*) n FROM tenants WHERE name='限流测试企业'`).n, 1);
     assert.equal(q.get(`SELECT COUNT(*) n FROM users WHERE username='register_test'`).n, 1);
+  });
+});
+
+test('同IP六名受邀员工可独立于普通申请限额注册，所有带码请求共享邀请码限额', async () => {
+  const issuerId = Number(q.run("INSERT INTO users(username,password_hash,name,role,status,tenant_id) VALUES('invite_rate_super','unused','超管','platform_super','启用',1)").lastInsertRowid);
+  const tenantId = Number(q.run("INSERT INTO tenants(name,status,seat_limit,credits) VALUES('办公室受邀企业','已开通',10,0)").lastInsertRowid);
+  const invitations = Array.from({ length: 7 }, () => createInvitation({ id: issuerId },
+    { type: 'existing_tenant', tenantId, role: 'sales' }, 'platform'));
+  await withServer(async base => {
+    const submit = body => fetch(`${base}/auth/register`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    // Invalid, empty, and malformed-account requests each consume one attempt.
+    for (const inviteCode of ['unknown-code', '']) {
+      const invalid = await submit({ inviteCode, username: 'invalid_invite_rate', password: 'StrongPass123' });
+      assert.equal(invalid.status, 400);
+      assert.equal((await invalid.json()).code, 'INVITATION_INVALID');
+    }
+    assert.equal((await submit({ inviteCode: invitations[0].code, password: 'StrongPass123' })).status, 400);
+    assert.equal(q.get('SELECT used_count FROM invitations WHERE id=?', invitations[0].invitation.id).used_count, 0);
+    for (let index = 0; index < 6; index++) {
+      const accepted = await submit({ inviteCode: invitations[index].code, contactName: `同事${index + 1}`,
+        username: `invite_rate_member_${index}`, password: 'StrongPass123' });
+      const body = await accepted.json();
+      assert.equal(accepted.status, 200, JSON.stringify(body));
+      assert.equal(body.canLogin, true); assert.equal(body.tenantId, tenantId);
+    }
+    assert.equal(q.get('SELECT COUNT(*) n FROM users WHERE tenant_id=?', tenantId).n, 6);
+    assert.equal(q.get("SELECT COUNT(*) n FROM users WHERE username='invalid_invite_rate'").n, 0);
+    const blockedInvite = await submit({ inviteCode: invitations[6].code, username: 'invite_rate_member_6', password: 'StrongPass123' });
+    assert.equal(blockedInvite.status, 429);
+    assert.ok(Number(blockedInvite.headers.get('retry-after')) > 0);
+    assert.equal(q.get('SELECT used_count FROM invitations WHERE id=?', invitations[6].invitation.id).used_count, 0);
+    const blockedApplication = await submit({ company: '申请额度保持原样', username: 'ordinary_after_invites', password: 'StrongPass123' });
+    assert.equal(blockedApplication.status, 429);
+    assert.ok(Number(blockedApplication.headers.get('retry-after')) > 0);
+  });
+});
+
+test('公共邀请码预览按IP限流，轮换无效邀请码也不能绕过', async () => {
+  await withServer(async base => {
+    for (const code of ['invalid-first', 'invalid-second']) {
+      const response = await fetch(`${base}/auth/invitations/preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+      });
+      assert.equal(response.status, 400);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal((await response.json()).code, 'INVITATION_INVALID');
+    }
+    const blocked = await fetch(`${base}/auth/invitations/preview`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'invalid-third' }),
+    });
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) > 0);
   });
 });
 

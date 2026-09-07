@@ -20,7 +20,7 @@ export const BUSINESS_DELIVERY_LABELS = Object.freeze({
   businessBlocked: '业务暂不可采用（待账务对账）',
   qualityFailed: '失败需返工（质检未通过）',
   executionFailed: '失败需处理（执行异常）',
-  reviewRejected: '失败需返工（人工审阅未通过）',
+  reviewRejected: '未采纳（原稿已保留）',
   remediated: '历史失败（后续已修复）',
   superseded: '已由安全修订版取代',
   // P0-1 失败不交白卷：质量门未通过但正文已保留；老板可重新派活或接受为内部参考稿
@@ -663,7 +663,7 @@ export function inspectContentDeliveryState(content, {
   }
   if (approval.latestStatus && approval.latestStatus !== '已通过') {
     return blockedState(content, provenance, contract, contentBilling, approval,
-      'DELIVERY_APPROVAL_NOT_PASSED', `最近一次人工审阅结果为“${approval.latestStatus}”，当前稿件不能采用`, '按审阅意见返工并提交新修订稿');
+      'DELIVERY_APPROVAL_NOT_PASSED', `最近一次人工审阅结果为“${approval.latestStatus}”，当前稿件不能采用`, '原稿已保留，可继续查看；是否修改并另行提交由你决定。');
   }
   if (requireFlowStatus && !DELIVERY_STATUS_SET.has(status)) {
     return blockedState(content, provenance, contract, contentBilling, approval,

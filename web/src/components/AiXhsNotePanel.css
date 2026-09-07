@@ -1,0 +1,113 @@
+.ai-xhs-note-panel {
+  display: grid;
+  gap: 20px;
+  padding-top: 6px;
+  min-width: 0;
+}
+.ai-xhs-note-intro {
+  margin: 0;
+  color: var(--ui-muted);
+  line-height: 1.7;
+}
+.ai-xhs-note-panel .ant-form-item:last-child {
+  margin-bottom: 16px;
+}
+.ai-xhs-note-history {
+  display: flex;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ui-border);
+}
+.ai-xhs-note-history .ant-select {
+  flex: 1;
+  min-width: 0;
+}
+.ai-xhs-note-result {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.ai-xhs-note-result .ant-input {
+  font-size: 16px;
+  line-height: 1.85;
+}
+.ai-xhs-note-result .ant-form-item-label > label {
+  font-weight: 600;
+}
+.ai-xhs-note-result > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ai-xhs-note-result > header h5 {
+  margin: 0 0 6px;
+}
+.ai-xhs-note-result > header span,
+.ai-xhs-note-billing {
+  color: var(--ui-muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.ai-xhs-note-billing {
+  margin: 0;
+}
+.ai-xhs-note-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.ai-xhs-note-images {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.ai-xhs-note-images figure {
+  margin: 0;
+  min-width: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ai-xhs-note-images img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: contain;
+  background: var(--ui-bg);
+  display: block;
+}
+.ai-xhs-note-images figcaption {
+  padding: 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.ai-xhs-note-images p {
+  margin: 6px 0;
+  line-height: 1.6;
+}
+.ai-xhs-note-image-placeholder {
+  aspect-ratio: 3 / 4;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  color: var(--ui-muted);
+  background: var(--ui-bg);
+  text-align: center;
+}
+.ai-xhs-note-details {
+  border-top: 1px solid var(--ui-border);
+  padding-top: 12px;
+}
+.ai-xhs-note-details summary {
+  color: var(--ui-muted);
+  cursor: pointer;
+}
+.ai-xhs-note-details > :not(summary) {
+  margin-top: 12px;
+}
+@media (max-width: 520px) {
+  .ai-xhs-note-images {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

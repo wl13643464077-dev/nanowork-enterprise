@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { curTenant, q } from "./db.js";
+import { allowedModelCatalog, allowedModelPreference, isAllowedModel } from './engines/yunwu.js';
 import {
   activeEvolutionNotes,
   evolutionNotesPromptLines,
@@ -168,10 +169,10 @@ export function resolveMinimalEmployeeDispatchInput(raw = {}, options = {}) {
   const body = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const questionMax = Number.isSafeInteger(options.questionMax)
     ? options.questionMax
-    : 8000;
+    : 32000;
   const materialsMax = Number.isSafeInteger(options.materialsMax)
     ? options.materialsMax
-    : 8000;
+    : 32000;
   const titleMax = Number.isSafeInteger(options.titleMax)
     ? options.titleMax
     : 100;
@@ -421,12 +422,12 @@ function defaultWorkConfig(employee, safeLegacyConfig = null) {
   const canonical = canonicalRestaurantEmployeeProfileFor(employee.idx);
   return {
     ...structuredClone(canonical.workConfig.factoryDefault),
-    textModel:
+    textModel: allowedModelPreference('text',
       safeLegacyConfig?.modelText ??
-      canonical.workConfig.factoryDefault.textModel,
-    visionModel:
+      canonical.workConfig.factoryDefault.textModel),
+    visionModel: allowedModelPreference('vision',
       safeLegacyConfig?.modelImage ??
-      canonical.workConfig.factoryDefault.visionModel,
+      canonical.workConfig.factoryDefault.visionModel),
   };
 }
 
@@ -449,6 +450,7 @@ function validateWorkConfig(value, employee, safeLegacyConfig = null) {
   if (!APPROVAL_MODES.has(config.approvalMode))
     throw new Error("approvalMode不正确");
   for (const field of ["textModel", "visionModel"]) {
+    if (config[field] === '' || config[field] === 'inherit') config[field] = null;
     if (
       config[field] != null &&
       (typeof config[field] !== "string" ||
@@ -457,6 +459,10 @@ function validateWorkConfig(value, employee, safeLegacyConfig = null) {
     ) {
       throw new Error(`${field}必须是160字以内的模型标识或空`);
     }
+    if (config[field] != null && !isAllowedModel(field === 'textModel' ? 'text' : 'vision', config[field])) {
+      throw new Error(`${field}必须从平台已启用模型清单中选择`);
+    }
+    if (config[field] != null) config[field] = config[field].trim();
   }
   if (
     typeof config.language !== "string" ||
@@ -507,6 +513,9 @@ function workConfig(employee, row, safeLegacyConfig = null) {
     {},
     `员工${employee.idx}工作配置`,
   );
+  for (const [field, kind] of [['textModel', 'text'], ['visionModel', 'vision']]) {
+    if (Object.hasOwn(saved, field)) saved[field] = allowedModelPreference(kind, saved[field]);
+  }
   const values = validateWorkConfig(saved, employee, safeLegacyConfig);
   const { tenantScoped: _tenantScopedValue, ...editableValues } = values;
   const version = `tenant-revision-${Number(row?.revision || 0)}`;
@@ -514,14 +523,16 @@ function workConfig(employee, row, safeLegacyConfig = null) {
     {
       key: "textModel",
       label: "文本模型",
-      type: "text",
+      type: "select",
+      options: ['', ...allowedModelCatalog().text.map(item => item.id)],
       description:
         "单独派活的文本生成与预授权计费均使用该模型；留空跟随账号路由。",
     },
     {
       key: "visionModel",
       label: "视觉理解模型",
-      type: "text",
+      type: "select",
+      options: ['', ...allowedModelCatalog().vision.map(item => item.id)],
       description: "单独派活附带图片证据时使用；不上传图片时不会调用。",
     },
     {
@@ -583,7 +594,7 @@ function workConfig(employee, row, safeLegacyConfig = null) {
   };
 }
 
-const RESTAURANT_PRIMARY_TASKS = Object.freeze({
+export const RESTAURANT_PRIMARY_TASKS = Object.freeze({
   101: "比较两个候选商圈，判断哪个品类机会更值得用90天验证",
   102: "画清目标门店3公里商圈与竞品空白，给出可核验的客群画像",
   103: "验证新品牌概念是否真正匹配目标顾客与消费场景",
@@ -1089,7 +1100,7 @@ export function buildEmployeeWorkbench(
       types: [...EMPLOYEE_TASK_TYPES],
       defaultTaskType: "执行方案",
       defaultType: "执行方案",
-      requirementMaxChars: 8000,
+      requirementMaxChars: 32000,
       selectedSpecialistId: dbRow.specialist_id,
       requiredInputs: structuredClone(canonical.workMethod.requiredInputs),
       guidance: dispatchGuidance(employee),
@@ -1272,8 +1283,14 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
   // system = 身份 + 岗位手册md + 本次启用的工作流步骤 + 进修技能库 + 交付规则；
   // 老板任务书只进 user。没有 JSON 契约、没有档案摘要 JSON，也没有质量门清单——
   // 手册本身就是岗位的完整工作方式。输出直接是老板可读的 Markdown 报告。
-  const paihuoLengthHint =
-    workbench.workConfig.outputLength === "full"
+  // Real acceptance runs may opt into a compact, still-complete brief. This
+  // keeps long specialist prompts from spending the provider wall-clock on
+  // repetitive prose; the server-side contract/gates remain unchanged and
+  // the production path keeps the configured full/standard length.
+  const acceptanceCompact = process.env.NANOWORK_ACCEPTANCE_COMPACT === "1";
+  const paihuoLengthHint = acceptanceCompact
+    ? "【篇幅】本轮真实验收采用紧凑完整版：控制在约3500字以内，必须覆盖手册要求的每个交付物、关键公式/判断、证据与下一步动作；禁止复述材料、能力清单或凑字。"
+    : workbench.workConfig.outputLength === "full"
       ? "【篇幅】本次按完整版交付：可以充分展开，但信息密度优先，禁止凑字与复述材料。"
       : "【篇幅】本次按标准版交付：整体控制在约2000字以内，宁可精炼，不要注水。";
   const paihuoSystemContext = [

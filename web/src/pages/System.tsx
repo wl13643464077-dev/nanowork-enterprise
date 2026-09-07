@@ -28,22 +28,17 @@ import {
   SafetyCertificateOutlined,
   HistoryOutlined,
   LoginOutlined,
-  CloudServerOutlined,
   SettingOutlined,
   RobotOutlined,
   CheckCircleFilled,
   UserOutlined,
   DatabaseOutlined,
-  HddOutlined,
-  FieldTimeOutlined,
   PlusOutlined,
   EditOutlined,
-  CloudUploadOutlined,
   SaveOutlined,
   AlertOutlined,
   UploadOutlined,
   ThunderboltOutlined,
-  DesktopOutlined,
   CheckOutlined,
   CloseOutlined,
   LinkOutlined,
@@ -54,7 +49,7 @@ import {
 import { Link } from 'react-router-dom';
 import { notifyCredits, api, getUser } from '../api/client';
 import { Panel } from '../components/Kit';
-import { RuntimeReadinessMatrix, readinessMeta } from '../components/RuntimeReadiness';
+import { readinessMeta } from '../components/RuntimeReadiness';
 import { SystemBillingPanel } from '../components/SystemBillingPanel';
 import { createSystemConfigPrimitives } from '../components/SystemConfigPrimitives';
 import { SystemDeletionDrawer } from '../components/SystemDeletionDrawer';
@@ -66,11 +61,8 @@ import {
   AB_LABELS,
   approvalListResult,
   approvalStatusLabel,
-  barColor,
   displayList,
   displayValue,
-  fmtKBSize,
-  fmtUptime,
   HW_LABELS,
   interactiveSurfaceStyle,
   KB_CATS,
@@ -92,12 +84,10 @@ export default function System() {
   const canViewApprovalPolicy = ['boss', 'ops_director', 'manager', 'admin', 'platform_super'].includes(user.role);
   const canManageUsers = ['boss', 'admin'].includes(user.role); // 增改用户
   const canSaveConfig = ['boss', 'admin'].includes(user.role); // 保存配置
-  const canBackup = ['boss', 'admin'].includes(user.role); // 数据备份
   const canEditKb = isAdminish; // 知识库维护
   const canBackfillKb = ['boss', 'admin'].includes(user.role); // 向量回填会产生真实API费用
   const canEditPrompt = ['boss', 'admin', 'platform_super'].includes(user.role); // 提示词维护
   const canRestoreDeleted = ['boss', 'admin'].includes(user.role); // 删除留痕/恢复
-  const canResolveBilling = ['boss', 'admin', 'platform_super'].includes(user.role);
   const [tab, setTab] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get('tab');
     const knownTab =
@@ -264,10 +254,9 @@ export default function System() {
   const [deletionStatus, setDeletionStatus] = useState('active');
   const [deletionLoading, setDeletionLoading] = useState(false);
   const [deletionView, setDeletionView] = useState<any>(null);
-  // 配置与备份
+  // 业务配置
   const [cfg, setCfg] = useState<any>({});
   const [cfgSaving, setCfgSaving] = useState(false);
-  const [backups, setBackups] = useState<any[]>([]);
   const [feishuCfg, setFeishuCfg] = useState<any>(null);
   const [feishuQr, setFeishuQr] = useState(false);
   const [feishuBind, setFeishuBind] = useState<any>(null);
@@ -357,7 +346,6 @@ export default function System() {
       })
       .catch(() => {});
   };
-  const [backingUp, setBackingUp] = useState(false);
 
   const loadStatus = () =>
     api
@@ -386,11 +374,6 @@ export default function System() {
     api
       .get(`/sys/kb?category=${encodeURIComponent(cat)}`)
       .then(setKbDocs)
-      .catch(() => {});
-  const loadBackups = () =>
-    api
-      .get('/sys/backups')
-      .then(setBackups)
       .catch(() => {});
   const loadDeletions = (st = deletionStatus) => {
     if (!canRestoreDeleted) return;
@@ -475,7 +458,6 @@ export default function System() {
             api.get('/sys/config').then(setCfg),
           ]
         : []),
-      ...(canBackup ? [api.get('/sys/backups').then(setBackups)] : []),
     ];
     return Promise.allSettled(calls)
       .then(results => {
@@ -503,7 +485,7 @@ export default function System() {
     };
     // loadCore reads exactly these permission flags; depending on its per-render identity would retrigger after every state update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canBackup, canEditPrompt, isAdminish]);
+  }, [canEditPrompt, isAdminish]);
   useEffect(() => {
     api
       .get(`/sys/approvals?status=${encodeURIComponent(approvalStatus)}&meta=1`)
@@ -553,58 +535,6 @@ export default function System() {
       })
       .catch(() => {}) // 403（高风险需老板终审）等错误 client 已自动 message 提示
       .finally(() => setDeciding(false));
-  };
-
-  const resolveBilling = (row: any, action: 'settle' | 'release') => {
-    let reason = '';
-    const settle = action === 'settle';
-    Modal.confirm({
-      title: settle ? '按真实用量完成积分结算？' : '确认任务没有合格产物并退回预留积分？',
-      okText: settle ? '确认结算' : '确认退款',
-      okButtonProps: settle ? {} : { danger: true },
-      cancelText: '取消',
-      width: 560,
-      content: (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
-          <Alert
-            type={settle ? 'info' : 'warning'}
-            showIcon
-            message={
-              settle
-                ? `系统将只按已落库的 ${row.business?.model || '-'} 与真实 token 用量结算，不采用页面自报金额。`
-                : '系统会全额退回本任务临时预留的积分，并隔离无效产物及其下游素材/知识资产；隔离后不能用于业务。'
-            }
-          />
-          <Input.TextArea
-            rows={3}
-            maxLength={300}
-            showCount
-            placeholder="填写对账依据（至少6字），例如：主产物通过共享语义契约且模型/token证据一致"
-            onChange={event => {
-              reason = event.target.value;
-            }}
-          />
-        </div>
-      ),
-      onOk: () => {
-        const finalReason = reason.trim();
-        if (finalReason.length < 6) {
-          message.warning('请填写至少6字的对账依据');
-          return Promise.reject(new Error('billing reconciliation reason required'));
-        }
-        return api
-          .post(`/sys/billing/reconciliation/${row.holdId}/resolve`, {
-            action,
-            reason: finalReason,
-            evidenceHash: row.evidenceHash,
-          })
-          .then((result: any) => {
-            message.success(result.message || '对账完成');
-            notifyCredits();
-            return loadBillingReconciliation();
-          });
-      },
-    });
   };
 
   // ===== 知识库操作 =====
@@ -759,7 +689,7 @@ export default function System() {
       .catch(() => {});
   };
 
-  // ===== 配置与备份操作 =====
+  // ===== 业务配置操作 =====
   const saveCfg = () => {
     setCfgSaving(true);
     const { risk_rules: _riskRules, ...payload } = cfg; // 风控规则只读展示，不随保存提交
@@ -768,17 +698,6 @@ export default function System() {
       .then(() => message.success('配置已保存'))
       .catch(() => {})
       .finally(() => setCfgSaving(false));
-  };
-  const doBackup = () => {
-    setBackingUp(true);
-    api
-      .post('/sys/backup')
-      .then(r => {
-        message.success(`备份成功：${r.file}`);
-        loadBackups();
-      })
-      .catch(() => {})
-      .finally(() => setBackingUp(false));
   };
   const openDeletion = (row: any) => {
     api
@@ -830,7 +749,6 @@ export default function System() {
     { label: '操作日志', icon: <HistoryOutlined />, color: 'var(--ui-muted)', tab: 'users' },
     { label: '登录日志', icon: <LoginOutlined />, color: 'var(--ui-accent)', tab: 'users' },
     { label: '删除留痕', icon: <DeleteOutlined />, color: 'var(--danger)', tab: 'trash' },
-    { label: '数据备份', icon: <CloudServerOutlined />, color: 'var(--chart-2)', tab: 'config' },
     { label: '系统配置', icon: <SettingOutlined />, color: 'var(--chart-3)', tab: 'config' },
   ].filter(item => (canEditPrompt || item.tab !== 'prompts') && (isAdminish || item.tab !== 'billing'));
 
@@ -851,9 +769,6 @@ export default function System() {
   };
   const feishuReadiness = feishuCfg?.readiness;
   const feishuState = readinessMeta(feishuReadiness);
-  const usage = ai.usage || {};
-  const healthTagColor =
-    status.healthStatus === 'danger' ? 'red' : status.healthStatus === 'warning' ? 'orange' : 'green';
   const noPermTip = (
     <Panel>
       <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前角色无权查看该模块（需老板/运营总监/管理员）" />
@@ -862,238 +777,47 @@ export default function System() {
 
   // ===== ① 系统概览 Tab =====
   const overviewTab = (
-    <Row gutter={[12, 12]}>
-      <Col xs={24} lg={7}>
-        <Panel
-          title={
-            <>
-              <DatabaseOutlined style={{ color: 'var(--ui-accent)' }} /> 系统概览
-            </>
-          }
-          extra={<span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>30秒自动刷新</span>}
-        >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+    <Row gutter={[16, 16]}>
+      <Col xs={24} lg={14}>
+        <Panel title="本企业使用概况">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <MiniStat
               icon={<TeamOutlined />}
               color="var(--ui-accent)"
-              label="用户数"
+              label="企业成员"
               value={(status.users ?? 0).toLocaleString()}
             />
             <MiniStat
-              icon={<DesktopOutlined />}
+              icon={<UserOutlined />}
               color="var(--chart-2)"
-              label="在线用户"
+              label="当前在线"
               value={(status.online ?? 0).toLocaleString()}
             />
             <MiniStat
-              icon={<UserOutlined />}
+              icon={<DatabaseOutlined />}
               color="var(--chart-3)"
-              label="客户数据量"
+              label="客户数据"
               value={(status.leads ?? 0).toLocaleString()}
             />
             <MiniStat
               icon={<FileTextOutlined />}
               color="var(--warn)"
-              label="内容数据量"
+              label="已存内容"
               value={(status.contents ?? 0).toLocaleString()}
             />
-            <MiniStat
-              icon={<HddOutlined />}
-              color="var(--ui-muted)"
-              label="数据库大小"
-              value={`${(status.dbSizeKB ?? 0).toLocaleString()} KB`}
-              span
-            />
           </div>
         </Panel>
       </Col>
-      <Col xs={24} lg={6}>
-        <Panel
-          title={
-            <>
-              <ThunderboltOutlined style={{ color: 'var(--warn)' }} /> 系统状态
-            </>
-          }
-          extra={
-            <Tooltip title={status.healthReason || '核心资源处于安全区间'}>
-              <Tag color={healthTagColor} style={{ marginRight: 0 }}>
-                {status.healthLabel || '运行正常'}
-              </Tag>
-            </Tooltip>
-          }
-        >
-          {[
-            ['CPU使用率', status.cpu ?? 0],
-            ['内存使用率', status.memory ?? 0],
-          ].map(([label, p]: any) => (
-            <div key={label} style={{ marginBottom: 12 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: 12,
-                  color: 'var(--ui-text-2)',
-                  marginBottom: 4,
-                }}
-              >
-                <span>{label}</span>
-                <span style={{ fontWeight: 600, color: 'var(--ui-text)' }}>{p}%</span>
-              </div>
-              <Progress percent={p} showInfo={false} size="small" strokeColor={barColor(p)} />
-            </div>
-          ))}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 14 }}>
-            <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '10px 12px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>
-                <HddOutlined /> 堆内存
-              </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ui-text)' }}>
-                {status.heapMB ?? 0} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ui-muted)' }}>MB</span>
-              </div>
-            </div>
-            <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '10px 12px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>
-                <FieldTimeOutlined /> 运行时长
-              </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ui-text)' }}>
-                {fmtUptime(status.uptimeMin)}
-              </div>
-            </div>
-          </div>
+      <Col xs={24} lg={10}>
+        <Panel title="AI服务" extra={<Badge status={aiState.badge} text={aiState.label} />}>
+          <p style={{ lineHeight: 1.8, color: 'var(--ui-text-2)' }}>
+            {aiReadiness.description || (ai.available ? 'AI服务等待平台验证。' : 'AI服务暂不可用，可先使用本地底稿。')}
+          </p>
+          {canSaveConfig && <Link to="/admin?tab=api">选择本企业使用的模型</Link>}
+          <p style={{ lineHeight: 1.8, color: 'var(--ui-muted)' }}>
+            服务问题由平台处理；任务结果和积分记录可随时查看。
+          </p>
         </Panel>
-      </Col>
-      <Col xs={24} lg={6}>
-        <Panel
-          title={
-            <>
-              <RobotOutlined style={{ color: 'var(--ui-accent)' }} /> AI服务状态
-            </>
-          }
-          extra={
-            <Badge
-              status={aiState.badge}
-              text={<span style={{ fontSize: 12, color: aiVerified ? '#16a34a' : '#e0a253' }}>{aiState.label}</span>}
-            />
-          }
-        >
-          <div
-            style={{
-              background: aiVerified ? '#112018' : 'var(--ui-warning-surface)',
-              borderRadius: 8,
-              padding: '10px 12px',
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: aiVerified ? '#16a34a' : '#e0a253',
-              marginBottom: 10,
-            }}
-          >
-            <div>{aiState.label}</div>
-            <div style={{ marginTop: 4, fontSize: 11, fontWeight: 400, color: 'var(--ui-muted)' }}>
-              {aiReadiness.description ||
-                (ai.available ? '已发现服务端密钥，但尚未通过最近一次显式连接测试' : '模板模式（未配置AI密钥）')}
-            </div>
-          </div>
-          {ai.canViewDetail ? (
-            <>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  fontSize: 12,
-                  color: 'var(--ui-text-2)',
-                  marginBottom: 10,
-                }}
-              >
-                <span>当前模型</span>
-                <Tag color="blue" style={{ marginRight: 0 }}>
-                  {ai.model || '-'}
-                </Tag>
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 6 }}>
-                今日Token用量
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
-                {[
-                  ['输入', usage.input],
-                  ['输出', usage.output],
-                  ['调用次数', usage.calls],
-                ].map(([label, v]: any) => (
-                  <div
-                    key={label}
-                    style={{
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-accent)' }}>
-                      {(v ?? 0).toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>{label}</div>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <Alert type="info" showIcon message="当前角色仅显示AI运行就绪状态；模型与Token明细仅老板/管理员可见。" />
-          )}
-        </Panel>
-      </Col>
-      <Col xs={24} lg={5}>
-        <Panel
-          title={
-            <>
-              <SafetyCertificateOutlined style={{ color: 'var(--chart-2)' }} /> 安全概览
-            </>
-          }
-        >
-          <div style={{ textAlign: 'center', marginBottom: 12 }}>
-            <div
-              style={{
-                width: 56,
-                height: 56,
-                borderRadius: '50%',
-                background: 'var(--ui-surface-2)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <SafetyCertificateOutlined style={{ fontSize: 28, color: 'var(--ui-accent)' }} />
-            </div>
-            <div style={{ fontSize: 12, color: '#16a34a', fontWeight: 600, marginTop: 6 }}>安全策略全部生效</div>
-          </div>
-          {[
-            ['密码加密存储', '已加密'],
-            ['操作全审计', '已开启'],
-            ['手机号脱敏', '已启用'],
-            ['外发人工确认', '已启用'],
-          ].map(([label, tag]) => (
-            <div
-              key={label}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '6px 0',
-                borderBottom: '1px solid var(--ui-surface-2)',
-              }}
-            >
-              <span style={{ fontSize: 12.5, color: 'var(--ui-text-2)' }}>
-                <CheckCircleFilled style={{ color: 'var(--chart-2)', marginRight: 6 }} />
-                {label}
-              </span>
-              <Tag color="green" style={{ marginRight: 0, fontSize: 11 }}>
-                {tag}
-              </Tag>
-            </div>
-          ))}
-        </Panel>
-      </Col>
-      <Col xs={24}>
-        <RuntimeReadinessMatrix matrix={status.readiness} />
       </Col>
     </Row>
   );
@@ -1425,9 +1149,8 @@ export default function System() {
     <SystemBillingPanel
       billingLoading={billingLoading}
       billingReconciliation={billingReconciliation}
-      canResolveBilling={canResolveBilling}
+      canResolveBilling={false}
       loadBillingReconciliation={loadBillingReconciliation}
-      resolveBilling={resolveBilling}
     />
   );
 
@@ -2139,7 +1862,7 @@ export default function System() {
     />
   );
 
-  // ===== ⑥ 配置与备份 Tab =====
+  // ===== ⑥ 业务配置 Tab =====
   const { numField, cfgGroup, grid } = createSystemConfigPrimitives(canSaveConfig);
   const setCfgSub = (key: string, sub: string, v: any) =>
     setCfg((c: any) => ({ ...c, [key]: { ...(c[key] || {}), [sub]: v } }));
@@ -2328,63 +2051,6 @@ export default function System() {
               ]}
             />
           </Panel>
-          <Panel
-            title={
-              <>
-                <CloudServerOutlined style={{ color: 'var(--chart-2)' }} /> 数据备份
-              </>
-            }
-            extra={
-              <Tooltip title={!canBackup ? '仅老板/管理员可操作备份' : ''}>
-                <Button
-                  type="primary"
-                  size="small"
-                  icon={<CloudUploadOutlined />}
-                  loading={backingUp}
-                  disabled={!canBackup}
-                  onClick={doBackup}
-                >
-                  立即备份
-                </Button>
-              </Tooltip>
-            }
-            style={{ height: 'auto' }}
-          >
-            <Table
-              size="small"
-              rowKey="file"
-              dataSource={backups}
-              pagination={false}
-              columns={[
-                {
-                  title: '文件名',
-                  dataIndex: 'file',
-                  ellipsis: true,
-                  render: (v: string) => (
-                    <Tooltip title={v}>
-                      <span style={{ fontFamily: 'Consolas,Menlo,monospace', fontSize: 11.5 }}>{v}</span>
-                    </Tooltip>
-                  ),
-                },
-                { title: '大小', dataIndex: 'sizeKB', align: 'right', width: 80, render: (v: number) => fmtKBSize(v) },
-                {
-                  title: '备份时间',
-                  dataIndex: 'at',
-                  width: 150,
-                  render: (v: string) => <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>{v}</span>,
-                },
-              ]}
-              locale={{
-                emptyText: (
-                  <Empty
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description={canBackup ? '暂无备份，点击「立即备份」创建' : '仅老板/管理员可查看备份'}
-                  />
-                ),
-              }}
-            />
-          </Panel>
-
           <Panel
             title={
               <>
@@ -2883,7 +2549,7 @@ export default function System() {
             ...(canEditPrompt ? [{ key: 'prompts', label: '提示词模板', children: promptsTab }] : []),
             { key: 'users', label: '用户与日志', children: usersTab },
             { key: 'trash', label: '删除留痕', children: trashTab },
-            { key: 'config', label: '配置与备份', children: configTab },
+            { key: 'config', label: '业务配置', children: configTab },
           ]}
         />
       )}

@@ -1,0 +1,112 @@
+.seat-panel {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  min-width: 0;
+}
+.seat-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.seat-panel h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.seat-panel p {
+  margin: 8px 0;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.seat-panel-header p,
+.seat-muted {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.seat-quota-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 18px;
+}
+.seat-quota-grid > div {
+  display: grid;
+  gap: 7px;
+}
+.seat-quota-grid span {
+  font-size: 13px;
+  color: var(--ui-muted);
+}
+.seat-quota-grid strong {
+  font-size: 20px;
+  font-weight: 600;
+}
+.seat-form-fields {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 16px;
+}
+.seat-form-fields .ant-form-item {
+  margin-bottom: 0;
+}
+.seat-form-fields .ant-input-number {
+  width: 100%;
+}
+.seat-loading {
+  min-height: 90px;
+}
+.seat-history {
+  border-top: 1px solid var(--ui-border);
+  padding-top: 16px;
+}
+.seat-history > summary {
+  cursor: pointer;
+  color: var(--ui-text-2);
+}
+.seat-request-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.seat-request-list article {
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 0;
+}
+.seat-active-request {
+  border-left: 3px solid var(--ui-border);
+  padding-left: 16px;
+}
+.seat-primary-binding {
+  margin-bottom: 18px;
+}
+.seat-primary-binding .ant-select {
+  width: 100%;
+}
+.seat-primary-binding .ant-btn {
+  margin-top: 10px;
+}
+.seat-order-summary {
+  padding: 12px 0;
+  line-height: 1.8;
+}
+@media (max-width: 600px) {
+  .seat-panel {
+    padding: 16px;
+  }
+  .seat-form-fields {
+    grid-template-columns: 1fr;
+  }
+  .seat-quota-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .seat-panel-header {
+    flex-wrap: wrap;
+  }
+}

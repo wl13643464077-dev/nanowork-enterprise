@@ -1,0 +1,194 @@
+/* 同一份正文在工作台、任务详情和对话中使用同一阅读尺度。 */
+.md-body {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 50rem;
+  margin-inline: auto;
+  color: var(--ui-text);
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1.85;
+  text-align: start;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.md-body p,
+.md-body ul,
+.md-body ol {
+  margin: 0 0 1em;
+}
+
+.md-body ul,
+.md-body ol {
+  padding-inline-start: 1.65em;
+}
+
+.md-body li {
+  margin-block: 0.4em;
+  padding-inline-start: 0.15em;
+}
+
+.md-body li > p {
+  margin-block: 0.35em;
+}
+
+.md-body li > ul,
+.md-body li > ol {
+  margin-block: 0.4em 0.6em;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 1.6em 0 0.65em;
+  color: var(--ui-text);
+  line-height: 1.45;
+  font-weight: 600;
+}
+
+.md-body h1 {
+  font-size: 1.5em;
+}
+
+.md-body h2 {
+  font-size: 1.25em;
+}
+
+.md-body h3 {
+  font-size: 1.125em;
+}
+
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-size: 1em;
+}
+
+.md-body strong {
+  font-weight: 600;
+}
+
+.md-body a {
+  color: var(--ui-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  overflow-wrap: anywhere;
+}
+
+.md-body a:focus-visible,
+.md-body .md-table-scroll:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 3px;
+}
+
+.md-body code {
+  padding: 0.1em 0.3em;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: var(--ui-surface-2);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.md-body pre {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 1.25em;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-surface-2);
+  line-height: 1.65;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.md-body pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  white-space: inherit;
+  overflow-wrap: normal;
+}
+
+.md-body blockquote {
+  margin: 1.2em 0;
+  padding: 0.5em 1em;
+  border-inline-start: 3px solid var(--ui-border-strong);
+  color: var(--ui-text-2);
+  background: var(--ui-surface-2);
+}
+
+.md-body blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.md-table-scroll {
+  max-width: 100%;
+  margin: 0 0 1.25em;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.md-body table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375em;
+  line-height: 1.65;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-body th,
+.md-body td {
+  min-width: 6em;
+  max-width: 24em;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.md-body th {
+  background: var(--ui-surface-2);
+  font-weight: 600;
+}
+
+.md-body hr {
+  margin: 1.75em 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 600px) {
+  .md-body h1 {
+    font-size: 1.375em;
+  }
+
+  .md-body ul,
+  .md-body ol {
+    padding-inline-start: 1.4em;
+  }
+
+  .md-body pre {
+    padding: 12px;
+  }
+}

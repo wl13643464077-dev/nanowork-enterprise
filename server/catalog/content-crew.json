@@ -78,8 +78,8 @@
       "skill": "AI-Sales-Video",
       "emoji": "🛍️",
       "color": "#ef476f",
-      "duty": "根据人物、菜品或商品、门店图片，完成30秒带货脚本、三段10秒分镜、字幕与成片任务",
-      "intro": "上传人物、菜品或商品、门头等真实素材，再说一句这次要卖什么；AI带货员先整理事实、脚本、三段镜头和字幕，再按已授权的视频连接器生成或安全阻断，不把计划冒充成片。",
+      "duty": "根据菜品、门头或人物图片与主题，默认完成15秒原生有声带货视频；用户可选30秒两段，员工负责脚本和字幕",
+      "intro": "上传真实照片，说说这次想宣传什么。默认生成15秒万相原生有声视频；勾选30秒才分两段生成，声音可能略有差异。先看脚本，再确认生成、预览和下载。",
       "approval": "auto",
       "optional": false,
       "capabilities": [
@@ -98,32 +98,32 @@
           "sourceFingerprint": "sha256:e58590bd634bb36e02c07a34502feef8c70d414eab8934ac618e745c70db1a10"
         },
         {
-          "name": "30秒口播编排",
+          "name": "自然口播编排",
           "emoji": "🎙️",
-          "desc": "将事实白名单编成30秒口播稿、开场钩子、价值说明与条件式行动入口",
+          "desc": "按用户选择写15秒或30秒口语脚本，默认一段自然邀约，不堆广告套话，不为填满时长凑字数",
           "required": true,
           "enabled": true,
           "locked": true,
           "sourceDefinition": {
-            "name": "30秒口播编排",
+            "name": "自然口播编排",
             "emoji": "🎙️",
-            "desc": "将事实白名单编成30秒口播稿、开场钩子、价值说明与条件式行动入口"
+            "desc": "按用户选择写15秒或30秒口语脚本，默认一段自然邀约，不堆广告套话，不为填满时长凑字数"
           },
-          "sourceFingerprint": "sha256:21ae00dd2fcb882749b4c6f3f3619c65a6e58c34655adbaf81ad448b17be8d71"
+          "sourceFingerprint": "sha256:e212664332fba4e4f53d6307719789b7c37838b5bb8f7d09acd8e88b2c027652"
         },
         {
-          "name": "三段10秒分镜",
+          "name": "按时长生成原生有声视频",
           "emoji": "🎬",
-          "desc": "固定编排三段10秒镜头，分别承担注意力、产品价值和行动入口，不伪造视频已生成",
+          "desc": "Wan2.6默认生成一段15秒；仅用户选择30秒时生成两段15秒，保留模型原声，不额外配音；海螺三段10秒仅供历史任务恢复",
           "required": true,
           "enabled": true,
           "locked": true,
           "sourceDefinition": {
-            "name": "三段10秒分镜",
+            "name": "按时长生成原生有声视频",
             "emoji": "🎬",
-            "desc": "固定编排三段10秒镜头，分别承担注意力、产品价值和行动入口，不伪造视频已生成"
+            "desc": "Wan2.6默认生成一段15秒；仅用户选择30秒时生成两段15秒，保留模型原声，不额外配音；海螺三段10秒仅供历史任务恢复"
           },
-          "sourceFingerprint": "sha256:616522421cf00ff0855c0149ff44b131bbac3980a309656077c35e485856440b"
+          "sourceFingerprint": "sha256:aed4ede42815ff83ac626d297a4bc2dee21ec056aaa363ca71b80355b7e41e9c"
         },
         {
           "name": "视频连接器安全门",
@@ -140,7 +140,14 @@
           "sourceFingerprint": "sha256:932ce295448070c52910abe69d49daee78b28f79c9259b9da631cf63ea52a3e4"
         }
       ],
-      "outputKeys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+      "outputKeys": [
+        "facts",
+        "script",
+        "subtitles",
+        "segments",
+        "cover",
+        "video"
+      ],
       "skillProfile": {
         "catalog": "native-content-employee",
         "employeeIdx": 10,
@@ -150,15 +157,22 @@
       "pipelinePrompt": {
         "messageMode": "single_user",
         "legacyBuilder": "buildAiSalesVideoPlan",
-        "assemblyOrder": ["goal_and_references", "fact_whitelist", "script", "segments", "subtitles", "provider_evidence"],
-        "template": "【你的岗位】内容生产仓第11名原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n先列事实白名单与待确认项，再交付30秒口播稿、字幕、三段10秒分镜、封面建议和视频连接器状态。素材不足不得猜测价格、功效、评价、库存、营业信息或经营结果；没有真实供应商结果时必须明确阻断，不得把脚本和分镜冒充成片。",
-        "sourceTemplate": "【你的岗位】内容生产仓第11名原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n先列事实白名单与待确认项，再交付30秒口播稿、字幕、三段10秒分镜、封面建议和视频连接器状态。素材不足不得猜测价格、功效、评价、库存、营业信息或经营结果；没有真实供应商结果时必须明确阻断，不得把脚本和分镜冒充成片。",
-        "sourceFingerprint": "sha256:a6a12294829adc62726de5bbd42cc978a4e9fbe0d87a8d12c286f8f48554e3f2"
+        "assemblyOrder": [
+          "goal_and_references",
+          "fact_whitelist",
+          "script",
+          "segments",
+          "subtitles",
+          "provider_evidence"
+        ],
+        "template": "【你的岗位】内容生产仓原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n用户未选择时长时默认15秒，仅写一段完整口播。用户明确选择30秒时才写两段15秒。Wan2.6生成原生声音，后期保留原声并加字幕，不再配音。使用本次真实照片和事实，台词像与朋友聊天，用户看过脚本后确认生成。没有真实视频结果时保留脚本和已生成素材，不伪造视频URL或费用；海螺三段10秒仅为历史恢复方式，不用于新默认任务。",
+        "sourceTemplate": "【你的岗位】内容生产仓原生员工 · AI带货员\n目标：{brief}\n参考素材：{references}\n用户未选择时长时默认15秒，仅写一段完整口播。用户明确选择30秒时才写两段15秒。Wan2.6生成原生声音，后期保留原声并加字幕，不再配音。使用本次真实照片和事实，台词像与朋友聊天，用户看过脚本后确认生成。没有真实视频结果时保留脚本和已生成素材，不伪造视频URL或费用；海螺三段10秒仅为历史恢复方式，不用于新默认任务。",
+        "sourceFingerprint": "sha256:d7bebbdee9c805d815ae16b8d36c97ab349d4caded47ee8ad3828628f7441269"
       },
       "soloPrompt": {
         "messageMode": "single_user",
         "legacyBuilder": "buildAiSalesVideoPlan",
-        "template": "你是内容生产仓原生数字员工「AI带货员」。本次只执行30秒带货视频专项任务。目标：{direction}\n行业/场景：{industry}\n老板材料：{material}\n上一版意见：{feedback}\n必须先整理事实白名单和缺失项，再输出30秒口播、字幕、三段10秒分镜、封面建议、视频连接器状态；没有真实视频供应商结果时只能返回计划或阻断，不得伪造视频URL、费用或效果。",
+        "template": "你是原生数字员工「AI带货员」。目标：{direction}\n行业/场景：{industry}\n老板材料：{material}\n上一版意见：{feedback}\n默认交付15秒视频的一段自然口播、字幕和媒体方案，用户明确选择30秒才编排两段15秒，万相声音随视频原生生成，不加独立配音。价格、地址、评价等必须有本次事实依据；先保留完整可读稿件，只有真实供应商结果才能称为成片。海螺三段10秒仅供历史任务恢复。",
         "placeholders": {
           "direction": "带货目标",
           "industry": "行业/场景",
@@ -178,18 +192,30 @@
       "workMethod": {
         "input": {
           "upstream": "老板一句带货目标",
-          "context": ["至少一张人物、菜品/商品或门店图片", "企业品牌档案", "已授权知识库与附件", "供应商与模型授权状态"]
+          "context": [
+            "至少一张人物、菜品/商品或门店图片",
+            "企业品牌档案",
+            "已授权知识库与附件",
+            "供应商与模型授权状态"
+          ]
         },
         "execution": {
           "handler": "buildAiSalesVideoPlan",
-          "capabilities": "先事实整理，再脚本、三段10秒分镜、字幕和连接器证据",
+          "capabilities": "先事实整理，再脚本、按模型分段（Wan2.6两段15秒／海螺三段10秒）、字幕和连接器证据",
           "skills": "注入AI-Sales-Video岗位 Skill；不得把目录描述扩展为当前事实",
           "webRequired": false,
           "realtimeSteps": true
         },
         "output": {
-          "duty": "30秒带货事实包、口播、字幕、三段分镜与视频任务状态",
-          "keys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+          "duty": "按选择交付15秒或30秒口播、字幕、视频与预览下载结果",
+          "keys": [
+            "facts",
+            "script",
+            "subtitles",
+            "segments",
+            "cover",
+            "video"
+          ],
           "primaryArtifact": "video_plan"
         },
         "approval": {
@@ -210,38 +236,102 @@
           "skillVerificationStatus": "native_verified",
           "textModel": "gpt-5.5",
           "imageModel": null,
-          "videoModel": "MiniMax-Hailuo-2.3-Fast",
+          "videoModel": "wan2.6-i2v",
           "approval": "auto",
           "optional": false,
           "messageMode": "single_user"
         },
         "roleSpecific": {
-          "durationSeconds": 30,
-          "segmentDurationSeconds": 10,
-          "segmentCount": 3,
+          "durationSeconds": 15,
           "maxReferences": 6,
-          "provider": "MiniMax",
-          "workflow": "ai_sales_video"
+          "provider": "Alibaba Wan via Yunwu",
+          "workflow": "ai_sales_video",
+          "segmentPolicy": "model_dependent",
+          "segmentPlans": [
+            {
+              "models": [
+                "wan2.6-i2v"
+              ],
+              "durationSeconds": 15,
+              "segmentDurationSeconds": 15,
+              "segmentCount": 1
+            },
+            {
+              "models": [
+                "wan2.6-i2v"
+              ],
+              "durationSeconds": 30,
+              "segmentDurationSeconds": 15,
+              "segmentCount": 2
+            },
+            {
+              "models": [
+                "MiniMax-Hailuo-2.3",
+                "MiniMax-Hailuo-2.3-Fast",
+                "MiniMax-Hailuo-02"
+              ],
+              "durationSeconds": 30,
+              "segmentDurationSeconds": 10,
+              "segmentCount": 3
+            }
+          ],
+          "durationOptions": [
+            15,
+            30
+          ]
         }
       },
       "dispatchForm": {
         "mode": "single_station",
         "fields": [
-          {"key": "direction", "label": "一句话带货目标", "type": "textarea", "required": true},
-          {"key": "material", "label": "人物、菜品/商品或门店图片", "type": "image_upload", "required": true, "minItems": 1, "maxItems": 6},
-          {"key": "industry", "label": "行业/场景", "type": "text", "required": false},
-          {"key": "feedback", "label": "上一版意见", "type": "textarea", "required": false}
+          {
+            "key": "direction",
+            "label": "一句话带货目标",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "material",
+            "label": "人物、菜品/商品或门店图片",
+            "type": "image_upload",
+            "required": true,
+            "minItems": 1,
+            "maxItems": 6
+          },
+          {
+            "key": "industry",
+            "label": "行业/场景",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "feedback",
+            "label": "上一版意见",
+            "type": "textarea",
+            "required": false
+          }
         ],
-        "result": {"format": "json", "persistedAsAsset": true, "supportsRedoFeedback": true}
+        "result": {
+          "format": "json",
+          "persistedAsAsset": true,
+          "supportsRedoFeedback": true
+        }
       },
       "outputSchema": {
         "format": "json_object",
-        "keys": ["facts", "script", "subtitles", "segments", "cover", "video"],
+        "keys": [
+          "facts",
+          "script",
+          "subtitles",
+          "segments",
+          "cover",
+          "video"
+        ],
         "contract": "{\n  \"facts\": [{\"claim\": \"可核验事实\", \"source\": \"图片/老板材料/知识库\"}],\n  \"script\": {\"hook\": \"...\", \"value\": \"...\", \"cta\": \"...\"},\n  \"subtitles\": [{\"start\": 0, \"end\": 3, \"text\": \"...\"}],\n  \"segments\": [{\"index\": 1, \"durationSeconds\": 10, \"scene\": \"...\", \"voiceover\": \"...\", \"status\": \"planned|processing|ready|blocked\"}],\n  \"cover\": {\"description\": \"...\", \"source\": \"待生成或已核验素材\"},\n  \"video\": {\"status\": \"planned|processing|ready|blocked\", \"url\": null, \"provider\": null, \"model\": null, \"usage\": null, \"cost\": null}\n}",
         "primaryArtifact": "video_plan"
       },
       "connectorPolicy": {
-        "executionBoundary": "先复用现有ai-sales-video三段10秒计划能力；未授权或未核价时只保留脚本、分镜与阻断证据，不调用供应商、不扣费、不伪造视频。",
+        "executionBoundary": "复用现有ai-sales-video按模型分段能力；未授权或未核价时只保留脚本、分镜与阻断证据，不调用供应商、不扣费、不伪造视频。",
         "connectors": [
           {
             "kind": "sales_video_plan",
@@ -251,8 +341,16 @@
             "newProjectStatus": "single_station",
             "status": "single_station",
             "mode": "employee_generation",
-            "requirements": {"inputs": ["brief", "referenceImages"], "liveData": "not_required", "credentials": [], "humanApproval": "auto"},
-            "executeBoundary": "本地确定性脚本与三段10秒分镜计划；零外部调用、零扣费。"
+            "requirements": {
+              "inputs": [
+                "brief",
+                "referenceImages"
+              ],
+              "liveData": "not_required",
+              "credentials": [],
+              "humanApproval": "auto"
+            },
+            "executeBoundary": "本地确定性脚本与按模型分段（Wan2.6两段15秒／海螺三段10秒）计划；零外部调用、零扣费。"
           },
           {
             "kind": "sales_video_generation",
@@ -262,7 +360,17 @@
             "newProjectStatus": "single_station",
             "status": "single_station",
             "mode": "employee_generation",
-            "requirements": {"inputs": ["plannedSegments", "referenceImages"], "liveData": "optional", "credentials": ["server_runtime_video_provider"], "humanApproval": "review"},
+            "requirements": {
+              "inputs": [
+                "plannedSegments",
+                "referenceImages"
+              ],
+              "liveData": "optional",
+              "credentials": [
+                "server_runtime_video_provider"
+              ],
+              "humanApproval": "review"
+            },
             "executeBoundary": "只有已核验模型价格、服务端授权和受控合成器同时就绪才允许外部调用；任一缺失即阻断。"
           }
         ]
@@ -273,8 +381,8 @@
         "referenceSha256": "807f041b78ecd41e10e2901d85df371288044307de2aafa11946f63b3682fc4e",
         "legacyIdx": 10,
         "snapshotDate": "2026-08-08",
-        "sourceCapabilitySetFingerprint": "sha256:4c698d4c53b398e4d2be0f17ac6d0e47c87e1e5b229dcd42909138804a9ee767",
-        "sourcePromptFingerprint": "sha256:a6a12294829adc62726de5bbd42cc978a4e9fbe0d87a8d12c286f8f48554e3f2",
+        "sourceCapabilitySetFingerprint": "sha256:c03da5d293cc7fe4feb25e3603d4f39ca226f6e40440c24ef3e1cdf293298d62",
+        "sourcePromptFingerprint": "sha256:d7bebbdee9c805d815ae16b8d36c97ab349d4caded47ee8ad3828628f7441269",
         "native": true,
         "sourceBoundary": "本岗位是NanoWork原生扩展，不属于Paihuo旧10岗来源快照。"
       },
@@ -286,15 +394,50 @@
       "runtime": {
         "mode": "single_station",
         "workflow": "ai_sales_video",
-        "durationSeconds": 30,
-        "segmentDurationSeconds": 10,
-        "segmentCount": 3,
+        "durationSeconds": 15,
         "providerCallsDefault": 0,
         "defaultStatus": "blocked_without_authorization",
-        "evidenceRequired": true
+        "evidenceRequired": true,
+        "segmentPolicy": "model_dependent",
+        "segmentPlans": [
+          {
+            "models": [
+              "wan2.6-i2v"
+            ],
+            "durationSeconds": 15,
+            "segmentDurationSeconds": 15,
+            "segmentCount": 1
+          },
+          {
+            "models": [
+              "wan2.6-i2v"
+            ],
+            "durationSeconds": 30,
+            "segmentDurationSeconds": 15,
+            "segmentCount": 2
+          },
+          {
+            "models": [
+              "MiniMax-Hailuo-2.3",
+              "MiniMax-Hailuo-2.3-Fast",
+              "MiniMax-Hailuo-02"
+            ],
+            "durationSeconds": 30,
+            "segmentDurationSeconds": 10,
+            "segmentCount": 3
+          }
+        ],
+        "durationOptions": [
+          15,
+          30
+        ]
       },
       "permissions": {
-        "profileAudience": ["boss", "admin", "platform_super"],
+        "profileAudience": [
+          "boss",
+          "admin",
+          "platform_super"
+        ],
         "dispatchAudience": "authenticated_tenant_user",
         "mayEditFactoryProfile": false,
         "mayUseVideoProviderWithoutAuthorization": false,

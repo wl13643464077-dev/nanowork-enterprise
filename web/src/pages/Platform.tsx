@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -30,6 +30,12 @@ import {
   DollarOutlined,
 } from '@ant-design/icons';
 import { api, clearAuth, exportCsv } from '../api/client';
+import PlatformApiConfig from '../components/PlatformApiConfig';
+import PlatformOperations from '../components/PlatformOperations';
+import PlatformTesters from '../components/PlatformTesters';
+import InvitationManager from '../components/InvitationManager';
+import PlatformSeatRequests, { PrimaryAccountBinding } from '../components/PlatformSeatRequests';
+import { planSeatDescription } from '../components/seatRequestModel';
 
 // 积分流水类型（与企业内一致）
 const KIND_LABEL: Record<string, string> = {
@@ -38,6 +44,14 @@ const KIND_LABEL: Record<string, string> = {
   video: '生视频',
   recharge: '充值/调整',
   bonus: '套餐赠送',
+  refund: '无成果退款',
+};
+const SUPPLIER_COST_LABEL: Record<string, string> = {
+  known: '回执已核实',
+  estimated: '估算',
+  pending: '待核验',
+  not_incurred: '确认未发生',
+  not_applicable: '不另计供应商费用',
 };
 const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }));
 import { StatCard, Panel, ErrorState } from '../components/Kit';
@@ -79,6 +93,8 @@ export default function Platform() {
   const [planTarget, setPlanTarget] = useState<any>(null); // 开通年度套餐的目标企业
   const [planPkgId, setPlanPkgId] = useState<number | undefined>(undefined);
   const [activating, setActivating] = useState(false);
+  const planRequest = useRef<{ tenantId: number; packageId: number; requestKey: string } | null>(null);
+  const planBusy = useRef(false);
   const [aForm] = Form.useForm();
   const [pForm] = Form.useForm();
   const pkgKind = Form.useWatch('kind', pForm);
@@ -108,17 +124,22 @@ export default function Platform() {
     aForm.setFieldsValue({
       modules: t.modules ? parseModules(t.modules) : ALL_MODULES,
       plan: t.plan || '标准版',
-      seatLimit: t.seat_limit || 50,
       grantCredits: t.status === '待审核' ? 10000 : 0,
     });
   };
   const submitApprove = () =>
     aForm.validateFields().then(v => {
-      api.post(`/platform/tenants/${approve.id}/approve`, v).then(() => {
-        message.success(approve.status === '待审核' ? '账号已开通' : '已更新');
-        setApprove(null);
-        loadAll();
-      });
+      api
+        .post(`/platform/tenants/${approve.id}/approve`, {
+          plan: v.plan,
+          modules: v.modules,
+          grantCredits: v.grantCredits,
+        })
+        .then(() => {
+          message.success(approve.status === '待审核' ? '账号已开通' : '已更新');
+          setApprove(null);
+          loadAll();
+        });
     });
   const setStatus = (t: any, status: string) =>
     api.post(`/platform/tenants/${t.id}/update`, { status }).then(() => {
@@ -127,6 +148,8 @@ export default function Platform() {
     });
   const directCredit = (t: any) => {
     let val = 0;
+    let operation: { value: number; requestKey: string } | null = null;
+    let pending: Promise<void> | null = null;
     Modal.confirm({
       title: `给「${t.name}」直充/扣减积分`,
       content: (
@@ -139,16 +162,31 @@ export default function Platform() {
         />
       ),
       onOk: () => {
-        if (val)
-          api.post(`/platform/tenants/${t.id}/credits`, { delta: val, note: '平台直充' }).then(() => {
+        if (pending) return pending;
+        if (!Number.isSafeInteger(val) || !val) {
+          message.warning('请输入非零整数积分');
+          return Promise.reject(new Error('积分输入无效'));
+        }
+        if (!operation || operation.value !== val) operation = { value: val, requestKey: crypto.randomUUID() };
+        pending = api
+          .post(`/platform/tenants/${t.id}/credits`, { delta: val, note: '平台直充', requestKey: operation.requestKey })
+          .then(() => {
             message.success('已处理');
             loadAll();
+          })
+          .finally(() => {
+            pending = null;
           });
+        return pending;
       },
     });
   };
-  const confirmOrder = (o: any) =>
-    Modal.confirm({
+  const confirmOrder = (o: any) => {
+    if (o.kind === 'seat_addon') {
+      setTab('席位申请');
+      return;
+    }
+    return Modal.confirm({
       title: '确认收到款项？',
       content: `确认后将向「${o.tenant_name}」充入 ${o.credits.toLocaleString()} 积分（¥${o.price_yuan}）`,
       okText: '确认到账',
@@ -158,6 +196,7 @@ export default function Platform() {
           loadAll();
         }),
     });
+  };
   const openPkg = (p: any) => {
     setPkgEdit(p);
     pForm.resetFields();
@@ -170,6 +209,7 @@ export default function Platform() {
   };
   const submitPkg = () =>
     pForm.validateFields().then(v => {
+      if (v.kind === 'plan') v.seat_limit = pkgEdit?.kind === 'plan' ? pkgEdit.seat_limit : 5;
       const req = pkgEdit?.id ? api.put(`/platform/packages/${pkgEdit.id}`, v) : api.post('/platform/packages', v);
       req.then(() => {
         message.success('已保存');
@@ -178,20 +218,30 @@ export default function Platform() {
       });
     });
   const openActivatePlan = (t: any) => {
+    planRequest.current = null;
     setPlanTarget(t);
     setPlanPkgId(planPackages.find(p => p.code === t.plan_code)?.id ?? planPackages[0]?.id);
   };
   const submitActivatePlan = async () => {
-    if (!planTarget || !planPkgId) return;
+    if (!planTarget || !planPkgId || planBusy.current) return;
+    if (planRequest.current?.tenantId !== planTarget.id || planRequest.current?.packageId !== planPkgId) {
+      planRequest.current = { tenantId: planTarget.id, packageId: planPkgId, requestKey: crypto.randomUUID() };
+    }
+    planBusy.current = true;
     setActivating(true);
     try {
-      const r = await api.post(`/platform/tenants/${planTarget.id}/plan/activate`, { packageId: planPkgId });
+      const r = await api.post(`/platform/tenants/${planTarget.id}/plan/activate`, {
+        packageId: planPkgId,
+        requestKey: planRequest.current.requestKey,
+      });
       message.success(`已开通「${r.name}」，有效期至 ${r.expiresAt}${r.rolledOver ? '（已顺延）' : ''}`);
       setPlanTarget(null);
+      planRequest.current = null;
       loadAll();
     } catch {
       /* api 层已提示错误 */
     } finally {
+      planBusy.current = false;
       setActivating(false);
     }
   };
@@ -267,8 +317,27 @@ export default function Platform() {
         <Segmented
           value={tab}
           onChange={v => setTab(v as string)}
-          options={['开通管理', '概览', '运营分析', '积分流水', '客户企业', '充值订单', '套餐管理']}
+          options={[
+            '开通管理',
+            '邀请码',
+            '测试员与体验',
+            '席位申请',
+            '概览',
+            '运营分析',
+            '积分流水',
+            '客户企业',
+            '充值订单',
+            '套餐管理',
+            '模型与接口',
+            '平台运维',
+          ]}
         />
+
+        {tab === '邀请码' && <InvitationManager scope="platform" />}
+        {tab === '测试员与体验' && <PlatformTesters />}
+        {tab === '席位申请' && <PlatformSeatRequests tenants={tenants} onChanged={loadAll} />}
+        {tab === '模型与接口' && <PlatformApiConfig />}
+        {tab === '平台运维' && <PlatformOperations tenants={tenants} />}
 
         {tab === '开通管理' && (
           <Panel
@@ -371,8 +440,9 @@ export default function Platform() {
                 <StatCard
                   icon={<DollarOutlined />}
                   color="var(--warn)"
-                  label="累计营收（客户充值）"
+                  label="累计收款（已支付订单）"
                   value={`¥${(ana.summary.totalRevenue || 0).toLocaleString()}`}
+                  suffix={`积分 ¥${ana.summary.cashReceipts?.credits || 0} · 套餐 ¥${ana.summary.cashReceipts?.plans || 0} · 席位 ¥${ana.summary.cashReceipts?.seats || 0}${ana.summary.cashReceipts?.unclassified ? ` · 历史未分类 ¥${ana.summary.cashReceipts.unclassified}` : ''}`}
                 />
               </Col>
             </Row>
@@ -381,25 +451,37 @@ export default function Platform() {
                 <StatCard
                   icon={<AuditOutlined />}
                   color="var(--danger)"
-                  label="平台真实成本（云雾API·至今）"
-                  value={`¥${(ana.summary.totalCost || 0).toLocaleString()}`}
+                  label="供应商已核实成本"
+                  value={`¥${(ana.summary.knownCostYuan || 0).toLocaleString()}`}
+                  suffix={`另估算 ¥${ana.summary.estimatedCostYuan || 0} · ${ana.summary.pendingCostCount || 0} 笔待核验`}
                 />
               </Col>
               <Col xs={12} md={8}>
                 <StatCard
                   icon={<DollarOutlined />}
                   color="var(--chart-2)"
-                  label="客户已消耗价值（按售价）"
+                  label="积分消费面值（扣除退款）"
                   value={`¥${(ana.summary.consumedYuan || 0).toLocaleString()}`}
+                  suffix={
+                    ana.summary.estimatedPriceCount
+                      ? `${ana.summary.estimatedPriceCount} 笔历史面值为估算`
+                      : '含赠送积分，不代表现金收入'
+                  }
                 />
               </Col>
               <Col xs={12} md={8}>
                 <StatCard
                   icon={<WalletOutlined />}
                   color="var(--chart-3)"
-                  label="AI转售毛利率（消耗−成本）"
-                  value={`${ana.summary.marginRate || 0}`}
-                  suffix="%"
+                  label="积分面值估算毛差比例"
+                  value={ana.summary.marginRate == null ? '待核验' : `${ana.summary.marginRate}%`}
+                  suffix={
+                    ana.summary.marginStatus === 'estimated'
+                      ? '含估算，非最终利润'
+                      : ana.summary.pendingCostCount
+                        ? '供应商费用未齐，不计算利润'
+                        : '未扣平台其他费用'
+                  }
                 />
               </Col>
             </Row>
@@ -523,7 +605,7 @@ export default function Platform() {
                         render: (v: number) => (v || 0).toLocaleString(),
                       },
                       {
-                        title: '消耗积分',
+                        title: '净消费积分',
                         dataIndex: 'spent',
                         align: 'right',
                         width: 80,
@@ -531,20 +613,34 @@ export default function Platform() {
                       },
                       { title: '调用', dataIndex: 'calls', width: 56, align: 'right' },
                       {
-                        title: '真实成本',
-                        dataIndex: 'cost',
+                        title: '供应商成本',
+                        dataIndex: 'knownCostYuan',
                         align: 'right',
                         width: 84,
-                        render: (v: number) => `¥${(v || 0).toFixed(2)}`,
+                        render: (v: number, r: any) => (
+                          <span>
+                            已核实 ¥{v || 0}
+                            <br />
+                            <small>
+                              估算 ¥{r.estimatedCostYuan || 0} · 待核验 {r.pendingCostCount || 0} 笔
+                            </small>
+                          </span>
+                        ),
                       },
                       {
-                        title: '毛利',
+                        title: '面值估算毛差',
                         dataIndex: 'margin',
                         align: 'right',
                         width: 84,
-                        render: (v: number) => (
-                          <b style={{ color: (v || 0) >= 0 ? '#16a34a' : 'var(--danger)' }}>¥{(v || 0).toFixed(2)}</b>
-                        ),
+                        render: (v: number | null, r: any) =>
+                          v == null ? (
+                            '待核验'
+                          ) : (
+                            <span style={{ color: v >= 0 ? '#16a34a' : 'var(--danger)' }}>
+                              ¥{v.toFixed(2)}
+                              {r.marginStatus === 'estimated' ? '（估算）' : ''}
+                            </span>
+                          ),
                       },
                       { title: '账号', dataIndex: 'users', width: 50, align: 'right' },
                     ]}
@@ -628,12 +724,13 @@ export default function Platform() {
                   ),
                 },
                 {
-                  title: '账号/席位',
-                  width: 80,
+                  title: '账号与额度',
+                  width: 180,
                   align: 'right',
                   render: (_: any, r: any) => (
-                    <span style={{ color: r.user_count >= (r.seat_limit || 0) ? 'var(--danger)' : 'var(--ui-text)' }}>
-                      {r.user_count}/{r.seat_limit ?? '-'}
+                    <span>
+                      已建账号 {r.user_count ?? '待读取'} / 席位额度{' '}
+                      {r.seat_limit === null ? '不限' : (r.seat_limit ?? '待读取')}
                     </span>
                   ),
                 },
@@ -689,7 +786,7 @@ export default function Platform() {
           <Panel
             title={
               <>
-                <WalletOutlined style={{ color: 'var(--chart-2)' }} /> 充值订单（确认到账即发放积分）
+                <WalletOutlined style={{ color: 'var(--chart-2)' }} /> 充值与开通订单
               </>
             }
           >
@@ -715,11 +812,12 @@ export default function Platform() {
                   render: (v: number) => <b style={{ color: 'var(--danger)' }}>¥{v}</b>,
                 },
                 {
-                  title: '积分',
+                  title: '权益',
                   dataIndex: 'credits',
                   align: 'right',
                   width: 90,
-                  render: (v: number) => v.toLocaleString(),
+                  render: (v: number, r: any) =>
+                    r.kind === 'seat_addon' ? `增加 ${r.additionalSeats} 个副账号` : Number(v || 0).toLocaleString(),
                 },
                 {
                   title: '状态',
@@ -741,7 +839,7 @@ export default function Platform() {
                   render: (_: any, r: any) =>
                     r.status === '待支付' ? (
                       <Button size="small" type="primary" onClick={() => confirmOrder(r)}>
-                        确认到账
+                        {r.kind === 'seat_addon' ? '处理席位申请' : '确认到账'}
                       </Button>
                     ) : (
                       <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>{r.paid_at?.slice(5, 16) || '—'}</span>
@@ -842,12 +940,10 @@ export default function Platform() {
         okText={approve?.status === '待审核' ? '开通' : '保存'}
         title={approve ? `${approve.status === '待审核' ? '开通账号' : '调整权限'} · ${approve.name}` : ''}
       >
+        {approve && <PrimaryAccountBinding key={approve.id} tenantId={approve.id} onChanged={loadAll} />}
         <Form form={aForm} layout="vertical">
           <Form.Item name="plan" label="套餐">
             <Select options={PLANS.map(p => ({ value: p, label: p }))} />
-          </Form.Item>
-          <Form.Item name="seatLimit" label="账号席位上限（该企业最多可创建多少个账号）" rules={[{ required: true }]}>
-            <InputNumber style={{ width: '100%' }} min={1} max={500} addonAfter="个账号" placeholder="如 50" />
           </Form.Item>
           <Form.Item name="modules" label="开通模块（该企业可见的功能）">
             <Checkbox.Group options={ALL_MODULES.map(m => ({ label: MOD_NAME[m], value: m }))} />
@@ -899,8 +995,12 @@ export default function Platform() {
           {pkgKind === 'plan' ? (
             <Row gutter={12}>
               <Col span={12}>
-                <Form.Item name="seat_limit" label="含账号数" rules={[{ required: true }]}>
-                  <InputNumber style={{ width: '100%' }} min={1} max={10000} addonAfter="个" />
+                <Form.Item label="基础账号">
+                  <span>
+                    {pkgEdit?.kind === 'plan' && pkgEdit.seat_limit !== 5
+                      ? `历史套餐 ${pkgEdit.seat_limit} 个账号（原值保留）`
+                      : '1 个主账号 + 4 个副账号'}
+                  </span>
                 </Form.Item>
               </Col>
               <Col span={12}>
@@ -918,7 +1018,7 @@ export default function Platform() {
             showIcon
             message={
               pkgKind === 'plan'
-                ? '年度套餐：开通时写入企业席位与到期日；未到期再次购买按原到期日顺延；赠送积分作为独立"套餐赠送"流水入账，不含购买积分。'
+                ? '年度套餐基础为 1 主 + 4 副；存量及已购追加名额保留，更多副账号通过席位申请开通。续费顺延到期日，赠送积分按套餐独立入账。'
                 : '积分包：到账积分 = 价格×100 + 赠送（基础积分按价格自动计算），支付成功一次入账。'
             }
           />
@@ -958,7 +1058,7 @@ export default function Platform() {
             onChange={v => setPlanPkgId(v)}
             options={planPackages.map(p => ({
               value: p.id,
-              label: `${p.name} · ¥${p.price_yuan} · ${p.seat_limit} 账号 · ${p.valid_days} 天 · 赠 ${Number(p.bonus_credits || 0).toLocaleString()} 积分`,
+              label: `${p.name} · ¥${p.price_yuan} · ${planSeatDescription(p.seat_limit)} · ${p.valid_days} 天 · 赠 ${Number(p.bonus_credits || 0).toLocaleString()} 积分`,
             }))}
             placeholder="选择年度套餐"
           />
@@ -968,7 +1068,7 @@ export default function Platform() {
             message={
               planTarget?.plan_expires_at && planTarget?.plan_status !== 'expired'
                 ? `该企业当前套餐至 ${String(planTarget.plan_expires_at).slice(0, 10)}，本次开通将从该日顺延有效期，并再次入账赠送积分。`
-                : '开通后从今天起算有效期，写入账号席位并入账赠送积分；适用于对公转账等线下已收款场景。'
+                : '开通后从今天起算有效期并入账套餐赠送积分，存量及已购追加账号名额保留；扩容请走席位申请。适用于对公转账等线下已收款场景。'
             }
           />
         </Flex>
@@ -977,7 +1077,7 @@ export default function Platform() {
   );
 }
 
-// 全平台积分流水（平台超管：跨企业可筛选可导出，含真实成本——平台方自己的账）
+// 全平台积分流水：客户余额与供应商支出分别列示，历史估算不会伪装成已核实费用。
 function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
   const [logs, setLogs] = useState<any>({ total: 0, rows: [] });
   const [tenantId, setTenantId] = useState<number | undefined>(undefined);
@@ -1005,10 +1105,13 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
       KIND_LABEL[r.kind] || r.kind || '',
       r.model || '',
       `${r.input_tokens || 0}+${r.output_tokens || 0}`,
-      r.credits > 0 ? r.credits : 0,
+      r.net_consumed_credits || 0,
+      r.held_credits || 0,
       r.credits < 0 ? -r.credits : 0,
       r.spend_yuan ?? '',
-      r.cost_yuan ?? 0,
+      r.price_source === 'legacy_estimate' ? '历史面值估算' : r.price_source === 'snapshot' ? '价格快照' : '',
+      r.supplier_cost_yuan ?? '',
+      SUPPLIER_COST_LABEL[r.supplier_cost_status] || '',
       r.balance_after,
     ]);
     exportCsv(
@@ -1021,10 +1124,13 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
         '类型',
         '模型',
         'tokens(入+出)',
-        '消耗积分',
-        '充值积分',
-        '折合售价¥',
-        '真实成本¥',
+        '净消费积分（退款为负）',
+        '预授权冻结积分',
+        '入账积分（含退款）',
+        '积分消费面值¥',
+        '积分面值依据',
+        '供应商成本¥',
+        '供应商成本状态',
         '余额',
       ],
       rows,
@@ -1047,7 +1153,7 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
             size="small"
             style={{ width: 160 }}
             optionFilterProp="label"
-            options={tenants.filter((t: any) => t.id > 1).map((t: any) => ({ value: t.id, label: t.name }))}
+            options={tenants.filter((t: any) => t.id > 0).map((t: any) => ({ value: t.id, label: t.name }))}
             onChange={(v: any) => {
               setTenantId(v);
               setPage(1);
@@ -1114,8 +1220,10 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
             title: '积分',
             dataIndex: 'credits',
             align: 'right',
-            render: (v: number) =>
-              v > 0 ? (
+            render: (v: number, r: any) =>
+              r.ledger_effect === 'held' ? (
+                `冻结 ${r.held_credits} 分`
+              ) : v > 0 ? (
                 <b style={{ color: 'var(--danger)' }}>-{v}</b>
               ) : v < 0 ? (
                 <b style={{ color: '#16a34a' }}>+{-v}</b>
@@ -1124,12 +1232,19 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
               ),
           },
           {
-            title: '折合售价',
+            title: '积分消费面值',
             dataIndex: 'spend_yuan',
             align: 'right',
-            render: (v: number) => (v == null ? '—' : `¥${v}`),
+            render: (v: number, r: any) =>
+              v == null ? '—' : `¥${v}${r.price_source === 'legacy_estimate' ? '（历史估算）' : ''}`,
           },
-          { title: '真实成本', dataIndex: 'cost_yuan', align: 'right', render: (v: number) => `¥${v ?? 0}` },
+          {
+            title: '供应商成本',
+            dataIndex: 'supplier_cost_yuan',
+            align: 'right',
+            render: (v: number | null, r: any) =>
+              `${v == null ? '' : `¥${v} · `}${SUPPLIER_COST_LABEL[r.supplier_cost_status] || '待核验'}`,
+          },
           {
             title: '余额',
             dataIndex: 'balance_after',

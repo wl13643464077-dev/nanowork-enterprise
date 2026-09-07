@@ -987,7 +987,7 @@ function contentRequiredSkill(employee) {
 function nativeContentRequiredSkill(employee) {
   return {
     id: `required:${employee.key}`,
-    title: `${employee.name}完整岗位 Skill`,
+    title: employee.idx === 11 ? '小红书图文种草' : '图生带货视频制作',
     detail: employee.workMethod.execution.skills,
     source: employee.sourceProvenance.referencePath,
     sourceUrl: null,
@@ -1003,6 +1003,18 @@ function nativeContentRequiredSkill(employee) {
 }
 
 function nativeContentRuntimeBindings(employee, safeLegacyConfig) {
+  if (employee.idx === 11) {
+    const binding = { handler: 'ai-xhs-note', adapter: 'ai-xhs-note', mode: 'single_station', bindingStatus: 'native_runtime_bound',
+      businessEndpoint: '/api/content/ai-xhs-note', executionType: 'employee_generation', execution: { workflow: 'ai_xhs_note' } };
+    return {
+      sourceBindings: { work: { legacyHandler: 'xhsNotePrompt' }, connectors: structuredClone(employee.connectorPolicy.connectors), safeLegacyConfig },
+      currentRuntimeBindings: { work: binding, models: { text: { route: 'tenant_vision_model_route', credentials: 'server_runtime_only' } },
+        webPolicy: { defaultMode: 'not_required', evidenceRequired: false },
+        apis: [{ id: 'vision_generation', binding: 'tenant_vision_model_route', credentialPolicy: 'server_runtime_only' }],
+        tools: [{ ...binding, id: 'xhs_note_generation' }], connectors: [{ ...binding, kind: 'xhs_note_generation' }] },
+      parityBoundary: '用户照片与品牌信息一次生成一份图文包；原图与全文保存，用户自行编辑发布。',
+    };
+  }
   const connectors = structuredClone(employee.connectorPolicy.connectors).map(
     (connector) => ({
       ...connector,
@@ -1038,9 +1050,10 @@ function nativeContentRuntimeBindings(employee, safeLegacyConfig) {
         provenance: "NanoWork native content employee runtime",
         execution: {
           workflow: "ai_sales_video",
-          durationSeconds: 30,
-          segmentDurationSeconds: 10,
-          segmentCount: 3,
+          durationSeconds: employee.runtime.durationSeconds,
+          durationOptions: structuredClone(employee.runtime.durationOptions),
+          segmentPolicy: 'model_dependent',
+          segmentPlans: structuredClone(employee.runtime.segmentPlans),
           defaultComposerStatus: "blocked_without_authorization",
         },
       },
@@ -1102,11 +1115,12 @@ function nativeContentRuntimeBindings(employee, safeLegacyConfig) {
       })),
     },
     parityBoundary:
-      "AI带货员是NanoWork原生扩展；ai-sales-video运行时负责30秒脚本、三段10秒视频与合成证据。没有供应商成功、账务结算和成片证据时必须失败或阻断，不能把计划冒充成片。",
+      "AI带货员是NanoWork原生扩展；默认15秒单次Wan2.6原生有声生成，只有用户选择30秒时才生成两段15秒。海螺三段10秒仅供历史任务恢复。没有真实成片时保留脚本和可用素材，不把计划冒充成片。",
   };
 }
 
 function nativeContentProfile(employee) {
+  const isXhs = employee.idx === 11;
   const requiredSkill = nativeContentRequiredSkill(employee);
   const factoryDefault = structuredClone(employee.defaultWorkConfig);
   const safeLegacyConfig = {
@@ -1119,9 +1133,16 @@ function nativeContentProfile(employee) {
     employee,
     safeLegacyConfig,
   );
+  runtimeBindings.currentRuntimeBindings.skillLearning = {
+    supported: true, handler: 'startSkillLearningRun',
+    endpoint: `/api/employee-workbench/content/${employee.idx}/learn`,
+    runsEndpoint: `/api/employee-workbench/content/${employee.idx}/learning-runs`,
+    storage: 'tenant_scoped_content_employee_workbench_configs.skills_json',
+    sourcePolicy: 'controlled_public_web_evidence', appliesOn: 'next_dispatch',
+  };
   const safetyBoundaries = [
     "公开可查的门店、商品与平台信息由联网工具自动补齐，不得要求老板重复提供；企业私有价格、库存与授权事实必须按本次证据处理。",
-    "脚本、字幕和三段分镜计划不等于真实视频已经生成；没有供应商成功、下载与合成证据不得返回视频URL。",
+    "脚本、字幕和分镜计划不等于真实视频已经生成；没有供应商成功、下载与合成证据不得返回视频URL。",
     "真实视频供应商调用、付费、下载、合成和对外发布必须写入任务、模型、用量、费用与产物证据；Boss测试会话不生成二次审批。",
     "外部发布、真实付费和不可逆动作仍受服务端执行授权边界控制；内部合格成片按中央auto策略采用但不自动发布。",
   ];
@@ -1137,14 +1158,14 @@ function nativeContentProfile(employee) {
     intro: employee.intro,
     responsibilities: [employee.duty],
     useCases: [
-      "一句带货目标 + 真实图片 → 事实白名单、30秒脚本、字幕、三段分镜与成片状态",
+      "主题和真实照片 → 员工写脚本 → 确认生成原生有声视频；默认15秒，可选30秒",
     ],
     scope: "native_single_station",
     requiredInputs: ["一句带货目标", "至少一张人物、菜品/商品或门店参考图片"],
     expectedDeliverables: [
       "事实白名单与企业私有事实缺口",
-      "30秒口播稿与字幕",
-      "三段10秒分镜计划",
+      "按所选15秒或30秒编排的口播稿与字幕",
+      "默认一段15秒原生视频；可选两段15秒组成30秒",
       "视频供应商、模型、用量、费用、下载和合成证据或明确失败原因",
     ],
     qualityStandards: [
@@ -1180,6 +1201,18 @@ function nativeContentProfile(employee) {
       approvalDescription: "质量门与账务门通过后内部自动采用；不自动发布。",
     },
   };
+  if (isXhs) {
+    safetyBoundaries.splice(0, safetyBoundaries.length,
+      '仅描述照片可见外观和老板提供的事实，不编造价格、口味、地址、销量或顾客体验。',
+      '完整保留生成结果，排版和长度作为优化建议；用户决定采纳与手动发布。');
+    Object.assign(jobProfile, {
+      useCases: [employee.intro], requiredInputs: ['品牌名', '1–6张菜品或门头照片'],
+      expectedDeliverables: ['标题', '正文', '标签', '评论区首评', '原图配图顺序'],
+      qualityStandards: [employee.duty], nonGoals: ['不自动发布，不伪装成顾客，不编造事实'],
+      authority: { mayDraft: true, mayUseDefaultInjectedSkills: true, mayPublishExternallyWithoutHumanApproval: false,
+        mayTriggerPaidActionWithoutHumanApproval: false, approvalCode: 'review', approvalDescription: employee.workMethod.approval.description },
+    });
+  }
   return finalizeCanonicalProfile({
     identity: {
       domain: "content",
@@ -1203,7 +1236,7 @@ function nativeContentProfile(employee) {
       },
     },
     provenance: {
-      authority: "NanoWork原生AI带货员岗位 + 当前ai-sales-video安全编排接线",
+      authority: isXhs ? 'NanoWork原生AI小红书种草员 + ai-xhs-note运行接线' : "NanoWork原生AI带货员岗位 + 当前ai-sales-video安全编排接线",
       project: "NanoWork当前项目",
       employee: structuredClone(employee.sourceProvenance),
       contentCatalog: {
@@ -1216,7 +1249,7 @@ function nativeContentProfile(employee) {
         schemaVersion: "native-content-skills/1",
         expectedSkillCount: 0,
         snapshot: null,
-        note: "原生岗位没有Paihuo历史技能快照；当前岗位必备Skill已锁定注入。",
+        note: "原生岗位没有Paihuo历史技能快照；当前岗位必备Skill已锁定注入，租户新增与受控全网进修技能独立保存并按启用状态执行。",
       },
       noDatabaseDependency: true,
       noSilentFallback: true,
@@ -1227,8 +1260,7 @@ function nativeContentProfile(employee) {
         historicalSkills: "none",
         legacyHandlers: "source_reference_only",
         runtimeBindings: "native_runtime_reimplementation",
-        aiSalesVideoApi:
-          "buildAiSalesVideoPlan + executeAiSalesVideoPlan contract",
+        ...(isXhs ? { nativeApi: 'ai-xhs-note' } : { aiSalesVideoApi: 'buildAiSalesVideoPlan + executeAiSalesVideoPlan contract' }),
       },
     },
     jobProfile,
@@ -1242,8 +1274,10 @@ function nativeContentProfile(employee) {
       injectionPolicy: {
         requiredPositionSkill: "always",
         historicalSkills: "none",
+        learnedSkills: 'tenant_enabled_next_dispatch',
+        customSkills: 'tenant_enabled_next_dispatch',
         historicalFactPolicy:
-          "原生岗位只注入当前岗位必备Skill；外部平台规则、价格、效果和业务事实必须按本次证据核验。",
+          "当前岗位必备Skill始终注入，租户技能与进修方法仅在启用时参考；外部平台规则、价格、效果和业务事实必须按本次证据核验，来源核验不等于当前事实或效果保证。",
       },
     },
     workMethod: structuredClone(employee.workMethod),
@@ -1286,7 +1320,7 @@ function nativeContentProfile(employee) {
         capabilities: employee.workMethod.execution.capabilities,
         skills: employee.workMethod.execution.skills,
       },
-      approval: {
+      approval: isXhs ? structuredClone(employee.workMethod.approval) : {
         code: "central_auto",
         mode: "auto",
         description: "质量门与账务门通过后内部自动采用；不自动发布。",
@@ -1715,7 +1749,7 @@ function contentProfile(employee) {
 }
 
 const CONTENT_CANONICAL_PROFILES = CONTENT_EMPLOYEE_ROSTER.map((employee) =>
-  employee.idx === 10
+  employee.sourceProvenance?.native
     ? nativeContentProfile(employee)
     : contentProfile(employee),
 );

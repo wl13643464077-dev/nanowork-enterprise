@@ -15,7 +15,7 @@ test('业务交付状态统一表达是否可验收、可采用与失败处理�
     businessBlocked: '业务暂不可采用（待账务对账）',
     qualityFailed: '失败需返工（质检未通过）',
     executionFailed: '失败需处理（执行异常）',
-    reviewRejected: '失败需返工（人工审阅未通过）',
+    reviewRejected: '未采纳（原稿已保留）',
     remediated: '历史失败（后续已修复）',
     superseded: '已由安全修订版取代',
     // P0-1 失败不交白卷（B4 契约分级）：质量门未过但正文保留，由老板决定重派或接受为内部参考稿
