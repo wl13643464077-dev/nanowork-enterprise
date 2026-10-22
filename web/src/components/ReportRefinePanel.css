@@ -1,0 +1,160 @@
+.report-refine {
+  display: grid;
+  gap: 14px;
+  margin-top: 28px;
+  padding: 18px 20px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface-2, var(--ui-surface));
+  min-width: 0;
+}
+
+.report-refine__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 20px;
+}
+
+.report-refine__head h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-refine__head p {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 46rem;
+}
+
+.report-refine__composer {
+  display: grid;
+  gap: 8px;
+}
+
+.report-refine__composer small {
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+.report-refine__input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.report-refine__input .ant-input {
+  flex: 1;
+}
+
+.report-refine__version {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--ui-border);
+  min-width: 0;
+}
+
+.report-refine__version > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.report-refine__version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.report-refine__instruction {
+  color: var(--ui-text-2);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.report-refine__version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-refine__change-summary {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: 13px;
+}
+
+.report-refine__version .md-body {
+  max-width: 52rem;
+  line-height: 1.9;
+}
+
+.report-refine__original summary,
+.report-refine__history summary {
+  cursor: pointer;
+  color: var(--ui-text-2);
+  font-size: 13px;
+}
+
+.report-refine__history ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.report-refine__history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.report-refine__history li button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ui-primary, #2c76dc);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.report-refine__history li em {
+  color: var(--ui-muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.report-refine__boundary {
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .report-refine {
+    padding: 14px;
+  }
+  .report-refine__input {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

@@ -33,9 +33,11 @@ export function voiceSubtitleAss(cues, duration = 30) {
   ].join('\n');
 }
 
-export function voicedVideoFilter(segmentCount, { rasterCues = [], audioMode = 'external_tts', segmentDurationSeconds = 15 } = {}) {
+export function voicedVideoFilter(segmentCount, { rasterCues = [], audioMode = 'external_tts', segmentDurationSeconds = 15, nativeAudioGainDb = 0 } = {}) {
   if (!['external_tts', 'provider_native'].includes(audioMode)) throw invalid('声音来源无效');
   const nativeAudio = audioMode === 'provider_native';
+  if (!Number.isFinite(nativeAudioGainDb) || nativeAudioGainDb > 0 || nativeAudioGainDb < -60)
+    throw invalid('原生音轨增益无效');
   if (![15, 30].includes(segmentDurationSeconds) || (segmentDurationSeconds === 30 && (!nativeAudio || segmentCount !== 1)))
     throw invalid('视频片段时长不正确');
   if (nativeAudio && ![1, 2].includes(segmentCount)) throw invalid('原生声音需要一或两段15秒视频');
@@ -51,7 +53,8 @@ export function voicedVideoFilter(segmentCount, { rasterCues = [], audioMode = '
     const edgeFade = transition ? (i === 0
       ? ',afade=t=out:st=14.96:d=0.04:curve=qsin'
       : ',afade=t=in:st=0:d=0.04:curve=qsin') : '';
-    filters.push(`[${nativeAudio ? i : segmentCount + i}:a]aresample=48000,apad=whole_dur=${segmentDurationSeconds},atrim=duration=${segmentDurationSeconds},asetpts=PTS-STARTPTS${edgeFade}[a${i}]`);
+    const attenuation = nativeAudio && nativeAudioGainDb < 0 ? `,volume=${nativeAudioGainDb.toFixed(3)}dB` : '';
+    filters.push(`[${nativeAudio ? i : segmentCount + i}:a]aresample=48000,apad=whole_dur=${segmentDurationSeconds},atrim=duration=${segmentDurationSeconds},asetpts=PTS-STARTPTS${edgeFade}${attenuation}[a${i}]`);
     labels.push(`[v${i}][a${i}]`);
   }
   if (transition) {

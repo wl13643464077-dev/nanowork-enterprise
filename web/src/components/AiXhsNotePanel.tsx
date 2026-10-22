@@ -1,7 +1,8 @@
+import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Modal, Space, Tag, Typography, message } from 'antd';
 import { CopyOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
-import { api, notifyCredits } from '../api/client';
+import { api, notifyCredits, getUser } from '../api/client';
 import type { UploadedFileRef } from './UnifiedFilePicker';
 import NativeEmployeeChat, { type NativeGeneration, type NativeImageOptions } from './NativeEmployeeChat';
 import NativeDeliverableDownloadButton from './NativeDeliverableDownloadButton';
@@ -10,11 +11,18 @@ import './AiXhsNotePanel.css';
 
 type NoteOutput = {
   title: string;
+  titleOptions?: string[];
+  sellingPoints?: string[];
   body: string;
   tags: string[];
   firstComment: string;
   imagePlan: Array<{ fileId: number; caption: string }>;
   warnings?: string[];
+  compliance?: {
+    level: 'none' | 'warn' | 'block';
+    blocked: boolean;
+    hits: Array<{ group: string; label: string; severity: 'block' | 'warn'; words: string[]; suggestion: string }>;
+  };
 };
 type NoteBilling = {
   state?: string;
@@ -81,7 +89,8 @@ const isJobRunning = (job: NoteJob) =>
 const tagText = (tags?: string[]) => (tags || []).map(tag => `#${String(tag).replace(/^#+/, '')}`).join(' ');
 const noteText = (output: NoteOutput) =>
   `${output.title}\n\n${output.body}\n\n${tagText(output.tags)}\n\n评论区首评：\n${output.firstComment}`;
-const imageBillingText = (billing?: NoteBilling | null) => {
+const imageBillingText = (billing?: NoteBilling | null, personal = false) => {
+  if (personal) return personalApiBillingLabel(billing || {});
   if (!billing) return '';
   if (billing.state === 'settled')
     return billing.chargedCredits != null ? `本图费用：${billing.chargedCredits} 积分` : '本图费用已结算，金额未返回';
@@ -102,6 +111,7 @@ export default function AiXhsNotePanel({
   canDispatch?: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const personalBilling = isPersonalApiUser(getUser());
   const [loading, setLoading] = useState(false);
   const [retryingImages, setRetryingImages] = useState(false);
   const [recoveringImages, setRecoveringImages] = useState(false);
@@ -426,7 +436,9 @@ export default function AiXhsNotePanel({
               </header>
               {!!generatedImages.length && (
                 <section aria-label="AI生成配图">
-                  <p className="ai-xhs-note-billing">AI 创意配图</p>
+                  <p className="ai-xhs-note-billing">
+                    AI 创意配图{personalBilling ? ` · ${PERSONAL_API_PRICING_NOTE}` : ''}
+                  </p>
                   <div className="ai-xhs-note-images">
                     {generatedImages.map((image, index) => {
                       const url =
@@ -460,7 +472,9 @@ export default function AiXhsNotePanel({
                             {image.warning && <p>{image.warning}</p>}
                             {image.status === 'failed' && (
                               <p>
-                                {image.error ||
+                                {(personalBilling && /积分|预授权|未扣费/.test(image.error || '')
+                                  ? '这张图片尚未完成，已有内容保留；上游费用以供应商账单为准。'
+                                  : image.error) ||
                                   (image.canRetry
                                     ? '可单独重试，已有结果会保留。'
                                     : '请先核对这张图的费用与任务记录。')}
@@ -473,7 +487,9 @@ export default function AiXhsNotePanel({
                                   : '暂不可重试，请先核对这张图的任务与费用。'}
                               </p>
                             )}
-                            {!!imageBillingText(image.billing) && <p>{imageBillingText(image.billing)}</p>}
+                            {!!imageBillingText(image.billing, personalBilling) && (
+                              <p>{imageBillingText(image.billing, personalBilling)}</p>
+                            )}
                           </figcaption>
                         </figure>
                       );
@@ -501,8 +517,62 @@ export default function AiXhsNotePanel({
                         取回已生成图片
                       </Button>
                       <p className="ai-xhs-note-billing">
-                        复用原任务，不重新生成；沿用原预授权核对结算，已有文案和成功图片会保留。
+                        {personalBilling
+                          ? `复用原任务，不重新生成；已有文案和成功图片保留，上游费用以原供应商账单为准。`
+                          : '复用原任务，不重新生成；沿用原预授权核对结算，已有文案和成功图片会保留。'}
                       </p>
+                    </div>
+                  )}
+                </section>
+              )}
+              {draft.compliance && draft.compliance.hits.length > 0 && (
+                <Alert
+                  type={draft.compliance.blocked ? 'error' : 'warning'}
+                  showIcon
+                  message={
+                    draft.compliance.blocked
+                      ? '发布前必改：命中平台红线词（限流/广告法风险）'
+                      : '建议调整：有平台软风险表述'
+                  }
+                  description={
+                    <ul className="ai-xhs-note-compliance">
+                      {draft.compliance.hits.map(hit => (
+                        <li key={hit.group}>
+                          <strong>{hit.severity === 'block' ? '必改' : '建议'} · {hit.label}</strong>：
+                          {hit.words.map(word => (
+                            <Tag key={word} color={hit.severity === 'block' ? 'red' : 'orange'}>
+                              {word}
+                            </Tag>
+                          ))}
+                          <span>{hit.suggestion}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  }
+                />
+              )}
+              {(!!draft.titleOptions?.length || !!draft.sellingPoints?.length) && (
+                <section className="ai-xhs-note-commercial" aria-label="备选标题与卖点">
+                  {!!draft.titleOptions?.length && (
+                    <div>
+                      <span className="ai-xhs-note-field-label">备选标题（点一下替换）</span>
+                      <div className="ai-xhs-note-title-options">
+                        {draft.titleOptions.map(option => (
+                          <Button key={option} size="small" onClick={() => updateDraft('title', option)}>
+                            {option}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!!draft.sellingPoints?.length && (
+                    <div>
+                      <span className="ai-xhs-note-field-label">本篇卖点（来自你确认的事实，可复用到其他平台）</span>
+                      <ul className="ai-xhs-note-selling-points">
+                        {draft.sellingPoints.map(point => (
+                          <li key={point}>{point}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </section>
@@ -523,9 +593,11 @@ export default function AiXhsNotePanel({
               )}
               {job?.billing && (
                 <p className="ai-xhs-note-billing">
-                  {job.billing.state === 'settled'
-                    ? `文案费用${job.billing.chargedCredits != null ? `：${job.billing.chargedCredits} 积分` : '已结算'}`
-                    : job.billing.note || '文案已保留，费用待核对。'}
+                  {personalBilling
+                    ? personalApiBillingLabel(job.billing)
+                    : job.billing.state === 'settled'
+                      ? `文案费用${job.billing.chargedCredits != null ? `：${job.billing.chargedCredits} 积分` : '已结算'}`
+                      : job.billing.note || '文案已保留，费用待核对。'}
                 </p>
               )}
               <Form layout="vertical">

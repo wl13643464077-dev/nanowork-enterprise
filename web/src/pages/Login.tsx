@@ -284,11 +284,6 @@ export default function Login() {
       else localStorage.removeItem(REMEMBER_KEY);
       setAuth(data.token, data.user);
       sound.success();
-      if (data.user.accountType === 'tester') {
-        message.success(`欢迎，${data.user.name}`);
-        nav('/tester');
-        return;
-      }
       if (data.user.role === 'platform_super') {
         message.success('欢迎，平台管理员');
         nav('/platform');

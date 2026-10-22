@@ -46,6 +46,17 @@ const TASK = Object.freeze({
   requirement: "围绕毛血旺 太原吾悦广场完成商圈画像与竞品核验。",
 });
 
+test('清凤时代城烘焙商户可进入正文核验，不能被火锅词表误过滤', () => {
+  const task = { title: '清凤时代城商圈竞品与流量勘察', requirement: '成都清凤时代城1楼底商周边1-3公里烘焙竞品' };
+  const source = { title: '哈尼的微笑千层蛋糕(清凤时代城店)详细地址', url: 'https://cd.city8.com/cater/example', snippet: '千层蛋糕、面包与甜品，位于清凤时代城。' };
+  const options = { locationBusinessTask: true, requireTaskRelevance: true, task };
+  assert.equal(sanitizePublicSources([source], options).accepted.length, 1);
+  assert.equal(isDirectRestaurantSource(source, task), false, '搜索摘要不是已核验正文');
+  const verified = { ...source, body: '清凤时代城的这家蛋糕烘焙商户提供千层蛋糕、面包和甜品。'.repeat(6) };
+  assert.equal(isDirectRestaurantSource(verified, task), true);
+  assert.equal(sanitizePublicSources([{ ...source, title: '太古里蛋糕', snippet: '太古里的蛋糕与面包' }], options).accepted.length, 0);
+});
+
 function profile(idx) {
   return buildEmployeeExecutionProfile(idx, {
     tenantId: 1,
@@ -376,13 +387,8 @@ test("未成功受控的候选URL不能进入失败快照，且无direct不得�
   );
 });
 
-test("地点任务受控抓取每批不超过8、总候选不超过24，并在首个合格direct正文后停止", async () => {
+async function runControlledBatchProbe(candidates) {
   const employeeExecution = profile(102);
-  const candidates = Array.from({ length: 30 }, (_, index) => ({
-    title: `候选商户${index + 1}·毛血旺太原吾悦广场`,
-    url: `https://candidate-${index + 1}.example/menu`,
-    snippet: "毛血旺太原吾悦广场餐厅菜单营业评价候选，尚未读取正文。",
-  }));
   const batchCalls = [];
   let failure;
   try {
@@ -458,15 +464,51 @@ test("地点任务受控抓取每批不超过8、总候选不超过24，并在�
   }
   assert.ok(failure);
   assert.equal(failure.code, "RESTAURANT_OUTPUT_CONTRACT_INVALID");
-  assert.equal(batchCalls.length, 2);
   assert.ok(batchCalls.every((batch) => batch.length <= 8));
   assert.ok(batchCalls.flat().length <= 24);
   assert.ok(failure.web?.sourceQuality?.directRestaurantSourceCount >= 1);
+  return { failure, batchCalls };
+}
+
+function restaurantCandidates(length) {
+  return Array.from({ length }, (_, index) => ({
+    title: `候选商户${index + 1}·毛血旺太原吾悦广场`,
+    url: `https://candidate-${index + 1}.example/menu`,
+    snippet: "毛血旺太原吾悦广场餐厅菜单营业评价候选，尚未读取正文。",
+  }));
+}
+
+test("地点任务受控抓取每批不超过8、总候选不超过24；取得合格餐厅正文后，后续批次没有新客源主题就立即停止", async () => {
+  const { failure, batchCalls } = await runControlledBatchProbe(restaurantCandidates(30));
+  assert.equal(batchCalls.length, 2, "第三批全是同主题商户页，不再消耗预算");
   assert.equal(
     failure.web?.channels?.find(
       (channel) => channel.kind === "controlled_web_fetch",
     )?.evidence?.batchCount,
     2,
+  );
+});
+
+test("地点任务受控抓取：取得合格餐厅正文后，若后续批次还有办公/交通等新客源页面则继续读完预算", async () => {
+  const candidates = restaurantCandidates(30);
+  // 加权轮转排序每轮放 2 条餐厅 + 各 1 条其它客源；5 条写字楼页 + 5 条地铁页
+  // 时，第 5 轮的办公/交通页会落到第 17-20 位，即第三批。
+  const extras = Array.from({ length: 5 }, (_, index) => [
+    { title: `太原吾悦广场 写字楼 入驻企业名录${index + 1}`, url: `https://office-${index + 1}.example/tenants`, snippet: "写字楼 办公 企业入驻名录，午市客源参考。" },
+    { title: `太原地铁 吾悦广场站 运营信息${index + 1}`, url: `https://transit-${index + 1}.example/station`, snippet: "地铁 公交 站点 客流 运营时间。" },
+  ]).flat();
+  candidates.splice(16, 0, ...extras);
+  const { failure, batchCalls } = await runControlledBatchProbe(candidates);
+  assert.ok(
+    batchCalls[2].some((url) => /office-5|transit-5/u.test(url)),
+    "第三批应包含尚未读取的办公/交通客源页",
+  );
+  assert.equal(batchCalls.length, 3, "第三批还有其它客源主题页面，继续核验");
+  assert.equal(
+    failure.web?.channels?.find(
+      (channel) => channel.kind === "controlled_web_fetch",
+    )?.evidence?.batchCount,
+    3,
   );
 });
 

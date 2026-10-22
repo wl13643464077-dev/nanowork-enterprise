@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Form, Input, Progress, Result, Spin } from 'antd';
 import { Link, useParams } from 'react-router-dom';
-import { TrialHistory, newTrialRequestId, trialError, trialProviderLabel, trialRequest } from './TrialShared';
+import {
+  TrialHistory,
+  newTrialRequestId,
+  trialError,
+  trialProviderLabel,
+  trialRequest,
+  trialTurnLimit,
+} from './TrialShared';
 import type { TrialConversation, TrialEmployee, TrialLead } from './TrialShared';
-import TrialEmployeePicker, { TrialEmployeeGuide } from './TrialEmployeePicker';
+import TrialEmployeePicker, {
+  TrialEmployeeGuide,
+  trialEmployeeName,
+  validTrialEmployeeId,
+} from './TrialEmployeePicker';
 import './Trial.css';
 
 type TrialLanding = {
@@ -48,7 +59,7 @@ export default function TrialExperience() {
       .then(result => {
         if (active) {
           setLanding(result);
-          setEmployeeId(result.employees?.[0]?.id);
+          setEmployeeId(current => validTrialEmployeeId(result.employees || [], current));
         }
       })
       .catch(error => {
@@ -95,7 +106,7 @@ export default function TrialExperience() {
   };
   const send = async () => {
     const text = draft.trim();
-    if (!text || !employeeId || sending.current) return;
+    if (!text || !employeeId || !landing?.employees.some(item => item.id === employeeId) || sending.current) return;
     sending.current = true;
     setBusy(true);
     setError('');
@@ -121,8 +132,10 @@ export default function TrialExperience() {
     }
   };
   const selected = landing?.employees.find(item => item.id === employeeId);
+  const turnLimit = trialTurnLimit(lead?.turnLimit, landing?.turnLimit);
   const exhausted = lead && lead.remainingTurns <= 0;
   const chooseEmployee = (id: string) => {
+    if (busy || !landing?.employees.some(item => item.id === id)) return;
     setEmployeeId(id);
     // 只记录客户主动选岗；没有同意新版说明的旧客户可继续使用，不因兴趣记录失败而中断。
     if (accessToken && lead?.status === 'approved') {
@@ -163,29 +176,39 @@ export default function TrialExperience() {
                 <br />
                 让数字员工帮你做。
               </h1>
-              <p>新品推广怎么写，差评如何回复，活动怎样安排？说说你的门店，马上看看能用的结果。</p>
+              <p>选址、店长、巡店、种草、带货，都按正式岗位完整能力帮你做事。</p>
               <div className="trial-benefits">
                 <span>说一句需求</span>
-                <span>拿到完整正文</span>
-                <span>复制就能用</span>
+                <span>选择一个场景</span>
+                <span>拿到完整结果</span>
               </div>
             </section>
-            <section className="trial-panel">
-              <h2>先选一位员工，看看怎么用</h2>
+            <section className="trial-panel trial-team-panel">
+              <div className="trial-team-heading">
+                <div>
+                  <span className="trial-eyebrow">你的餐饮数字团队</span>
+                  <h2>这次，让谁来帮你？</h2>
+                </div>
+                <span className="trial-team-quota">共 {turnLimit} 次体验</span>
+              </div>
               <TrialEmployeePicker
+                variant="featured"
                 employees={landing.employees}
                 value={employeeId}
                 onChange={chooseEmployee}
                 disabled={busy}
               />
-              <TrialEmployeeGuide employee={selected} onExample={setDraft} disabled={busy} />
+              <TrialEmployeeGuide employee={selected} onExample={setDraft} disabled={busy} compact />
+              <p className="trial-team-note">
+                五个场景共用 {turnLimit}{' '}
+                次成功体验，切换员工不会增加次数。这五位都按正式岗位完整能力执行，含调研、报告和完整文案方案。
+              </p>
             </section>
             <section className="trial-panel">
               <div className="trial-section-title">
                 <h2>{landing.title || '数字员工限次体验'}</h2>
                 <span className="trial-pill">
-                  {landing.turnLimit || 2} 次问答 ·{' '}
-                  {trialProviderLabel(landing.provider, landing.providerLabel || '360 智脑')}
+                  {turnLimit} 次问答 · {trialProviderLabel(landing.provider, landing.providerLabel || '360 智脑')}
                 </span>
               </div>
               {landing.salesPhone && (
@@ -238,7 +261,7 @@ export default function TrialExperience() {
                       </Checkbox>
                     </Form.Item>
                     <Button htmlType="submit" type="primary" size="large" block loading={busy}>
-                      申请 2 次体验
+                      申请 {turnLimit} 次体验
                     </Button>
                   </Form>
                 </>
@@ -268,16 +291,18 @@ export default function TrialExperience() {
               {lead?.status === 'approved' && (
                 <>
                   <div className="trial-turns">
-                    <strong>{exhausted ? '两次体验已完成' : `还可以体验 ${lead.remainingTurns} 次`}</strong>
+                    <strong>{exhausted ? `${turnLimit} 次体验已用完` : `还可以体验 ${lead.remainingTurns} 次`}</strong>
                     <Progress
-                      percent={Math.min(100, (lead.usedTurns / (landing.turnLimit || 2)) * 100)}
+                      percent={Math.min(100, (lead.usedTurns / turnLimit) * 100)}
                       showInfo={false}
                       strokeColor="var(--ui-primary)"
                     />
                   </div>
                   {!exhausted ? (
                     <>
-                      <p className="trial-muted">本次由「{selected?.name || '数字员工'}」为你提供文字建议。</p>
+                      <p className="trial-muted">
+                        本次由「{selected ? trialEmployeeName(selected) : '数字员工'}」按正式岗位完整能力为你工作。
+                      </p>
                       <div className="trial-field-label" id="trial-message-label">
                         你的需求
                       </div>
@@ -297,13 +322,13 @@ export default function TrialExperience() {
                         size="large"
                         block
                         loading={busy}
-                        disabled={!draft.trim() || !employeeId}
+                        disabled={!draft.trim() || !selected}
                         onClick={() => void send()}
                       >
                         {busy ? '数字员工正在工作' : `开始这次问答（剩余 ${lead.remainingTurns} 次）`}
                       </Button>
                       <p className="trial-small trial-muted">
-                        每次发送并成功得到回复计 1 次。没有生成可用结果时可重试。
+                        五个场景合计 {turnLimit} 次成功体验。每次成功回复计 1 次，没有生成可用结果时可重试。
                       </p>
                     </>
                   ) : (
@@ -322,7 +347,7 @@ export default function TrialExperience() {
             {conversations.length > 0 && (
               <section className="trial-panel">
                 <h2>我的体验记录</h2>
-                <TrialHistory conversations={conversations} />
+                <TrialHistory conversations={conversations} invitationToken={token} accessToken={accessToken} />
               </section>
             )}
             <footer className="trial-footer">

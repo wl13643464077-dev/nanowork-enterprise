@@ -55,6 +55,7 @@ import {
   SearchOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, getUser, clearAuth } from '../api/client';
@@ -99,6 +100,7 @@ const MENUS = [
   { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'make' },
   { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'make' },
   { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'make' },
+  { key: '/brand-kb', icon: <BookOutlined />, label: '品牌知识包', mod: 'system', group: 'setup' },
   { key: '/system', icon: <SettingOutlined />, label: '系统管理', mod: 'system', group: 'setup' },
   { key: '/recharge', icon: <WalletOutlined />, label: '充值中心', bossOnly: true, group: 'setup' },
 ];
@@ -141,6 +143,7 @@ const KEY_OF_PATH: Record<string, string> = {
   '/analysis': 'analysis',
   '/store-data': 'analysis',
   '/assets': 'assets',
+  '/brand-kb': 'system',
   '/data-intake': 'system',
   '/system': 'system',
 };
@@ -169,10 +172,12 @@ function pressable(fn: () => void) {
   };
 }
 
-function menusFor(modules: string[], role?: string) {
+function menusFor(modules: string[], role?: string, isTester = false) {
   return MENUS.filter((menu: any) => {
+    if (isTester && (menu.mod === 'system' || menu.bossOnly)) return false;
     if (menu.bossOnly && role !== 'boss') return false;
-    if (menu.managerOnly && !['boss', 'ops_director', 'manager', 'admin'].includes(role || '')) return false;
+    if (menu.managerOnly && !isTester && !['boss', 'ops_director', 'manager', 'admin'].includes(role || ''))
+      return false;
     return !menu.mod || modules.includes(menu.mod);
   });
 }
@@ -219,8 +224,14 @@ export default function MainLayout() {
   const nav = useNavigate();
   const loc = useLocation();
   const user = getUser();
-  const dailyGuide =
-    user?.role === 'boss'
+  const isTester = user?.accountType === 'tester';
+  const roleName = isTester ? '测试员' : ROLE_NAME[user?.role] || user?.role;
+  const dailyGuide = isTester
+    ? {
+        title: '测试员使用流程',
+        body: '① 点右上角测试员后台绑定个人 API Key ② 去餐饮数字员工派活 ③ 生成体验码并跟进客户使用情况',
+      }
+    : user?.role === 'boss'
       ? {
           title: '老板每日10分钟',
           body: '① 老板驾驶舱看 KPI 与异常 ② 点开指标穿刺到订单/会员 ③ 把下一步动作派给对应数字员工',
@@ -260,7 +271,8 @@ export default function MainLayout() {
     stores: user?.tenant?.stores || [],
     bound: user?.storeId ?? null,
   });
-  const [modules, setModules] = useState<string[]>(user?.modules || Object.values(KEY_OF_PATH));
+  const [configuredModules, setModules] = useState<string[]>(user?.modules || Object.values(KEY_OF_PATH));
+  const modules = isTester ? configuredModules.filter(module => module !== 'system') : configuredModules;
   const canUseAdvisor = modules.includes('advisor');
   const assistantCopy =
     user?.role === 'boss'
@@ -293,11 +305,12 @@ export default function MainLayout() {
       window.dispatchEvent(new CustomEvent('nanowork-theme-change', { detail: { theme: key } }));
     }
   };
-  const visibleMenus = menusFor(modules, user?.role);
+  const visibleMenus = menusFor(modules, user?.role, isTester);
   const menuPath = menuPathOf(loc.pathname);
   const current = MENUS.find(m => m.key === menuPath) || visibleMenus[0] || MENUS[0];
   const currentGroup = MENU_GROUPS.find(group => group.key === current.group)?.label || '经营工作台';
   const menuLabel = (m: any) => {
+    if (isTester) return m.label;
     if (m.mod === 'advisor') {
       if (user?.role === 'boss') return '老板参谋';
       if (user?.role === 'ops_director' || user?.role === 'manager' || user?.role === 'admin') return '经营参谋';
@@ -315,7 +328,7 @@ export default function MainLayout() {
   };
   // P0-2 知识库健康红点：boss/admin 读 /sys/kb/health（待回填 > 0 或 24h 问题向量化失败）；
   // 系统页“知识库健康”卡刷新/回填后通过同名事件同步，不必再等下一轮轮询。
-  const kbNeedsAttention = useKbHealthAttention(user?.role);
+  const kbNeedsAttention = useKbHealthAttention(isTester ? undefined : user?.role);
   // 分组渲染：只保留有可见项的组，避免权限受限用户看到空标题
   const menuItems = useMemo(
     () =>
@@ -338,7 +351,7 @@ export default function MainLayout() {
       }).filter(Boolean),
     // menuLabel 只依赖 user.role，随 visibleMenus 一起变化
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleMenus, user?.role, kbNeedsAttention],
+    [visibleMenus, user?.role, isTester, kbNeedsAttention],
   );
   // 命令面板的导航项：与侧栏同源同权限，带分组名做为副标题
   const paletteNavItems = useMemo(
@@ -349,7 +362,7 @@ export default function MainLayout() {
         group: MENU_GROUPS.find(g => g.key === m.group)?.label,
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleMenus, user?.role],
+    [visibleMenus, user?.role, isTester],
   );
 
   // 全局 ⌘K / Ctrl+K：在输入框里也生效（用户可能正在填表时想跳走）
@@ -376,10 +389,10 @@ export default function MainLayout() {
   // 记录最近访问，供命令面板在空查询时优先展示
   useEffect(() => {
     const hit = MENUS.find(m => m.key === menuPathOf(loc.pathname));
-    if (hit) rememberRecent(hit.key, menuLabel(hit));
+    if (hit && visibleMenus.some(menu => menu.key === hit.key)) rememberRecent(hit.key, menuLabel(hit));
     // menuLabel 仅依赖 user.role
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loc.pathname, user?.role]);
+  }, [loc.pathname, user?.role, isTester]);
 
   // 实时事件流：单例挂载在壳层；connected=false 时各处轮询自动恢复原频率
   const { connected: realtimeConnected } = useRealtimeEvents();
@@ -436,10 +449,10 @@ export default function MainLayout() {
   useEffect(() => {
     const need = KEY_OF_PATH[menuPathOf(loc.pathname)];
     if (need && modules.length && !modules.includes(need)) {
-      const first = menusFor(modules, user?.role)[0]?.key || '/';
+      const first = menusFor(modules, user?.role, isTester)[0]?.key || '/';
       if (loc.pathname !== first) nav(first, { replace: true });
     }
-  }, [loc.pathname, modules, nav, user?.role]);
+  }, [loc.pathname, modules, nav, user?.role, isTester]);
   const unread = notifs.filter(n => !n.read).length;
 
   const NOTIF_LINK: Record<string, { link: string; name: string }> = {
@@ -459,8 +472,10 @@ export default function MainLayout() {
       /^\/(?!\/)[^\\\r\n]*$/u.test(notification.link)
         ? notification.link
         : '';
-    if (explicit) return { link: explicit, name: fallback?.name || '查看详情' };
-    return fallback;
+    const target = explicit ? { link: explicit, name: fallback?.name || '查看详情' } : fallback;
+    if (isTester && target && /^\/(system|admin|platform|recharge|data-intake)(?:[/?#]|$)/.test(target.link))
+      return undefined;
+    return target;
   };
   const reloadNotifs = (size = 20) =>
     api
@@ -658,18 +673,26 @@ export default function MainLayout() {
               <BgColorsOutlined className="os-ic" />
             </Tooltip>
           </Dropdown>
-          <Tooltip
-            title={user?.role === 'boss' ? '企业积分余额 · 点击进入充值中心' : '企业积分余额 · 充值由老板统一管理'}
-          >
-            <span
-              className="os-credit"
-              aria-label={user?.role === 'boss' ? '企业积分余额，点击进入充值中心' : '企业积分余额'}
-              {...(user?.role === 'boss' ? pressable(() => nav('/recharge')) : {})}
+          {isTester ? (
+            <Tooltip title="管理体验二维码、客户记录、使用看板和个人 Key">
+              <button type="button" className="os-api-account" onClick={() => nav('/tester')}>
+                <TeamOutlined /> <span>测试员后台</span>
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip
+              title={user?.role === 'boss' ? '企业积分余额 · 点击进入充值中心' : '企业积分余额 · 充值由老板统一管理'}
             >
-              ◆ {Number(credits).toLocaleString()} 积分
-            </span>
-          </Tooltip>
-          {planSummary && (planSummary.status === 'expiring' || planSummary.status === 'expired') && (
+              <span
+                className="os-credit"
+                aria-label={user?.role === 'boss' ? '企业积分余额，点击进入充值中心' : '企业积分余额'}
+                {...(user?.role === 'boss' ? pressable(() => nav('/recharge')) : {})}
+              >
+                ◆ {Number(credits).toLocaleString()} 积分
+              </span>
+            </Tooltip>
+          )}
+          {!isTester && planSummary && (planSummary.status === 'expiring' || planSummary.status === 'expired') && (
             <Tooltip
               title={
                 planSummary.status === 'expired'
@@ -690,7 +713,7 @@ export default function MainLayout() {
               </Tag>
             </Tooltip>
           )}
-          {budgetSummary && (budgetSummary.state === 'alert' || budgetSummary.state === 'exceeded') && (
+          {!isTester && budgetSummary && (budgetSummary.state === 'alert' || budgetSummary.state === 'exceeded') && (
             <Tooltip
               title={
                 budgetSummary.state === 'exceeded'
@@ -732,7 +755,7 @@ export default function MainLayout() {
               <MobileOutlined className="os-ic" />
             </button>
           </Tooltip>
-          {['boss', 'admin'].includes(user?.role) && (
+          {!isTester && ['boss', 'admin'].includes(user?.role) && (
             <Tooltip title="管理后台">
               <button
                 type="button"
@@ -834,7 +857,7 @@ export default function MainLayout() {
                 {
                   key: 'switch',
                   icon: <SwapOutlined />,
-                  label: `账号：${ROLE_NAME[user?.role] || user?.role}`,
+                  label: `账号：${roleName}`,
                   disabled: true,
                 },
                 { key: 'password', icon: <LockOutlined />, label: '修改密码' },
@@ -842,7 +865,10 @@ export default function MainLayout() {
                 { key: 'logout', icon: <LogoutOutlined />, label: '退出登录' },
               ],
               onClick: ({ key }) => {
-                if (key === 'password') setPasswordOpen(true);
+                if (key === 'password') {
+                  if (isTester) nav('/tester?tab=password');
+                  else setPasswordOpen(true);
+                }
                 if (key === 'feishu') openPersonalFeishuBinding();
                 if (key === 'logout') {
                   clearAuth();
@@ -853,7 +879,10 @@ export default function MainLayout() {
           >
             <div className="os-user">
               <Avatar size={30} style={{ background: 'var(--ui-primary)' }} icon={<UserOutlined />} />
-              <span className="os-user-name">{user?.name}</span>
+              <span className="os-user-name">
+                {user?.name}
+                {isTester && <span className="os-user-account-type">测试员</span>}
+              </span>
             </div>
           </Dropdown>
         </div>
@@ -895,7 +924,7 @@ export default function MainLayout() {
             <Avatar size={32} style={{ background: 'var(--ui-primary)' }} icon={<UserOutlined />} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="os-me-name">{user?.name}</div>
-              <div className="os-me-sub">{ROLE_NAME[user?.role] || user?.role}</div>
+              <div className="os-me-sub">{roleName}</div>
             </div>
           </div>
         </aside>
@@ -912,7 +941,7 @@ export default function MainLayout() {
                 type="button"
                 className="os-page-assistant os-page-guide"
                 aria-label="打开当前页面功能使用指引"
-                onClick={() => setFeatureGuideOpen(true)}
+                onClick={() => (menuPath === '/tester' ? nav('/tester?tab=guide') : setFeatureGuideOpen(true))}
               >
                 <QuestionCircleOutlined />
                 <span>本页怎么用</span>

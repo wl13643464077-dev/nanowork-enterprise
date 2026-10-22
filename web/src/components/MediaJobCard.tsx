@@ -1,3 +1,5 @@
+import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
+import { getUser } from '../api/client';
 import { Button, Checkbox, Tag, Tooltip } from 'antd';
 import { DeleteOutlined, FolderOpenOutlined, LinkOutlined } from '@ant-design/icons';
 
@@ -68,8 +70,15 @@ function safeExportUrl(job: MediaJobView) {
   return safeMediaUrl(job.url);
 }
 
-export function mediaBillingPresentation(billing?: MediaBilling | null) {
-  if (!billing?.state) return null;
+export function mediaBillingPresentation(billing?: MediaBilling | null, personal = false) {
+  if (!billing?.state)
+    return personal ? { color: 'default', label: personalApiBillingLabel(), detail: PERSONAL_API_PRICING_NOTE } : null;
+  if (personal && !(billing.state === 'not_required' && billing.exempt && billing.authoritative))
+    return {
+      color: billing.state === 'settled' ? 'success' : billing.state === 'held' ? 'processing' : 'warning',
+      label: personalApiBillingLabel(billing),
+      detail: PERSONAL_API_PRICING_NOTE,
+    };
   const estimated = Number(billing.estimatedCredits || billing.heldCredits || 0);
   const charged = Number(billing.chargedCredits ?? billing.credits ?? 0);
   if (billing.state === 'held') {
@@ -125,7 +134,7 @@ export function MediaReviewTags({ job }: { job: MediaJobView }) {
   const technical = job.technicalStatus || job.status || '未知';
   const business =
     job.businessStatus || job.reviewStatus || (technical === '成功' ? '可验收（待管理层审阅）' : '尚未形成可验收产物');
-  const billing = mediaBillingPresentation(job.billing);
+  const billing = mediaBillingPresentation(job.billing, isPersonalApiUser(getUser()));
   return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
       <Tag color={technical === '成功' ? 'blue' : technical === '失败' ? 'error' : 'processing'} style={{ margin: 0 }}>

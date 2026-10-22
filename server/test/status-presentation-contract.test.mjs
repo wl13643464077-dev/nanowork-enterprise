@@ -118,6 +118,18 @@ test('知识库页面区分资料入库与语义向量就绪，并提供显式�
 test('运行就绪状态使用已就绪、需配置、需验证等可行动文案', () => {
   assert.equal(runtimeReadinessMeta({ effective: 'connected', verification: 'passed' }).label, '已验证就绪');
   assert.equal(runtimeReadinessMeta({ effective: 'local_ready' }).label, '本地能力已就绪');
+  assert.equal(
+    runtimeReadinessMeta({ effective: 'configured_ready', verification: 'never' }).label,
+    '已配置，可直接使用',
+  );
+  assert.equal(
+    runtimeReadinessMeta({ effective: 'configured_ready', verification: 'stale' }).label,
+    '已配置，可直接使用',
+  );
+  assert.equal(
+    runtimeReadinessMeta({ effective: 'configured_ready', verification: 'failed' }).label,
+    '已配置，可直接使用',
+  );
   assert.equal(runtimeReadinessMeta({ effective: 'configured_unverified' }).label, '已配置，需验证');
   assert.equal(runtimeReadinessMeta({ effective: 'degraded' }).label, '真实通道未配置');
   assert.equal(runtimeReadinessMeta({ effective: 'manual_only' }).label, '仅支持人工操作');
@@ -126,6 +138,17 @@ test('运行就绪状态使用已就绪、需配置、需验证等可行动文�
   assert.equal(runtimeReadinessMeta({ effective: 'connected', verification: 'failed' }).label, '最近验证失败');
   assert.equal(runtimeReadinessConfigLabel({ configuration: 'missing' }), '需要配置');
   assert.equal(runtimeReadinessVerificationLabel({ verification: 'never' }), '尚未验证');
+  assert.equal(runtimeReadinessVerificationLabel({ effective: 'configured_ready', verification: 'never' }), '无需验证，可直接使用');
+  assert.equal(runtimeReadinessVerificationLabel({ verification: 'stale' }), '验证已过期');
+});
+
+test('联网管理面板把显式探测标为会实际调用的可选诊断', () => {
+  const source = read('web/src/components/AdminWebSearchPanel.tsx');
+  assert.match(source, /readiness\?\.description/u);
+  assert.match(source, /可选诊断主备链（会实际调用）/u);
+  assert.match(source, /可选排障操作：会实际调用已配置的联网供应商/u);
+  assert.match(source, /不运行诊断不影响配置完整通道正常使用/u);
+  assert.doesNotMatch(source, />\s*🔎 测试主备链\s*</u);
 });
 
 test('飞书开关启用不等于已连接，必须同时具备有效验证和外部执行能力', () => {

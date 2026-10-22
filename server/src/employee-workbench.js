@@ -12,6 +12,7 @@ import {
 } from "./catalog/employee-skills-verification.js";
 import { userScopeClause } from "./engines/access.js";
 import { canDispatchEmployee } from "./engines/employee-dispatch-policy.js";
+import { isTesterBusinessActor } from './engines/tester-access.js';
 import {
   buildExecutionDigest,
   verifyDigestCoverage,
@@ -875,7 +876,7 @@ function runtime(
 
 function permissionsFor(user, employee = null) {
   const authenticated = !!user?.id;
-  const manager = MANAGER_ROLES.has(user?.role);
+  const manager = MANAGER_ROLES.has(user?.role) || isTesterBusinessActor(user);
   // 派活权限走租户策略：员工级覆盖 > 分部级规则 > 默认放行；boss/admin/平台超管永不锁死
   const dispatchAllowed = employee
     ? canDispatchEmployee(user, {
@@ -886,7 +887,7 @@ function permissionsFor(user, employee = null) {
     : authenticated;
   return {
     canDispatch: authenticated && dispatchAllowed,
-    canReviewRuns: REVIEWER_ROLES.has(user?.role),
+    canReviewRuns: REVIEWER_ROLES.has(user?.role) || isTesterBusinessActor(user),
     canViewInternalProfile: manager,
     canViewCapabilities: manager,
     canViewSkills: manager,
@@ -1318,6 +1319,12 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
     ...(posterTextCapabilityAppliesTo("restaurant", workbench.identity.idx)
       ? [...posterTextCapabilityPromptLines(), ""]
       : []),
+    ...(workbench.identity.idx === 160
+      ? [
+          "【活动全套交付】必须一次给齐四件套，有表格用表格：①同类活动扫描表（品牌|城市/时间|玩法|效果|翻车点）②活动SOP（主题、机制、引流钩子、时间节奏、现场步骤、人员分工；未确认价格标待确认）③物料清单（系统稍后按清单成艺术成图：宣传单两套备选、Banner两套备选、主KV、朋友圈方图、桌贴；老板点名则只出点名类型）④活动执行表（动作|负责人|期限|验收标准）。不要用“请设计部门出图”代替成图，也不要在报告里假装图片已经生成。物料图必须是可直接用的艺术设计成品：先读取品牌知识包里的 Logo、视觉调性和店名，理解后再图生图，把标志和活动内容设计进画面；禁止写 textOverlay / 后期叠字底稿，禁止把折扣、价格、平台产品名等系统字硬贴到画面上。没给 Logo 的不要编。未确认的价格、折扣和菜名不要写进画面。",
+          "",
+        ]
+      : []),
     ...(enabledSkills.length
       ? [
           "【你的进修技能库（全网收集的最新打法，本次工作要主动运用）】",
@@ -1380,6 +1387,12 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
     "",
     ...(posterTextCapabilityAppliesTo("restaurant", workbench.identity.idx)
       ? [...posterTextCapabilityPromptLines(), ""]
+      : []),
+    ...(workbench.identity.idx === 160
+      ? [
+          "【活动全套交付】必须一次给齐四件套，有表格用表格：①同类活动扫描表（品牌|城市/时间|玩法|效果|翻车点）②活动SOP（主题、机制、引流钩子、时间节奏、现场步骤、人员分工；未确认价格标待确认）③物料清单（系统稍后按清单成艺术成图：宣传单两套备选、Banner两套备选、主KV、朋友圈方图、桌贴；老板点名则只出点名类型）④活动执行表（动作|负责人|期限|验收标准）。不要用“请设计部门出图”代替成图，也不要在报告里假装图片已经生成。物料图必须是可直接用的艺术设计成品：先读取品牌知识包里的 Logo、视觉调性和店名，理解后再图生图，把标志和活动内容设计进画面；禁止写 textOverlay / 后期叠字底稿，禁止把折扣、价格、平台产品名等系统字硬贴到画面上。没给 Logo 的不要编。未确认的价格、折扣和菜名不要写进画面。",
+          "",
+        ]
       : []),
     "【质量门】",
     ...workbench.workMethod.qualityGates.map((item) => `- ${item}`),
@@ -1647,7 +1660,7 @@ function upsertConfig(idx, values, userId) {
 }
 
 export function assertWorkbenchManager(user) {
-  if (!MANAGER_ROLES.has(user?.role)) {
+  if (!MANAGER_ROLES.has(user?.role) && !isTesterBusinessActor(user)) {
     throw Object.assign(new Error("仅老板或管理员可修改数字员工工作台"), {
       status: 403,
     });

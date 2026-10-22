@@ -24,7 +24,7 @@ const RULE_NAMES: Record<string, string> = {
   CONTRACT: '合同/政策口径',
 };
 
-export const KB_CATS = ['品牌资料', '招商政策', '产品资料', '话术案例', '客户画像', '数据规范', '员工产出'];
+export const KB_CATS = ['品牌知识包', '品牌资料', '招商政策', '产品资料', '话术案例', '客户画像', '数据规范', '员工产出'];
 
 export const MT_LABELS: Record<string, string> = {
   leads: '新增线索(人)',

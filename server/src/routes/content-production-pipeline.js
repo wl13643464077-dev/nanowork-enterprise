@@ -4,6 +4,9 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { Router } from "express";
+import { withTaskProvider } from "../engines/ai-provider-selection.js";
+import { testerExecutionIdentity, isTesterBusinessActor } from "../engines/tester-access.js";
+import { runWithTesterIdentity } from "../engines/tester-provider-context.js";
 
 import { CONTENT_EMPLOYEES } from "../catalog/content-crew.js";
 import {
@@ -1245,7 +1248,7 @@ function specialAttemptPendingReconciliation(row, hold, reason) {
     state: "pending_reconciliation",
     holdId,
     estimatedCredits: Number(
-      hold?.held_credits || stored.estimatedCredits || 0,
+      hold?.held_credits ?? stored.estimatedCredits ?? 0,
     ),
     heldCredits,
     chargedCredits:
@@ -1402,7 +1405,7 @@ function specialAttemptAuthorizationConsumption(row, authorizationUsage) {
 
   if (hold?.status === "released") return { imageCount: 0, credits: 0 };
   if (hold?.status === "held") {
-    const credits = Math.max(0, Number(hold.held_credits || reservedCredits));
+    const credits = Math.max(0, Number(hold.held_credits ?? reservedCredits));
     return {
       imageCount: Math.max(reservedImageCount, imageCountFromCredits(credits)),
       credits,
@@ -2248,6 +2251,29 @@ export function createContentPipelineSpecialProviderAttemptStore(
   });
 }
 
+export function bindContentPipelineProvider({ tenantId, createdBy }) {
+  const identity = testerExecutionIdentity({ tenantId, userId: createdBy });
+  return identity ? { ownerUserId: identity.ownerUserId, tenantId: identity.tenantId,
+    providerId: identity.provider, billingMode: "personal" } : null;
+}
+
+export function runWithContentPipelineProvider(job, action) {
+  return runWithTenant(job.tenantId, () => {
+    const identity = testerExecutionIdentity({ tenantId: job.tenantId, userId: job.createdBy });
+    if (!identity) return action();
+    const binding = job.settings?.providerBinding;
+    if (!binding || binding.billingMode !== "personal"
+      || Number(binding.ownerUserId) !== identity.ownerUserId
+      || Number(binding.tenantId) !== identity.tenantId) {
+      throw new ContentProductionPipelineRouteError(
+        "原任务缺少可核验的个人供应商归属，请核对后重新创建任务",
+        409, "CONTENT_PIPELINE_PERSONAL_PROVIDER_UNKNOWN",
+      );
+    }
+    return runWithTesterIdentity(identity, () => withTaskProvider(binding, action));
+  });
+}
+
 function defaultRuntime() {
   const repository = createSqliteContentProductionPipelineRepository({ db });
   repository.ensureSchema();
@@ -2294,6 +2320,8 @@ function defaultRuntime() {
     releaseUndeliveredHolds:
       releaseContentPipelineUndeliveredHoldsInCurrentTransaction,
     executeStationDelivery: createStationDeliveryBoundary({ repository }),
+    bindProvider: bindContentPipelineProvider,
+    runWithJobProvider: runWithContentPipelineProvider,
   });
   return Object.freeze({
     repository,
@@ -2597,7 +2625,7 @@ function pipelineReviewCapability(user, state) {
     boundaryCode === "force" || ownerSelection
       ? PIPELINE_FINAL_REVIEW_ROLES
       : PIPELINE_REVIEW_ROLES;
-  if (!roles.has(role)) {
+  if (!roles.has(role) && !isTesterBusinessActor(user)) {
     return {
       canReview: false,
       reason:
@@ -2627,7 +2655,8 @@ export function contentPipelineReviewAudienceIds({
   const byId = new Map(activeUsers.map((user) => [Number(user.id), user]));
   const selected = new Set();
   for (const user of activeUsers) {
-    if (PIPELINE_NOTIFICATION_FINAL_ROLES.has(cleanText(user.role, 64))) {
+    if (PIPELINE_NOTIFICATION_FINAL_ROLES.has(cleanText(user.role, 64))
+      || (Number(user.id) === Number(creatorId) && isTesterBusinessActor(user))) {
       selected.add(Number(user.id));
     }
   }
@@ -2687,7 +2716,7 @@ function workflowInput(body, user) {
   if (
     suppliedApprovalPolicy !== undefined &&
     suppliedApprovalMode !== "internal_auto" &&
-    !hasFullDataAccess(user)
+    !hasFullDataAccess(user) && !isTesterBusinessActor(user)
   ) {
     throw new ContentProductionPipelineRouteError(
       "只有老板或管理员可以自定义流水线审批点",
@@ -2732,7 +2761,7 @@ function workflowInput(body, user) {
   }
   if (
     body?.workflow?.paidMediaAuthorized === true &&
-    !PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(user?.role, 64))
+    !PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(user?.role, 64)) && !isTesterBusinessActor(user)
   ) {
     throw new ContentProductionPipelineRouteError(
       "只有老板、管理员或平台超管可以授权付费媒体provider",
@@ -3390,7 +3419,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
 
   router.get("/pipelines/paid-media-estimate", (req, res) => {
     try {
-      if (!PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64))) {
+      if (!PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64)) && !isTesterBusinessActor(req.user)) {
         throw new ContentProductionPipelineRouteError(
           "只有老板、管理员或平台超管可以查看付费媒体授权上限",
           403,
@@ -3583,7 +3612,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
         );
       }
       if (pipelinePendingStation(current)?.approvalBoundary?.ownerSelectionRequired === true
-        && !PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64))) {
+        && !PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64)) && !isTesterBusinessActor(req.user)) {
         throw new ContentProductionPipelineRouteError('小红书发布版本需由老板或管理员选择', 403, 'CONTENT_PIPELINE_XHS_OWNER_REQUIRED');
       }
       const tenantId = Number(req.user.tenant_id || curTenant());
@@ -3627,7 +3656,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
     try {
       const pipelineId = positiveInteger(req.params.id, "pipelineId");
       const current = inspectFor(req, pipelineId);
-      if (!PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64))) {
+      if (!PIPELINE_FINAL_REVIEW_ROLES.has(cleanText(req.user?.role, 64)) && !isTesterBusinessActor(req.user)) {
         throw new ContentProductionPipelineRouteError(
           "只有老板、管理员或平台超管可以授权付费媒体provider",
           403,
@@ -3641,6 +3670,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
           "CONTENT_PAID_MEDIA_AUTHORIZATION_CONFIRMATION_REQUIRED",
         );
       }
+      return runWithContentPipelineProvider(current, () => {
       const imageModel = cleanText(resolveImageModelFn(), 160);
       if (!imageModel) {
         throw new ContentProductionPipelineRouteError(
@@ -3729,6 +3759,7 @@ export function createContentProductionPipelineRouter(dependencies = {}) {
               pollUrl: `/content/pipelines/${pipelineId}`,
             }
           : {}),
+      });
       });
     } catch (error) {
       return sendError(res, error);

@@ -8,6 +8,7 @@ import {
 } from './delivery-state.js';
 import { releaseHeldCreditsByRefInCurrentTransaction } from './credits.js';
 import { canAccessOwner } from './access.js';
+import { isTesterBusinessActor } from './tester-access.js';
 import {
   EMPLOYEE_MANAGEMENT_REVIEW_ROLES,
   resolveEmployeeReviewAccess,
@@ -212,6 +213,7 @@ export function contentOutputReviewAccess(actor, task, approval, content = null)
     ? currentStep?.level === 'boss' ? 'owner_review' : 'manager_review'
     : lockedEmployeeApprovalMode(task, approval);
   const policy = resolveEmployeeReviewAccess({
+    actor,
     role: actor?.role,
     approvalMode: mode || 'default',
     approvalLevel: currentStep?.level || approval?.approval_level || null,
@@ -510,7 +512,7 @@ function ensureApproval(content, task, tenantId) {
 }
 
 function assertReviewer(actor, content) {
-  if (!actor || !REVIEW_ROLES.has(actor.role)) {
+  if (!actor || (!REVIEW_ROLES.has(actor.role) && !isTesterBusinessActor(actor))) {
     throw httpError(403, '餐饮数字员工产出仅老板、运营总监、直属经理或管理员可按任务审批策略审阅');
   }
 }

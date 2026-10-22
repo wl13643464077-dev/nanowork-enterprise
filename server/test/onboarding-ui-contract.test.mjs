@@ -16,7 +16,10 @@ test('角色化新手指引挂在全局外壳并只生成当前账号有权进�
   assert.match(onboarding, /role === 'admin'[\s\S]*return 'admin'/);
   assert.match(onboarding, /role === 'partner'[\s\S]*return 'partner'/);
   assert.match(onboarding, /\['ops_director', 'manager'\][\s\S]*return 'manager'/);
-  assert.match(onboarding, /tasksFor\(track\)\.filter\(task => availableModules\.has\(task\.module\)\)/);
+  assert.match(onboarding, /tasksFor\(track\)\.filter\([\s\S]*?task => \(track === 'tester' && task\.module === 'tester'\) \|\| availableModules\.has\(task\.module\)/);
+  assert.match(onboarding, /user\?\.accountType === 'tester' \? 'tester' : trackFor\(user\?\.role\)/);
+  assert.match(onboarding, /id: 'tester-key'[\s\S]*?path: '\/tester\?tab=key'/);
+  assert.match(onboarding, /id: 'tester-invite'[\s\S]*?path: '\/tester\?tab=invitations'/);
   assert.match(onboarding, /id: 'owner-dispatch'[\s\S]*module: 'marshals'/);
   assert.match(onboarding, /id: 'staff-task'[\s\S]*module: 'execution'/);
   assert.match(onboarding, /id: 'partner-execution'[\s\S]*module: 'execution'/);

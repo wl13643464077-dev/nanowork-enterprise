@@ -263,12 +263,11 @@ r.post('/register', (req, res) => {
 r.get('/me', authMiddleware, (req, res) => {
   const u = q.get('SELECT id,username,name,role,dept,phone,tenant_id,store_id,last_login_at FROM users WHERE id = ?', req.user.id);
   const tester = testerAccount(req.user.id);
-  if (tester) return res.json({ ...u, accountType: 'tester', modules: [], credits: 0,
-    tester: testerPublicProfile(tester), tenant: null });
   const tenant = getTenant(u?.tenant_id || 1);
   res.json({
     ...u, credits: tenant?.credits ?? 0, modules: modulesFor(u),
-    accountType: u?.role === 'platform_super' ? 'platform' : primaryUserIdFor(tenant?.id) === u?.id ? 'primary' : 'sub',
+    accountType: tester ? 'tester' : u?.role === 'platform_super' ? 'platform' : primaryUserIdFor(tenant?.id) === u?.id ? 'primary' : 'sub',
+    ...(tester ? { tester: testerPublicProfile(tester), billingMode: 'personal', canManageUsers: false } : {}),
     // 多门店：storeId=NULL 表示总部/全店；tenant.stores 供顶栏门店切换器（>1 家才显示）
     storeId: u?.store_id == null ? null : Number(u.store_id),
     tenant: tenant ? {

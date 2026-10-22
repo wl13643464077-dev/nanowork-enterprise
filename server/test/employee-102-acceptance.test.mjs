@@ -555,12 +555,13 @@ test("idx102真实研究链至少5次搜索并把地图与受控网页正文写�
   );
   assert.equal(calls.length, 1);
   assert.match(calls[0].userMsg, /【受控网页正文】/u);
-  assert.match(calls[0].system, /老板极简派活规则·最高优先级/u);
+  assert.match(calls[0].system, /老板极简派活规则/u);
   assert.match(
     calls[0].system,
-    /网上可查信息，必须使用本次地图、WebSearch和受控网页正文自行补齐/u,
+    /公开资料由本次地图、WebSearch和受控网页正文自行检索/u,
   );
-  assert.match(calls[0].system, /不得向老板索取/u);
+  assert.match(calls[0].system, /取得多少可靠证据就交付多少可用结论/u);
+  assert.match(calls[0].system, /不得为了满足完整性要求编造或猜测/u);
   assert.match(
     calls[0].userMsg,
     /所有公开可查输入由你调用本次已提供的真实工具证据自行完成/u,

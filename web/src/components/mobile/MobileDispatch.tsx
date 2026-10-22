@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Empty, Input, Select, Skeleton, Tag, message } from 'antd';
-import { AimOutlined, ArrowLeftOutlined, CloseOutlined, RightOutlined, SendOutlined } from '@ant-design/icons';
-import { api } from '../../api/client';
+import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd';
+import { AimOutlined, ArrowLeftOutlined, CloseOutlined, RightOutlined, RocketOutlined, SendOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { api, getUser } from '../../api/client';
 import type { EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
 import EmployeeAvatar from '../EmployeeAvatar';
 import type { MatchedTeam, MatchedTeamMember } from '../EmployeeTeamMatch';
@@ -21,10 +21,33 @@ import './mobile.css';
 // → 全屏派活页（POST /employee-workbench/restaurant/:idx/dispatch，与桌面同一端点与入参）
 // → 成功后跳到该任务的进度页（/m/tasks?task=ID）。
 
-const TEAM_MATCH_KEY = 'nw-mobile-team-match.v1';
+const TEAM_MATCH_KEY = 'nw-mobile-team-match.v2';
 const PREFILL_KEY = 'nw-mobile-dispatch-prefill.v1';
 
-type StoredTeam = { query: string; team: MatchedTeam; matchedAt: string };
+type MemberBrief = {
+  idx: number;
+  person: string;
+  name: string;
+  roleInTeam: string;
+  title: string;
+  directive: string;
+  deliverables?: string;
+};
+type TeamPlan = { depth: string; depthLabel: string; briefs: MemberBrief[] };
+type TeamSummary = {
+  summary: string;
+  progress: { idx: number; person: string; name: string; statusLabel: string; highlight?: string }[];
+  nextActions?: { action: string; owner: string; timing?: string }[];
+  summarizedAt: string;
+};
+type StoredTeam = {
+  query: string;
+  team: MatchedTeam;
+  matchedAt: string;
+  plan?: TeamPlan | null;
+  dispatched?: Record<string, { taskId: number; at: string }>;
+  teamSummary?: TeamSummary | null;
+};
 export type DispatchPrefill = {
   idx: number;
   question?: string;
@@ -107,6 +130,7 @@ export default function MobileDispatch({ nav, params }: { nav: (path: string) =>
 }
 
 function DispatchList({ nav }: { nav: (path: string) => void }) {
+  const personalBilling = getUser()?.accountType === 'tester';
   const [catalog, setCatalog] = useState<MobileEmployeeCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -115,6 +139,14 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
   const [matching, setMatching] = useState(false);
   const [matchError, setMatchError] = useState('');
   const [stored, setStored] = useState<StoredTeam | null>(() => readStoredTeam());
+  const [depth, setDepth] = useState<'simple' | 'full' | 'pro'>('full');
+  const [mode, setMode] = useState<'semi' | 'auto'>('semi');
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState('');
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState('');
+  const [dispatchingIdxs, setDispatchingIdxs] = useState<Set<number>>(new Set());
+  const [bulkDispatching, setBulkDispatching] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -150,7 +182,9 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
       const payload = await api.post('/employees/match-team', { text: query }, { silent: true });
       const team = payload?.team as MatchedTeam | undefined;
       if (!team?.members?.length) throw new Error('没有匹配到合适的员工，换个说法再试试');
-      setStored({ query, team, matchedAt: new Date().toISOString() });
+      setStored({ query, team, matchedAt: new Date().toISOString(), plan: null, dispatched: {}, teamSummary: null });
+      setPlanError('');
+      setSummaryError('');
     } catch (err: any) {
       setMatchError(err?.message || '匹配失败，请稍后再试');
     } finally {
@@ -161,6 +195,110 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
   const dispatchTo = (member: MatchedTeamMember) => {
     writeDispatchPrefill({ idx: member.idx, question: stored?.query || '' });
     nav(mobilePath('dispatch', { employee: member.idx }));
+  };
+
+  const dispatchBrief = async (brief: MemberBrief) => {
+    if (!stored || stored.dispatched?.[String(brief.idx)]) return true;
+    setDispatchingIdxs(current => new Set(current).add(brief.idx));
+    try {
+      const result = await api.post(
+        `/employee-workbench/restaurant/${brief.idx}/dispatch`,
+        { question: brief.directive, title: brief.title },
+        { silent: true },
+      );
+      const taskId = Number((result as Record<string, unknown>)?.runId ?? (result as Record<string, unknown>)?.taskId);
+      if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('任务已提交但未返回任务编号');
+      const record = { taskId, at: new Date().toISOString() };
+      setStored(current => current
+        ? { ...current, dispatched: { ...(current.dispatched || {}), [String(brief.idx)]: record } }
+        : current);
+      return true;
+    } catch (err: any) {
+      message.error(`${brief.person}：${err?.message || '派出失败'}`);
+      return false;
+    } finally {
+      setDispatchingIdxs(current => {
+        const next = new Set(current);
+        next.delete(brief.idx);
+        return next;
+      });
+    }
+  };
+
+  const dispatchAll = async (briefs: MemberBrief[], { reset = false } = {}) => {
+    const already = reset ? {} : stored?.dispatched || {};
+    const pending = briefs.filter(brief => !already[String(brief.idx)]);
+    if (!pending.length) return;
+    setBulkDispatching(true);
+    try {
+      const results = await Promise.allSettled(pending.map(brief => dispatchBrief(brief)));
+      const ok = results.filter(result => result.status === 'fulfilled' && result.value).length;
+      if (ok === pending.length) message.success(`已同时派出 ${ok} 名成员`);
+      else if (ok > 0) message.warning(`已派出 ${ok}/${pending.length}，其余可单独重试`);
+    } finally {
+      setBulkDispatching(false);
+    }
+  };
+
+  const runPlan = async () => {
+    if (!stored?.team?.members?.length) return;
+    setPlanning(true);
+    setPlanError('');
+    try {
+      const payload = await api.post(
+        '/employees/team-plan',
+        {
+          text: stored.query,
+          depth,
+          members: stored.team.members.map(member => ({
+            idx: member.idx,
+            roleInTeam: member.roleInTeam,
+            task: member.task,
+            dependsOn: member.dependsOn,
+          })),
+        },
+        { silent: true },
+      );
+      const nextPlan = payload?.plan as TeamPlan | undefined;
+      if (!nextPlan?.briefs?.length) throw new Error('队长没有返回有效拆解');
+      if (String(payload?.billing?.state || '').toLowerCase() !== 'settled') {
+        throw new Error('拆解已返回，但账务尚未确认结算，本次不派活');
+      }
+      setStored(current => current ? { ...current, plan: nextPlan, dispatched: {}, teamSummary: null } : current);
+      if (mode === 'auto') {
+        message.info('队长拆解完成，全队同时开工…');
+        await dispatchAll(nextPlan.briefs, { reset: true });
+      }
+    } catch (err: any) {
+      setPlanError(err?.message || '队长拆解失败');
+    } finally {
+      setPlanning(false);
+    }
+  };
+
+  const runSummary = async () => {
+    if (!stored) return;
+    const items = Object.entries(stored.dispatched || {}).map(([idx, record]) => ({
+      idx: Number(idx),
+      taskId: record.taskId,
+    }));
+    if (!items.length) {
+      message.warning('先派出至少一单，再让队长汇总');
+      return;
+    }
+    setSummarizing(true);
+    setSummaryError('');
+    try {
+      const payload = await api.post('/employees/team-summary', { text: stored.query, items }, { silent: true });
+      const summary = payload?.teamSummary as TeamSummary | undefined;
+      if (!summary?.summary) throw new Error('队长没有给出有效汇总');
+      if (payload?.billing?.state !== 'settled') throw new Error('汇总已生成，费用尚未完成结算');
+      setStored(current => current ? { ...current, teamSummary: summary } : current);
+    } catch (err: any) {
+      setSummaryError(err?.message || '队长汇总失败');
+    } finally {
+      setSummarizing(false);
+    }
   };
 
   const grouped = useMemo(() => {
@@ -247,7 +385,107 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
                 <SendOutlined className="m-row-arrow" />
               </button>
             ))}
-            <p className="m-muted">点任一成员，你这句话会自动填进派活框；派活后按其岗位标准计费。</p>
+            <p className="m-muted">点任一成员单独派活；也可以让队长拆解后半自动确认或全自动同时开工。</p>
+            <div className="m-team-orchestrate" aria-label="队长拆解派活">
+              <div className="m-card-title">
+                <span>
+                  <ThunderboltOutlined /> 让队长拆解分工
+                </span>
+              </div>
+              <Segmented
+                size="small"
+                value={mode}
+                onChange={value => setMode(value as 'semi' | 'auto')}
+                options={[
+                  { value: 'semi', label: '半自动 · 逐个确认' },
+                  { value: 'auto', label: '全自动 · 同时开工' },
+                ]}
+                block
+              />
+              <Segmented
+                size="small"
+                value={depth}
+                onChange={value => setDepth(value as 'simple' | 'full' | 'pro')}
+                options={[
+                  { value: 'simple', label: '简单' },
+                  { value: 'full', label: '全面' },
+                  { value: 'pro', label: '专业' },
+                ]}
+                block
+              />
+              <Button
+                type="primary"
+                icon={<RocketOutlined />}
+                loading={planning}
+                disabled={matching || summarizing || bulkDispatching}
+                onClick={() => void runPlan()}
+                block
+              >
+                {planning ? '队长拆解中…' : stored.plan ? '重新拆解' : '让队长拆解分工'}
+              </Button>
+              {planError && <Alert type="error" showIcon message={planError} className="m-block-gap" />}
+              {stored.plan?.briefs?.length ? (
+                <div className="m-team-briefs">
+                  {mode === 'semi' && stored.plan.briefs.some(brief => !stored.dispatched?.[String(brief.idx)]) && (
+                    <Button
+                      size="small"
+                      type="primary"
+                      loading={bulkDispatching}
+                      onClick={() => void dispatchAll(stored.plan!.briefs)}
+                      block
+                    >
+                      全队同时开工（{stored.plan.briefs.filter(brief => !stored.dispatched?.[String(brief.idx)]).length}）
+                    </Button>
+                  )}
+                  {stored.plan.briefs.map(brief => {
+                    const record = stored.dispatched?.[String(brief.idx)];
+                    return (
+                      <article className="m-team-brief" key={brief.idx}>
+                        <strong>
+                          {brief.person}
+                          {brief.roleInTeam === '队长' ? ' · 队长' : ''}
+                        </strong>
+                        <p>{brief.title}</p>
+                        {record ? (
+                          <Button size="small" onClick={() => nav(mobilePath('tasks', { task: record.taskId }))}>
+                            看任务进度
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            type="primary"
+                            loading={dispatchingIdxs.has(brief.idx)}
+                            disabled={bulkDispatching}
+                            onClick={() => void dispatchBrief(brief)}
+                          >
+                            派出这单
+                          </Button>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : null}
+              <Button
+                loading={summarizing}
+                disabled={!Object.keys(stored.dispatched || {}).length}
+                onClick={() => void runSummary()}
+                block
+              >
+                {summarizing ? '队长汇总中…' : stored.teamSummary ? '刷新队长总结' : '让队长收尾汇总'}
+              </Button>
+              {summaryError && <Alert type="error" showIcon message={summaryError} className="m-block-gap" />}
+              {stored.teamSummary && (
+                <div className="m-team-summary">
+                  <p className="m-text-2">{stored.teamSummary.summary}</p>
+                  {(stored.teamSummary.progress || []).map(row => (
+                    <p key={row.idx} className="m-muted">
+                      {row.person} · {row.statusLabel} · {row.highlight || '—'}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </section>
@@ -321,7 +559,11 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
                       </span>
                       <span className="m-emp-status">
                         {statusTag(employee.status)}
-                        {credits !== null && <small>约 {credits} 积分/次</small>}
+                        {personalBilling ? (
+                          <small>个人 Key 计费</small>
+                        ) : (
+                          credits !== null && <small>约 {credits} 积分/次</small>
+                        )}
                       </span>
                     </button>
                   );
@@ -336,6 +578,7 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
 }
 
 function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }) {
+  const personalBilling = getUser()?.accountType === 'tester';
   const [prefill] = useState(() => takeDispatchPrefill(idx));
   const [profile, setProfile] = useState<EmployeeWorkbenchProfile | null>(null);
   const [employee, setEmployee] = useState<MobileEmployee | null>(null);
@@ -511,11 +754,18 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
                 />
               </div>
             </details>
-            {credits !== null && (
+            {personalBilling ? (
               <div className="m-dispatch-cost">
-                <span>预计消耗</span>
-                <strong>约 {credits} 积分</strong>
+                <span>费用归属</span>
+                <strong>个人 Key 计费</strong>
               </div>
+            ) : (
+              credits !== null && (
+                <div className="m-dispatch-cost">
+                  <span>预计消耗</span>
+                  <strong>约 {credits} 积分</strong>
+                </div>
+              )
             )}
           </div>
           {(identity?.intro || materials.length > 0 || deliverables.length > 0 || examples.length > 0) && (

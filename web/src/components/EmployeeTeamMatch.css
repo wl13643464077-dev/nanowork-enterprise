@@ -256,6 +256,7 @@
 .team-match-board {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding: 16px 18px;
   border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
@@ -499,6 +500,8 @@
 /* —— 队长拆解派活编排区 —— */
 .team-plan {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 10px;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
@@ -543,6 +546,10 @@
   margin: 0;
   color: var(--ui-muted);
   font-size: 11.5px;
+}
+
+.team-plan-unplanned {
+  margin-bottom: 8px;
 }
 
 .team-plan-briefs {
@@ -642,6 +649,8 @@
 .team-summary {
   container-type: inline-size;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 10px;
   padding: clamp(14px, 2vw, 20px);
   border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
@@ -1118,7 +1127,7 @@
 @container (max-width: 599px) {
   .team-summary-numbers[data-count] > .team-summary-number {
     grid-column: auto;
-    width: 100%;
+    width: auto;
     min-height: 0;
   }
 }

@@ -16,6 +16,9 @@ import { xhsNoteMarkdown, XHS_STYLES, XHS_COVER_LAYOUTS } from "./ai-xhs-note.js
 import { approvedNativeChatPlan, nativeChatJson } from "./native-creative-chat-store.js";
 import { nativeDownloadMetadata, nativeSalesScriptText } from "./native-deliverables.js";
 import { parseProviderMediaUrl } from "./provider-media-download.js";
+import { cleanReportBody } from "../../../shared/report-body.mjs";
+import { prepareRestaurantArtifactSource } from "./restaurant-output-export.js";
+import { parseCampaignMaterialsPack } from "./super-manager-campaign-materials.js";
 
 export const TASK_CENTER_KINDS = Object.freeze([
   "manual",
@@ -505,7 +508,7 @@ function structuredReportMarkdown(value, depth = 2) {
 }
 
 function readableReportMarkdown(value, title) {
-  const text = String(value || "").trim();
+  const text = cleanReportBody(String(value || "")).trim();
   if (!text) return "";
   let parsed;
   try {
@@ -522,7 +525,7 @@ function readableReportMarkdown(value, title) {
     parsed?.text,
   ].find((candidate) => typeof candidate === "string" && candidate.trim());
   if (preferred) {
-    const report = String(preferred).trim();
+    const report = cleanReportBody(preferred).trim();
     return /^#\s/u.test(report) ? report : `# ${title}\n\n${report}`;
   }
   const report = structuredReportMarkdown(parsed);
@@ -543,16 +546,38 @@ function sourceArtifactFileReady(artifact) {
   }
 }
 
-function sourceDeliverables(user, sourceType, sourceId, sourceBody) {
+function sourceDeliverables(
+  user,
+  sourceType,
+  sourceId,
+  sourceBody,
+  sourceContext = {},
+) {
   if (!tableExists("generated_artifacts")) return [];
   if (
     sourceType === "agent_task" &&
     loadAgentTaskSupersession(sourceId, { tenantId: curTenant() })
   )
     return [];
-  const body = String(sourceBody || "").trim();
-  if (!body) return [];
-  const sourceHash = createHash("sha256").update(body).digest("hex");
+  const originalBody = String(sourceBody || "");
+  if (!originalBody.trim()) return [];
+  const identity =
+    sourceType === "agent_task"
+      ? prepareRestaurantArtifactSource(originalBody, sourceContext)
+      : {
+          body: originalBody,
+          sourceHash: createHash("sha256").update(originalBody).digest("hex"),
+          renderVersion: null,
+        };
+  const compatibleSourceHashes = new Set([identity.sourceHash]);
+  // Preserve old plain-text artifacts that were keyed after trim(). Never use
+  // the raw hash when an internal block was removed or a structured contract
+  // was rendered, because that could re-expose an obsolete machine report.
+  if (identity.body === originalBody) {
+    compatibleSourceHashes.add(
+      createHash("sha256").update(originalBody.trim()).digest("hex"),
+    );
+  }
   const scope = userScopeClause(user, "a.user_id");
   return q
     .all(
@@ -568,7 +593,10 @@ function sourceDeliverables(user, sourceType, sourceId, sourceBody) {
     .filter((artifact) => {
       const metadata = parseObject(artifact.metadata);
       return (
-        metadata.sourceHash === sourceHash && sourceArtifactFileReady(artifact)
+        compatibleSourceHashes.has(metadata.sourceHash) &&
+        (!identity.renderVersion ||
+          metadata.renderVersion === identity.renderVersion) &&
+        sourceArtifactFileReady(artifact)
       );
     })
     .map((artifact) => {
@@ -3758,23 +3786,52 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
     : "";
   const deliverables =
     kind === "restaurant"
-      ? sourceDeliverables(user, "agent_task", id, detail.output)
+      ? sourceDeliverables(user, "agent_task", id, detail.output, {
+          title,
+          requirement: row.requirement || "",
+        })
       : kind === "content"
-        ? sourceDeliverables(user, "content_employee_run", id, detail.output)
+        ? sourceDeliverables(
+            user,
+            "content_employee_run",
+            id,
+            detail.output,
+            { title },
+          )
         : [];
+  const exportSourceType =
+    kind === "restaurant"
+      ? "agent_task"
+      : kind === "content"
+        ? "content_employee_run"
+        : null;
+  const canGenerateDeliverables = Boolean(exportSourceType && reportMarkdown);
+  const exportContract = exportSourceType
+    ? {
+        canGenerate: canGenerateDeliverables,
+        sourceType: exportSourceType,
+        sourceId: id,
+        generateMethod: "POST",
+        generateUrl: `/api/files/artifacts/source/${exportSourceType}/${id}`,
+        formats: ["pdf", "docx"],
+      }
+    : { canGenerate: false };
   const deliverableAvailability = deliverables.length
     ? {
         status: "ready",
         message: `已生成 ${deliverables.length} 份可下载交付文件`,
+        ...exportContract,
       }
-    : reportMarkdown && conversationDeepLink
+    : canGenerateDeliverables
       ? {
-          status: "employee_conversation",
-          message: "交付文件可在数字员工对话中自动生成并下载",
+          status: "ready_to_generate",
+          message: "可直接生成 PDF 或 Word 供审阅",
+          ...exportContract,
         }
       : {
           status: "not_ready",
           message: "报告正文生成后将提供交付文件",
+          ...exportContract,
         };
   const result = {
     sourceKey: `${kind}:${id}`,
@@ -3824,6 +3881,10 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
           markdown: reportMarkdown,
         }
       : null,
+    campaignMaterials:
+      kind === "restaurant"
+        ? parseCampaignMaterialsPack(detail.output)?.items || []
+        : [],
     deliverables,
     deliverableAvailability,
     ...detail,
@@ -3867,6 +3928,7 @@ export function getUnifiedTaskDetail(user, kind, rawId) {
       message: unavailableReason,
     },
     output: "",
+    campaignMaterials: [],
     resultUnavailableReason: unavailableReason,
   };
 }

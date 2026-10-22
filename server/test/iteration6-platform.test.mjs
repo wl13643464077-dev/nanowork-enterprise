@@ -479,7 +479,10 @@ test('6.0迭代：文件读取、产出入档、记忆、数据导入、驾驶�
     const init = await call(base, '/sys/kb/initialize', 'POST', {});
     assert.ok(init.created.length > 0);
     const readiness = await call(base, '/sys/kb/readiness');
-    assert.equal(readiness.percent, 100);
+    const withoutBrandPack = (readiness.categories || []).filter(item => item.category !== '品牌知识包');
+    assert.ok(withoutBrandPack.length >= 7);
+    assert.ok(withoutBrandPack.every(item => item.ready), JSON.stringify(withoutBrandPack));
+    assert.ok((readiness.categories || []).some(item => item.category === '品牌知识包'));
     const promptStatus = await call(base, '/sys/marshal-prompts/status');
     assert.equal(promptStatus.length, 8);
     assert.deepEqual(promptStatus.map(item => item.code), ['M-01', 'M-02', 'M-03', 'M-04', 'M-05', 'M-06', 'M-07', 'M-08']);

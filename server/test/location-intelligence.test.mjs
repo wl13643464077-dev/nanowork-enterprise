@@ -550,11 +550,17 @@ test("餐饮101/102自动调用地图，其他岗位即使同句地点也不误�
     locationWebCalls.every((call) => call.query.length <= 120),
     "地点通用检索query不得过长",
   );
+  // 六类客源公共查询（商场/写字楼/住宅/学校/地铁）与岗位技能查询同批执行。
   assert.ok(
-    locationWebCalls.some((call) =>
-      /官方\s+商场\s+餐饮\s+品牌\s+门店列表/u.test(call.query),
-    ),
+    locationWebCalls.some((call) => /商场\s+官网\s+品牌\s+门店/u.test(call.query)),
+    "商场客源查询必须执行",
   );
+  for (const topic of ["写字楼", "住宅", "学校", "地铁"]) {
+    assert.ok(
+      locationWebCalls.some((call) => call.idx === 102 && call.query.includes(topic)),
+      `${topic} 客源查询必须执行`,
+    );
+  }
   assert.ok(
     locationWebCalls.some(
       (call) => call.idx === 102 && /site:dianping\.com/u.test(call.query),

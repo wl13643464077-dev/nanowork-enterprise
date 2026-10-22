@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Modal, Space, Table, Tabs, Tag, message } from 'antd';
+import { Alert, AutoComplete, Button, Input, Modal, Select, Space, Table, Tabs, Tag, message } from 'antd';
 import {
   TrialLeadDrawer,
   TrialStatus,
@@ -8,6 +8,8 @@ import {
   trialError,
   trialProviderLabel,
   trialRequest,
+  trialTurnLimit,
+  trialUsageState,
 } from '../pages/TrialShared';
 import type { TrialLead } from '../pages/TrialShared';
 import TrialAnalyticsPanel from '../pages/TrialAnalyticsPanel';
@@ -18,6 +20,7 @@ type TesterApplication = {
   name: string;
   username: string;
   phone: string;
+  department?: string;
   status: string;
   keyConfigured?: boolean;
   keyMasked?: string;
@@ -59,6 +62,35 @@ export default function PlatformTesters() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [busy, setBusy] = useState('');
   const [analyticsRefresh, setAnalyticsRefresh] = useState(0);
+  const [department, setDepartment] = useState<string>();
+  const [editing, setEditing] = useState<TesterApplication | null>(null);
+  const [draftDepartment, setDraftDepartment] = useState('');
+  const departmentNames = [...new Set(applications.map(row => row.department || ''))].sort((a, b) =>
+    a.localeCompare(b, 'zh-CN'),
+  );
+  const matchesDepartment = (id: number) =>
+    department === undefined || applications.some(row => row.id === id && (row.department || '') === department);
+  const filteredApplications = applications.filter(row => matchesDepartment(row.id));
+  const filteredLeads = leads.filter(row => matchesDepartment(row.ownerUserId));
+  const filteredInvitations = invitations.filter(row => matchesDepartment(row.ownerUserId));
+  const ownerDepartment = (id: number) => applications.find(row => row.id === id)?.department || '未分类';
+  const saveDepartment = async () => {
+    if (!editing) return;
+    setBusy(`department-${editing.id}`);
+    try {
+      await trialRequest(`/tester/admin/applications/${editing.id}/department`, {
+        method: 'PATCH',
+        body: { department: draftDepartment },
+      });
+      setEditing(null);
+      message.success('部门分类已更新');
+      await load();
+    } catch (error) {
+      setError(trialError(error));
+    } finally {
+      setBusy('');
+    }
+  };
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -111,21 +143,44 @@ export default function PlatformTesters() {
         </Button>
       </div>
       {error && <Alert type="error" message={error} className="trial-notice" />}
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          aria-label="按部门或团队筛选"
+          placeholder="全部部门／团队"
+          value={department}
+          onChange={setDepartment}
+          options={departmentNames.map(name => ({ value: name, label: name || '未分类' }))}
+          style={{ minWidth: 240 }}
+        />
+        <span className="trial-muted">
+          当前分类 {filteredApplications.length} 位测试员 · {filteredLeads.length} 位客户
+        </span>
+      </Space>
       <Tabs
         items={[
           {
             key: 'analytics',
             label: '销售与客户看板',
-            children: <TrialAnalyticsPanel admin testers={applications} refreshKey={analyticsRefresh} />,
+            children: (
+              <TrialAnalyticsPanel
+                admin
+                testers={filteredApplications}
+                department={department}
+                refreshKey={analyticsRefresh}
+              />
+            ),
           },
           {
             key: 'testers',
-            label: `测试员（${applications.length}）`,
+            label: `测试员（${filteredApplications.length}）`,
             children: (
               <Table
                 rowKey="id"
                 loading={loading}
-                dataSource={applications}
+                dataSource={filteredApplications}
                 scroll={{ x: 1100 }}
                 columns={[
                   {
@@ -138,6 +193,7 @@ export default function PlatformTesters() {
                     ),
                   },
                   { title: '手机号', dataIndex: 'phone' },
+                  { title: '部门／团队', dataIndex: 'department', render: value => value || '未分类' },
                   { title: '状态', dataIndex: 'status', render: status => <TrialStatus status={status} /> },
                   {
                     title: '当前供应商',
@@ -180,6 +236,15 @@ export default function PlatformTesters() {
                     title: '操作',
                     render: (_, row) => (
                       <Space wrap>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            setEditing(row);
+                            setDraftDepartment(row.department || '');
+                          }}
+                        >
+                          调整部门
+                        </Button>
                         {row.status !== 'approved' && (
                           <Button
                             size="small"
@@ -219,12 +284,12 @@ export default function PlatformTesters() {
           },
           {
             key: 'customers',
-            label: `客户使用情况（${leads.length}）`,
+            label: `客户使用情况（${filteredLeads.length}）`,
             children: (
               <Table
                 rowKey="id"
                 loading={loading}
-                dataSource={leads}
+                dataSource={filteredLeads}
                 scroll={{ x: 1050 }}
                 columns={[
                   {
@@ -247,6 +312,7 @@ export default function PlatformTesters() {
                     ),
                   },
                   { title: '体验入口', dataIndex: 'invitationTitle' },
+                  { title: '归属部门', render: (_, row) => ownerDepartment(row.ownerUserId) },
                   { title: '供应商', dataIndex: 'provider', render: value => trialProviderLabel(value || '360') },
                   {
                     title: '状态',
@@ -262,13 +328,13 @@ export default function PlatformTesters() {
                   },
                   {
                     title: '已用次数',
-                    render: (_, row) => `${row.usedTurns || 0} / 2`,
+                    render: (_, row) => `${row.usedTurns || 0} / ${trialTurnLimit(row.turnLimit)} 次`,
                     filters: [
-                      { text: '尚未使用', value: 0 },
-                      { text: '已用 1 次', value: 1 },
-                      { text: '已用完 2 次', value: 2 },
+                      { text: '尚未使用', value: 'unused' },
+                      { text: '使用中', value: 'active' },
+                      { text: '已用完', value: 'exhausted' },
                     ],
-                    onFilter: (value, row) => row.usedTurns === value,
+                    onFilter: (value, row) => trialUsageState(row) === value,
                   },
                   { title: '最近使用', dataIndex: 'lastUsedAt', render: formatTrialTime },
                   {
@@ -311,13 +377,15 @@ export default function PlatformTesters() {
             children: (
               <Table
                 rowKey="id"
-                dataSource={invitations}
+                dataSource={filteredInvitations}
                 scroll={{ x: 700 }}
                 columns={[
                   { title: '邀请名称', dataIndex: 'title' },
                   { title: '测试员', dataIndex: 'ownerName' },
+                  { title: '归属部门', render: (_, row) => ownerDepartment(row.ownerUserId) },
                   { title: '销售手机号', dataIndex: 'salesPhone' },
                   { title: '供应商', dataIndex: 'provider', render: value => trialProviderLabel(value || '360') },
+                  { title: '每位客户额度', render: (_, row) => `${trialTurnLimit(row.turnLimit)} 次` },
                   { title: '状态', dataIndex: 'status', render: status => <TrialStatus status={status} /> },
                   { title: '创建时间', dataIndex: 'createdAt', render: formatTrialTime },
                   {
@@ -335,6 +403,25 @@ export default function PlatformTesters() {
         ]}
       />
       <TrialLeadDrawer id={detailId} admin onClose={() => setDetailId(null)} />
+      <Modal
+        title={`调整部门／团队${editing ? ` · ${editing.name}` : ''}`}
+        open={!!editing}
+        onCancel={() => setEditing(null)}
+        onOk={() => void saveDepartment()}
+        confirmLoading={!!editing && busy === `department-${editing.id}`}
+        okText="保存分类"
+        cancelText="取消"
+      >
+        <p>选择已有部门或填写统一名称。留空归入“未分类”；历史统计按当前部门重新归集，不更改权限、Key 或体验额度。</p>
+        <AutoComplete
+          value={draftDepartment}
+          onChange={setDraftDepartment}
+          style={{ width: '100%' }}
+          options={departmentNames.filter(Boolean).map(value => ({ value }))}
+        >
+          <Input aria-label="所属部门或团队" maxLength={40} placeholder="例如：成都销售一部" />
+        </AutoComplete>
+      </Modal>
     </section>
   );
 }

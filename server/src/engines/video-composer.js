@@ -1,13 +1,13 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { mediaBinarySearchDirectories, mediaBinaryNames } from './media-binaries.js';
 import { voiceSubtitleAss, voicedVideoFilter, assertAudibleTrack, assertVoiceProbe, AI_SALES_NATIVE_TRANSITION } from './video-voice-composition.js';
+import { measureNativeAudioLevel } from './native-audio-level.js';
 
 export const AI_SALES_VIDEO_TARGET_DURATION_SECONDS = 30;
 export const AI_SALES_VIDEO_ALLOWED_SEGMENT_COUNTS = Object.freeze([2, 3]);
@@ -425,7 +425,10 @@ export async function composeAiSalesVideo({
   const root = path.resolve(outputRoot);
   if (root !== outputRoot || root === path.parse(root).root) throw composerError('输出目录无效');
   const { tenantDir, filePath } = secureOutputPath(root, safeTenantId);
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nanowork-ai-sales-video-'));
+  // Production may mount /tmp and persistent uploads on different devices.
+  // Compose beside the final file so the final rename remains atomic.
+  await fsp.mkdir(tenantDir, { recursive: true, mode: 0o750 });
+  const tempDir = await fsp.mkdtemp(path.join(tenantDir, '.compose-'));
   const tempOutput = path.join(tempDir, 'composed.mp4');
   let committed = false;
   try {
@@ -449,6 +452,7 @@ export async function composeAiSalesVideo({
     }
 
     const subtitlePaths = [];
+    let nativeAudioLevel = null;
     if (requireAudio) {
       const expectedSegmentSeconds = nativeAudio ? targetDuration / inputPaths.length : 15;
       if (probes.some(probe => !probe.hasAudio || Math.abs(probe.duration - expectedSegmentSeconds) > 0.35)) {
@@ -465,6 +469,8 @@ export async function composeAiSalesVideo({
         for (const inputPath of inputPaths) {
           await assertAudibleTrack({ runner, ffmpegPath: resolvedFfmpegPath, filePath: inputPath, cwd: tempDir, durationSeconds: expectedSegmentSeconds });
         }
+        nativeAudioLevel = await measureNativeAudioLevel({ paths: inputPaths, ffmpegPath: resolvedFfmpegPath,
+          runner, cwd: tempDir, durationSeconds: expectedSegmentSeconds });
       }
       if (subtitleRenderer === 'raster_png') {
         for (const [index, cue] of subtitleCues.entries()) {
@@ -481,7 +487,7 @@ export async function composeAiSalesVideo({
     for (const inputPath of [...inputPaths, ...voicePaths, ...subtitlePaths]) ffmpegArgs.push('-protocol_whitelist', 'file,pipe', '-i', inputPath);
     ffmpegArgs.push(
       '-filter_complex_threads', '1',
-      '-filter_complex', requireAudio ? voicedVideoFilter(inputPaths.length, { audioMode, segmentDurationSeconds: nativeAudio ? targetDuration / inputPaths.length : 15, rasterCues: subtitlePaths.length ? subtitleCues : [] }) : buildFilterGraph(probes, targetDuration),
+      '-filter_complex', requireAudio ? voicedVideoFilter(inputPaths.length, { audioMode, nativeAudioGainDb: nativeAudioLevel?.gainDb || 0, segmentDurationSeconds: nativeAudio ? targetDuration / inputPaths.length : 15, rasterCues: subtitlePaths.length ? subtitleCues : [] }) : buildFilterGraph(probes, targetDuration),
       '-map', '[vout]', '-map', '[aout]',
       '-c:v', VIDEO_CODEC,
       '-profile:v', 'high',
@@ -550,6 +556,7 @@ export async function composeAiSalesVideo({
       videoCodec: VIDEO_CODEC,
       audioCodec: AUDIO_CODEC,
       segmentCount: inputPaths.length,
+      ...(nativeAudioLevel ? { nativeAudioLevel } : {}),
       ...(requireAudio ? { hasAudio: true, audioVerified: true, audioVerification, subtitleCount: subtitleCues.length, subtitlesBurnedIn: true, subtitleRenderer, audioSource: nativeAudio ? 'provider_native' : 'reviewed_tts', ...(nativeAudio ? { subtitleTiming: 'script_estimated', ...(inputPaths.length === 2 ? { transition: { ...AI_SALES_NATIVE_TRANSITION } } : {}) } : {}) } : {}),
     };
   } catch (error) {

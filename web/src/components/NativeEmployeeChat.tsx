@@ -1,3 +1,4 @@
+import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Input, Select, Space, Spin, message } from 'antd';
 import { api, getUser, notifyCredits } from '../api/client';
@@ -129,6 +130,7 @@ export default function NativeEmployeeChat({
   children?: ReactNode;
 }) {
   const owner = getUser();
+  const personalBilling = isPersonalApiUser(owner);
   const ownerKey = `${owner?.tenant?.id || ''}:${owner?.id || ''}:${employeeIdx}`;
   const [composerOwner, setComposerOwner] = useState(ownerKey);
   const [storedSession, setSession] = useState<(NativeSession & { ownerKey: string }) | null>(null);
@@ -522,7 +524,15 @@ export default function NativeEmployeeChat({
             {item.role === 'user' ? (
               <p className="native-employee-chat__user-text">{item.content}</p>
             ) : item.status === 'failed' ? (
-              <Alert type="warning" showIcon message={item.content || '本轮未能取得回复，原输入已保留。'} />
+              <Alert
+                type="warning"
+                showIcon
+                message={
+                  personalBilling && /积分|预授权|未扣费/.test(item.content || '')
+                    ? '本轮未能取得回复，原输入已保留；上游费用以供应商账单为准。'
+                    : item.content || '本轮未能取得回复，原输入已保留。'
+                }
+              />
             ) : (
               <Markdown content={item.content} />
             )}
@@ -541,9 +551,11 @@ export default function NativeEmployeeChat({
             )}
             {item.billing && (
               <p className="native-employee-chat__hint">
-                {item.billing.state === 'settled'
-                  ? `本轮对话 ${item.billing.chargedCredits ?? '已结算'}${item.billing.chargedCredits != null ? ' 积分' : ''}`
-                  : item.billing.note || '本轮对话费用待核对'}
+                {personalBilling
+                  ? personalApiBillingLabel(item.billing)
+                  : item.billing.state === 'settled'
+                    ? `本轮对话 ${item.billing.chargedCredits ?? '已结算'}${item.billing.chargedCredits != null ? ' 积分' : ''}`
+                    : item.billing.note || '本轮对话费用待核对'}
               </p>
             )}
           </article>
@@ -594,8 +606,14 @@ export default function NativeEmployeeChat({
           )}
           {employeeIdx === 11 && imageOptions && Number.isFinite(imageOptions.creditsPerImage) && (
             <p className="native-employee-chat__hint">
-              本方案 {plan.options?.imageCount || 6} 张图，预计{' '}
-              {imageOptions.creditsPerImage * (plan.options?.imageCount || 6)} 积分；按每张实际调用结算。
+              {personalBilling ? (
+                `本方案 ${plan.options?.imageCount || 6} 张图。${PERSONAL_API_PRICING_NOTE}`
+              ) : (
+                <>
+                  本方案 {plan.options?.imageCount || 6} 张图，预计{' '}
+                  {imageOptions.creditsPerImage * (plan.options?.imageCount || 6)} 积分；按每张实际调用结算。
+                </>
+              )}
             </p>
           )}
           {mediaQuote && <p className="native-employee-chat__hint">{mediaQuote}</p>}
@@ -737,7 +755,9 @@ export default function NativeEmployeeChat({
               ? 'AI 图片是创意制作；品牌、菜品与活动以你确认的信息为准。'
               : '中文声音与画面一起生成，字幕按脚本估时；成片后请播放检查。'}
             <br />
-            对话按实际用量结算，确认前不会生成媒体。
+            {personalBilling
+              ? `${PERSONAL_API_PRICING_NOTE}确认前不会生成媒体。`
+              : '对话按实际用量结算，确认前不会生成媒体。'}
           </p>
           <Space wrap>
             {canRecheck && (

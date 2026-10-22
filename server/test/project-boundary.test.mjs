@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { assertPrivateArtifact, windowsAclFingerprints, inspectWindowsPermissions } from '../src/engines/private-artifact.js';
+import { stageServerRuntime } from './helpers/stage-server-runtime.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -36,20 +37,16 @@ test('生产模式运行库与迁移器保护默认data和数据库原生权限�
 
   // Stage the actual runtime/migrator sources, not a substitute implementation,
   // so production-mode directory ACL changes never touch the user's live tree.
-  const stagedRoot = path.join(temporaryRoot, 'isolated-project');
-  for (const relative of ['server/package.json', 'server/src/db.js', 'server/src/env.js',
-    'server/src/engines/private-artifact.js', 'server/src/engines/database-storage.js',
-    'server/src/engines/windows-private-artifact.ps1', 'scripts/migrate.mjs']) {
-    const destination = path.join(stagedRoot, relative);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(path.join(ROOT, relative), destination);
-  }
+  const stagedRuntime = stageServerRuntime();
+  const stagedRoot = stagedRuntime.root;
   const stagedData = path.join(stagedRoot, 'server/data');
   const assertPrivateDirectory = () => process.platform === 'win32'
     ? assert.equal(inspectWindowsPermissions([stagedData])[0].private, true)
     : assert.equal(modeOf(stagedData), 0o700);
 
   try {
+    fs.mkdirSync(path.join(stagedRoot, 'scripts'));
+    fs.copyFileSync(path.join(ROOT, 'scripts/migrate.mjs'), path.join(stagedRoot, 'scripts/migrate.mjs'));
     const dbUrl = pathToFileURL(path.join(stagedRoot, 'server', 'src', 'db.js')).href;
     const runtime = spawnSync(process.execPath, ['--input-type=module', '-e',
       `import fs from 'node:fs';
@@ -99,6 +96,7 @@ test('生产模式运行库与迁移器保护默认data和数据库原生权限�
     try { assert.equal(check.prepare('SELECT note FROM private_boundary').get().note, 'isolated sentinel'); }
     finally { check.close(); }
   } finally {
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    try { stagedRuntime.cleanup(); }
+    finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); }
   }
 });

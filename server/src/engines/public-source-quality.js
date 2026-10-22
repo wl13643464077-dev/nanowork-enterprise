@@ -1,3 +1,5 @@
+import { normalizeLocationIntent } from './location-intelligence.js';
+
 const LOCATION_HOST_PATTERNS = Object.freeze([
   /(?:^|\.)openstreetmap\.org$/u,
   /(?:^|\.)openstreetmap\.de$/u,
@@ -38,9 +40,9 @@ const LOCATION_MARKETING_TEXT =
 const LOCATION_AGGREGATION_TEXT =
   /(?:(?:餐厅|饭店|美食).{0,12}(?:推荐榜|排行榜|top\s*\d|靠谱之选|专业测评)|包包回收|回收指南)/iu;
 const RESTAURANT_EVIDENCE_TEXT =
-  /(?:餐饮|餐厅|饭店|门店|商户|菜单|菜品|营业|价格|人均|评价|点评|外卖|堂食|午餐|晚餐|夜宵|火锅|毛血旺|中餐|竞品)/iu;
+  /(?:餐饮|餐厅|饭店|门店|商户|菜单|菜品|营业|价格|人均|评价|点评|外卖|堂食|午餐|晚餐|夜宵|火锅|毛血旺|中餐|竞品|烘焙|面包|蛋糕|甜品|糕点|咖啡|茶饮)/iu;
 const LOCATION_BUSINESS_CONTEXT_TEXT =
-  /(?:餐饮|餐厅|饭店|门店|商户|菜单|菜品|营业|价格|人均|评价|点评|外卖|堂食|午餐|晚餐|夜宵|火锅|毛血旺|中餐|竞品|商圈|客流|交通|公交|地铁|车站|学校|医院|办公|住宅|商场|购物中心|景点|活动场所)/iu;
+  /(?:餐饮|餐厅|饭店|门店|商户|菜单|菜品|营业|价格|人均|评价|点评|外卖|堂食|午餐|晚餐|夜宵|火锅|毛血旺|中餐|竞品|烘焙|面包|蛋糕|甜品|糕点|咖啡|茶饮|商圈|客流|交通|公交|地铁|车站|学校|校区|医院|办公|写字楼|产业园|园区|住宅|社区|居民|街道|商场|购物中心|景点|活动场所)/iu;
 const SENSITIVE_URL_PARAMETER =
   /^(?:api[_-]?key|access[_-]?token|authorization|auth|signature|secret|token|password|passwd|credential)$/iu;
 
@@ -196,14 +198,29 @@ function rejectionReason(
     !isLocationBusinessSourceRelevant(source, task) &&
     !(
       allowUnresolvedToolCandidate &&
-      /来自本次真实WebSearch工具结果.{0,80}受控WebFetch/iu.test(
+      (isProviderContextCandidate(source) || /来自本次真实WebSearch工具结果.{0,80}受控WebFetch/iu.test(
         sourceText(source),
-      )
+      ))
     )
   ) {
     return "not_relevant_to_location_business_task";
   }
   return null;
+}
+
+// Only relax the pre-fetch relevance screen for records assembled by the
+// provider adapter. This does not make a search snippet verified page evidence.
+function isProviderContextCandidate(source) {
+  const provenance = source?.sourceProvenance;
+  const url = parsedHttpUrl(source?.url)?.href;
+  return provenance?.schemaVersion === 'nanowork.web-search-candidate/1'
+    && provenance.provider === '360'
+    && provenance.transport === '360_search_api'
+    && provenance.sourcePath === 'context.web_search_records'
+    && Number.isInteger(provenance.recordIndex)
+    && provenance.recordIndex >= 0
+    && Boolean(url)
+    && provenance.url === url;
 }
 
 function rejectedSourceRecord(source, reason, stage) {
@@ -320,7 +337,7 @@ function controlledCandidateScore(source, task = {}) {
   return score;
 }
 
-export function rankControlledFetchCandidates(sources, { task } = {}) {
+export function rankControlledFetchCandidates(sources, { task, diversifyTopics = false } = {}) {
   const ranked = (Array.isArray(sources) ? sources : [])
     .map((source, index) => ({
       source,
@@ -343,7 +360,48 @@ export function rankControlledFetchCandidates(sources, { task } = {}) {
     perHost.set(host, count + 1);
     output.push(item.source);
   }
-  return [...output, ...overflow];
+  const ordered = [...output, ...overflow];
+  if (!diversifyTopics) return ordered;
+  // 商圈任务：餐厅页优先但不能独占预算。按主题分桶后加权轮转（每轮餐厅 2 席、
+  // 其它客源各 1 席），让写字楼/住宅/学校/交通/商场页面均匀落进 24 条候选池，
+  // 而不是被分数更高的同类商户页全部挤到池外。桶内仍保持分数顺序；
+  // 主题以页面标题/摘要实际内容判定，不以查询标签代替。
+  const buckets = new Map(LOCATION_RESEARCH_TOPICS.map(topic => [topic.key, []]));
+  const untopical = [];
+  for (const item of ordered) {
+    const [primary] = locationResearchTopicsOf(item);
+    if (primary) buckets.get(primary).push(item);
+    else untopical.push(item);
+  }
+  const diverse = [];
+  const quota = { restaurant: 2 };
+  while ([...buckets.values()].some(bucket => bucket.length)) {
+    for (const topic of LOCATION_RESEARCH_TOPICS) {
+      const bucket = buckets.get(topic.key);
+      for (let take = quota[topic.key] || 1; take > 0 && bucket.length; take -= 1) {
+        diverse.push(bucket.shift());
+      }
+    }
+  }
+  return [...diverse, ...untopical];
+}
+
+// 商圈研究六类客源主题：排序时每类先占一席，受控抓取分批时用于判断
+// “后续批次是否还有新主题可补”，避免拿到餐厅正文后仍无意义地把预算烧完。
+export const LOCATION_RESEARCH_TOPICS = Object.freeze([
+  { key: "restaurant", pattern: /(餐厅|餐饮|菜单|饭店)/u },
+  { key: "office", pattern: /(写字楼|办公|产业园|入驻)/u },
+  { key: "residential", pattern: /(住宅|社区|居民|居住)/u },
+  { key: "school", pattern: /(学校|校区|教育)/u },
+  { key: "transit", pattern: /(地铁|公交|交通|车站)/u },
+  { key: "mall", pattern: /(商场|购物中心|商业)/u },
+]);
+
+export function locationResearchTopicsOf(source) {
+  const text = sourceText(source);
+  return LOCATION_RESEARCH_TOPICS
+    .filter(topic => topic.pattern.test(text))
+    .map(topic => topic.key);
 }
 
 function strippedTaskSegment(value) {
@@ -362,10 +420,18 @@ function taskAnchorTerms(task = {}) {
     ...requirement.matchAll(/[“"「『]([^”"」』]{2,60})[”"」』]/gu),
   ].map((match) => match[1]);
   const chunks = [title, ...quoted]
-    .flatMap((value) => value.split(/[\s,，。;；:：·|｜/\\()[\]【】]+/gu))
+    .flatMap((value) => value.split(/[\s,，、。;；:：·|｜/\\()[\]【】]+/gu))
     .map(strippedTaskSegment)
     .filter((value) => value.length >= 2 && value.length <= 24);
   const output = new Set(chunks);
+  const intent = normalizeLocationIntent(`${title}\n${requirement}`);
+  for (const candidate of intent.centerCandidates || []) {
+    if (candidate.length >= 3) output.add(candidate);
+    const localName = intent.city && candidate.startsWith(intent.city)
+      ? candidate.slice(intent.city.length).replace(/^市/u, '')
+      : candidate;
+    if (localName.length >= 3) output.add(localName);
+  }
   for (const chunk of chunks) {
     if (!/(?:广场|商场|购物中心|门店|餐厅|饭店|酒店|大厦|街区)/u.test(chunk)) {
       continue;

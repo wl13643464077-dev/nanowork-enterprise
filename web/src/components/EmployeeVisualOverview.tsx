@@ -13,6 +13,8 @@ import type { EmployeeWorkbenchBusiness, EmployeeWorkbenchProfile } from '../api
 import { Chart, axisStyle, chartAnimation } from './Charts';
 import { employeePortraitUrl } from './EmployeeAvatar';
 import './EmployeeVisualOverview.css';
+import { getUser } from '../api/client';
+import { isPersonalApiUser, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 
 /**
  * 员工工作台「总览」—— 全可视化首屏（v1）。
@@ -39,6 +41,7 @@ function stepTitle(step: string, index: number) {
 }
 
 export default function EmployeeVisualOverview({ profile, business, deptColor }: Props) {
+  const personalApi = isPersonalApiUser(getUser());
   const identity = profile.identity;
   const runtime = profile.runtime || {};
   const portrait = typeof identity.idx === 'number' ? employeePortraitUrl(identity.idx) : null;
@@ -140,16 +143,16 @@ export default function EmployeeVisualOverview({ profile, business, deptColor }:
           <p>{business?.intro || identity.intro || identity.duty}</p>
         </div>
         {business && (
-          <Tooltip title={`${business.basis} ${business.reference}`}>
+          <Tooltip title={personalApi ? PERSONAL_API_PRICING_NOTE : `${business.basis} ${business.reference}`}>
             <div className="evo-roi" aria-label="投入产出对比">
               <div className="evo-roi-side">
                 <span>单次投入</span>
-                <strong>{business.cost.typicalCredits} 积分</strong>
-                <em>¥{business.cost.typicalYuan}</em>
+                <strong>{personalApi ? '个人API计费' : `${business.cost.typicalCredits} 积分`}</strong>
+                <em>{personalApi ? '供应商账户扣费' : `¥${business.cost.typicalYuan}`}</em>
               </div>
               <div className="evo-roi-flow" aria-hidden="true">
                 <i />
-                <b>≈1 : {roiRatio?.toLocaleString()}</b>
+                <b>{personalApi ? '→' : `≈1 : ${roiRatio?.toLocaleString()}`}</b>
                 <i />
               </div>
               <div className="evo-roi-side evo-roi-gain">

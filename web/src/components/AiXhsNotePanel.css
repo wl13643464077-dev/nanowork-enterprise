@@ -106,6 +106,43 @@
 .ai-xhs-note-details > :not(summary) {
   margin-top: 12px;
 }
+.ai-xhs-note-compliance {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 6px;
+}
+.ai-xhs-note-compliance li {
+  line-height: 1.7;
+}
+.ai-xhs-note-compliance li strong {
+  margin-right: 4px;
+}
+.ai-xhs-note-compliance li span {
+  display: block;
+  color: var(--ui-text-2);
+  font-size: 12.5px;
+}
+.ai-xhs-note-commercial {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--ui-border);
+  border-radius: 10px;
+}
+.ai-xhs-note-title-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ai-xhs-note-selling-points {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--ui-text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
 @media (max-width: 520px) {
   .ai-xhs-note-images {
     grid-template-columns: repeat(2, minmax(0, 1fr));

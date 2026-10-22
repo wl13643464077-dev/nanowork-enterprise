@@ -9,6 +9,8 @@
 // 6. 供应商成本单独留账；已保存成果不因结算异常被删除或重新生成；
 // 7. settle 失败不回滚已经交付的业务产物，也不虚构实扣金额，而是保留 hold 待对账。
 
+import { testerExecutionIdentity } from './tester-access.js';
+
 const text = (value) => String(value ?? "").slice(0, 500);
 
 export function twoPhaseBillingSummary({
@@ -164,6 +166,14 @@ export async function executeHeldDelivery({
   let phase = "generate";
   try {
     output = await generate();
+    if (hold.billingMode === 'personal') {
+      try { testerExecutionIdentity({ userId: hold.userId, tenantId: hold.tenantId }); }
+      catch (error) {
+        if (output?.supplierCosts) error.supplierCosts = output.supplierCosts;
+        error.providerUsage = output?.usage;
+        throw error;
+      }
+    }
     phase = "persist";
     delivery = await persist(output);
   } catch (error) {

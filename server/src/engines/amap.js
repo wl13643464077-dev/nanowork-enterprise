@@ -15,6 +15,8 @@
 
 export const AMAP_DEFAULT_BASE_URL = "https://restapi.amap.com";
 export const AMAP_DEFAULT_TIMEOUT_MS = 8_000;
+export const AMAP_REQUEST_INTERVAL_MS = 1_100;
+export const AMAP_QUEUE_TIMEOUT_MS = 60_000;
 export const AMAP_MAX_PAGE_SIZE = 25;
 export const AMAP_MAX_PAGES = 3;
 export const GEO_POI_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -61,8 +63,59 @@ const TRANSIENT_INFOCODES = Object.freeze({
   10019: "服务总QPS超限",
   10020: "Key在该接口的QPS超出限制",
   10021: "同一IP在该服务的QPS超出限制",
+  10022: "服务并发或QPS超出限制",
 });
 const QUOTA_INFOCODES = new Set(["10003", "10044", "10045", "40000", "40002"]);
+const RETRYABLE_QPS_INFOCODES = new Set(["10020", "10021", "10022"]);
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new DOMException("已取消高德请求", "AbortError");
+}
+
+function abortableWait(milliseconds, signal) {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const finish = () => { signal?.removeEventListener("abort", cancel); resolve(); };
+    const timer = setTimeout(finish, milliseconds);
+    const cancel = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); reject(abortReason(signal)); };
+    signal?.addEventListener("abort", cancel, { once: true });
+  });
+}
+
+/** 同一进程、同一 API origin 的所有 Key/客户端共享启动间隔，避免同出口 IP 的 QPS 冲突。 */
+export function createAmapRequestPacer({ intervalMs = AMAP_REQUEST_INTERVAL_MS, nowMs = Date.now, waitFn = abortableWait } = {}) {
+  const origins = new Map();
+  return {
+    async wait(origin, { signal, deadlineAt = Infinity } = {}) {
+      if (signal?.aborted) throw abortReason(signal);
+      const state = origins.get(origin) || { tail: Promise.resolve(), lastStart: null };
+      origins.set(origin, state);
+      const work = state.tail.then(async () => {
+        if (signal?.aborted) throw abortReason(signal);
+        const interval = Math.max(0, Number(typeof intervalMs === "function" ? intervalMs() : intervalMs) || 0);
+        const delay = state.lastStart == null ? 0 : Math.max(0, state.lastStart + interval - nowMs());
+        if (nowMs() + delay >= deadlineAt) throw new DOMException("高德排队等待超时", "TimeoutError");
+        if (delay) await waitFn(delay, signal);
+        if (signal?.aborted) throw abortReason(signal);
+        state.lastStart = nowMs();
+      });
+      state.tail = work.catch(() => {});
+      if (!signal) return work;
+      // 队列中撤销立即返回；轮到这个节点时再次检查，绝不发送已取消请求。
+      return new Promise((resolve, reject) => {
+        const cancel = () => { cleanup(); reject(abortReason(signal)); };
+        const cleanup = () => signal.removeEventListener("abort", cancel);
+        signal.addEventListener("abort", cancel, { once: true });
+        work.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+        if (signal.aborted) cancel();
+      });
+    },
+  };
+}
+
+const sharedRequestPacer = createAmapRequestPacer({
+  intervalMs: () => process.env.NODE_ENV === "test" ? 0 : AMAP_REQUEST_INTERVAL_MS,
+});
 
 export class AmapError extends Error {
   constructor(message, { endpoint, infocode = null, info = null, category = "request", httpStatus = null } = {}) {
@@ -386,6 +439,8 @@ export function createAmapClient({
   baseUrl,
   fetchImpl,
   timeoutMs = AMAP_DEFAULT_TIMEOUT_MS,
+  queueTimeoutMs = AMAP_QUEUE_TIMEOUT_MS,
+  requestPacer = sharedRequestPacer,
   cache,
   now = () => new Date(),
   env = process.env,
@@ -393,6 +448,7 @@ export function createAmapClient({
   const key = apiKey === undefined ? amapWebKey(env) : String(apiKey || "").trim();
   const origin = baseUrl ? amapBaseUrl({ AMAP_BASE_URL: baseUrl }) : amapBaseUrl(env);
   const timeout = Math.max(1_000, Math.min(30_000, Number(timeoutMs) || AMAP_DEFAULT_TIMEOUT_MS));
+  const queueTimeout = Math.max(1, Math.min(120_000, Number(queueTimeoutMs) || AMAP_QUEUE_TIMEOUT_MS));
   const cacheStore = resolveCache(cache);
 
   const unavailable = (reason = AMAP_UNCONFIGURED_REASON) => ({
@@ -413,60 +469,57 @@ export function createAmapClient({
       if (value == null || value === "") continue;
       url.searchParams.set(name, String(value));
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    const signals = [controller.signal];
-    if (signal) signals.push(signal);
-    const fetchedAt = now().toISOString();
-    const id = requestId();
-    runtimeState.callCount += 1;
-    let payload;
+    const deadlineAt = Date.now() + queueTimeout + timeout;
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(new DOMException("高德请求总等待超时", "TimeoutError")), queueTimeout + timeout);
+    const totalSignal = signal ? AbortSignal.any([signal, deadlineController.signal]) : deadlineController.signal;
+    const safeErrorText = value => redactKey(String(value || "")).split(key).join("[已脱敏]");
     try {
-      let response;
-      try {
-        response = await fetcher(url.toString(), {
-          method: "GET",
-          headers: { Accept: "application/json" },
-          signal: AbortSignal.any(signals),
-        });
-      } catch (error) {
-        const aborted = error?.name === "AbortError" || controller.signal.aborted;
-        throw new AmapError(
-          aborted ? `高德请求超时（${timeout}ms）` : `高德请求失败：${redactKey(error?.message || error)}`,
-          { endpoint, category: "transient" },
-        );
-      }
-      if (!response?.ok) {
-        throw new AmapError(`高德HTTP ${response?.status ?? "?"}`, {
-          endpoint,
-          category: Number(response?.status) === 429 ? "transient" : "request",
-          httpStatus: Number(response?.status) || null,
-        });
-      }
-      try {
-        payload = await response.json();
-      } catch {
-        throw new AmapError("高德响应不是合法JSON", { endpoint, category: "request" });
+      for (let attempt = 0; attempt <= 2; attempt += 1) {
+        await requestPacer.wait(origin, { signal: totalSignal, deadlineAt });
+        if (totalSignal.aborted) throw abortReason(totalSignal);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(new DOMException("高德网络请求超时", "TimeoutError")), timeout);
+        const fetchSignal = AbortSignal.any([totalSignal, controller.signal]);
+        const fetchedAt = now().toISOString();
+        const id = requestId();
+        runtimeState.callCount += 1;
+        let payload;
+        try {
+          const response = await fetcher(url.toString(), {
+            method: "GET", headers: { Accept: "application/json" }, signal: fetchSignal,
+          });
+          if (!response?.ok) throw new AmapError(`高德HTTP ${response?.status ?? "?"}`, {
+            endpoint, category: Number(response?.status) === 429 ? "transient" : "request", httpStatus: Number(response?.status) || null,
+          });
+          try { payload = await response.json(); }
+          catch { throw new AmapError("高德响应不是合法JSON", { endpoint, category: "request" }); }
+        } catch (error) {
+          if (error instanceof AmapError) throw error;
+          throw new AmapError(signal?.aborted ? "高德请求已取消" : fetchSignal.aborted
+            ? `高德请求超时（${timeout}ms）` : `高德请求失败：${safeErrorText(error?.message || error)}`,
+          { endpoint, category: signal?.aborted ? "cancelled" : "transient" });
+        } finally { clearTimeout(timer); }
+        if (String(payload?.status) !== "1") {
+          const infocode = str(payload?.infocode, 12);
+          const info = safeErrorText(str(payload?.info, 200));
+          const classified = classifyAmapInfocode(infocode);
+          const error = new AmapError(`高德${classified.category === "blocked" ? "凭证/配额" : ""}错误 ${infocode || "?"}：${classified.message || info || "未知错误"}`,
+            { endpoint, infocode, info, category: classified.category });
+          noteFailure(error, fetchedAt);
+          if (RETRYABLE_QPS_INFOCODES.has(infocode) && attempt < 2 && !totalSignal.aborted) continue;
+          throw error;
+        }
+        noteSuccess(fetchedAt);
+        return { payload, source: { provider: "amap", endpoint, fetchedAt, requestId: id, requestAttempts: attempt + 1 } };
       }
     } catch (error) {
-      noteFailure(error, fetchedAt);
-      throw error;
+      const safe = error instanceof AmapError ? error : new AmapError(signal?.aborted ? "高德请求已取消" : "高德请求排队或执行超时", { endpoint, category: signal?.aborted ? "cancelled" : "transient" });
+      noteFailure(safe, now().toISOString());
+      throw safe;
     } finally {
-      clearTimeout(timer);
+      clearTimeout(deadlineTimer);
     }
-    if (String(payload?.status) !== "1") {
-      const infocode = str(payload?.infocode, 12);
-      const info = str(payload?.info, 200);
-      const classified = classifyAmapInfocode(infocode);
-      const error = new AmapError(
-        `高德${classified.category === "blocked" ? "凭证/配额" : ""}错误 ${infocode || "?"}：${classified.message || info || "未知错误"}`,
-        { endpoint, infocode, info, category: classified.category },
-      );
-      noteFailure(error, fetchedAt);
-      throw error;
-    }
-    noteSuccess(fetchedAt);
-    return { payload, source: { provider: "amap", endpoint, fetchedAt, requestId: id } };
   }
 
   async function withCache(cacheKey, endpoint, loader) {
@@ -537,7 +590,7 @@ export function createAmapClient({
           { ...baseParams, offset: size, page, extensions: "all" },
           { signal },
         );
-        requestCount += 1;
+        requestCount += source.requestAttempts || 1;
         if (!firstSource) firstSource = source;
         const rows = Array.isArray(payload?.pois) ? payload.pois : [];
         if (total == null) total = num(payload?.count);

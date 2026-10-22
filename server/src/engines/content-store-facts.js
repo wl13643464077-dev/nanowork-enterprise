@@ -1,4 +1,5 @@
 import { q } from '../db.js';
+import { campaignBrandIdentity, isPlatformBrandStamp } from './brand-knowledge-pack.js';
 import { curStore, defaultStoreId } from './store-scope.js';
 
 // ===== 门店事实包（Store Fact Pack）=====
@@ -518,6 +519,36 @@ function computeMissing(facts) {
     .map(([, label]) => label);
 }
 
+function applyBrandPackStoreName(pack) {
+  if (!pack || pack.degraded) return pack;
+  let identity = null;
+  try {
+    identity = campaignBrandIdentity(pack.tenantId);
+  } catch {
+    identity = null;
+  }
+  const brandName = String(identity?.brandName || '').replace(/\s+/gu, ' ').trim();
+  const stamped = isPlatformBrandStamp(pack.storeName);
+  if (!brandName) {
+    if (!stamped) return pack;
+    const facts = (pack.facts || []).filter((fact) => fact?.kind !== 'store_name');
+    return { ...pack, storeName: null, facts, missing: computeMissing(facts) };
+  }
+  if (!stamped && pack.storeName === brandName) return pack;
+  const facts = (pack.facts || []).filter((fact) => fact?.kind !== 'store_name');
+  facts.unshift(makeFact({
+    id: factId('kb_docs', pack.tenantId, 'brand_store_name'),
+    kind: 'store_name',
+    claim: `门店名称「${brandName}」`,
+    value: brandName,
+    source: 'kb_docs',
+    sourceId: pack.tenantId,
+    freshness: pack.generatedAt ? String(pack.generatedAt).slice(0, 10) : null,
+  }));
+  const ordered = orderFacts(facts);
+  return { ...pack, storeName: brandName, facts: ordered, missing: computeMissing(ordered) };
+}
+
 /**
  * 构造门店事实包。永不抛错：查询失败返回空包（degraded:true）。
  *
@@ -527,12 +558,14 @@ function computeMissing(facts) {
  * @param {string[]} [options.dishNames] 调用方点名的菜品，优先作为招牌菜
  * @param {number} [options.limit=24] 事实条数上限
  * @param {boolean} [options.includeReviews=true] 是否带顾客评价原句（内部证据）
+ * @param {boolean} [options.includeBrandNotes=true] 是否带泛知识库品牌资料；照片创作只需门店主数据时关闭
  */
 export function buildContentStoreFactPack(tenantId, {
   storeId = null,
   dishNames = [],
   limit = 24,
   includeReviews = true,
+  includeBrandNotes = true,
 } = {}) {
   const generatedAt = new Date().toISOString();
   const tid = Number(tenantId);
@@ -547,14 +580,14 @@ export function buildContentStoreFactPack(tenantId, {
     const dishes = dishFacts(tid, store, { dishNames, limit: cap });
     facts.push(...dishes.facts);
     facts.push(...reviewFacts(tid, store, includeReviews !== false));
-    facts.push(...brandNoteFacts(tid));
+    if (includeBrandNotes !== false) facts.push(...brandNoteFacts(tid));
     const presentKinds = new Set(facts.map(fact => fact.kind));
     facts.push(...onboardingFacts(tid, parseOnboardingAnswers(tid), {
       hasDishes: dishes.hasDishes,
       presentKinds,
     }));
     const ordered = orderFacts(facts).slice(0, cap);
-    return {
+    return applyBrandPackStoreName({
       tenantId: tid,
       storeId: store ? Number(store.id) : null,
       storeName: store ? text(store.name, 80) || null : null,
@@ -563,7 +596,7 @@ export function buildContentStoreFactPack(tenantId, {
       facts: ordered,
       missing: computeMissing(ordered),
       generatedAt,
-    };
+    });
   } catch (error) {
     return emptyPack(tid, generatedAt, {
       degraded: true,

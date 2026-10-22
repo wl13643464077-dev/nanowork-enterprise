@@ -1,3 +1,4 @@
+import * as personalBillingCopy from "../../web/src/components/personalApiBilling.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -134,6 +135,7 @@ function harness(file, initialProps, responses = {}) {
   const module = { exports: {} };
   new Function("require", "module", "exports", compiled)(
     (name) => {
+      if (name === "./personalApiBilling.js") return personalBillingCopy;
       if (name === "react") return hooks;
       if (name === "react/jsx-runtime")
         return { jsx, jsxs: jsx, Fragment: "Fragment" };
@@ -1643,4 +1645,24 @@ test("小红书业务采纳已保存但经验记录失败时可单独重试且�
     byName(tree, "Tag").some((node) => node.props.children === "已采纳"),
     true,
   );
+});
+
+test("测试员带货报价和小红书账单使用个人API费用，不展示平台积分预占", async () => {
+  const user = { accountType: "tester", role: "boss" };
+  const video = harness("components/AiSalesVideoPanel.tsx", videoProps, {
+    user, get: () => ({ ready: true, durationSeconds: 15, estimatedMaxCredits: 330 }),
+  });
+  const videoTree = await video.mount();
+  const quote = byName(videoTree, "NativeEmployeeChat")[0].props.mediaQuote;
+  assert.match(quote, /API Key.*供应商账户扣除/);
+  assert.doesNotMatch(quote, /330|积分|预占|余额不足/);
+  const job = { id: 120, status: "success", decision: "pending", brandName: "测试店", output: { title: "测试结果", body: "真实存储结果", tags: [], firstComment: "", imagePlan: [] },
+    files: [], fileIds: [], billing: { state: "settled", chargedCredits: 0, costYuan: 0.125 } };
+  const xhs = harness("components/AiXhsNotePanel.tsx", { open: true, embedded: true, onOpenChange() {} }, {
+    user, get: url => url.endsWith("/jobs") ? [job] : job,
+  });
+  const xhsTree = await deliverXhs(xhs, job.id);
+  const visible = all(xhsTree, node => node.props?.className === "ai-xhs-note-billing").map(node => JSON.stringify(node.props.children)).join(" ");
+  assert.match(visible, /个人API计费.*0\.1250/);
+  assert.doesNotMatch(visible, /文案费用：0|积分|预授权/);
 });

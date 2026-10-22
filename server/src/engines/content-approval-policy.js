@@ -1,3 +1,5 @@
+import { isTesterBusinessActor } from './tester-access.js';
+
 const OWNER_REVIEW = new Set(['owner_review', '老板审核']);
 const MANAGER_REVIEW = new Set([
   'manager_review',
@@ -33,6 +35,7 @@ export function normalizeEmployeeApprovalMode(value) {
  * 损坏或未知模式按老板专审处理，避免脏数据把权限静默放宽。
  */
 export function resolveEmployeeReviewAccess({
+  actor = null,
   role,
   approvalMode = 'default',
   approvalLevel = null,
@@ -44,9 +47,9 @@ export function resolveEmployeeReviewAccess({
     || String(approvalLevel || '') === 'boss'
     || String(riskLevel || '') === 'high';
   const allowedRoles = bossOnly ? ['boss'] : [...EMPLOYEE_MANAGEMENT_REVIEW_ROLES];
-  const allowed = bossOnly
+  const allowed = isTesterBusinessActor(actor) || (bossOnly
     ? String(role || '') === 'boss'
-    : EMPLOYEE_MANAGEMENT_REVIEW_ROLE_SET.has(String(role || ''));
+    : EMPLOYEE_MANAGEMENT_REVIEW_ROLE_SET.has(String(role || '')));
   return {
     allowed,
     allowedRoles,
@@ -127,13 +130,14 @@ export function lockedContentEmployeeRunApprovalPolicy(snapshot) {
 }
 
 export function canReviewContentEmployeeRun(user, snapshot) {
-  if (!CONTENT_EMPLOYEE_REVIEWER_ROLES.has(user?.role)) return false;
+  if (!CONTENT_EMPLOYEE_REVIEWER_ROLES.has(user?.role) && !isTesterBusinessActor(user)) return false;
   return contentEmployeeRunReviewAccess(user, snapshot).allowed;
 }
 
 export function contentEmployeeRunReviewAccess(user, snapshot) {
   const policy = lockedContentEmployeeRunApprovalPolicy(snapshot);
   return resolveEmployeeReviewAccess({
+    actor: user,
     role: user?.role,
     approvalMode: policy.mode,
     approvalLevel: policy.level,

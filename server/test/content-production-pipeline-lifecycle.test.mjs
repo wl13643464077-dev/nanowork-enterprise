@@ -86,7 +86,7 @@ function runtimeContextBuilder() {
   };
 }
 
-function lifecycleFixture({ invoke, classifyRecovery, releaseUndeliveredHolds } = {}) {
+function lifecycleFixture({ invoke, classifyRecovery, releaseUndeliveredHolds, providerHooks = {} } = {}) {
   const db = new DatabaseSync(":memory:");
   const now = testClock();
   const repository = createSqliteContentProductionPipelineRepository({
@@ -122,6 +122,7 @@ function lifecycleFixture({ invoke, classifyRecovery, releaseUndeliveredHolds } 
       classifyRecovery,
       releaseUndeliveredHolds,
       buildRuntimeContext: runtimeContextBuilder(),
+      ...providerHooks,
       now,
     });
   const create = (pipeline, tenantId = 7) =>
@@ -366,4 +367,40 @@ test("ensureSchema将旧CHECK安全迁移为paused/cancelled且保留数据", (t
   ).run();
   assert.equal(repository.getJob(7, 1).status, "paused");
   assert.equal(repository.getStation(7, 1, 0).status, "cancelled");
+});
+
+
+test("原供应商绑定持久化，resume、retry和进程恢复统一进入该任务上下文", async (t) => {
+  const entries = [];
+  let selected = "360", active = null, failOnce = true;
+  const fixture = lifecycleFixture({
+    providerHooks: {
+      bindProvider: ({ tenantId, createdBy }) => ({ tenantId, ownerUserId: createdBy, providerId: selected }),
+      runWithJobProvider: async (job, action) => {
+        active = job.settings.providerBinding.providerId;
+        entries.push({ id: job.id, provider: active });
+        try { return await action(); } finally { active = null; }
+      },
+    },
+    async invoke(input) {
+      assert.equal(active, "360");
+      if (failOnce) { failOnce = false; throw new Error("isolated first attempt failure"); }
+      const output = structuredClone(VALID_CONTENT_EMPLOYEE_OUTPUTS[input.employeeIdx]);
+      return { data: output, artifacts: [artifact(input.employeeIdx, output)], tokens: 10 };
+    },
+  });
+  t.after(() => fixture.db.close());
+  const original = fixture.makePipeline();
+  const created = fixture.create(original);
+  const stale = fixture.create(original);
+  assert.equal(fixture.repository.getJob(7, created.id).settings.providerBinding.providerId, "360");
+  selected = "openlux";
+  assert.equal((await original.resume({ tenantId: 7, pipelineId: created.id })).status, "failed");
+  assert.equal((await original.retry({ tenantId: 7, pipelineId: created.id })).status, "awaiting_approval");
+  fixture.repository.claimStation(7, stale.id, 0);
+  fixture.now.advance(CONTENT_PRODUCTION_INTERRUPTED_STALE_MS + 1_000);
+  const restarted = fixture.makePipeline();
+  const outcomes = await restarted.recoverStale({ tenantId: 7, source: "startup_recovery" });
+  assert.equal(outcomes[0].action, "resumed_once");
+  assert.deepEqual(entries, [{ id: created.id, provider: "360" }, { id: created.id, provider: "360" }, { id: stale.id, provider: "360" }]);
 });

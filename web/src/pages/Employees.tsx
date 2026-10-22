@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Alert, Button, Empty, Input, Select, Skeleton, Tooltip } from 'antd';
 import { AppstoreOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, getUser } from '../api/client';
+import { isPersonalApiUser, PERSONAL_API_PRICING_NOTE } from '../components/personalApiBilling.js';
 import { AnimatedNumber } from '../components/Kit';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeTeamMatch, { type MatchedTeamMember } from '../components/EmployeeTeamMatch';
@@ -95,6 +96,7 @@ function pulseStatusClass(item: any) {
 }
 
 export default function Employees() {
+  const personalApi = isPersonalApiUser(getUser());
   const [params, setParams] = useSearchParams();
   const [catalog, setCatalog] = useState<EmployeeCatalog>({ total: 0, groups: [], employees: [] });
   const [loading, setLoading] = useState(true);
@@ -618,10 +620,10 @@ export default function Employees() {
                     )}
                     {employee.business && (
                       <Tooltip
-                        title={`${employee.business.basis} 参考区间 ¥${fmtYuan(employee.business.value[0])}–${fmtYuan(employee.business.value[1])}${employee.business.unit.replace('元', '')}。${employee.business.cost.typicalBasis}；${employee.business.cost.note} ${employee.business.reference}`}
+                        title={personalApi ? PERSONAL_API_PRICING_NOTE : `${employee.business.basis} 参考区间 ¥${fmtYuan(employee.business.value[0])}–${fmtYuan(employee.business.value[1])}${employee.business.unit.replace('元', '')}。${employee.business.cost.typicalBasis}；${employee.business.cost.note} ${employee.business.reference}`}
                       >
                         <div className="employee-roi" aria-label="投入产出参考">
-                          <span className="employee-roi-cost">约 {employee.business.cost.typicalCredits} 积分/次</span>
+                          <span className="employee-roi-cost">{personalApi ? '个人API计费' : `约 ${employee.business.cost.typicalCredits} 积分/次`}</span>
                           <span className="employee-roi-arrow" aria-hidden="true">
                             →
                           </span>

@@ -55,6 +55,8 @@ test("team-plan 失败只展示真实失败、退款与请求证据，不把模�
   );
 
   assert.match(component, /真实上游暂时异常，队长拆解未完成/);
+  assert.match(component, /等待AI生成超时，分工尚未完成/);
+  assert.match(component, /'AI_PROVIDER_TIMEOUT', 'REQUEST_TIMEOUT', 'provider_timeout'/);
   assert.match(component, /预授权已全额退回（已退款），本次拆解未扣费/);
   assert.match(component, /本次没有生成拆解产出，系统未使用模板或降级底稿代替/);
   assert.match(component, /请求编号：/);

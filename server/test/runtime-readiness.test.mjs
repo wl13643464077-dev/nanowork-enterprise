@@ -13,7 +13,10 @@ for (const file of [DBP, `${DBP}-wal`, `${DBP}-shm`]) fs.rmSync(file, { force: t
 process.env.NANOWORK_DB = DBP;
 process.env.ENABLE_SCHEDULER = 'false';
 for (const key of [
+  'AI360_API_KEY',
+  'NANOWORK_AI_PROVIDER',
   'YUNWU_API_KEY',
+  'YUNWU_BASE_URL',
   'ANTHROPIC_API_KEY',
   'TINYFISH_API_KEY',
   'CONTENTCREW_CLAUDE_PATH',
@@ -173,14 +176,21 @@ test('无凭证矩阵诚实阻断模型生成，不用本地替代文本冒充�
   assert.equal(channel(afterExplicitFailure, 'ai').lastCheck.scope, 'process');
 });
 
-test('只有当前配置最近一次显式测试通过才叫 connected，失败、过期和配置变化均失效', () => {
+test('AI 配置完整即可直接使用且可交付人工审阅，诊断只决定 verification 与 connected', () => {
   clearRuntimeReadinessChecks();
   process.env.YUNWU_API_KEY = 'sk-runtime-readiness-one';
   setConfig('yunwu_base_url', 'https://93.184.216.34/v1?token=config-secret');
 
   let matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 1_000 }));
-  assert.equal(channel(matrix, 'ai').configured, true);
-  assert.equal(channel(matrix, 'ai').effective, 'configured_unverified');
+  let ai = channel(matrix, 'ai');
+  assert.equal(ai.configured, true);
+  assert.equal(ai.effective, 'configured_ready');
+  assert.equal(ai.verification, 'never');
+  assert.equal(ai.verified, false);
+  assert.equal(ai.connected, false);
+  assert.equal(ai.canDeliverForHumanReview, true);
+  assert.match(ai.capabilitySummary, /供应商回执.*质量与账务门/u);
+  assert.match(ai.nextAction, /可直接使用.*实际调用上游.*可选/u);
 
   const fingerprint = runWithTenant(1, () => runtimeReadinessConfigFingerprint('ai', { tenantId: 1 }));
   recordRuntimeReadinessCheck('ai', {
@@ -207,9 +217,12 @@ test('只有当前配置最近一次显式测试通过才叫 connected，失败�
   assert.doesNotMatch(JSON.stringify(matrix), /password|do-not-leak|config-secret/);
 
   matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 20_000 }));
-  assert.equal(channel(matrix, 'ai').verified, false);
-  assert.equal(channel(matrix, 'ai').verification, 'stale');
-  assert.notEqual(channel(matrix, 'ai').effective, 'connected');
+  ai = channel(matrix, 'ai');
+  assert.equal(ai.verified, false);
+  assert.equal(ai.verification, 'stale');
+  assert.equal(ai.effective, 'configured_ready');
+  assert.equal(ai.connected, false);
+  assert.equal(ai.canDeliverForHumanReview, true);
 
   recordRuntimeReadinessCheck('ai', {
     tenantId: 1,
@@ -220,8 +233,11 @@ test('只有当前配置最近一次显式测试通过才叫 connected，失败�
     error: 'invalid token sk-runtime-readiness-secret-must-not-leak',
   });
   matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 22_000 }));
-  assert.equal(channel(matrix, 'ai').verification, 'failed');
-  assert.equal(channel(matrix, 'ai').effective, 'configured_unverified');
+  ai = channel(matrix, 'ai');
+  assert.equal(ai.verification, 'failed');
+  assert.equal(ai.effective, 'configured_ready');
+  assert.equal(ai.connected, false);
+  assert.equal(ai.canDeliverForHumanReview, true);
   assert.doesNotMatch(JSON.stringify(matrix), /runtime-readiness-secret/);
 
   recordRuntimeReadinessCheck('ai', {
@@ -232,8 +248,10 @@ test('只有当前配置最近一次显式测试通过才叫 connected，失败�
   });
   process.env.YUNWU_API_KEY = 'sk-runtime-readiness-two';
   matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 24_000 }));
-  assert.equal(channel(matrix, 'ai').verification, 'stale');
-  assert.notEqual(channel(matrix, 'ai').effective, 'connected');
+  ai = channel(matrix, 'ai');
+  assert.equal(ai.verification, 'stale');
+  assert.equal(ai.effective, 'configured_ready');
+  assert.equal(ai.connected, false);
 });
 
 test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFish 密钥纳入配置指纹', () => {
@@ -251,7 +269,10 @@ test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFis
     let matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 1_000 }));
     let search = channel(matrix, 'web_search');
     assert.equal(search.configured, true);
-    assert.equal(search.effective, 'configured_unverified');
+    assert.equal(search.effective, 'configured_ready');
+    assert.equal(search.verification, 'never');
+    assert.equal(search.connected, false);
+    assert.match(search.nextAction, /可直接使用.*实际调用联网供应商.*可选/u);
     assert.equal(search.details.preferredProvider, 'tinyfish');
     assert.equal(search.details.fallbackProvider, 'claude_websearch');
     assert.equal(search.details.automaticFallback, true);
@@ -280,7 +301,8 @@ test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFis
     matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1, now: 3_000 }));
     search = channel(matrix, 'web_search');
     assert.equal(search.verification, 'stale');
-    assert.notEqual(search.effective, 'connected');
+    assert.equal(search.effective, 'configured_ready');
+    assert.equal(search.connected, false);
     assert.doesNotMatch(JSON.stringify(search), /tinyfish-runtime-readiness-(?:one|two)/u);
 
     clearRuntimeReadinessChecks();
@@ -292,7 +314,7 @@ test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFis
     const tinyfishRoute = search.details.providerRoute.find(item => item.id === 'tinyfish');
     const claudeRoute = search.details.providerRoute.find(item => item.id === 'claude_websearch');
     assert.equal(search.configured, true);
-    assert.equal(search.effective, 'configured_unverified');
+    assert.equal(search.effective, 'configured_ready');
     assert.equal(tinyfishRoute.ready, false);
     assert.equal(claudeRoute.configured, true);
     assert.equal(claudeRoute.ready, true);
@@ -303,6 +325,51 @@ test('联网检索展示 TinyFish 首选与 Claude 自动回退，并将 TinyFis
     else process.env.TINYFISH_API_KEY = previous.tinyfish;
     if (previous.yunwu === undefined) delete process.env.YUNWU_API_KEY;
     else process.env.YUNWU_API_KEY = previous.yunwu;
+    if (previous.claudePath === undefined) delete process.env.CONTENTCREW_CLAUDE_PATH;
+    else process.env.CONTENTCREW_CLAUDE_PATH = previous.claudePath;
+  }
+});
+
+test('360 联网回退使用现有 Key 与 API，无需 Claude CLI 或手动诊断作为可用门', () => {
+  const previous = {
+    provider: process.env.NANOWORK_AI_PROVIDER,
+    key360: process.env.AI360_API_KEY,
+    tinyfish: process.env.TINYFISH_API_KEY,
+    claudePath: process.env.CONTENTCREW_CLAUDE_PATH,
+  };
+  try {
+    clearRuntimeReadinessChecks();
+    process.env.NANOWORK_AI_PROVIDER = '360';
+    process.env.AI360_API_KEY = 'runtime-360-key-must-never-leak';
+    process.env.TINYFISH_API_KEY = '';
+    process.env.CONTENTCREW_CLAUDE_PATH = '';
+
+    const matrix = runWithTenant(1, () => buildRuntimeReadiness({ tenantId: 1 }));
+    const search = channel(matrix, 'web_search');
+    const fallback = search.details.providerRoute.find(item => item.id === 'claude_websearch');
+    assert.equal(search.configured, true);
+    assert.equal(search.effective, 'configured_ready');
+    assert.equal(search.verification, 'never');
+    assert.equal(search.verified, false);
+    assert.equal(search.connected, false);
+    assert.deepEqual(search.missing, []);
+    assert.equal(fallback.configured, true);
+    assert.equal(fallback.ready, true);
+    assert.equal(fallback.details.transport, '360_search_api');
+    assert.equal(fallback.details.cliRequired, false);
+    assert.equal(fallback.details.cliReady, false);
+    assert.equal(fallback.details.cliPath, null);
+    assert.match(fallback.reason, /现有 360 Key.*360 Claude WebSearch API.*无需 Claude CLI/u);
+    assert.match(search.description, /现有 360 Key.*360 Claude WebSearch API.*可直接使用.*无需 Claude CLI/u);
+    assert.doesNotMatch(`${search.description}${search.nextAction}${search.missing.join('')}`, /YUNWU|Yunwu|云雾/u);
+    assert.doesNotMatch(JSON.stringify(search), /runtime-360-key-must-never-leak/u);
+  } finally {
+    if (previous.provider === undefined) delete process.env.NANOWORK_AI_PROVIDER;
+    else process.env.NANOWORK_AI_PROVIDER = previous.provider;
+    if (previous.key360 === undefined) delete process.env.AI360_API_KEY;
+    else process.env.AI360_API_KEY = previous.key360;
+    if (previous.tinyfish === undefined) delete process.env.TINYFISH_API_KEY;
+    else process.env.TINYFISH_API_KEY = previous.tinyfish;
     if (previous.claudePath === undefined) delete process.env.CONTENTCREW_CLAUDE_PATH;
     else process.env.CONTENTCREW_CLAUDE_PATH = previous.claudePath;
   }
@@ -395,7 +462,8 @@ test('readiness GET 严禁联网，AI 显式测试成败会更新进程内证据
     assert.equal(result.response.status, 200);
     assert.equal(fetchCalls, 1);
     assert.equal(channel(result.json, 'ai').verification, 'stale');
-    assert.notEqual(channel(result.json, 'ai').effective, 'connected');
+    assert.equal(channel(result.json, 'ai').effective, 'configured_ready');
+    assert.equal(channel(result.json, 'ai').connected, false);
 
     setConfig('yunwu_base_url', 'https://93.184.216.34/v1');
     globalThis.fetch = async () => {
@@ -407,7 +475,8 @@ test('readiness GET 严禁联网，AI 显式测试成败会更新进程内证据
     assert.equal(result.json.ok, false);
     result = await request(base, '/admin/runtime-readiness');
     assert.equal(channel(result.json, 'ai').verification, 'failed');
-    assert.notEqual(channel(result.json, 'ai').effective, 'connected');
+    assert.equal(channel(result.json, 'ai').effective, 'configured_ready');
+    assert.equal(channel(result.json, 'ai').connected, false);
     assert.doesNotMatch(JSON.stringify(result.json), /sk-upstream-secret/);
   });
 });

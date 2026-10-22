@@ -87,10 +87,13 @@ test('独白完整schema正例，不补缺字段、不忽略额外控制字段',
   timeString.shots[0].start = '0';
   assert.equal(validateThirtySecondScript(timeString).ok, false);
 });
-test('字幕必须对应口播，风控异常不可按未命中放行', () => {
+test('字幕与口播不一致时按口播原文生成字幕并提示，风控异常不可按未命中放行', () => {
   const bad = validScript();
   bad.shots[0].subtitle = '这里换成另一段话。';
-  assert.equal(validateThirtySecondScript(bad).ok, false);
+  const normalized = validateThirtySecondScript(bad);
+  assert.equal(normalized.ok, true, JSON.stringify(normalized.errors));
+  assert.equal(normalized.script.shots[0].subtitle, bad.shots[0].voiceover, '字幕是口播的派生物，按口播原文烧录');
+  assert.ok(normalized.warnings.some(item => /字幕与口播不一致/u.test(item)));
   assert.equal(
     validateThirtySecondScript(validScript(), {
       scanText: () => {
@@ -99,6 +102,30 @@ test('字幕必须对应口播，风控异常不可按未命中放行', () => {
     }).ok,
     false,
   );
+});
+
+test('仅规范化明确内部字段注记，保留普通括号字句及原始对象，仍校验缺字段和事实', () => {
+  const original=validScript();
+  const before=structuredClone(original);
+  original.shots[0].voiceover=original.shots[0].voiceover.replace(original.hook_3s,original.hook_3s+'（brandName）');
+  original.shots[0].subtitle=original.shots[0].voiceover;
+  original.cta+='(storeName)';
+  const annotated=structuredClone(original);
+  const normalized=validateThirtySecondScript(original);
+  assert.equal(normalized.ok,true,JSON.stringify(normalized.errors));
+  assert.equal(normalized.script.shots[0].voiceover,before.shots[0].voiceover);
+  assert.equal(normalized.script.cta,before.cta);
+  assert.deepEqual(original,annotated,'不改写原始模型对象');
+  assert.equal(normalized.normalizations.length,3);
+  assert.ok(normalized.warnings.some(value=>/内部字段注记/.test(value)));
+  const ordinary=validScript();ordinary.shots[0].visual+='（仅做缓慢运镜）';
+  ordinary.shots[0].voiceover=ordinary.shots[0].voiceover.replace('。','（微辣）。');ordinary.shots[0].subtitle=ordinary.shots[0].voiceover;
+  const kept=validateThirtySecondScript(ordinary);
+  assert.match(kept.script.shots[0].voiceover,/（微辣）/);
+  assert.match(kept.script.shots[0].visual,/（仅做缓慢运镜）/);
+  assert.equal(kept.normalizations.length,0);
+  const missing=validScript();delete missing.shots[0].voiceover;
+  assert.equal(validateThirtySecondScript(missing).ok,false);
 });
 test('自然到品牌店邀请与用户明确品牌编号可对应，不能借此放过未知价格地址或伪造声明', () => {
   const script = validScript();
@@ -171,15 +198,34 @@ test('独白提示面向食客，镜头留在visual，本次品牌优先且不�
   assert.match(prompt.system, /允许环境音和画面留白/u);
   assert.match(prompt.system, /本次用户明确的品牌与素材范围优先/u);
   assert.match(prompt.system, /没有已证实的优惠或渠道/u);
-  assert.match(prompt.system, /不要把一句话跨过15秒剪辑边界/u);
-  assert.match(prompt.system, /不是验收字数门/u);
-  assert.match(prompt.system, /20–35字左右的一两句/u);
+  assert.match(prompt.system, /说完保留轻微环境音/u);
+  assert.match(prompt.system, /每段写两句，合计约20–35字/u);
+  assert.match(prompt.system, /全片品牌邀约只说一次/u);
+  assert.match(prompt.system, /cta原样摘取末段口播的收尾句/u);
+  assert.match(prompt.system, /静态照片不能证明上菜、烹饪或顾客聚餐的过程/u);
+  assert.match(prompt.system, /不得写成已经发生的事实/u);
+  assert.match(prompt.system, /可使用未来邀约语气/u);
   assert.match(prompt.system, /不固定以“欢迎到店”结尾/u);
   assert.match(prompt.system, /不按每字定速/u);
-  assert.match(prompt.system, /本次原生声音规则优先于技能中的旧制作方法/u);
-  assert.match(prompt.system, /默认不照搬强营销钩子或社会证明/u);
-  assert.match(prompt.system, /仅本次用户明确要求促销时参考/u);
-  assert.doesNotMatch(prompt.system + prompt.user, /53–67|各\s*53|写完先数|每句不超过\s*18|每秒3\.5|中低音区/u);
+  assert.match(prompt.system, /用户已确认的台词不擅自更改/u);
+  assert.match(prompt.system, /自然开场首句或前缀/u);
+  assert.match(prompt.system, /不必写成提问或悬念/u);
+  assert.match(prompt.system, /每段固定一个视角/u);
+  assert.doesNotMatch(prompt.system + prompt.user, /53–67|各\s*53|写完先数|每句不超过\s*18|每秒3\.5|中低音区|0\.3秒|换气|14秒|社会证明|强营销/u);
+  assert.doesNotMatch(prompt.system + prompt.user, /给出真实、简洁的用餐邀请|接住用餐意愿|左右的一两句|不是验收字数门/u);
+  assert.match(buildAiSalesVideoScriptPrompt({durationSeconds:30}).system, /不要把一句话跨过15秒剪辑边界/u);
+});
+test('自然陈述开场与短邀约可交付，写作字数建议不升级为硬失败', () => {
+  const value = validScript(), voiceover = '周末约朋友，到店坐坐。';
+  value.hook_3s = '周末约朋友'; value.cta = '到店坐坐。';
+  value.shots = [{...value.shots[0],voiceover,subtitle:voiceover}];
+  value.total_chars = countSpeechChars(voiceover); value.estimated_seconds = 6;
+  const before = structuredClone(value), checked = validateAiSalesVideoScript(value);
+  assert.equal(checked.ok, true, JSON.stringify(checked.errors));
+  assert.ok(countSpeechChars(voiceover) < 20);
+  assert.equal(checked.script.shots[0].voiceover, voiceover);
+  assert.deepEqual(value, before, '检查不能将已确认台词改成模板问句');
+  assert.match(aiSalesVideoScriptResponseSchema().schema.properties.hook_3s.description, /不必提问/u);
 });
 test('登记事实声明不能伪造，顾客原句也不能偷偷写在画面说明', () => {
   const pack = {
@@ -203,8 +249,13 @@ test('登记事实声明不能伪造，顾客原句也不能偷偷写在画面�
   script.shots[0].visual = '测试餐厅的菜品近景';
   script.facts_used = [{ factId: 'name', claim: '门店名称：测试餐厅' }];
   assert.equal(validateThirtySecondScript(script, { pack }).ok, true);
+  // 引用编号才是证据；改写过的引用说明按事实包原文登记并提示，不让格式问题拦住已落地的脚本。
   script.facts_used[0].claim = '门店名称：另一家店';
-  assert.equal(validateThirtySecondScript(script, { pack }).ok, false);
+  const canonical = validateThirtySecondScript(script, { pack });
+  assert.equal(canonical.ok, true, JSON.stringify(canonical.errors));
+  assert.deepEqual(canonical.script.facts_used, [{ claim: '门店名称：测试餐厅', factId: 'name' }]);
+  assert.ok(canonical.warnings.some(item => /已按本店事实包原文登记/u.test(item)));
+  script.facts_used[0].claim = '门店名称：测试餐厅';
   const quote = validScript();
   quote.shots[1].visual = pack.facts[1].value;
   assert.equal(validateThirtySecondScript(quote, { pack }).ok, false);

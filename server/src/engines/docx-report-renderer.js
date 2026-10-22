@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as fontkit from "fontkit";
 import JSZip from "jszip";
-import subsetFont from "subset-font";
 import {
   AlignmentType,
   BorderStyle,
@@ -28,10 +28,11 @@ import {
   WidthType,
 } from "docx";
 
-// /2：中文字体按文档字符子集化嵌入（15MB→数百KB）；封面标题改用正文首个
-// H1，不再印被100字上限拦腰截断的任务标题。
-export const DOCX_RENDER_VERSION = "docx-report-layout/2";
-export const DOCX_CJK_FONT_FAMILY = "Arial Unicode MS";
+// /3：完整嵌入可授权的中文字体。HarfBuzz 动态子集在 Word 中可打开，
+// 但 LibreOffice 会把其 GPOS/GSUB 字形映射当成损坏字体，最终出现“表格还在、
+// 正文全空白”。交付文件以跨端可读为第一优先，因此不再产出该不兼容子集。
+export const DOCX_RENDER_VERSION = "docx-report-layout/3";
+export const DOCX_CJK_FONT_FAMILY = "Noto Sans SC";
 
 // LibreOffice's OOXML reader intermittently rejects the random font keys
 // emitted by docx, even though those packages decrypt to a valid TTF. A
@@ -82,18 +83,23 @@ const WORD_BORDER = Object.freeze({
 
 let embeddedCjkFont;
 
-const DOCX_FONT_SIGNATURES = new Set(["00010000", "4f54544f", "74727565", "74797031"]);
+// Word/LibreOffice can embed CFF-flavoured OTF files in OOXML, but the same
+// package renders Chinese as empty glyphs in LibreOffice. Keep DOCX embedding
+// on TrueType outlines; PDFKit can continue using the production OTF font.
+const DOCX_TRUE_TYPE_SIGNATURES = new Set(["00010000", "74727565"]);
+const BUNDLED_DOCX_FONT_PATH = fileURLToPath(new URL(
+  "../../assets/fonts/NotoSansSC.ttf",
+  import.meta.url,
+));
 
 function docxFontCandidates() {
   const windowsRoot = String(process.env.WINDIR || process.env.SystemRoot || "C:\\Windows").trim();
   return [
     process.env.DOCX_FONT_PATH,
-    process.env.PDF_FONT_PATH,
+    BUNDLED_DOCX_FONT_PATH,
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode MS.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
@@ -106,14 +112,14 @@ function docxFontCandidates() {
 function inspectFontCandidate(candidatePath) {
   const resolvedPath = path.resolve(String(candidatePath));
   const extension = path.extname(resolvedPath).toLowerCase();
-  if (![".ttf", ".otf"].includes(extension)) return null;
+  if (extension !== ".ttf") return null;
   let data;
   try {
     data = fs.readFileSync(resolvedPath);
   } catch {
     return null;
   }
-  if (data.length < 12 || !DOCX_FONT_SIGNATURES.has(data.subarray(0, 4).toString("hex"))) {
+  if (data.length < 12 || !DOCX_TRUE_TYPE_SIGNATURES.has(data.subarray(0, 4).toString("hex"))) {
     return null;
   }
 
@@ -144,7 +150,7 @@ function resolveEmbeddedCjkFont() {
     .find(Boolean);
   if (!candidate) {
     throw new Error(
-      "缺少可嵌入的完整中文 DOCX 字体；请安装 TTF/OTF 中文字体或设置 DOCX_FONT_PATH（不支持 WOFF/WOFF2/TTC）",
+      "缺少可嵌入的完整中文 DOCX 字体；请安装 TrueType 中文字体或设置 DOCX_FONT_PATH（仅支持 TTF，不支持 OTF/WOFF/TTC）",
     );
   }
   activeCjkFontFamily = candidate.family;
@@ -154,43 +160,6 @@ function resolveEmbeddedCjkFont() {
     path: candidate.path,
   });
   return embeddedCjkFont;
-}
-
-// 渲染器自身注入的固定文案 + 中文字形探针：这些字符不在正文里也必须进入
-// 字体子集，否则页眉页脚、表格标题或嵌入校验会缺字形。
-const DOCX_STATIC_TEXT_CORPUS = [
-  "纳米Work行业版",
-  "数字员工交付报告",
-  "数字员工报告",
-  "数据明细（长内容按字段展开）",
-  "暂无正文内容。",
-  "第 / 页",
-  "·…—－", // 页眉分隔符与截断省略号
-  "中文报告餐饮经营数据战略开店竞品商圈证据行动授权",
-  "0123456789",
-].join("");
-
-// 整包内嵌完整CJK字体曾让单份Word报告膨胀到15MB（Arial Unicode约23MB）。
-// 这里按“正文实际字符+固定文案+全部可见ASCII”做确定性子集，通常收敛到
-// 几百KB，同时保留“无中文字体的机器也能正确显示”的原保证。
-// 子集失败时回退整包字体：宁可文件大，绝不产出缺字形的报告。
-async function subsetCjkFontForDocument(cjkFont, textCorpus) {
-  const characters = new Set([...String(textCorpus || "")]);
-  for (let code = 0x20; code <= 0x7e; code += 1)
-    characters.add(String.fromCharCode(code));
-  for (const char of DOCX_STATIC_TEXT_CORPUS) characters.add(char);
-  try {
-    const data = await subsetFont(cjkFont.data, [...characters].join(""), {
-      targetFormat: "sfnt",
-    });
-    if (!data?.length || data.length >= cjkFont.data.length) return cjkFont;
-    return { ...cjkFont, data: Buffer.from(data) };
-  } catch (error) {
-    console.warn(
-      `[docx] 中文字体子集化失败，回退整包嵌入：${error?.message || error}`,
-    );
-    return cjkFont;
-  }
 }
 
 function obfuscateOpenXmlFont(fontData, key = LIBREOFFICE_FONT_KEY) {
@@ -252,14 +221,17 @@ function plainText(value = "") {
     .replace(/__([^_]+)__/gu, "$1")
     .replace(/`([^`]+)`/gu, "$1")
     .replace(/\*([^*]+)\*/gu, "$1")
-    .replace(/_([^_]+)_/gu, "$1")
+    // CommonMark does not open/close single-underscore emphasis inside a word.
+    // Without these boundaries, `customer_id、phone_hash` was consumed as one
+    // italic span and both field-name underscores disappeared from DOCX files.
+    .replace(/(?<![\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])/gu, "$1")
     .trim();
 }
 
 function inlineRuns(value, base = {}) {
   const source = cleanText(value);
   const runs = [];
-  const pattern = /(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_|\[[^\]]+\]\([^)]+\))/gu;
+  const pattern = /(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|(?<![\p{L}\p{N}_])_[^_\n]+_(?![\p{L}\p{N}_])|\[[^\]]+\]\([^)]+\))/gu;
   let cursor = 0;
   for (const match of source.matchAll(pattern)) {
     if (match.index > cursor) {
@@ -819,11 +791,7 @@ export async function renderMarkdownDocx(markdown, title = "数字员工报告")
     firstHeading && firstHeading.level === 1
       ? plainText(firstHeading.text).slice(0, 120)
       : safeTitle;
-  const fullCjkFont = resolveEmbeddedCjkFont();
-  const cjkFont = await subsetCjkFontForDocument(
-    fullCjkFont,
-    `${source}${safeTitle}${displayTitle}`,
-  );
+  const cjkFont = resolveEmbeddedCjkFont();
 
   const document = new Document({
     title: safeTitle,

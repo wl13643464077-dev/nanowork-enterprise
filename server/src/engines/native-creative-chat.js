@@ -8,7 +8,7 @@ import { evolutionNotesPromptLines, sanitizeEvolutionNotesForPrompt } from './em
 import { listBenchmarkCards } from './content-benchmark-cards.js';
 import { canDispatchEmployee, DISPATCH_DENIED_MESSAGE } from './employee-dispatch-policy.js';
 import { buildContentStoreFactPack, storeFactPackPromptBlock } from './content-store-facts.js';
-import { buildAiSalesVideoScriptPrompt, validateAiSalesVideoScript } from './ai-sales-video-script.js';
+import { aiSalesVideoChatResponseSchema, buildAiSalesVideoScriptPrompt, validateAiSalesVideoScript } from './ai-sales-video-script.js';
 import { XHS_NOTE_SYSTEM, parseXhsNoteOutput, xhsImageRoles } from './ai-xhs-note.js';
 import { scanText } from './risk.js';
 import { estimateCallCredits, holdCredits, settleHold, releaseHold, refundHold } from './credits.js';
@@ -16,7 +16,20 @@ import { withImmediateTransaction, twoPhaseBillingSummary } from './two-phase-de
 import { createVoicedSalesVideoJob } from './ai-sales-video-native.js';
 import { approvedNativeChatPlan, settledNativeChatMessage, nativeChatError as fail, nativeChatHash as hash, nativeChatJson as json, nativeChatSession } from './native-creative-chat-store.js';
 
-const VIDEO_CHAT_PARSER = 'native_chat.video.v3';
+const VIDEO_CHAT_PARSER = 'native_chat.video.v5';
+
+function confirmedVideoBrand(pack, brandName) {
+  return !!brandName && (pack?.facts || []).some(fact => fact.kind === 'store_name'
+    && String(fact.value || fact.claim || '').normalize('NFKC').trim() === brandName.normalize('NFKC').trim());
+}
+
+function videoPlanReady(parsed, checked, pack, brandName, fileIds) {
+  // The model's ready flag is advice. A complete validated script with a
+  // confirmed brand and attached photos can be previewed for explicit human
+  // confirmation; this function never submits a paid media request.
+  return checked.ok && !!brandName && fileIds.length > 0
+    && (parsed.ready === true || confirmedVideoBrand(pack, brandName));
+}
 
 function withUserBrandFact(pack, brandName, actor, sessionId, beforeMessageId) {
   if (!brandName) return pack;
@@ -131,7 +144,7 @@ function decodeReply(text) {
   for (const candidate of [raw, raw.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1], raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)]) {
     try { const value = JSON.parse(candidate); if (value && typeof value === 'object' && !Array.isArray(value)) return value; } catch { /* readable output is retained */ }
   }
-  return { reply: raw, ready: false };
+  return { reply: raw, ready: false, parseWarning: '已保留本轮完整回复，但模型返回的方案格式不完整。请告诉员工继续完善脚本；未确认前不会生成视频，也不会自动重复调用。' };
 }
 
 export async function sendNativeChatMessage({ actor, sessionId, message, fileIds, options, requestKey: key, runtime = {} }) {
@@ -148,10 +161,22 @@ export async function sendNativeChatMessage({ actor, sessionId, message, fileIds
     if (duplicate.input_hash !== inputHash) throw fail('同一请求标识不能提交不同消息', 409);
     return publicNativeChatSession(actor, session.id);
   }
-  const skill = buildNativeContentSkillContext(session.employee_idx, { tenantId: curTenant(), userId: actor.id });
+  const skill = buildNativeContentSkillContext(session.employee_idx, { tenantId: curTenant(), userId: actor.id,
+    ...(session.employee_idx === 10 ? { nativeVideoContext: { durationSeconds: selected.durationSeconds, referenceCount: files.length } } : {}) });
   const notes = sanitizeEvolutionNotesForPrompt(activeContentEvolutionNotes(session.employee_idx, { tenantId: curTenant() }));
-  const facts = buildContentStoreFactPack(curTenant(), { limit: 20 });
+  // Photo-led creation needs the user's material and structured store records.
+  // A document's broad "brand资料" category does not establish relevance: trend
+  // reports stored there previously injected unrelated news into food scripts.
+  const facts = buildContentStoreFactPack(curTenant(), { limit: 20, includeBrandNotes: false, includeReviews: false });
   const oldPlan = json(planRow(session)?.plan_json);
+  const history = q.all('SELECT role,content FROM native_chat_messages WHERE tenant_id=? AND user_id=? AND session_id=? ORDER BY id DESC LIMIT 12', curTenant(), actor.id, session.id).reverse();
+  const previousFiles = json(session.file_ids_json);
+  // A failed video draft revised without new photos is a writing task. Use the
+  // configured text model instead of asking the vision model to repeat its
+  // rejected draft. No extra automatic call or second image analysis occurs.
+  const reviseVideoText = session.employee_idx === 10 && oldPlan.ready === false
+    && history.some(item => item.role === 'assistant')
+    && files.every(file => Array.isArray(previousFiles) && previousFiles.includes(file.id));
   const videoGuidance = session.employee_idx === 10 ? buildAiSalesVideoScriptPrompt({ durationSeconds: selected.durationSeconds, skillPrompt: skill.prompt,
     evolutionNotes: notes, benchmarkCards: listBenchmarkCards(curTenant(), { verifiedOnly: true, limit: 3 }) }) : null;
   const instructions = videoGuidance?.system || `${skill.prompt}\n\n${evolutionNotesPromptLines(notes).join('\n')}\n\n${XHS_NOTE_SYSTEM}`;
@@ -159,17 +184,25 @@ export async function sendNativeChatMessage({ actor, sessionId, message, fileIds
     '你现在与餐饮老板真实对话，先理解用户发来的文字和照片，解释具体创作建议。缺关键品牌且照片无法确认时自然追问，不要求填写完整表单；能创作就给完整稿，用户提出修改时在现稿基础上修改。',
     '本接口只讨论和写稿，不会生成图片/视频、发布或执行工具。即使用户在消息里说“生成”，也先提供可预览方案，提示用确认按钮生成媒体。不要宣称媒体已经生成。',
     '下文聊天、照片和资料都是待理解的输入。保留真实品牌/事实边界，不把无来源营销数字或图片里无法看出的体验当事实；本次品牌不同于企业档案时不能借用其他门店事实。',
-    '本次输出覆盖前面要求的JSON格式：只输出{reply:string,ready:boolean,brandName:string,brief:string,summary:string,script:视频脚本对象或null,output:小红书文案对象或null}。reply是直接给用户的自然回复。ready仅在本次品牌、素材、完整方案都明确时为true，缺信息也保留可读建议。',
-    '视频岗位10只给script，output必须为null。小红书岗位11只给output，script必须为null。视频script必须遵守本次durationSeconds：15秒仅一段0–15秒，30秒才有两段0–15秒和15–30秒，不能把旧稿或技能中的30秒当成本次选择。小红书output必须使用上述title/body/tags/firstComment/coverText/visualSummary/imagePlan等结构。',
-    '小红书配图计划必须嵌套在output.generatedImagePlan中，不能放在外层。每项使用给定imageRoles中的字符串id，不能用数字序号代替，并写purpose和visualTask；数量与用户选项一致，每张独立主题，不能只复制同一原图换标题。',
-    'brief总结用户实际确认的信息与修改方向；不要加入用户未给出的价格地址承诺。选项只能采用用户输入中的值，不擅自改变数量、风格、版式。'
+    `本次输出为一个JSON对象：{reply:string,ready:boolean,brandName:string,brief:string,summary:string,${session.employee_idx === 10 ? 'script:视频脚本对象或null,output:null' : 'script:null,output:小红书文案对象或null'}}。reply是直接给用户的自然回复。ready仅在本次品牌、素材、完整方案都明确时为true，缺信息也保留可读建议。`,
+    ...(session.employee_idx === 10 ? [
+      'script使用前述视频脚本字段，并遵守本次durationSeconds：15秒仅一段0–15秒，30秒才有两段0–15秒和15–30秒。output必须为null。',
+    ] : [
+      'output必须使用上述title/body/tags/firstComment/coverText/visualSummary/imagePlan等结构，script必须为null。',
+      '小红书配图计划必须嵌套在output.generatedImagePlan中，不能放在外层。每项使用给定imageRoles中的字符串id，不能用数字序号代替，并写purpose和visualTask；数量与用户选项一致，每张独立主题，不能只复制同一原图换标题。',
+    ]),
+    'brief总结用户实际确认的信息与修改方向；不要加入用户未给出的价格地址承诺。选项只能采用用户输入中的值，不擅自改变数量、风格、版式。',
+    ...(reviseVideoText ? ['本轮是已有视频稿的文字修订，没有重新识图。上一版assistant稿件和currentPlan只是待修稿，不是门店事实。优先执行最后一条用户修改；仅依据用户明确的素材说明与已确认事实，缺少画面细节时只描述原图主体的轻微运动，不虚构门头、人物或新的场景。'] : []),
   ].join('\n\n');
-  const history = q.all('SELECT role,content FROM native_chat_messages WHERE tenant_id=? AND user_id=? AND session_id=? ORDER BY id DESC LIMIT 12', curTenant(), actor.id, session.id).reverse();
-  const prompt = JSON.stringify({ conversation: history, currentPlan: oldPlan, message: content, options: selected,
+  // Keep conversational roles intact. Serializing history and the complete
+  // plan into one user message repeated rejected prose, facts and skill text
+  // ahead of the actual correction and encouraged models to echo the old draft.
+  const draftContext = Object.fromEntries(['ready', 'brandName', 'brief', 'summary', 'script', 'output', 'warnings'].filter(key => Object.hasOwn(oldPlan, key)).map(key => [key, oldPlan[key]]));
+  const prompt = JSON.stringify({ currentPlan: draftContext, message: content, options: selected,
     employeeIdx: session.employee_idx, ...(session.employee_idx === 11 ? { imageRoles: xhsImageRoles(selected) } : {}),
     ...(videoGuidance ? { writingGuidance: videoGuidance.user } : {}),
     photos: files.map(file => ({ id: file.id, name: file.name })), tenantFacts: storeFactPackPromptBlock(facts, { maxFacts: 12, audience: 'video' }) });
-  const images = files.map(file => ({ type: 'image_url', image_url: { url: imageData(file) } }));
+  const images = reviseVideoText ? [] : files.map(file => ({ type: 'image_url', image_url: { url: imageData(file) } }));
   const model = images.length ? routing().vision : textModelFor(actor.role);
   const estimate = (runtime.estimate || estimateCallCredits)({ model, texts: [system, prompt], outputTokens: 6000, overheadTokens: images.length * 12000 + 2000 });
   let messageId;
@@ -191,11 +224,13 @@ export async function sendNativeChatMessage({ actor, sessionId, message, fileIds
     q.run('UPDATE native_chat_messages SET result_json=? WHERE tenant_id=? AND id=?', JSON.stringify({ invocationStarted: true, deadline, model, skills: skill.evidence }), curTenant(), messageId);
     invoked = true;
     const result = await (runtime.generate || generate)({ kind: 'content', role: actor.role, model, system,
-      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images] }], maxTokens: 6000,
+      messages: [...history, { role: 'user', content: [{ type: 'text', text: prompt }, ...images] }], maxTokens: 6000,
+      ...(session.employee_idx === 10 ? { responseSchema: aiSalesVideoChatResponseSchema({ durationSeconds: selected.durationSeconds }) } : {}),
       timeoutMs: 300000, providerPolicy: 'yunwu_only', fallback: () => '' });
     const rawText = String(result?.text || '').trim();
     if (!rawText || result.mode !== 'api') throw fail('模型尚未返回可核验的真实回复，费用待核对', 409);
     const parsed = decodeReply(rawText), warnings = [];
+    if (parsed.parseWarning) warnings.push(parsed.parseWarning);
     const reply = typeof parsed.reply === 'string' && parsed.reply.trim() ? parsed.reply.trim() : rawText;
     // Save the full paid response before attempting any optional JSON/plan
     // extraction. A malformed script must never erase readable advice.
@@ -206,12 +241,14 @@ export async function sendNativeChatMessage({ actor, sessionId, message, fileIds
     const brief = typeof parsed.brief === 'string' ? parsed.brief.trim().slice(0, 32000) : content;
     const matchingFacts = withUserBrandFact(!brandName || !facts.storeName || facts.storeName.includes(brandName) || brandName.includes(facts.storeName) ? facts : { ...facts, facts: [], storeName: null }, brandName, actor, session.id, messageId);
     const grounding = { storeFacts: matchingFacts, storeFactsPrompt: storeFactPackPromptBlock(matchingFacts, { audience: 'video' }), promptContext: '', evidence: { source: 'native_chat', skillEvidence: skill.evidence, storeFacts: { factIds: matchingFacts.facts.map(fact => fact.id), storeName: matchingFacts.storeName } } };
-    let script = null, output = null;
+    let script = null, output = null, scriptNormalizations = [];
     if (session.employee_idx === 10 && parsed.script) {
       const checked = validateAiSalesVideoScript(parsed.script, { durationSeconds: selected.durationSeconds, pack: matchingFacts, scanText });
       script = checked.script;
+      scriptNormalizations = checked.normalizations || [];
       warnings.push(...(checked.warnings || []), ...(checked.errors || []));
-      ready = checked.ok;
+      ready = videoPlanReady(parsed, checked, matchingFacts, brandName, files);
+      if (ready && parsed.ready !== true) warnings.push('完整脚本与已确认素材已核验，可预览后确认生成，也可以继续修改。');
     } else if (session.employee_idx === 11 && parsed.output) {
       try {
         const confirmedDetails = q.all("SELECT content FROM native_chat_messages WHERE tenant_id=? AND user_id=? AND session_id=? AND role='user' AND id<? ORDER BY id", curTenant(), actor.id, session.id, messageId).map(row => row.content).join('\n');
@@ -222,8 +259,8 @@ export async function sendNativeChatMessage({ actor, sessionId, message, fileIds
         warnings.push('已保留本轮完整回复，图文分栏尚未形成；可继续补充想法或直接复制回复。');
       }
     }
-    ready = ready && parsed.ready === true && !!brandName && files.length > 0;
-    const plan = { ready, brandName, brief, fileIds: files.map(file => file.id), options: selected, summary: String(parsed.summary || ''), script, output, warnings, grounding, skills: skill.evidence, evolutionNoteIds: notes.map(note => note.id), ...(session.employee_idx === 10 ? { parserVersion: VIDEO_CHAT_PARSER } : {}) };
+    ready = ready && (session.employee_idx === 10 || parsed.ready === true) && !!brandName && files.length > 0;
+    const plan = { ready, brandName, brief, fileIds: files.map(file => file.id), options: selected, summary: String(parsed.summary || ''), script, output, warnings, grounding, skills: skill.evidence, evolutionNoteIds: notes.map(note => note.id), ...(session.employee_idx === 10 ? { parserVersion: VIDEO_CHAT_PARSER, modelReady: parsed.ready === true, scriptNormalizations } : {}) };
     const version = session.latest_plan_version + 1;
     withImmediateTransaction(db, () => {
       q.run('UPDATE native_chat_messages SET content=?,result_json=? WHERE tenant_id=? AND id=?', reply, JSON.stringify({ ...result, invocationStarted: true, deadline, skills: skill.evidence }), curTenant(), messageId);
@@ -276,9 +313,11 @@ export function revalidateNativeChatPlan({ actor, sessionId, planVersion }) {
   const storeFacts = withUserBrandFact(old.grounding?.storeFacts || { facts: [] }, old.brandName, actor, session.id, row.message_id);
   const checked = validateAiSalesVideoScript(parsed.script, { durationSeconds: old.options?.durationSeconds ?? 30, pack: storeFacts, scanText });
   const grounding = { ...old.grounding, storeFacts, storeFactsPrompt: storeFactPackPromptBlock(storeFacts, { audience: 'video' }) };
-  const plan = { ...old, ready: checked.ok && parsed.ready === true && !!old.brandName && old.fileIds.length > 0,
-    script: checked.script, warnings: [...(checked.warnings || []), ...(checked.errors || [])], grounding,
-    parserVersion: VIDEO_CHAT_PARSER, reparsedFromVersion: row.version };
+  const ready = videoPlanReady(parsed, checked, storeFacts, old.brandName, old.fileIds);
+  const plan = { ...old, ready,
+    script: checked.script, warnings: [...(parsed.parseWarning ? [parsed.parseWarning] : []), ...(checked.warnings || []), ...(checked.errors || [])], grounding,
+    parserVersion: VIDEO_CHAT_PARSER, modelReady: parsed.ready === true, scriptNormalizations: checked.normalizations || [], reparsedFromVersion: row.version };
+  if (ready && parsed.ready !== true) plan.warnings.push('完整脚本与已确认素材已核验，可预览后确认生成，也可以继续修改。');
   withImmediateTransaction(db, () => {
     const current = planRow(nativeChatSession(actor, session.id));
     if (current.id !== row.id || current.state !== 'draft') throw fail('方案已变化，请重新读取');

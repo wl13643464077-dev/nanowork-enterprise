@@ -12,7 +12,7 @@ import {
 import { userScopeClause } from '../engines/access.js';
 import { restaurantBusinessProfile, restaurantAvatar } from '../catalog/business-profiles.js';
 import { employeeTextModelFailoverPlan, generate } from '../engines/ai.js';
-import { textModelFor, yunwuAvailable } from '../engines/yunwu.js';
+import { provider360Active, textModelFor, yunwuAvailable } from '../engines/yunwu.js';
 import {
   aiFailurePayload,
   assertRealAiOutput,
@@ -27,6 +27,7 @@ import { refundHold,
   settleHold,
 } from '../engines/credits.js';
 import { executeHeldDelivery } from '../engines/two-phase-delivery.js';
+import { aggregateSupplierCosts } from '../engines/provider-cost-receipts.js';
 import { canonicalRestaurantEmployeeProfileFor } from '../engines/canonical-employee-profile.js';
 
 const r = Router();
@@ -203,6 +204,38 @@ r.get('/:idx', (req, res) => {
 // 与依赖关系；本接口只做“选人导航”，不派活、不产生任务、不对外发布。
 // fail-closed：模型不可用或输出不合法直接失败并全额退款，不用规则结果冒充 AI。
 const TEAM_MATCH_MAX_TEXT = 300;
+// 协同小队人数上限：选人、队长拆解、队长汇总三个接口与前端一键派活必须
+// 用同一个数字。历史上选人提示词写 1-5、拆解/汇总 slice(0,5)，但模型按业务
+// 需要选出 8 人时 normalizeMatchedTeam 并不截断，结果老板看到 8 人上阵、
+// 队长只给 5 人派活，其余 3 人干站着。现在：选人阶段就按上限截断（保留队长），
+// 后续每一步都以同一上限放行，谁被选进小队谁就一定有活干。
+export const TEAM_MAX_MEMBERS = 8;
+const TEAM_MATCH_MAX_PROVIDER_ATTEMPTS = 2;
+const TEAM_MATCH_RETRY_DELAY_MS = 2500;
+const TEAM_MATCH_RETRYABLE_FAILURES = new Set([
+  'provider_rate_limited',
+  'provider_empty_output',
+]);
+
+function teamMatchHasProviderSpendEvidence(output) {
+  const inputTokens = Number(output?.usage?.inputTokens || 0);
+  const outputTokens = Number(output?.usage?.outputTokens || 0);
+  if (inputTokens > 0 || outputTokens > 0) return true;
+  return (Array.isArray(output?.usage?.supplierCosts) ? output.usage.supplierCosts : [])
+    .some(receipt => receipt?.status === 'known' && Number(receipt?.costYuanOverride) > 0);
+}
+
+export function shouldRetryTeamMatchOutput(
+  output,
+  attempt,
+  maxAttempts = TEAM_MATCH_MAX_PROVIDER_ATTEMPTS,
+) {
+  if (output?.mode === 'api' || Number(attempt) >= Number(maxAttempts)) return false;
+  if (output?.providerFailure?.retryable === false) return false;
+  if (String(output?.text || '').trim() || teamMatchHasProviderSpendEvidence(output)) return false;
+  return TEAM_MATCH_RETRYABLE_FAILURES.has(String(output?.providerFailure?.code || ''));
+}
+
 // 轻量文本通道对复杂 json_schema response_format 支持不稳（可能返回空正文），
 // 改为提示词约定 JSON 结构 + 服务端剥围栏解析；normalizeMatchedTeam 仍做
 // idx 白名单、队长唯一、依赖合法性把关，安全性不依赖模型自觉。
@@ -265,6 +298,13 @@ function normalizeMatchedTeam(parsed, employees) {
         .filter(value => Number.isSafeInteger(value) && value !== idx))],
     });
   }
+  // 超出人数上限时截断：优先保住模型指定的队长，其余按模型给出的顺序保留。
+  if (members.length > TEAM_MAX_MEMBERS) {
+    const leadIndex = members.findIndex(item => item.roleInTeam === '队长');
+    const lead = leadIndex >= 0 ? members.splice(leadIndex, 1)[0] : null;
+    members.splice(lead ? TEAM_MAX_MEMBERS - 1 : TEAM_MAX_MEMBERS);
+    if (lead) members.unshift(lead);
+  }
   // 依赖只允许指向队内成员；恰好一名队长（模型多选/漏选时取第一名修正）。
   const memberIdxSet = new Set(members.map(item => item.idx));
   for (const member of members) {
@@ -326,7 +366,9 @@ export async function matchTeamByText(req, rawText) {
       generate: async () => {
         // 上游瞬时限流时退避重试一次；两次都失败才按未交付退款。
         let output = null;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
+        let attempts = 0;
+        for (let attempt = 1; attempt <= TEAM_MATCH_MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+          attempts = attempt;
           output = await generate({
           kind: 'employee-team-match',
           system: [
@@ -334,7 +376,8 @@ export async function matchTeamByText(req, rawText) {
             '老板原话可能来自语音转写，存在同音错字或语气词；先按餐饮经营语境理解真实意图再选人。',
             '只能从下方花名册中选人（用花名册第一列的岗位编号 idx），不得虚构岗位或编号。',
             '规则：',
-            '- 选 1-5 名员工组成协同小队，其中恰好 1 名「队长」负责统筹，其余为「成员」。',
+            `- 选 1-${TEAM_MAX_MEMBERS} 名员工组成协同小队（按这单活真正需要的岗位选，不凑数、不漏关键岗位），其中恰好 1 名「队长」负责统筹，其余为「成员」。`,
+            '- 选进小队的每一个人都会被队长真实派活并各自产出，不要把只是"可能相关"的岗位拉进来。',
             '- 每名成员写清 task（TA 在这单活里的具体分工，20-60字）和 why（为什么选TA，尽量引用岗位职责）。',
             '- dependsOn 填该成员开工前依赖哪些成员的产出（岗位编号数组），没有依赖就留空数组。',
             '- teamName 用一句有业务感的小队名（≤16字）；summary 用一句话说清整单活的接力路线（≤80字）。',
@@ -351,22 +394,25 @@ export async function matchTeamByText(req, rawText) {
           maxTokens: 8000,
           role: req.user.role,
           model,
+          // 选人只需要一份短 JSON；关闭 360 DeepSeek 的思考输出，避免
+          // 思考占满 max_tokens 后正文为空，让老板白等。
+          thinking: false,
           providerPolicy: 'yunwu_only',
           signal: req.requestSignal,
           });
-          // 限流与“思考耗尽预算导致正文为空”都是瞬时波动，各值得再试一次。
-          const retryable =
-            output?.mode !== 'api' &&
-            ['provider_rate_limited', 'provider_empty_output'].includes(
-              output?.providerFailure?.code,
-            );
-          if (!retryable || attempt === 2) break;
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          // 有真实 token/成本回执时不重复付费请求；用户失败仍全额退款，
+          // 已产生的供应商成本由平台承担。
+          if (!shouldRetryTeamMatchOutput(output, attempt)) break;
+          await new Promise(resolve => setTimeout(resolve, TEAM_MATCH_RETRY_DELAY_MS));
         }
-        assertRealAiOutput(output, {
-          label: '一句话找人',
-          noDelivery: '本次不产生匹配结果，也不扣费',
-        });
+        try {
+          assertRealAiOutput(output, {
+            label: '一句话找人',
+            noDelivery: '本次不产生匹配结果，也不扣费',
+          });
+        } catch (error) {
+          throw attachTeamMatchProviderFailure(error, output, attempts);
+        }
         const parsed = parseTeamMatchJson(output.text);
         const team = normalizeMatchedTeam(parsed, employees);
         if (!team.members.length) {
@@ -410,10 +456,15 @@ r.post('/match-team', async (req, res) => {
       boundary: '本次只完成选人建议，未创建任务、未派活、未产生对外动作；派活在各员工工作台确认后才执行。',
     });
   } catch (error) {
-    return res.status(error.status || 502).json({
-      error: String(error?.message || '一句话找人失败').slice(0, 300),
-      ...(error.billing ? { billing: error.billing } : {}),
-    });
+    return res.status(error.status || 502).json(aiFailurePayload(error, {
+      requestId: teamPlanRequestId(req),
+      extra: {
+        ...(error.providerFailure ? { providerFailure: error.providerFailure } : {}),
+        ...(Number.isSafeInteger(Number(error.providerAttempts))
+          ? { providerAttempts: Number(error.providerAttempts) }
+          : {}),
+      },
+    }));
   }
 });
 
@@ -547,13 +598,57 @@ const TEAM_PLAN_DEPTHS = Object.freeze({
   },
 });
 
-const TEAM_PLAN_SCHEMA_HINT = [
-  '只输出一个 JSON 对象，不要输出任何解释或 Markdown 围栏，结构如下：',
-  '{"briefs":[{"idx":101,"title":"任务标题(≤40字)","directive":"给该成员的完整任务指令","deliverables":"交付物一句话(老板视角)"}]}',
-].join('\n');
+function teamPlanSchemaHint(members) {
+  const indexes = members.map(member => Number(member.idx));
+  return [
+    `briefs 必须恰好返回 ${indexes.length} 条，idx 按此顺序逐一为：${indexes.join('、')}。`,
+    '按下方 JSON 骨架填满每个空字符串；不得删除、合并、重复或改写任何 idx。',
+    '只输出一个 JSON 对象，不要输出任何解释或 Markdown 围栏：',
+    JSON.stringify({
+      briefs: indexes.map(idx => ({
+        idx,
+        title: '',
+        directive: '',
+        deliverables: '',
+      })),
+    }),
+  ].join('\n');
+}
+
+const CHINESE_MONTH_DAY = /(\d{1,2})月\s*(\d{1,2})(日|号)/gu;
+const REQUEST_YEAR_ANCHOR = /年|(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}/u;
+
+// 老板只给了月日时，模型偶尔会擅自补一个年份。这里只删除同一月日
+// 前由模型新增的 19xx/20xx 年；明确年份、相对年份和其他日期原样保留。
+export function normalizeTeamPlanDateText(value, requestText) {
+  const source = String(requestText || '');
+  // 年份锚点可能与后面的月日被逗号或其他语句隔开。无法可靠判断归属时
+  // 保守保留模型结果，避免删掉老板明确给出的年份。
+  if (REQUEST_YEAR_ANCHOR.test(source)) return String(value || '');
+  const yearless = new Set();
+  for (const match of source.matchAll(CHINESE_MONTH_DAY)) {
+    const month = Number(match[1]);
+    const day = Number(match[2]);
+    if (!Number.isInteger(month) || month < 1 || month > 12
+      || !Number.isInteger(day) || day < 1 || day > 31) continue;
+    yearless.add(`${month}-${day}`);
+  }
+  let normalized = String(value || '');
+  for (const key of yearless) {
+    const [month, day] = key.split('-').map(Number);
+    normalized = normalized.replace(
+      new RegExp(`(?:19|20)\\d{2}年(\\s*0?${month}月\\s*0?${day}[日号])`, 'gu'),
+      '$1',
+    );
+  }
+  return normalized;
+}
 
 const TEAM_PLAN_MAX_PROVIDER_ATTEMPTS = 2;
 const TEAM_PLAN_RETRY_DELAY_MS = 2500;
+// 队长拆解比普通聊天长，不能继承生产环境为即时问答收紧的 20s 窗口。
+// 两轮 60s + 2.5s 退避仍完整落在前端 150s 请求预算内。
+export const TEAM_PLAN_PROVIDER_TIMEOUT_MS = 60_000;
 const TEAM_PLAN_MODEL_FAILOVER_REASON = 'retryable_zero_usage_transport_failure';
 const TEAM_PLAN_TRANSIENT_PROVIDER_FAILURES = new Set([
   'provider_upstream_error',
@@ -562,6 +657,16 @@ const TEAM_PLAN_TRANSIENT_PROVIDER_FAILURES = new Set([
   'provider_empty_output',
 ]);
 
+function teamPlanHasProviderSpendEvidence(output) {
+  const inputTokens = Number(output?.usage?.inputTokens || 0);
+  const outputTokens = Number(output?.usage?.outputTokens || 0);
+  if (inputTokens > 0 || outputTokens > 0) return true;
+  // pending 也代表上游调用已经留下费用身份但金额尚待核验。队长拆解
+  // 此时不能再次请求，避免重复成本以及混合回执无法可靠汇总。
+  return (Array.isArray(output?.usage?.supplierCosts) ? output.usage.supplierCosts : [])
+    .some(receipt => receipt && typeof receipt === 'object');
+}
+
 export function shouldRetryTeamPlanOutput(
   output,
   attempt,
@@ -569,9 +674,7 @@ export function shouldRetryTeamPlanOutput(
 ) {
   if (output?.mode === 'api' || Number(attempt) >= Number(maxAttempts)) return false;
   if (output?.providerFailure?.retryable === false) return false;
-  const inputTokens = Number(output?.usage?.inputTokens || 0);
-  const outputTokens = Number(output?.usage?.outputTokens || 0);
-  if (inputTokens !== 0 || outputTokens !== 0 || String(output?.text || '').trim()) return false;
+  if (String(output?.text || '').trim() || teamPlanHasProviderSpendEvidence(output)) return false;
   return TEAM_PLAN_TRANSIENT_PROVIDER_FAILURES.has(
     String(output?.providerFailure?.code || ''),
   );
@@ -629,13 +732,33 @@ function publicTeamPlanProviderFailure(value) {
   };
 }
 
+function attachTeamMatchProviderFailure(error, output, attempts) {
+  const target = error instanceof Error ? error : new Error(String(error || '一句话找人失败'));
+  const providerFailure = publicTeamPlanProviderFailure(output?.providerFailure);
+  if (!providerFailure) return target;
+  target.code = providerFailure.code;
+  target.retryable = providerFailure.retryable;
+  target.retryHint = teamMatchHasProviderSpendEvidence(output)
+    ? `上游${providerFailure.summary}，本次已返回用量证据，系统未重复提交；请稍后在原需求重试。`
+    : attempts > 1
+      ? `上游${providerFailure.summary}，系统已自动尝试 ${attempts} 次但仍未取得产出，请稍后在原需求重试。`
+      : `上游${providerFailure.summary}，请核对通道配置后在原需求重试。`;
+  target.providerFailure = providerFailure;
+  target.providerAttempts = Number(attempts) || 1;
+  return target;
+}
+
 function attachTeamPlanProviderFailure(error, output, attempts) {
   const target = error instanceof Error ? error : new Error(String(error || '队长拆解失败'));
   const providerFailure = publicTeamPlanProviderFailure(output?.providerFailure);
   if (!providerFailure) return target;
   target.code = providerFailure.code;
   target.retryable = providerFailure.retryable;
-  target.retryHint = `上游${providerFailure.summary}，系统已自动尝试 ${attempts} 次但仍未取得产出，请稍后在原任务重试。`;
+  target.retryHint = teamPlanHasProviderSpendEvidence(output)
+    ? `上游${providerFailure.summary}，本次已返回用量证据，系统未重复提交；请稍后在原任务重试。`
+    : attempts > 1
+      ? `上游${providerFailure.summary}，系统已自动尝试 ${attempts} 次但仍未取得产出，请稍后在原任务重试。`
+      : `上游${providerFailure.summary}，请稍后在原任务重试。`;
   target.providerFailure = providerFailure;
   target.providerAttempts = attempts;
   return target;
@@ -644,6 +767,79 @@ function attachTeamPlanProviderFailure(error, output, attempts) {
 function teamPlanRequestId(req) {
   const value = String(req.requestId || req.get?.('X-Request-Id') || '').trim();
   return /^[A-Za-z0-9._-]{1,100}$/.test(value) ? value : null;
+}
+
+function observeTeamPlanUsage(target, output) {
+  const inputTokens = Number(output?.usage?.inputTokens);
+  const outputTokens = Number(output?.usage?.outputTokens);
+  if (Number.isSafeInteger(inputTokens) && inputTokens > 0) target.inputTokens += inputTokens;
+  if (Number.isSafeInteger(outputTokens) && outputTokens > 0) target.outputTokens += outputTokens;
+  if (Array.isArray(output?.usage?.supplierCosts)) {
+    target.supplierCosts.push(...output.usage.supplierCosts.filter(value => (
+      value && typeof value === 'object'
+    )).slice(0, TEAM_PLAN_MAX_PROVIDER_ATTEMPTS));
+  }
+  return target;
+}
+
+function attachTeamPlanUsageEvidence(error, observed) {
+  const target = error instanceof Error ? error : new Error(String(error || '队长拆解失败'));
+  target.providerUsage = {
+    inputTokens: observed.inputTokens,
+    outputTokens: observed.outputTokens,
+    ...(observed.supplierCosts.length ? { supplierCosts: [...observed.supplierCosts] } : {}),
+  };
+  return target;
+}
+
+function teamPlanStructureDiagnostic({ rawBriefs, members, acceptedIdx, output, req }) {
+  const returnedIdx = rawBriefs
+    .map(brief => Number(brief?.idx))
+    .filter(Number.isSafeInteger)
+    .slice(0, 10);
+  const expectedSet = new Set(members.map(member => member.idx));
+  const duplicateIdx = returnedIdx.filter((idx, index) => returnedIdx.indexOf(idx) !== index);
+  return {
+    rawBriefCount: rawBriefs.length,
+    returnedIdx: [...new Set(returnedIdx)],
+    missingIdx: members.map(member => member.idx).filter(idx => !acceptedIdx.has(idx)),
+    emptyTitleIdx: rawBriefs
+      .filter(brief => expectedSet.has(Number(brief?.idx)) && !String(brief?.title || '').trim())
+      .map(brief => Number(brief.idx)).slice(0, 10),
+    emptyDirectiveIdx: rawBriefs
+      .filter(brief => expectedSet.has(Number(brief?.idx)) && !String(brief?.directive || '').trim())
+      .map(brief => Number(brief.idx)).slice(0, 10),
+    duplicateIdx: [...new Set(duplicateIdx)].slice(0, 10),
+    unexpectedIdx: [...new Set(returnedIdx.filter(idx => !expectedSet.has(idx)))].slice(0, 10),
+    requestId: teamPlanRequestId(req),
+    model: String(output?.effectiveModel || output?.model || '').slice(0, 120) || null,
+  };
+}
+
+function teamPlanFailureNote(error, phase, observed) {
+  const cost = aggregateSupplierCosts(observed.supplierCosts);
+  const costStatus = cost?.status || (observed.supplierCosts.length ? 'pending' : 'unknown');
+  const structure = error?.teamPlanStructure;
+  const structureText = structure
+    ? [
+        `raw=${structure.rawBriefCount}`,
+        `returned=${structure.returnedIdx.join(',') || '-'}`,
+        `missing=${structure.missingIdx.join(',') || '-'}`,
+        `emptyTitle=${structure.emptyTitleIdx.join(',') || '-'}`,
+        `emptyDirective=${structure.emptyDirectiveIdx.join(',') || '-'}`,
+        `duplicate=${structure.duplicateIdx.join(',') || '-'}`,
+        `unexpected=${structure.unexpectedIdx.join(',') || '-'}`,
+        `rid=${structure.requestId || '-'}`,
+        `model=${structure.model || '-'}`,
+      ].join('|')
+    : 'none';
+  return [
+    '队长拆解未形成完整结果，预授权全额退回',
+    `phase=${String(phase || 'unknown').slice(0, 30)}`,
+    `usage=${observed.inputTokens}/${observed.outputTokens}`,
+    `supplierCost=${costStatus}`,
+    `structure=${structureText}`,
+  ].join('；');
 }
 
 r.post('/team-plan', async (req, res) => {
@@ -663,7 +859,7 @@ r.post('/team-plan', async (req, res) => {
   const rawMembers = Array.isArray(req.body?.members) ? req.body.members : [];
   const members = [];
   const seen = new Set();
-  for (const raw of rawMembers.slice(0, 5)) {
+  for (const raw of rawMembers.slice(0, TEAM_MAX_MEMBERS)) {
     const idx = Number(raw?.idx);
     const source = byIdx.get(idx);
     if (!source || seen.has(idx)) continue;
@@ -701,6 +897,9 @@ r.post('/team-plan', async (req, res) => {
   }).join('\n');
   const model = textModelFor('sales');
   const modelPlan = employeeTextModelFailoverPlan(model);
+  // 每名成员的 directive 含四段+输出标准，专业档还要逐项点到能力；输出预算
+  // 随人数放大，避免 8 人小队在 8000 tokens 处被截断后落成"漏拆成员"。
+  const planOutputTokens = Math.min(16000, 5000 + members.length * 1400);
   let hold = null;
   try {
     for (const candidateModel of modelPlan.models) {
@@ -709,7 +908,7 @@ r.post('/team-plan', async (req, res) => {
     const estimatedCredits = Math.max(...modelPlan.models.map(candidateModel => (
       estimateCallCredits({
         model: candidateModel,
-        outputTokens: 8000,
+        outputTokens: planOutputTokens,
         texts: [text, memberLines],
       })
     )));
@@ -726,9 +925,23 @@ r.post('/team-plan', async (req, res) => {
     });
     const deliveryHold = hold;
     hold = null;
+    const observedTeamPlanUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      supplierCosts: [],
+    };
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
-      refund: refundHold,
+      refund: (held, options = {}) => {
+        const cost = aggregateSupplierCosts(observedTeamPlanUsage.supplierCosts);
+        return refundHold(held, {
+          ...options,
+          ...(cost?.status === 'known' ? {
+            supplierCostYuan: cost.costYuanOverride,
+            costSource: cost.costSource,
+          } : {}),
+        });
+      },
       hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
@@ -741,22 +954,34 @@ r.post('/team-plan', async (req, res) => {
             kind: 'employee-team-plan',
             system: [
               `你是协同小队队长「${lead.person}」（${lead.name}），负责把老板的一句话需求拆解派活给小队每一名成员（包括你自己）。`,
+              `当前北京时间日期：${new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'numeric', day: 'numeric' })}。`,
               '老板原话可能来自语音转写，存在同音错字或语气词；先按餐饮经营语境理解真实意图再拆解。',
               '拆解规则：',
               '- briefs 必须覆盖下方名单的每一名成员，一人一条，不得增删或虚构编号。',
+              '- 小队默认并行开工：每人先完成不依赖他人的部分；前置成员结果尚未交付时，在 directive 中明确写“待衔接”及需要接入的具体产物，不得编造已经拿到前置结果。',
               '- title：这单活的任务标题（≤40字，业务口吻）。',
+              '- 日期：老板只说月日、没有明确年份时，title、directive、deliverables 一律保留月日原样，禁止自行添加年份；明确给出的年份与相对日期按原要求处理，不得擅自改写。',
               '- directive：给该成员的完整任务指令，必须包含四部分：①要做什么（结合老板原话与该成员的小队分工）②与上下游怎么衔接（有依赖的写清楚拿谁的什么产出、给谁供料）③交付物是什么④【输出标准】一段。',
               `- 本次输出标准（${depth.label}档，逐字写进每名成员 directive 的【输出标准】里并按需细化到岗位）：${depth.outputRule}`,
               '- deliverables：用老板能懂的话一句话说明 TA 最终交出来什么。',
-              TEAM_PLAN_SCHEMA_HINT,
+              teamPlanSchemaHint(members),
               '【小队名单（idx｜姓名｜岗位｜小队分工｜依赖）】',
               memberLines,
             ].join('\n'),
             userMsg: `老板原话：${text}`,
             fallback: () => '',
-            maxTokens: 8000,
+            maxTokens: planOutputTokens,
             role: req.user.role,
             model: callModel,
+            // 拆解只需结构化业务正文。360 DeepSeek 默认思考会与正文共用
+            // max_tokens；显式关闭后避免思考阶段耗尽时间却没有可交付 JSON。
+            thinking: false,
+            timeoutMs: TEAM_PLAN_PROVIDER_TIMEOUT_MS,
+            // 360 已验证 DeepSeek V4 支持 OpenAI JSON Object mode；只在这条
+            // 短结构拆解链启用。旧云雾通道继续依靠提示词与服务端完整性校验。
+            responseFormat: provider360Active() && /deepseek/iu.test(callModel)
+              ? { type: 'json_object' }
+              : undefined,
             providerPolicy: 'yunwu_only',
             signal: req.requestSignal,
           });
@@ -766,6 +991,7 @@ r.post('/team-plan', async (req, res) => {
             effectiveModel: generated?.mode === 'api' ? generated.model : callModel,
             modelFailover,
           };
+          observeTeamPlanUsage(observedTeamPlanUsage, output);
           if (!shouldRetryTeamPlanOutput(output, attempt)) break;
           if (modelPlan.backupModel && shouldFailoverTeamPlanModel(output)) {
             modelFailover = {
@@ -784,7 +1010,10 @@ r.post('/team-plan', async (req, res) => {
             noDelivery: '本次不产生拆解结果，也不扣费',
           });
         } catch (error) {
-          throw attachTeamPlanProviderFailure(error, output, attempts);
+          throw attachTeamPlanUsageEvidence(
+            attachTeamPlanProviderFailure(error, output, attempts),
+            observedTeamPlanUsage,
+          );
         }
         const parsed = parseTeamMatchJson(output.text);
         const rawBriefs = Array.isArray(parsed?.briefs) ? parsed.briefs : [];
@@ -792,27 +1021,36 @@ r.post('/team-plan', async (req, res) => {
         for (const raw of rawBriefs) {
           const idx = Number(raw?.idx);
           if (!seen.has(idx) || briefByIdx.has(idx)) continue;
-          const directive = String(raw?.directive || '').trim();
-          const title = String(raw?.title || '').trim().slice(0, 40);
+          const directive = normalizeTeamPlanDateText(raw?.directive, text).trim();
+          const title = normalizeTeamPlanDateText(raw?.title, text).trim().slice(0, 40);
           if (!directive || !title) continue;
           briefByIdx.set(idx, {
             idx,
             title,
             directive: directive.slice(0, 6000),
-            deliverables: String(raw?.deliverables || '').trim().slice(0, 200),
+            deliverables: normalizeTeamPlanDateText(raw?.deliverables, text).trim().slice(0, 200),
           });
         }
         const missing = members.filter(member => !briefByIdx.has(member.idx));
         if (missing.length) {
-          throw Object.assign(
+          const structure = teamPlanStructureDiagnostic({
+            rawBriefs,
+            members,
+            acceptedIdx: new Set(briefByIdx.keys()),
+            output,
+            req,
+          });
+          console.warn('[ai] employee-team-plan incomplete structure', JSON.stringify(structure));
+          throw attachTeamPlanUsageEvidence(Object.assign(
             new Error(`队长拆解不完整，缺少成员：${missing.map(member => member.person).join('、')}，请重试`),
             {
               status: 422,
               code: 'TEAM_PLAN_INCOMPLETE',
               retryable: true,
               retryHint: '模型本轮漏拆了小队成员，未交付任何拆解并已退回预授权，可在原任务直接重试。',
+              teamPlanStructure: structure,
             },
-          );
+          ), observedTeamPlanUsage);
         }
         const briefs = members.map(member => ({
           ...briefByIdx.get(member.idx),
@@ -838,7 +1076,11 @@ r.post('/team-plan', async (req, res) => {
         ].filter(Boolean).join('；'),
       }),
       requirePositiveApiUsage: true,
-      releaseNote: '队长拆解未形成完整结果，预授权全额退回',
+      releaseNote: (error, phase) => teamPlanFailureNote(
+        error,
+        phase,
+        observedTeamPlanUsage,
+      ),
     });
     if (delivered.billing.state !== 'settled') {
       throw Object.assign(new Error('队长拆解已生成，但账务尚未完成结算，本次不交付可派发计划'), {
@@ -895,10 +1137,54 @@ const TEAM_SUMMARY_STATUS_LABEL = Object.freeze({
   已驳回: '被驳回需返工',
 });
 
+export const TEAM_SUMMARY_PROVIDER_TIMEOUT_MS = 60_000;
+
+function teamSummarySchemaHint(items) {
+  return [
+    '只输出一个 JSON 对象，不要输出任何解释或 Markdown 围栏：',
+    JSON.stringify({
+      summary: '',
+      keyNumbers: [{ label: '', value: '', source: '' }],
+      progress: items.map(item => ({ idx: item.idx, highlight: '' })),
+      nextActions: [{ action: '', owner: '', timing: '' }],
+      risks: '',
+    }),
+    `progress 必须恰好覆盖这 ${items.length} 名成员，idx 按此顺序逐一为：${items.map(item => item.idx).join('、')}，不得删除、合并、重复或改写。`,
+  ].join('\n');
+}
+
+function attachTeamSummaryProviderFailure(error, output, attempts) {
+  const target = error instanceof Error ? error : new Error(String(error || '队长汇总失败'));
+  const providerFailure = publicTeamPlanProviderFailure(output?.providerFailure);
+  if (!providerFailure) return target;
+  target.code = providerFailure.code;
+  target.retryable = providerFailure.retryable;
+  target.retryHint = teamPlanHasProviderSpendEvidence(output)
+    ? `上游${providerFailure.summary}，本次已返回用量证据，系统未重复提交；请稍后在原任务重试。`
+    : attempts > 1
+      ? `上游${providerFailure.summary}，系统已自动尝试 ${attempts} 次但仍未取得汇总，请稍后在原任务重试。`
+      : `上游${providerFailure.summary}，请稍后在原任务重试。`;
+  target.providerFailure = providerFailure;
+  target.providerAttempts = Number(attempts) || 1;
+  return target;
+}
+
+function teamSummaryFailureNote(error, phase, observed) {
+  const cost = aggregateSupplierCosts(observed.supplierCosts);
+  const costStatus = cost?.status || (observed.supplierCosts.length ? 'pending' : 'unknown');
+  return [
+    '队长汇总未形成有效结果，预授权全额退回',
+    `phase=${String(phase || 'unknown').slice(0, 30)}`,
+    `usage=${observed.inputTokens}/${observed.outputTokens}`,
+    `supplierCost=${costStatus}`,
+    `code=${String(error?.code || error?.name || 'failed').slice(0, 80)}`,
+  ].join('；');
+}
+
 r.post('/team-summary', async (req, res) => {
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: '缺少老板原话，无法汇总' });
-  const rawItems = Array.isArray(req.body?.items) ? req.body.items.slice(0, 5) : [];
+  const rawItems = Array.isArray(req.body?.items) ? req.body.items.slice(0, TEAM_MAX_MEMBERS) : [];
   if (!rawItems.length) return res.status(400).json({ error: '还没有派出的任务，先让队长拆解并派活' });
   const employees = visibleEmployees(req);
   const byIdx = new Map(employees.map(item => [Number(item.idx), item]));
@@ -963,33 +1249,46 @@ r.post('/team-summary', async (req, res) => {
       feature: '协同小队·队长收尾汇总',
       kind: 'text',
       model,
-      credits: estimateCallCredits({ model, outputTokens: 8000, texts: [text, outputsBlock] }),
+      credits: estimateCallCredits({ model, outputTokens: 10000, texts: [text, outputsBlock] }),
       refType: null,
       refId: null,
     });
     const deliveryHold = hold;
     hold = null;
+    const observedTeamSummaryUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      supplierCosts: [],
+    };
     const delivered = await executeHeldDelivery({
       hold: deliveryHold,
-      refund: refundHold,
+      refund: (held, options = {}) => {
+        const cost = aggregateSupplierCosts(observedTeamSummaryUsage.supplierCosts);
+        return refundHold(held, {
+          ...options,
+          ...(cost?.status === 'known' ? {
+            supplierCostYuan: cost.costYuanOverride,
+            costSource: cost.costSource,
+          } : {}),
+        });
+      },
       hasDeliverable: () => hasStoredAiDelivery(deliveryHold),
       generate: async () => {
         let output = null;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
-          output = await generate({
+        let attempts = 0;
+        for (let attempt = 1; attempt <= TEAM_PLAN_MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+          attempts = attempt;
+          const generated = await generate({
             kind: 'employee-team-summary',
             system: [
               '你是协同小队队长，成员们已经交付了各自的任务产出。现在向老板做一份详实的收尾汇报——老板要能凭这份汇报直接做决策。',
               '铁律：所有结论、数字和清单都必须摘自下方真实产出原文；产出里没有的数字绝不编造，没有量化数据就写"产出未给出量化数据"。未交付成员如实标注状态。',
-              '只输出一个 JSON 对象，不要 Markdown 围栏，结构：',
-              '{"summary":"整体收尾汇报，4-8句：这单活办到什么程度了、各成员分别交付了什么、合在一起能解决老板的什么问题、离老板的目标还差什么。每句尽量带产出中的具体数据或清单项。",'
-              + '"keyNumbers":[{"label":"指标名(如 预算/目标评分/整改项数/见效周期)","value":"数值或区间(摘自产出原文)","source":"出自哪位成员"}],'
-              + '"progress":[{"idx":101,"highlight":"该成员交付了什么：2-3句，必须引用产出中的具体方案点、数字或清单项，不许写空话"}],'
-              + '"nextActions":[{"action":"具体动作(含量化标准，摘自产出)","owner":"谁来做(岗位或老板)","timing":"什么时候"}],'
-              + '"risks":"最需要老板注意的1-2个风险，说清触发条件与后果，或空字符串"}',
+              teamSummarySchemaHint(items),
+              '- summary 写4-8句：说明这单活办到什么程度、各成员交付了什么、合起来解决什么问题、离目标还差什么；尽量引用产出中的具体数据或清单项。',
               '- keyNumbers 提取 3-8 个老板最关心的数字（钱、时间、数量、目标值）；每个都标注出处成员。产出确实没有数字时给空数组，不许硬凑。',
-              '- progress 覆盖每一名成员（含未交付的，highlight 写当前状态与影响）。',
+              '- progress 每人的 highlight 用2-3句说明实际交付；未交付成员写当前状态与影响，不许写空话。',
               '- nextActions 给 4-8 条，按轻重排序，必须落到人和时间，能量化的写量化标准。',
+              '- risks 写最需要老板注意的1-2个风险，说明触发条件与后果；确实没有则给空字符串。',
               `【老板原话】${text}`,
               '【成员任务与产出】',
               outputsBlock,
@@ -999,29 +1298,52 @@ r.post('/team-summary', async (req, res) => {
             maxTokens: 10000,
             role: req.user.role,
             model,
+            thinking: false,
+            timeoutMs: TEAM_SUMMARY_PROVIDER_TIMEOUT_MS,
+            responseFormat: provider360Active() && /deepseek/iu.test(model)
+              ? { type: 'json_object' }
+              : undefined,
             providerPolicy: 'yunwu_only',
             signal: req.requestSignal,
           });
-          const retryable =
-            output?.mode !== 'api' &&
-            ['provider_rate_limited', 'provider_empty_output'].includes(
-              output?.providerFailure?.code,
-            );
-          if (!retryable || attempt === 2) break;
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          output = generated;
+          observeTeamPlanUsage(observedTeamSummaryUsage, output);
+          if (!shouldRetryTeamPlanOutput(output, attempt)) break;
+          await waitForTeamPlanRetry(req.requestSignal);
         }
-        assertRealAiOutput(output, {
-          label: '队长收尾汇总',
-          noDelivery: '本次不产生汇总，也不扣费',
-        });
+        try {
+          assertRealAiOutput(output, {
+            label: '队长收尾汇总',
+            noDelivery: '本次不产生汇总，也不扣费',
+          });
+        } catch (error) {
+          throw attachTeamPlanUsageEvidence(
+            attachTeamSummaryProviderFailure(error, output, attempts),
+            observedTeamSummaryUsage,
+          );
+        }
         const parsed = parseTeamMatchJson(output.text);
         const summary = String(parsed?.summary || '').trim();
         if (!summary) {
-          throw Object.assign(new Error('队长没有给出有效汇总，请重试'), { status: 422 });
+          throw attachTeamPlanUsageEvidence(
+            Object.assign(new Error('队长没有给出有效汇总，请重试'), {
+              status: 422,
+              code: 'TEAM_SUMMARY_INVALID',
+              retryable: true,
+            }),
+            observedTeamSummaryUsage,
+          );
         }
         // 汇总不许糊弄：有交付产出时，正文至少要有实质篇幅（不足视为无效交付）
         if (summary.length < 60) {
-          throw Object.assign(new Error('队长汇总过于简略（不足60字），已拒收，请重试'), { status: 422 });
+          throw attachTeamPlanUsageEvidence(
+            Object.assign(new Error('队长汇总过于简略（不足60字），已拒收，请重试'), {
+              status: 422,
+              code: 'TEAM_SUMMARY_TOO_SHORT',
+              retryable: true,
+            }),
+            observedTeamSummaryUsage,
+          );
         }
         const highlightByIdx = new Map(
           (Array.isArray(parsed?.progress) ? parsed.progress : [])
@@ -1078,7 +1400,11 @@ r.post('/team-summary', async (req, res) => {
         note: `队长收尾汇总：${delivered_items.length}/${items.length} 名成员已交付`,
       }),
       requirePositiveApiUsage: true,
-      releaseNote: '队长汇总未交付，预授权全额退回',
+      releaseNote: (error, phase) => teamSummaryFailureNote(
+        error,
+        phase,
+        observedTeamSummaryUsage,
+      ),
     });
     try {
       logOp(req.user, '数字员工', '队长收尾汇总', `${delivered_items.length}/${items.length}人已交付`);
@@ -1096,10 +1422,16 @@ r.post('/team-summary', async (req, res) => {
       } catch { /* 保留原始错误 */ }
       hold = null;
     }
-    return res.status(error.status || 502).json({
-      error: String(error?.message || '队长汇总失败').slice(0, 300),
-      ...(error.billing ? { billing: error.billing } : {}),
-    });
+    const extra = {
+      ...(error.providerFailure ? { providerFailure: error.providerFailure } : {}),
+      ...(Number.isSafeInteger(Number(error.providerAttempts))
+        ? { providerAttempts: Number(error.providerAttempts) }
+        : {}),
+    };
+    return res.status(error.status || 502).json(aiFailurePayload(error, {
+      requestId: teamPlanRequestId(req),
+      extra,
+    }));
   }
 });
 

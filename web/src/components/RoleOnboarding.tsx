@@ -3,6 +3,7 @@ import { Button, Drawer, Progress, Tag, Tour, message, type TourProps } from 'an
 import {
   AppstoreOutlined,
   BarChartOutlined,
+  BookOutlined,
   CheckCircleFilled,
   CheckOutlined,
   CompassOutlined,
@@ -20,7 +21,7 @@ import type { ReactNode } from 'react';
 import { api } from '../api/client';
 import './RoleOnboarding.css';
 
-type OnboardingTrack = 'owner' | 'manager' | 'partner' | 'staff' | 'admin';
+type OnboardingTrack = 'owner' | 'manager' | 'partner' | 'staff' | 'admin' | 'tester';
 
 type OnboardingTask = {
   id: string;
@@ -56,6 +57,13 @@ const TRACK_COPY: Record<
   OnboardingTrack,
   { tag: string; title: string; subtitle: string; flow: string[]; accent: string }
 > = {
+  tester: {
+    tag: '测试员上手路线',
+    title: '先体验完整产品，再邀请客户试用',
+    subtitle: '用自己的 API Key 调用数字员工，在任务中心看交付，在体验管理中邀请和跟进客户。',
+    flow: ['配置 Key', '体验产品', '邀请客户', '查看使用'],
+    accent: '产品体验',
+  },
   owner: {
     tag: '老板上手路线',
     title: '用 3 分钟跑通第一轮经营闭环',
@@ -102,6 +110,45 @@ function trackFor(role?: string): OnboardingTrack {
 }
 
 function tasksFor(track: OnboardingTrack): OnboardingTask[] {
+  if (track === 'tester')
+    return [
+      {
+        id: 'tester-key',
+        title: '配置个人 API Key',
+        description: '填写本人供应商 Key。费用由供应商账户承担，不扣平台算力余额。',
+        path: '/tester?tab=key',
+        module: 'tester',
+        icon: <SettingOutlined />,
+        action: '配置我的 Key',
+      },
+      {
+        id: 'tester-employees',
+        title: '使用完整数字员工',
+        description: '从餐饮数字员工、内容生产仓或经营工具箱选择岗位，输入真实需求和资料。',
+        path: '/employees',
+        module: 'marshals',
+        icon: <AppstoreOutlined />,
+        action: '选择数字员工',
+      },
+      {
+        id: 'tester-tasks',
+        title: '查看任务交付',
+        description: '查看进度、输入输出与可下载成果，按实际效果采纳或提出修改。',
+        path: '/tasks',
+        module: 'execution',
+        icon: <UnorderedListOutlined />,
+        action: '打开任务中心',
+      },
+      {
+        id: 'tester-invite',
+        title: '邀请客户体验',
+        description: '自定义每位客户的体验次数，生成二维码；在体验管理中审核申请并查看使用情况。',
+        path: '/tester?tab=invitations',
+        module: 'tester',
+        icon: <TeamOutlined />,
+        action: '生成体验二维码',
+      },
+    ];
   if (track === 'owner') {
     return [
       {
@@ -139,6 +186,15 @@ function tasksFor(track: OnboardingTrack): OnboardingTask[] {
         module: 'analysis',
         icon: <BarChartOutlined />,
         action: '查看经营洞察',
+      },
+      {
+        id: 'owner-brand-kb',
+        title: '建立品牌知识包',
+        description: '输入品牌名联网采集近三个月公开资料，先在本页核对、修改或指出错误重抓，确认入库后数字员工才会按产品匹配。',
+        path: '/brand-kb',
+        module: 'system',
+        icon: <BookOutlined />,
+        action: '打开品牌知识包',
       },
       {
         id: 'owner-setup',
@@ -358,11 +414,13 @@ export default function RoleOnboarding({
   compact = false,
   suspended = false,
 }: Props) {
-  const track = trackFor(user?.role);
+  const track = user?.accountType === 'tester' ? 'tester' : trackFor(user?.role);
   const copy = TRACK_COPY[track];
   const availableModules = useMemo(() => new Set(modules), [modules]);
   const tasks = useMemo(() => {
-    const filtered = tasksFor(track).filter(task => availableModules.has(task.module));
+    const filtered = tasksFor(track).filter(
+      task => (track === 'tester' && task.module === 'tester') || availableModules.has(task.module),
+    );
     if (filtered.length) return filtered;
     const firstAvailable = [
       { module: 'advisor', path: '/advisor', title: '打开我的工作参谋' },

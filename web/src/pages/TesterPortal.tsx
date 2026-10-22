@@ -1,20 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Empty, Form, Input, Modal, Segmented, Space, Spin, Table, Tabs, Tag, message } from 'antd';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Alert,
+  Button,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Segmented,
+  Space,
+  Spin,
+  Table,
+  Tabs,
+  Tag,
+  message,
+} from 'antd';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { clearAuth, getUser } from '../api/client';
 import {
   TrialHistory,
   TrialLeadDrawer,
   TrialStatus,
   formatTrialTime,
-  newTrialRequestId,
   trialCost,
   trialError,
   trialProviderLabel,
   trialRequest,
+  trialTurnLimit,
+  trialUsageState,
 } from './TrialShared';
 import type { TrialConversation, TrialEmployee, TrialLead, TrialProviderId } from './TrialShared';
-import TrialEmployeePicker, { TrialEmployeeGuide } from './TrialEmployeePicker';
+import { trialEmployeeName } from './TrialEmployeePicker';
 import TrialAnalyticsPanel from './TrialAnalyticsPanel';
 import './Trial.css';
 
@@ -53,6 +69,7 @@ type Invitation = {
   status: string;
   createdAt: string;
   provider?: string;
+  turnLimit?: number;
 };
 
 const PROVIDER_GUIDES: Record<TrialProviderId, { home: string; docs: string; account?: string }> = {
@@ -62,8 +79,8 @@ const PROVIDER_GUIDES: Record<TrialProviderId, { home: string; docs: string; acc
   },
   '360': {
     home: 'https://ai.360.com/open/zh/login',
-    docs: 'https://ai.360.com/docs/413292017e0',
-    account: 'https://ai.360.com/open/zh/platform/account/keys',
+    docs: 'https://ai.360.com/docs/quick-start',
+    account: 'https://ai.360.com/open/zh/platform/keys',
   },
 };
 
@@ -101,29 +118,39 @@ export function testerProviderStates(
   return rows;
 }
 
-export default function TesterPortal() {
+export function testerPortalTab(value: string | null): string {
+  if (value === 'work') return 'history';
+  return ['analytics', 'key', 'invitations', 'leads', 'history', 'guide', 'password'].includes(value || '')
+    ? value!
+    : 'analytics';
+}
+
+export default function TesterPortal({ embedded = false }: { embedded?: boolean } = {}) {
   const nav = useNavigate();
+  const loc = useLocation();
+  const tab = testerPortalTab(new URLSearchParams(loc.search).get('tab'));
+  const setTab = (next: string) => {
+    const search = new URLSearchParams(loc.search);
+    search.set('tab', testerPortalTab(next));
+    nav({ pathname: loc.pathname, search: search.toString() }, { replace: true });
+  };
+  const Root = embedded ? 'section' : 'main';
   const [profile, setProfile] = useState<TesterProfile | null>(null);
   const [activeProvider, setActiveProvider] = useState<TrialProviderId>('360');
   const [providers, setProviders] = useState<TesterProviderState[]>([]);
-  const [employees, setEmployees] = useState<TrialEmployee[]>([]);
+  const [trialEmployees, setTrialEmployees] = useState<TrialEmployee[]>([]);
   const [conversations, setConversations] = useState<TrialConversation[]>([]);
   const [personalUsage, setPersonalUsage] = useState<PersonalUsage | null>(null);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [leads, setLeads] = useState<TrialLead[]>([]);
-  const [tab, setTab] = useState('work');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
-  const [employeeId, setEmployeeId] = useState<string>();
-  const [draft, setDraft] = useState('');
   const [leadId, setLeadId] = useState<number | null>(null);
   const [analyticsRefresh, setAnalyticsRefresh] = useState(0);
   const [keyForm] = Form.useForm();
   const [passwordForm] = Form.useForm();
   const [invitationForm] = Form.useForm();
-  const retry = useRef<{ employeeId: string; message: string; requestId: string } | null>(null);
-  const sending = useRef(false);
   const load = useCallback(async () => {
     setError('');
     try {
@@ -133,8 +160,7 @@ export default function TesterPortal() {
       setProfile(nextProfile);
       setActiveProvider(nextProvider);
       setProviders(testerProviderStates(result.providers || nextProfile.providers, nextProvider, nextProfile));
-      setEmployees(result.employees || []);
-      setEmployeeId(current => current || result.employees?.[0]?.id);
+      setTrialEmployees(result.trialEmployees || []);
       const [history, links, customers, analytics] = await Promise.all([
         trialRequest('/tester/conversations'),
         trialRequest('/tester/invitations'),
@@ -171,31 +197,6 @@ export default function TesterPortal() {
       setBusy('');
     }
   };
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || !employeeId || sending.current) return;
-    sending.current = true;
-    if (retry.current?.message !== text || retry.current?.employeeId !== employeeId)
-      retry.current = { employeeId, message: text, requestId: newTrialRequestId() };
-    await run('chat', async () => {
-      try {
-        await trialRequest('/tester/chat', { method: 'POST', body: retry.current });
-        setDraft('');
-        retry.current = null;
-      } finally {
-        const [history, analytics] = await Promise.allSettled([
-          trialRequest('/tester/conversations'),
-          trialRequest('/tester/analytics?days=all&scope=customers'),
-        ]);
-        if (history.status === 'fulfilled')
-          setConversations(Array.isArray(history.value) ? history.value : history.value.conversations || []);
-        setPersonalUsage(analytics.status === 'fulfilled' ? analytics.value.personalSummary || null : null);
-        if (history.status === 'rejected' || analytics.status === 'rejected')
-          message.warning('记录或费用暂未刷新，稍后点击「刷新记录」查看。');
-      }
-    });
-    sending.current = false;
-  };
   const reviewLead = (lead: TrialLead, status: string) =>
     run(`lead-${lead.id}`, async () => {
       await trialRequest(`/tester/leads/${lead.id}`, { method: 'PATCH', body: { status } });
@@ -203,7 +204,6 @@ export default function TesterPortal() {
       await load();
     });
   const active = profile?.status === 'approved';
-  const selected = employees.find(item => item.id === employeeId);
   const activeProviderState =
     providers.find(item => item.id === activeProvider) ||
     testerProviderStates(undefined, activeProvider, profile || {})[0];
@@ -223,34 +223,42 @@ export default function TesterPortal() {
   };
 
   return (
-    <main className="trial-shell tester-shell">
-      <header className="trial-header">
-        <Link to="/tester" className="trial-brand">
-          纳米 Work <span>测试员工作台</span>
-        </Link>
-        <Space wrap>
-          <span>{profile?.name || getUser()?.name}</span>
-          <Button
-            onClick={() => {
-              clearAuth();
-              nav('/login');
-            }}
-          >
-            退出登录
-          </Button>
-        </Space>
-      </header>
+    <Root className={`trial-shell tester-shell${embedded ? ' tester-shell--embedded' : ''}`} aria-label="测试员后台">
+      {!embedded && (
+        <header className="trial-header">
+          <Link to="/tester" className="trial-brand">
+            纳米 Work <span>测试员后台</span>
+          </Link>
+          <Space wrap>
+            <Link to="/">返回产品首页</Link>
+            <span>{profile?.name || getUser()?.name}</span>
+            <Button
+              onClick={() => {
+                clearAuth();
+                nav('/login');
+              }}
+            >
+              退出登录
+            </Button>
+          </Space>
+        </header>
+      )}
       <section className="tester-intro">
         <div>
-          <span className="trial-eyebrow">一句话，把活交给数字员工</span>
-          <h1>自己体验，也邀请客户试试</h1>
+          {!embedded && <h1>测试员后台</h1>}
+          <p className="tester-intro-description">管理个人 API 账户、邀请客户，跟进体验使用情况。</p>
           <p className="trial-muted">
-            本人账号 · {profile ? `当前使用 ${activeProviderLabel}` : '正在读取供应商'} · 客户最多体验 2 次问答
+            本人账号 · {profile ? `当前使用 ${activeProviderLabel}` : '正在读取供应商'} · 客户体验次数由你设置
           </p>
         </div>
-        <Button onClick={() => void load()} loading={loading}>
-          刷新记录
-        </Button>
+        <Space wrap>
+          <Button type="primary" onClick={() => nav('/employees')}>
+            去数字员工
+          </Button>
+          <Button onClick={() => void load()} loading={loading}>
+            刷新记录
+          </Button>
+        </Space>
       </section>
       {error && (
         <Alert
@@ -302,80 +310,14 @@ export default function TesterPortal() {
                 ),
               },
               {
-                key: 'work',
-                label: '数字员工',
-                children: (
-                  <div className="tester-work-grid">
-                    <section className="trial-panel">
-                      <h2>选择一位员工</h2>
-                      <TrialEmployeePicker
-                        employees={employees}
-                        value={employeeId}
-                        onChange={setEmployeeId}
-                        disabled={busy === 'chat'}
-                      />
-                      <TrialEmployeeGuide employee={selected} onExample={setDraft} disabled={busy === 'chat'} />
-                      <div className="trial-field-label" id="tester-message-label">
-                        你想完成什么？
-                      </div>
-                      <Input.TextArea
-                        id="tester-message"
-                        aria-labelledby="tester-message-label"
-                        value={draft}
-                        onChange={event => setDraft(event.target.value)}
-                        autoSize={{ minRows: 5, maxRows: 12 }}
-                        maxLength={6000}
-                        placeholder="说说你的门店、主题和想要的结果"
-                        disabled={busy === 'chat'}
-                      />
-                      <Button
-                        className="trial-send"
-                        block
-                        type="primary"
-                        size="large"
-                        onClick={() => void send()}
-                        loading={busy === 'chat'}
-                        disabled={!active || !activeKeyConfigured || !draft.trim() || !employeeId}
-                      >
-                        交给数字员工
-                      </Button>
-                      <p className="trial-muted trial-small">
-                        全部数字员工均可进行文字体验；AI
-                        带货员与小红书种草员提供脚本和图文方案，图片、视频文件在企业产品中生成。
-                      </p>
-                    </section>
-                    <section className="trial-panel">
-                      <div className="trial-section-title">
-                        <h2>我的输入与结果</h2>
-                        <span className="trial-muted">
-                          本人累计已核实成本 {trialCost(personalUsage?.knownCostCny)}
-                          {personalUsage?.unverifiedCostCount ? ` · ${personalUsage.unverifiedCostCount} 次待核实` : ''}
-                        </span>
-                      </div>
-                      <p className="trial-muted trial-small">
-                        下方展示最近 100 条本人记录，客户使用记录在客户看板中查看。
-                      </p>
-                      {busy === 'chat' && (
-                        <Alert
-                          type="info"
-                          showIcon
-                          message="数字员工正在工作，请稍等。结果会保留在这里。"
-                          className="trial-notice"
-                        />
-                      )}
-                      <TrialHistory conversations={conversations} showCost />
-                    </section>
-                  </div>
-                ),
-              },
-              {
                 key: 'key',
                 label: '供应商与个人 Key',
                 children: (
                   <section className="trial-panel tester-narrow">
-                    <h2>先选择供应商</h2>
+                    <h2>个人 API 账户</h2>
                     <p className="trial-muted">
-                      本人新对话和新生成的体验二维码使用当前供应商。已经生成的二维码继续使用创建时绑定的供应商。
+                      当前先主用 360 智脑。请在 360 官方平台申请并填写个人
+                      Key，再去数字员工派活。新任务和新生成的体验二维码使用当前供应商；已分享的二维码继续使用创建时绑定的供应商。
                     </p>
                     <Segmented
                       block
@@ -506,14 +448,22 @@ export default function TesterPortal() {
                   <>
                     <section className="trial-panel">
                       <h2>邀请客户体验</h2>
+                      <div className="trial-invite-scenarios" aria-label="客户扫码可选场景">
+                        {trialEmployees.map(employee => (
+                          <span key={employee.id}>{trialEmployeeName(employee)}</span>
+                        ))}
+                      </div>
                       <p className="trial-muted">
                         新二维码固定使用当前选择的{activeProviderLabel}个人
                         Key。之后切换供应商不会改变已经分享的二维码。
-                        客户扫码填写资料，经你或平台审核通过后，可体验两次问答。
+                        客户扫码填写资料，经你或平台审核通过后，可在以上五个场景中选择。这五位都按正式岗位完整能力执行。每位客户独立获得你设置的次数，五个员工共用总次数，切换员工不增加次数。
+                      </p>
+                      <p className="trial-muted trial-small">
+                        扫码页这五个岗位与正式工作台同一套能力：选址含调研和竞品核验，店长和巡店出完整报告，小红书和带货按完整岗位方案交付。没有照片或素材时，先给完整文案与制作清单，不假装图片或视频已经生成。
                       </p>
                       <Form
                         form={invitationForm}
-                        initialValues={{ salesPhone: profile?.phone }}
+                        initialValues={{ salesPhone: profile?.phone, turnLimit: 2 }}
                         layout="inline"
                         className="trial-invite-form"
                         onFinish={values =>
@@ -534,6 +484,22 @@ export default function TesterPortal() {
                         >
                           <Input inputMode="tel" maxLength={11} />
                         </Form.Item>
+                        <Form.Item
+                          name="turnLimit"
+                          label="每位客户体验次数"
+                          rules={[
+                            { required: true, message: '请设置每位客户的体验次数' },
+                            { type: 'number', min: 1, max: 100, message: '请输入 1 至 100 次' },
+                            {
+                              validator: (_, value) =>
+                                value == null || Number.isInteger(value)
+                                  ? Promise.resolve()
+                                  : Promise.reject(new Error('请输入整数次数')),
+                            },
+                          ]}
+                        >
+                          <InputNumber min={1} max={100} precision={0} addonAfter="次" style={{ width: 135 }} />
+                        </Form.Item>
                         <Button
                           htmlType="submit"
                           type="primary"
@@ -543,6 +509,10 @@ export default function TesterPortal() {
                           生成体验二维码
                         </Button>
                       </Form>
+                      <p className="trial-muted trial-small">
+                        每次成功回复计 1 次，失败不计次。默认 2 次，可设 1 至 100
+                        次；创建后次数固定，需要其他次数请新建二维码。已有客户的额度不会因换码或再次申请而重置。
+                      </p>
                     </section>
                     <div className="trial-invitations">
                       {invitations.length ? (
@@ -559,6 +529,7 @@ export default function TesterPortal() {
                             />
                             <p>销售手机号：{item.salesPhone}</p>
                             <p>体验供应商：{trialProviderLabel(item.provider || '360')}</p>
+                            <p>每位客户：{trialTurnLimit(item.turnLimit)} 次成功体验（五个员工共用）</p>
                             <Space wrap>
                               <Button
                                 onClick={() =>
@@ -644,13 +615,13 @@ export default function TesterPortal() {
                         {
                           title: '已使用',
                           dataIndex: 'usedTurns',
-                          render: value => `${value || 0} / 2 次`,
+                          render: (value, row) => `${value || 0} / ${trialTurnLimit(row.turnLimit)} 次`,
                           filters: [
-                            { text: '尚未使用', value: 0 },
-                            { text: '已用 1 次', value: 1 },
-                            { text: '已用完 2 次', value: 2 },
+                            { text: '尚未使用', value: 'unused' },
+                            { text: '使用中', value: 'active' },
+                            { text: '已用完', value: 'exhausted' },
                           ],
-                          onFilter: (value, row) => row.usedTurns === value,
+                          onFilter: (value, row) => trialUsageState(row) === value,
                         },
                         { title: '最近使用', dataIndex: 'lastUsedAt', render: formatTrialTime },
                         {
@@ -689,6 +660,30 @@ export default function TesterPortal() {
                 ),
               },
               {
+                key: 'history',
+                label: '历史文字测试',
+                children: (
+                  <section className="trial-panel">
+                    <div className="trial-section-title">
+                      <h2>历史文字测试</h2>
+                      <span className="trial-muted">
+                        本人历史已核实成本 {trialCost(personalUsage?.knownCostCny)}
+                        {personalUsage?.unverifiedCostCount ? ` · ${personalUsage.unverifiedCostCount} 次待核实` : ''}
+                      </span>
+                    </div>
+                    <p className="trial-muted">
+                      这里仅查看旧版文字测试的最近 100
+                      条输入与结果。新任务请到「餐饮数字员工」派活，正式业务记录统一在「任务中心」查看。
+                    </p>
+                    <Space wrap className="tester-history-links">
+                      <Button onClick={() => nav('/employees')}>去数字员工</Button>
+                      <Button onClick={() => nav('/tasks')}>查看任务中心</Button>
+                    </Space>
+                    <TrialHistory conversations={conversations} showCost />
+                  </section>
+                ),
+              },
+              {
                 key: 'guide',
                 label: '使用指南',
                 children: (
@@ -699,24 +694,29 @@ export default function TesterPortal() {
                         <strong>申请测试员账号。</strong>填写本人姓名、手机号，设置登录账号和密码。平台审核通过后登录。
                       </li>
                       <li>
-                        <strong>选择供应商。</strong>在「供应商与个人 Key」选择 OpenLux 或 360
-                        智脑，再到对应官方平台创建 API Key，并确认账户有可用额度。
+                        <strong>开通个人 API 账户。</strong>当前先主用 360 智脑，到 360 官方平台创建 API
+                        Key，并确认账户有可用额度。
                       </li>
                       <li>
                         <strong>绑定 Key。</strong>粘贴当前供应商的个人
-                        Key，然后在「数字员工」发一句需求验证。两家供应商的 Key 分开保存，切换时不会互相覆盖。
+                        Key，然后点击「去数字员工」发起任务。两家供应商的 Key 分开保存，切换时不会互相覆盖。
                       </li>
                       <li>
                         <strong>选择数字员工。</strong>
-                        全部岗位可按部门或需求搜索，每位员工都带一句话示例。本体验提供文字建议，带货和小红书岗位交付脚本与图文方案。
+                        在完整产品的「餐饮数字员工」中按部门或需求搜索岗位并派活，任务结果到「任务中心」查看。「历史文字测试」仅保留旧记录。客户扫码的
+                        H5 提供五个满血岗位。
                       </li>
                       <li>
                         <strong>生成二维码。</strong>
-                        到「体验二维码」，填写销售手机号和邀请名称，下载图片或复制链接发给客户。
+                        到「体验二维码」，填写销售手机号和邀请名称，设置「每位客户体验次数」（1 至 100 次，默认 2
+                        次），下载图片或复制链接发给客户。 客户扫码可选选址、超级店长、巡店、小红书种草、AI
+                        带货五个满血场景，调用使用此二维码绑定的个人 Key。
+                        创建后次数固定；需要不同额度时新建二维码，已有客户的额度不会重置。
                       </li>
                       <li>
                         <strong>同意客户体验。</strong>
-                        客户扫码填写手机号等资料后，在「客户与使用记录」点「同意体验」。每位客户最多获得两次成功问答，失败可重试。
+                        客户扫码填写手机号等资料后，在「客户与使用记录」点「同意体验」。每位客户独立获得二维码设定的额度，五个场景共用总次数，每次成功回复计
+                        1 次，失败可重试且不计次。
                       </li>
                       <li>
                         <strong>查看使用与成本。</strong>
@@ -724,7 +724,7 @@ export default function TesterPortal() {
                       </li>
                       <li>
                         <strong>看客户体验效果。</strong>
-                        「客户看板」可按时间查看已用、未用、两次已用完的客户，以及实际使用的功能和模型。「客户关注的功能」分开记录主动选过和成功用过的岗位，选岗不扣次数。
+                        「客户看板」可按时间查看已用、未用、额度已用完的客户，以及实际使用的功能和模型。「客户关注的功能」分开记录主动选过和成功用过的岗位，选岗不扣次数。
                       </li>
                       <li>
                         <strong>停止体验。</strong>
@@ -802,6 +802,6 @@ export default function TesterPortal() {
         </>
       )}
       <TrialLeadDrawer id={leadId} onClose={() => setLeadId(null)} />
-    </main>
+    </Root>
   );
 }

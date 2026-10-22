@@ -9,6 +9,7 @@ const { db, q, initSchema, migrateV2, runWithTenant, setTenantConfig } = await i
 const { saveUploadedFile } = await import('../src/engines/filehub.js');
 const { createNativeChatSession, publicNativeChatSession, listNativeChatSessions, sendNativeChatMessage, confirmNativeChatPlan, nativeChatOptionsFromMessage, revalidateNativeChatPlan } = await import('../src/engines/native-creative-chat.js');
 const { approvedNativeChatPlan, nativeChatHash } = await import('../src/engines/native-creative-chat-store.js');
+const { buildContentStoreFactPack } = await import('../src/engines/content-store-facts.js');
 const { voicedSalesSettlement, salesVideoPriceQuote } = await import('../src/engines/ai-sales-video-native.js');
 initSchema(); migrateV2();
 q.run("UPDATE tenants SET credits=1000000,status='已开通' WHERE id=1");
@@ -30,6 +31,56 @@ function reply({ready=true,tail,durationSeconds=30}={}) { return {reply:ready?'�
 function runtimeFor(output, capture=[]) { return { generate:async params=>{ capture.push(params); return {mode:'api',model:params.model,text:JSON.stringify(output),usage:{inputTokens:1000,outputTokens:500}}; } }; }
 const send = (session, key, output, other={}) => within(()=>sendNativeChatMessage({actor,sessionId:session.id,message:'品牌叫小锅馆，按照片给我一个自然的脚本。',fileIds:[pic.id],options:{durationSeconds:output?.script?.shots?.length===1?15:30},requestKey:key,runtime:runtimeFor(output),...other}));
 
+test('新15秒照片会话省略冲突技能，视频与小红书只接收各自的输出指导',async()=>{
+  const previous=q.get('SELECT skills_json,revision FROM content_employee_workbench_configs WHERE tenant_id=1 AND employee_idx=10');
+  const skills=[
+    {id:'content-custom:10:legacy-funnel',title:'旧营销方法',detail:'用AIDA、PAS和社会证明搭配高留存钩子。',enabled:true},
+    {id:'content-custom:10:legacy-duration',title:'旧制作方法',detail:'30秒分两段15秒，使用预设音色。',enabled:true},
+    {id:'content-custom:10:motion-kept',title:'菜品细节',detail:'KEEP_FOOD_MOTION 仅让画面内主体产生细微运动。',enabled:true},
+  ];
+  q.run(`INSERT INTO content_employee_workbench_configs(tenant_id,employee_idx,skills_json,revision) VALUES(1,10,?,8)
+    ON CONFLICT(tenant_id,employee_idx) DO UPDATE SET skills_json=excluded.skills_json,revision=excluded.revision`,JSON.stringify(skills));
+  try {
+    const video=within(()=>createNativeChatSession(actor,10)),calls=[];
+    const result=await send(video,'short_video_scoped_skills',reply({durationSeconds:15}),{runtime:runtimeFor(reply({durationSeconds:15}),calls)});
+    assert.equal(result.currentPlan.ready,true);
+    assert.match(calls[0].system,/KEEP_FOOD_MOTION/u);
+    assert.doesNotMatch(calls[0].system,/AIDA|PAS|社会证明|预设音色|generatedImagePlan|imageRoles|小红书/u);
+    const stored=JSON.parse(q.get('SELECT plan_json FROM native_chat_plans WHERE session_id=? AND version=1',video.id).plan_json);
+    assert.equal(stored.skills.omittedSkills.length,2);
+    assert.equal(stored.skills.methodScope,'native_sales_video_15s_single_reference');
+    assert.equal(q.get('SELECT skills_json FROM content_employee_workbench_configs WHERE tenant_id=1 AND employee_idx=10').skills_json,JSON.stringify(skills));
+    const xhs=within(()=>createNativeChatSession(actor,11)),xhsCalls=[];
+    await send(xhs,'xhs_only_output_guidance',reply({ready:false}),{options:{},runtime:runtimeFor(reply({ready:false}),xhsCalls)});
+    assert.match(xhsCalls[0].system,/output\.generatedImagePlan/u);
+    assert.doesNotMatch(xhsCalls[0].system,/hook_3s|15秒仅一段|普通话女声/u);
+    assert.deepEqual(JSON.parse(q.get('SELECT plan_json FROM native_chat_plans WHERE session_id=? AND version=1',video.id).plan_json),stored,'创建别的方案不能改写已保存的脚本');
+  } finally {
+    if(previous)q.run('UPDATE content_employee_workbench_configs SET skills_json=?,revision=? WHERE tenant_id=1 AND employee_idx=10',previous.skills_json,previous.revision);
+    else q.run('DELETE FROM content_employee_workbench_configs WHERE tenant_id=1 AND employee_idx=10');
+  }
+});
+
+test('照片创作只注入门店主数据，误存品牌资料的新闻不进入首轮及确认后的事实包', async()=>{
+  const pollution='不相关的今日新闻，仅为上下文隔离测试';
+  const doc=Number(q.run("INSERT INTO kb_docs(tenant_id,category,title,body,enabled) VALUES(1,'品牌资料','趋势简报',?,1)",pollution).lastInsertRowid);
+  try {
+    assert.ok(within(()=>buildContentStoreFactPack(1)).facts.some(fact=>fact.sourceId===doc&&fact.source==='kb_docs'),'共用事实包默认行为保持兼容');
+    for (const employeeIdx of [10,11]) {
+      const session=within(()=>createNativeChatSession(actor,employeeIdx)),calls=[];
+      const output=employeeIdx===10?reply({durationSeconds:15}):{...reply({ready:false}),brandName:'小锅馆'};
+      const ready=await send(session,`photo_context_scoped_${employeeIdx}`,output,{runtime:runtimeFor(output,calls)});
+      assert.equal(ready.currentPlan.ready,employeeIdx===10);
+      assert.doesNotMatch(JSON.stringify(calls),new RegExp(pollution));
+      const row=q.get('SELECT plan_json FROM native_chat_plans WHERE session_id=? AND version=?',session.id,ready.currentPlan.version);
+      const plan=JSON.parse(row.plan_json);
+      assert.equal(plan.grounding.storeFacts.facts.some(fact=>fact.source==='kb_docs'),false);
+      assert.doesNotMatch(plan.grounding.storeFactsPrompt,new RegExp(pollution));
+      assert.ok(plan.grounding.storeFacts.facts.some(fact=>fact.kind==='store_name'&&fact.value==='小锅馆'),'本轮明确品牌仍然保留');
+    }
+  } finally { q.run('DELETE FROM kb_docs WHERE id=?',doc); }
+});
+
 test('真实视觉对话先交付脚本、普通消息不创建媒体，重复请求只结算一次', async()=>{
   const session=within(()=>createNativeChatSession(actor,10)),calls=[];
   const params={actor,sessionId:session.id,message:'品牌叫小锅馆，请生成30秒视频',fileIds:[pic.id],requestKey:'chat_message_001',runtime:runtimeFor(reply(),calls)};
@@ -38,6 +89,10 @@ test('真实视觉对话先交付脚本、普通消息不创建媒体，重复�
   assert.equal(a.files[0].id,pic.id); assert.equal(a.currentPlan.script.shots[1].voiceover,script().shots[1].voiceover);
   assert.equal(a.currentPlan.skills,undefined);assert.equal(a.currentPlan.grounding,undefined);
   assert.equal(calls[0].messages[0].content[1].type,'image_url'); assert.match(calls[0].messages[0].content[1].image_url.url,/^data:image\/png;base64,/);
+  assert.equal(calls[0].responseSchema.name,'ai_sales_video_chat');
+  assert.equal(calls[0].responseSchema.schema.additionalProperties,false);
+  assert.deepEqual(calls[0].responseSchema.schema.required,['reply','ready','brandName','brief','summary','script','output']);
+  assert.equal(calls[0].responseSchema.schema.properties.script.anyOf[0].properties.shots.maxItems,2);
   assert.equal(q.get('SELECT count(*) AS n FROM media_jobs').n,0);
   const b=await within(()=>sendNativeChatMessage(params)); assert.equal(b.messages.length,2); assert.equal(calls.length,1);
   assert.equal(q.get("SELECT count(*) AS n FROM credit_holds WHERE ref_type='native_chat_message' AND ref_id=?",a.messages[1].id).n,1);
@@ -60,6 +115,8 @@ test('新会话缺省15秒，模型不能擅自扩为30秒；旧无时长快照�
   const ready=await within(()=>sendNativeChatMessage(params));
   assert.equal(ready.currentPlan.ready,true);assert.equal(ready.currentPlan.script.shots.length,1);
   assert.equal(ready.currentPlan.options.durationSeconds,15);assert.match(calls[0].system,/15秒仅一段/);
+  assert.equal(calls[0].responseSchema.schema.properties.script.anyOf[0].properties.shots.maxItems,1);
+  assert.deepEqual(calls[0].responseSchema.schema.properties.script.anyOf[1],{type:'null'},'缺信息仍能自然追问');
   const invalid=await within(()=>sendNativeChatMessage({...params,requestKey:'model_cannot_extend',runtime:runtimeFor(reply())}));
   assert.equal(invalid.currentPlan.options.durationSeconds,15);assert.equal(invalid.currentPlan.ready,false);
   assert.match(invalid.messages.at(-1).rawContent,/30/);
@@ -73,6 +130,53 @@ test('新会话缺省15秒，模型不能擅自扩为30秒；旧无时长快照�
   assert.equal(restored.options.durationSeconds,30);assert.equal(restored.currentPlan.options.durationSeconds,30);
   assert.deepEqual(q.get('SELECT plan_json,plan_hash FROM native_chat_plans WHERE id=?',row.id),before);
   await assert.rejects(within(()=>sendNativeChatMessage({...params,requestKey:'invalid_duration',options:{durationSeconds:45}})),/不在已支持/);
+});
+
+test('供应商未转义引号的付费回复保留全文并解释未ready原因，明确修稿后同会话可确认',async()=>{
+  const session=within(()=>createNativeChatSession(actor,10)); let calls=0;
+  const original=reply({durationSeconds:15});
+  const malformed=JSON.stringify(original).replace(/"reply":"[^"]*"/, '"reply":"口播："周末来聚餐。""');
+  const pending=await within(()=>sendNativeChatMessage({actor,sessionId:session.id,message:'品牌叫小锅馆，生成15秒方案',fileIds:[pic.id],requestKey:'malformed_quotes',runtime:{generate:async params=>{
+    calls++;return {mode:'api',model:params.model,text:malformed,usage:{inputTokens:1000,outputTokens:500}};
+  }}}));
+  assert.equal(calls,1,'格式问题不自动触发另一次付费调用');
+  assert.equal(pending.currentPlan.ready,false);
+  assert.equal(pending.messages.at(-1).rawContent,malformed);
+  assert.equal(pending.messages.at(-1).content,malformed);
+  assert.equal(pending.messages.at(-1).billing.state,'settled');
+  assert.ok(pending.currentPlan.warnings.some(value=>/方案格式不完整/.test(value)));
+  await assert.rejects(within(()=>confirmNativeChatPlan({actor,sessionId:session.id,planVersion:1,requestKey:'malformed_confirm'})),/请先完成/);
+  const revised=await within(()=>sendNativeChatMessage({actor,sessionId:session.id,message:'品牌仍是小锅馆。请修复JSON格式，保持15秒与原生声音，不添加营业时间和销量。',requestKey:'explicit_revision',runtime:{generate:async params=>{
+    calls++; assert.ok(params.responseSchema); assert.match(params.system,/不得自行添加营业中/);
+    assert.deepEqual(params.messages.slice(0,-1).map(item=>item.role),['user','assistant']);
+    assert.equal(params.messages[1].content,malformed,'旧错误稿保持assistant角色，不能提升为最新user指令');
+    assert.equal(params.messages.at(-1).content.length,1,'没有新图的失败稿修订只请求文字，不宣称重新识图');
+    assert.match(params.system,/没有重新识图/);
+    const payload=JSON.parse(params.messages.at(-1).content[0].text);
+    assert.equal(payload.conversation,undefined);
+    assert.equal(payload.currentPlan.grounding,undefined);
+    assert.equal(payload.currentPlan.skills,undefined);
+    assert.match(payload.message,/修复JSON格式/);
+    return {mode:'api',model:params.model,text:JSON.stringify(original),usage:{inputTokens:1000,outputTokens:500}};
+  }}}));
+  assert.equal(calls,2);assert.equal(revised.currentPlan.version,2);assert.equal(revised.currentPlan.ready,true);
+  assert.equal(revised.messages[1].rawContent,malformed);
+  assert.equal(q.get('SELECT count(*) n FROM media_jobs').n,0,'写稿成功不提前付费生成媒体');
+});
+
+test('完整稿的模型ready只是建议：已确认品牌和照片可预览，缺事实或不合法稿仍不可确认',async()=>{
+  const session=within(()=>createNativeChatSession(actor,10));
+  const output={...reply({durationSeconds:15}),ready:false};
+  const valid=await send(session,'advisory_ready_flag',output);
+  assert.equal(valid.currentPlan.ready,true);assert.match(valid.currentPlan.warnings.join('；'),/可预览后确认/);
+  assert.equal(q.get('SELECT count(*) n FROM media_jobs').n,0);
+  const other=within(()=>createNativeChatSession(actor,10));
+  const unknown=await send(other,'advisory_unknown_brand',output,{message:'请给我自然脚本，但还没确认店名'});
+  assert.equal(unknown.currentPlan.ready,false,'模型自报false不能绕过品牌确认');
+  const invalid=structuredClone(output);invalid.script.shots[0].end=30;
+  assert.equal((await send(session,'advisory_invalid_script',invalid)).currentPlan.ready,false);
+  const missing=structuredClone(output);delete missing.script.shots[0].visual;
+  assert.equal((await send(session,'advisory_missing_field',missing)).currentPlan.ready,false);
 });
 
 test('明确的视频时长与勾选同步，否定句/镜头时间不扩大费用，更新时长须新版本确认',async()=>{

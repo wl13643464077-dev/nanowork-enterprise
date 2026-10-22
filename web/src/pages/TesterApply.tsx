@@ -54,6 +54,14 @@ export default function TesterApply() {
                 <Input autoComplete="name" maxLength={40} />
               </Form.Item>
               <Form.Item
+                name="department"
+                label="所属部门／团队"
+                extra="填写公司内部统一名称，管理员审核时可校正分类。"
+                rules={[{ required: true, whitespace: true, message: '请填写所属部门或团队' }, { max: 40 }]}
+              >
+                <Input autoComplete="organization" placeholder="例如：成都销售一部、渠道合作团队" maxLength={40} />
+              </Form.Item>
+              <Form.Item
                 name="phone"
                 label="本人手机号"
                 rules={[
@@ -68,7 +76,7 @@ export default function TesterApply() {
                 label="登录账号"
                 rules={[
                   { required: true, message: '请设置登录账号' },
-                  { pattern: /^[a-zA-Z0-9_]{3,32}$/, message: '请使用 3–32 位字母、数字或下划线' },
+                  { pattern: /^[a-zA-Z0-9_]{4,32}$/, message: '请使用 4–32 位字母、数字或下划线' },
                 ]}
               >
                 <Input autoComplete="username" placeholder="例如 zhangsan01" maxLength={32} />

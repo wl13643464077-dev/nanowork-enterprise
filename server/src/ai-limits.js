@@ -73,6 +73,11 @@ export const AI_GENERATION_ROUTES = {
   ],
   files: [{ method: 'POST', pattern: /^\/upload$/ }],
   system: [{ method: 'POST', pattern: /^\/kb\/upload$/ }],
+  brandKb: [
+    { method: 'POST', pattern: /^\/collect\/?$/i },
+    { method: 'POST', pattern: /^\/upgrade\/?$/i },
+    { method: 'POST', pattern: /^\/recollect\/?$/i },
+  ],
   employeeWorkbench: [{ method: 'POST', pattern: /^\/restaurant\/[0-9]+\/dispatch$/ }],
 };
 

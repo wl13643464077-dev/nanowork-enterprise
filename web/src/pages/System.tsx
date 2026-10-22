@@ -1196,7 +1196,7 @@ export default function System() {
           <div>
             <Progress type="dashboard" percent={kbReadiness.percent || 0} size={112} strokeColor="var(--chart-2)" />
             <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 4 }}>
-              已就绪 {kbReadiness.ready || 0}/{kbReadiness.total || 7} 个知识域
+              已就绪 {kbReadiness.ready || 0}/{kbReadiness.total || 8} 个知识域
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 8 }}>
@@ -1275,6 +1275,11 @@ export default function System() {
         extra={
           canEditKb && (
             <Space size={8}>
+              <Link to="/brand-kb">
+                <Button size="small" icon={<BookOutlined />}>
+                  品牌知识包入口
+                </Button>
+              </Link>
               <Button
                 type="primary"
                 size="small"
@@ -1319,6 +1324,21 @@ export default function System() {
           }
           items={kbCats.map(c => ({ key: c, label: c === '员工产出' ? '员工产出（自动沉淀）' : c }))}
         />
+        {kbCat === '品牌知识包' && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 10 }}
+            message="品牌知识包在左侧「品牌知识包」入口查看。抓回来先审阅、修改或重抓，确认入库后才会出现在本分类并给数字员工调用。"
+            action={
+              <Link to="/brand-kb">
+                <Button size="small" type="primary">
+                  打开入口
+                </Button>
+              </Link>
+            }
+          />
+        )}
         {kbCat === '员工产出' && (
           <Alert
             type="info"

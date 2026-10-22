@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { modulesFor, q, getTenant, runWithTenant } from './db.js';
 import { authMiddleware, csrfOriginGuard } from './util.js';
 import { selectedProviderId, withPlatformProvider } from './engines/ai-provider-selection.js';
+import { testerExecutionIdentity, testerExecutionCredentials } from './engines/tester-access.js';
+import { runWithTesterIdentity } from './engines/tester-provider-context.js';
 import { storeScope } from './engines/store-scope.js';
 import adminRoutes from './routes/admin.js';
 import rechargeRoutes from './routes/recharge.js';
@@ -44,6 +46,7 @@ import taskCenterRoutes from './routes/task-center.js';
 import analysisRoutes from './routes/analysis.js';
 import storeDataRoutes from './routes/store-data.js';
 import assetRoutes from './routes/assets.js';
+import brandKbRoutes from './routes/brand-kb.js';
 import systemRoutes from './routes/system.js';
 import agentRoutes from './routes/agents.js';
 import fileRoutes from './routes/files.js';
@@ -56,7 +59,7 @@ import inboxRoutes from './routes/inbox.js';
 import { uploadAccessGuard } from './engines/upload-access.js';
 import { serveAvatarProviderAsset } from './engines/avatar-provider-assets.js';
 import { serveAiSalesVideoProviderAsset } from './engines/ai-sales-video-provider-assets.js';
-import { createAiGuard } from './ai-limits.js';
+import { createAiGuard, AI_GENERATION_ROUTES } from './ai-limits.js';
 import clientDownloadRoutes from './routes/client-downloads.js';
 import testerRoutes, { publicTrialRouter } from './routes/testers.js';
 
@@ -93,7 +96,11 @@ export function moduleGuard(moduleId) {
 // 租户数据作用域：把当前请求的 tenant_id 注入 AsyncLocalStorage，使所有写入自动带租户、读取可按租户过滤。
 // 多门店：租户上下文就位后再解析可选请求头 X-Store-Id（engines/store-scope.js），未传头=全店不过滤。
 export function tenantScope(req, res, next) {
-  runWithTenant(req.user?.tenant_id || 1, () => withPlatformProvider(selectedProviderId(), () => storeScope(req, res, next)));
+  runWithTenant(req.user?.tenant_id || 1, () => {
+    const personal = testerExecutionIdentity({ userId: req.user?.id, tenantId: req.user?.tenant_id });
+    if (personal) return runWithTesterIdentity(personal, () => storeScope(req, res, next));
+    return withPlatformProvider(selectedProviderId(), () => storeScope(req, res, next));
+  });
 }
 
 // 租户态守卫（SaaS）：企业账号须「已开通」才能用业务模块；平台超管豁免。
@@ -243,7 +250,17 @@ export function createApp({
 } = {}) {
   const app = express();
   Object.assign(app.locals, appLocals);
-  const guardFor = aiGuardFor || createAiGuard(aiGuardOptions);
+  const baseGuardFor = aiGuardFor || createAiGuard(aiGuardOptions);
+  const guardFor = prefix => {
+    const guard = baseGuardFor(prefix);
+    return (req, res, next) => {
+      try {
+        if ((AI_GENERATION_ROUTES[prefix] || []).some(rule => req.method === rule.method && rule.pattern.test(req.path)))
+          testerExecutionCredentials({ userId: req.user?.id, tenantId: req.user?.tenant_id });
+        return guard(req, res, next);
+      } catch (error) { return next(error); }
+    };
+  };
   const trustProxy = String(process.env.TRUST_PROXY || 'loopback').trim();
   app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 
@@ -334,6 +351,7 @@ export function createApp({
   app.use('/api/analysis', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), analysisRoutes);
   app.use('/api/store-data', authMiddleware, tenantScope, tenantGate, moduleGuard('analysis'), storeDataRoutes);
   app.use('/api/assets', authMiddleware, tenantScope, tenantGate, moduleGuard('assets'), assetRoutes);
+  app.use('/api/brand-kb', authMiddleware, tenantScope, tenantGate, moduleGuard('system'), guardFor('brandKb'), brandKbRoutes);
   app.use('/api/sys', authMiddleware, tenantScope, tenantGate, guardFor('system'), systemRoutes);
   app.use('/api/admin', authMiddleware, tenantScope, tenantGate, adminRoutes);
 
@@ -379,7 +397,7 @@ export function createApp({
       : 500;
     // 月度 AI 预算拦截（engines/credits.js）：文案已是面向老板的可读信息，原样透出并带错误码，
     // 前端 client.ts 按 code 统一提示，不需要各页面单独处理。
-    if (error?.code === 'BUDGET_EXCEEDED') {
+    if (error?.code === 'BUDGET_EXCEEDED' || /^(?:PERSONAL_|TESTER_)/.test(String(error?.code || ''))) {
       return res.status(status).json({
         error: String(error.message || '本月 AI 预算已用完'),
         code: error.code,

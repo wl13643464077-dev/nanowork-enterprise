@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Drawer, Empty, Spin, Tag, message } from 'antd';
 import { Markdown } from '../components/Markdown';
+import CampaignMaterialsGallery, { parseCampaignMaterials } from '../components/CampaignMaterialsGallery';
 
 export type TrialEmployee = {
   id: string;
   name: string;
+  displayName?: string;
   description: string;
   example: string;
   employeeIdx?: number;
@@ -12,7 +14,7 @@ export type TrialEmployee = {
   group?: string;
   department?: string;
   capabilities?: string[];
-  experienceMode?: 'text';
+  experienceMode?: 'text' | 'full';
   experienceNote?: string;
 };
 export type TrialProviderId = 'openlux' | '360';
@@ -50,6 +52,16 @@ export type TrialConversation = {
   callAttempts?: TrialCallAttempt[];
   // 服务端按客户自己输入过的内容比对正文，列出模型自行添加、需要老板核对的具体说法
   factAdvice?: string[];
+  campaignMaterials?: Array<{
+    id: string;
+    title: string;
+    kind?: string;
+    variant?: string;
+    groupTitle?: string;
+    status?: string;
+    note?: string;
+    url?: string;
+  }>;
   createdAt?: string;
 };
 export type TrialLead = {
@@ -59,6 +71,7 @@ export type TrialLead = {
   storeName?: string;
   status: string;
   provider?: TrialProviderId | string;
+  turnLimit?: number;
   usedTurns: number;
   remainingTurns: number;
   invitationTitle?: string;
@@ -69,6 +82,16 @@ export type TrialLead = {
   createdAt?: string;
   lastUsedAt?: string;
 };
+
+// 旧版本响应没有个人额度时兼容 2 次；登录客户以个人额度优先。
+export function trialTurnLimit(...values: Array<number | undefined>): number {
+  return values.find(value => Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 100) ?? 2;
+}
+
+export function trialUsageState(lead: Pick<TrialLead, 'usedTurns' | 'turnLimit'>): 'unused' | 'active' | 'exhausted' {
+  if (lead.usedTurns <= 0) return 'unused';
+  return lead.usedTurns >= trialTurnLimit(lead.turnLimit) ? 'exhausted' : 'active';
+}
 
 export const TRIAL_STATUS: Record<string, string> = {
   pending: '待审核',
@@ -105,7 +128,7 @@ export async function trialRequest<T = any>(
   options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 185000);
+  const timeout = window.setTimeout(() => controller.abort(), 14 * 60 * 1000);
   const abort = () => controller.abort();
   options.signal?.addEventListener('abort', abort, { once: true });
   try {
@@ -156,9 +179,13 @@ export function trialCost(value?: number | null, status?: string) {
 export function TrialHistory({
   conversations,
   showCost = false,
+  invitationToken,
+  accessToken,
 }: {
   conversations: TrialConversation[];
   showCost?: boolean;
+  invitationToken?: string;
+  accessToken?: string;
 }) {
   if (!conversations.length)
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="发一句需求，数字员工就开始工作" />;
@@ -177,7 +204,13 @@ export function TrialHistory({
             <div className="trial-request">{item.input}</div>
             {item.output ? (
               <>
-                <Markdown content={item.output} />
+                <Markdown content={item.output.replace(/```nanowork-campaign-materials[\s\S]*?```\s*/gu, '').trimEnd()} />
+                <CampaignMaterialsGallery
+                  items={item.campaignMaterials?.length ? item.campaignMaterials : parseCampaignMaterials(item.output)}
+                  invitationToken={invitationToken}
+                  accessToken={accessToken}
+                  conversationId={item.id}
+                />
                 {!!item.factAdvice?.length && (
                   <Alert
                     type="warning"
@@ -309,7 +342,7 @@ export function TrialLeadDrawer({
               {
                 key: 'turns',
                 label: '使用情况',
-                children: `已使用 ${data.lead.usedTurns} 次，还可用 ${data.lead.remainingTurns} 次`,
+                children: `已使用 ${data.lead.usedTurns} / ${trialTurnLimit(data.lead.turnLimit)} 次，还可用 ${data.lead.remainingTurns} 次`,
               },
             ]}
           />

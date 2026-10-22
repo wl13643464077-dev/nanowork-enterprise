@@ -24,6 +24,7 @@ import {
   buildRestaurantTaskPollWarning,
 } from '../restaurantTaskPolling';
 import { restaurantOutputPresentation } from '../restaurantOutputPresentation';
+import CampaignMaterialsGallery from '../CampaignMaterialsGallery';
 import {
   deptToneIndex,
   employeeDisplayName,
@@ -706,6 +707,7 @@ function RestaurantTaskDetail({
                 <small>先看结论、证据、风险与行动</small>
               </div>
               <Markdown content={report.overviewMarkdown} />
+              <CampaignMaterialsGallery items={report.campaignMaterials} />
               {report.deliverablesMarkdown && (
                 <details className="m-fold">
                   <summary>

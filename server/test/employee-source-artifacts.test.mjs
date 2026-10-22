@@ -660,6 +660,144 @@ test("纯 Markdown 原样进入渲染器，餐饮 JSON 转换异常则原正文�
   assert.equal(unrelated.renderVersion, null);
 });
 
+test("待审阅餐饮正文可免AI生成真实PDF和DOCX，内部巡检归档不进入下载文件", async () => {
+  const inspectionBody = `# CRM与会员生命周期方案
+
+## 本轮建议
+
+先完成会员分层，再按复购周期设计触达节奏；所有外发动作仍由老板确认。
+
+\`\`\`mermaid
+flowchart LR
+  A[新客] --> B[复购会员]
+\`\`\`
+
+\`\`\`nanowork-inspection JSON
+{
+  "schema_version": "1.0",
+  "record_type": "nanowork_inspection",
+  "task_id": "restaurant-crm-lifecycle"
+}
+\`\`\``;
+  const ids = runWithTenant(1, () => {
+    const outputId = Number(
+      q.run(
+        `INSERT INTO contents(type,title,body,status,risk_level,ai_mode,creator_id)
+      VALUES('员工产出','CRM与会员生命周期方案',?,'待审核','none','api',?)`,
+        inspectionBody,
+        ownerId,
+      ).lastInsertRowid,
+    );
+    const taskId = Number(
+      q.run(
+        `INSERT INTO agent_tasks(marshal_id,title,type,requirement,status,output_id,created_by)
+      VALUES(1,'CRM与会员生命周期方案','方案','制定会员生命周期执行方案','待审阅',?,?)`,
+        outputId,
+        ownerId,
+      ).lastInsertRowid,
+    );
+    return { outputId, taskId };
+  });
+  const beforeLogs = runWithTenant(
+    1,
+    () => q.get("SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=?", 1).n,
+  );
+
+  await withServer(actors.owner, async (base) => {
+    const generated = await jsonRequest(
+      base,
+      `/files/artifacts/source/agent_task/${ids.taskId}`,
+      { method: "POST", body: { formats: ["pdf", "docx"] } },
+    );
+    assert.equal(
+      generated.response.status,
+      200,
+      JSON.stringify(generated.payload),
+    );
+    assert.equal(generated.payload.source.draft, true);
+    assert.equal(generated.payload.source.sourceBodyKind, "markdown_or_text");
+    assert.deepEqual(
+      generated.payload.deliverables.map((item) => item.format),
+      ["pdf", "docx"],
+    );
+    assert.equal(
+      generated.payload.deliverables.every((item) => item.draft === true),
+      true,
+    );
+
+    const stored = runWithTenant(1, () =>
+      q.all(
+        `SELECT * FROM generated_artifacts
+        WHERE tenant_id=? AND source_type='agent_task' AND source_id=? ORDER BY id`,
+        1,
+        ids.taskId,
+      ),
+    );
+    assert.equal(stored.length, 2);
+    assert.equal(
+      stored.every((row) => !row.content.includes("nanowork_inspection")),
+      true,
+    );
+    assert.equal(
+      stored.every((row) => row.content.includes("flowchart LR")),
+      true,
+      "正常Mermaid业务内容必须保留",
+    );
+
+    const pdfRow = stored.find((row) => row.format === "pdf");
+    const pdf = fs.readFileSync(
+      path.join(ARTIFACT_DIR, "1", pdfRow.file_name),
+    );
+    assert.equal(pdf.subarray(0, 5).toString("ascii"), "%PDF-");
+
+    const docxRow = stored.find((row) => row.format === "docx");
+    const docx = await JSZip.loadAsync(
+      fs.readFileSync(path.join(ARTIFACT_DIR, "1", docxRow.file_name)),
+    );
+    const documentXml = await docx.file("word/document.xml").async("string");
+    assert.match(documentXml, /CRM与会员生命周期方案/u);
+    assert.match(documentXml, /复购周期设计触达节奏/u);
+    assert.match(documentXml, /flowchart LR/u);
+    assert.doesNotMatch(documentXml, /nanowork_inspection/u);
+
+    for (const deliverable of generated.payload.deliverables) {
+      const downloaded = await fetch(
+        `${base}/files/artifacts/${deliverable.id}/download`,
+      );
+      assert.equal(downloaded.status, 200);
+      assert.equal(
+        downloaded.headers.get("content-type"),
+        deliverable.format === "pdf"
+          ? "application/pdf"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      );
+    }
+
+    const repeated = await jsonRequest(
+      base,
+      `/files/artifacts/source/agent_task/${ids.taskId}`,
+      { method: "POST", body: { formats: ["pdf", "docx"] } },
+    );
+    assert.deepEqual(
+      repeated.payload.deliverables.map((item) => item.id),
+      generated.payload.deliverables.map((item) => item.id),
+    );
+    assert.equal(
+      repeated.payload.deliverables.every((item) => item.reused === true),
+      true,
+    );
+  });
+
+  assert.equal(
+    runWithTenant(
+      1,
+      () => q.get("SELECT COUNT(*) n FROM credit_logs WHERE tenant_id=?", 1).n,
+    ),
+    beforeLogs,
+    "本地文件导出不得新增AI费用流水",
+  );
+});
+
 test("内容数字员工 result_md 可在待审阅状态直接下载草稿，不以审核或采纳为前提", async () => {
   await withServer(actors.owner, async (base) => {
     const generated = await jsonRequest(

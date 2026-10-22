@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isTesterBusinessActor } from "./tester-access.js";
 
 import {
   CONTENT_HANDLER_ADAPTER_CATALOG,
@@ -1210,7 +1211,7 @@ function approvalPolicy(value) {
     !configuredBy ||
     !Number.isInteger(Number(configuredBy.id)) ||
     Number(configuredBy.id) <= 0 ||
-    !OWNER_APPROVAL_POLICY_ROLES.has(cleanText(configuredBy.role, 64))
+    (!OWNER_APPROVAL_POLICY_ROLES.has(cleanText(configuredBy.role, 64)) && !isTesterBusinessActor(configuredBy))
   ) {
     fail(
       "custom审批策略必须由老板或管理员的已认证身份配置",
@@ -4758,6 +4759,8 @@ export function createContentProductionPipeline({
   buildRuntimeContext = buildContentHandlerRuntimeContext,
   compileStationExecution = defaultCompileStationExecution,
   executeStationDelivery = executeStationDeliveryDirect,
+  bindProvider = () => null,
+  runWithJobProvider = (_job, action) => action(),
   now = () => new Date(),
 } = {}) {
   validateRepository(repository);
@@ -4870,7 +4873,17 @@ export function createContentProductionPipeline({
     });
   };
 
-  const resume = async ({
+  const resume = async (input = {}) => {
+    const tenantId = positiveInteger(input.tenantId, "tenantId");
+    const pipelineId = positiveInteger(input.pipelineId, "pipelineId");
+    const job = repository.getJob(tenantId, pipelineId);
+    if (!job) fail("内容生产流水线不存在", "CONTENT_PIPELINE_NOT_FOUND", 404);
+    // All entry points, including scheduler recovery and approval continuation,
+    // use the original job identity before any station can call a supplier.
+    return runWithJobProvider(job, () => resumeSelected(input));
+  };
+
+  const resumeSelected = async ({
     tenantId: rawTenantId,
     pipelineId: rawPipelineId,
     refreshWebEvidence = false,
@@ -5760,7 +5773,11 @@ export function createContentProductionPipeline({
         title,
         task,
         persona: safeValue(input.persona || {}),
-        settings: safeValue(input.settings || {}),
+        settings: safeValue({ ...input.settings,
+          // This field is server-owned; an incoming brief cannot choose the
+          // billing owner or replace the supplier of a persisted personal job.
+          providerBinding: bindProvider({ tenantId, createdBy }),
+        }),
         idempotency: normalizePipelineIdempotency(input.idempotency),
         workflow: {
           ...safeValue(input.workflow || {}),
@@ -5802,7 +5819,7 @@ export function createContentProductionPipeline({
       if (!job) fail("内容生产流水线不存在", "CONTENT_PIPELINE_NOT_FOUND", 404);
       const actorId = positiveInteger(actor?.id, "授权人id");
       const actorRole = cleanText(actor?.role, 64);
-      if (!OWNER_APPROVAL_POLICY_ROLES.has(actorRole)) {
+      if (!OWNER_APPROVAL_POLICY_ROLES.has(actorRole) && !isTesterBusinessActor(actor)) {
         fail(
           "只有老板、管理员或平台超管可以授权付费媒体provider",
           "CONTENT_PAID_MEDIA_AUTHORITY_REQUIRED",
@@ -5880,7 +5897,7 @@ export function createContentProductionPipeline({
         action === "reject" ? "reject" : action === "approve" ? "adopt" : "";
       if (!normalizedAction)
         fail("action必须是approve或reject", undefined, 400);
-      if (station.approvalBoundary.ownerSelectionRequired && !OWNER_APPROVAL_POLICY_ROLES.has(actor?.role)) {
+      if (station.approvalBoundary.ownerSelectionRequired && !OWNER_APPROVAL_POLICY_ROLES.has(actor?.role) && !isTesterBusinessActor(actor)) {
         fail('小红书发布版本只能由老板或管理员选择', 'CONTENT_PIPELINE_XHS_OWNER_REQUIRED', 403);
       }
       const decision = assertContentHandlerApprovalBoundary({

@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
+import { cleanReportBody } from "../../../shared/report-body.mjs";
+
 const RESTAURANT_OUTPUT_PREFIX = "urn:nanowork:restaurant-output:";
+export const SOURCE_ARTIFACT_RENDER_VERSION =
+  "restaurant-readable-markdown/2";
 
 function record(value) {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -770,19 +775,15 @@ export function isRestaurantOutputCandidate(raw) {
  */
 export function prepareRestaurantOutputForExport(raw, taskContext = "") {
   const original = typeof raw === "string" ? raw : String(raw ?? "");
-  const output = findRestaurantOutput(original);
-  const candidate = Boolean(output) || isRestaurantOutputCandidate(original);
+  const cleaned = cleanReportBody(original);
+  const output = findRestaurantOutput(cleaned);
+  const candidate = Boolean(output) || isRestaurantOutputCandidate(cleaned);
   if (!output) {
-    // 机读归档块（巡店 nanowork-inspection JSON）只供系统入档，
-    // 老板下载的 Word/PDF 不需要；数据库原文保持不变。
-    // 没有归档块的正文必须逐字节原样返回（含结尾换行），
-    // transformed 仍专指“契约JSON→报告”转换，剥块不算。
-    const body = normalizeMarkdownBreaks(
-      original.includes("```nanowork-inspection")
-        ? original.replace(/```nanowork-inspection[\s\S]*?```\s*/gu, "").trimEnd()
-        : original,
-    );
-    return { body: body || original, transformed: false, candidate };
+    // 内部巡检归档块只供系统入档；老板下载的 Word/PDF 不需要。
+    // shared/report-body 同时覆盖大小写、tilde、JSON 后缀及旧式
+    // record_type 归档对象，普通业务 JSON、Mermaid 和代码块保持原样。
+    const body = normalizeMarkdownBreaks(cleaned);
+    return { body, transformed: false, candidate };
   }
   try {
     return {
@@ -791,6 +792,38 @@ export function prepareRestaurantOutputForExport(raw, taskContext = "") {
       candidate: true,
     };
   } catch {
-    return { body: original, transformed: false, candidate: true };
+    return { body: cleaned, transformed: false, candidate: true };
   }
+}
+
+/**
+ * 餐饮任务导出的唯一正文与缓存身份。文件路由和任务中心必须共用，
+ * 否则结构化报告或剥除内部归档块后生成的文件会在任务中心刷新时消失。
+ */
+export function prepareRestaurantArtifactSource(raw, taskContext = "") {
+  const original = typeof raw === "string" ? raw : String(raw ?? "");
+  const prepared = prepareRestaurantOutputForExport(original, taskContext);
+  const rawSourceHash = createHash("sha256").update(original).digest("hex");
+  if (!prepared.candidate) {
+    return {
+      body: prepared.body,
+      rawSourceHash,
+      sourceHash: createHash("sha256").update(prepared.body).digest("hex"),
+      renderVersion: null,
+      sourceBodyKind: "markdown_or_text",
+      transformed: false,
+    };
+  }
+  return {
+    body: prepared.body,
+    rawSourceHash,
+    sourceHash: createHash("sha256")
+      .update(`${SOURCE_ARTIFACT_RENDER_VERSION}\0${prepared.body}`)
+      .digest("hex"),
+    renderVersion: SOURCE_ARTIFACT_RENDER_VERSION,
+    sourceBodyKind: prepared.transformed
+      ? "restaurant_structured_json"
+      : "restaurant_structured_json_fallback",
+    transformed: prepared.transformed,
+  };
 }

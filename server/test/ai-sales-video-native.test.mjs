@@ -154,7 +154,7 @@ function harness(overrides = {}) {
       capture('video');
       assert.equal(params.duration, 15);
       assert.equal(params.audioUrl, undefined);
-      assert.match(params.prompt, /普通话中文独白/u);
+      assert.match(params.prompt, /自然普通话女声/u);
       assert.match(params.prompt, /请完整说出/u);
       assert.equal(params.promptExtend, false);
       assert.equal(params.model, 'wan2.6-i2v');
@@ -955,6 +955,12 @@ test(
       assert.equal(state.voiceTracks, undefined);
       assert.equal(state.result.audioSource, 'provider_native');
       assert.equal(state.result.subtitleTiming, 'script_estimated');
+      assert.equal(state.referencePreparation.length, 1);
+      assert.deepEqual([state.referencePreparation[0].source.width, state.referencePreparation[0].source.height], [240, 400]);
+      assert.deepEqual([state.referencePreparation[0].prepared.width, state.referencePreparation[0].prepared.height], [720, 1280]);
+      assert.equal(state.referencePreparation[0].method, 'portrait_cover_center_crop');
+      assert.equal(state.referencePreparation[0].addedPadding, false);
+      assert.match(state.referencePreparation[0].prepared.sha256, /^[a-f0-9]{64}$/u);
       assert.ok(state.result.audioVerification.every(check => check.peakDb > -60));
       assert.ok(state.result.subtitleCount > 2);
       assert.equal(rendered.width, 1080);

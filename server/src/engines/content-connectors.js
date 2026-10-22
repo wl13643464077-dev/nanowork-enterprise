@@ -4,6 +4,7 @@ import {
 } from '../catalog/content-crew.js';
 import { buildContentEmployeeConnectorExecution } from './content-employee-workbench.js';
 import { contentFreshnessWindowDays } from './content-source-freshness.js';
+import { providerContext } from './tester-provider-context.js';
 
 // 真联网引擎依赖 db.js（云雾配置/密钥）；本模块保持可被纯目录测试静态导入，
 // 只在真正执行联网时按需加载。
@@ -646,6 +647,7 @@ export function prepareContentConnectorEmployeeExecution(kind, task, options = {
 const LIVE_RESEARCH_FEATURE = '内容连接器·联网检索';
 const LIVE_RESEARCH_REF_TYPE = 'content_connector_live_research';
 const LIVE_RESEARCH_DEFAULT_MODEL = () => process.env.NANOWORK_RESEARCH_MODEL || 'claude-opus-4-8';
+const LIVE_RESEARCH_DEFAULT_AUTHORIZATION_CREDITS = 100;
 
 function callerSuppliedLiveInput(descriptor, input, context) {
   if (descriptor.kind === 'benchmark_analysis') return normalizedSamples(input.samples).length > 0;
@@ -753,24 +755,30 @@ function liveOutputFor(descriptor, input, research) {
   };
 }
 
-function liveResearchEstimateCredits(credits, query) {
-  return credits.estimateCallCredits({
-    kind: 'text',
-    model: LIVE_RESEARCH_DEFAULT_MODEL(),
-    texts: [query],
-    outputTokens: 2_000,
-    overheadTokens: 4_000,
-  });
+function positiveConfiguredCredits(value, fallback = 0) {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= 1_000_000_000
+    ? amount
+    : fallback;
 }
 
-function fixedLaneCredits(credits, lane) {
-  const configured = credits.billing()?.liveResearch;
+function fixedLaneCredits(configured, lane) {
   const value = plainObject(configured) ? Number(configured[lane]) : 0;
   return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
 }
 
 async function defaultBillingAdapter() {
   const credits = await import('./credits.js');
+  const { aggregateSupplierCosts } = await import('./provider-cost-receipts.js');
+  const { getConfig } = await import('../db.js');
+  const configuredBilling = getConfig('billing', {}) || {};
+  const configuredLiveResearch = plainObject(configuredBilling.liveResearch)
+    ? configuredBilling.liveResearch
+    : {};
+  const authorizationCredits = positiveConfiguredCredits(
+    configuredLiveResearch.claude_websearch,
+    LIVE_RESEARCH_DEFAULT_AUTHORIZATION_CREDITS,
+  );
   return {
     hold: ({ userId, tenantId, query, note }) => credits.holdCredits({
       userId,
@@ -778,30 +786,89 @@ async function defaultBillingAdapter() {
       feature: LIVE_RESEARCH_FEATURE,
       kind: 'text',
       model: LIVE_RESEARCH_DEFAULT_MODEL(),
-      credits: liveResearchEstimateCredits(credits, query),
+      credits: authorizationCredits,
       refType: LIVE_RESEARCH_REF_TYPE,
       refId: null,
-      note,
+      note: `${note}；本次最多授权${authorizationCredits}积分，未用差额退回；该金额是平台扣费上限，不是供应商最高价保证`,
     }),
     settle: (hold, research) => {
       const usage = research?.cost?.usage || {};
+      const supplierCosts = Array.isArray(research?.cost?.supplierCosts)
+        ? research.cost.supplierCosts
+        : Array.isArray(usage.supplierCosts)
+          ? usage.supplierCosts
+          : [];
+      const aggregate = aggregateSupplierCosts(supplierCosts);
       const tokenLane = research?.lane === 'claude_websearch'
         && (Number(usage.inputTokens) > 0 || Number(usage.outputTokens) > 0);
       if (tokenLane) {
-        return credits.settleHold(hold, {
-          usage: { inputTokens: Number(usage.inputTokens) || 0, outputTokens: Number(usage.outputTokens) || 0 },
-          model: LIVE_RESEARCH_DEFAULT_MODEL(),
+        const pricing = credits.billing();
+        const knownSupplierCost = aggregate?.status === 'known'
+          ? Number(aggregate.costYuanOverride)
+          : null;
+        const uncappedCredits = knownSupplierCost != null
+          ? Math.ceil((knownSupplierCost * pricing.marginMultiplier) / pricing.creditYuan)
+          : null;
+        const settled = credits.settleHold(hold, {
+          usage: {
+            inputTokens: Number(usage.inputTokens) || 0,
+            outputTokens: Number(usage.outputTokens) || 0,
+            ...(supplierCosts.length ? { supplierCosts } : {}),
+          },
+          model: research?.cost?.model || LIVE_RESEARCH_DEFAULT_MODEL(),
           aiMode: 'api',
-          note: `联网检索 lane=${research.lane} 按真实 token 结算`,
+          ...(uncappedCredits != null ? { credits: uncappedCredits } : {}),
+          authorizationCapCredits: Number(hold.credits),
+          note: uncappedCredits == null
+            ? `联网检索 lane=${research.lane} 上游费用回执待核对，不将未知成本记为0`
+            : `联网检索 lane=${research.lane} 按真实usage.amount回执×${pricing.marginMultiplier}结算${uncappedCredits > Number(hold.credits) ? '，超过授权部分由平台承担' : ''}`,
         });
+        const cappedAtAuthorizedAmount = uncappedCredits != null
+          && uncappedCredits > Number(hold.credits);
+        const coveredSupplierCostYuan = cappedAtAuthorizedAmount
+          ? (Number(hold.credits) * pricing.creditYuan) / pricing.marginMultiplier
+          : knownSupplierCost;
+        return {
+          ...settled,
+          state: settled?.supplierCostStatus === 'pending' ? 'pending_reconciliation' : 'settled',
+          priceBasis: uncappedCredits == null
+            ? 'supplier_receipt_pending'
+            : 'verified_supplier_usage_amount_x2',
+          authorizedCapCredits: Number(hold.credits),
+          uncappedCredits,
+          cappedAtAuthorizedAmount,
+          platformAbsorbedExcessSupplierCostYuan:
+            cappedAtAuthorizedAmount && knownSupplierCost != null
+              ? Math.max(0, knownSupplierCost - coveredSupplierCostYuan)
+              : 0,
+        };
       }
       return credits.settleHold(hold, {
-        credits: fixedLaneCredits(credits, research?.lane),
+        credits: fixedLaneCredits(configuredLiveResearch, research?.lane),
         aiMode: 'api',
         note: `联网检索 lane=${research?.lane || 'none'} 无模型 token，按通道固定费用结算`,
       });
     },
-    release: (hold, note) => credits.releaseHold(hold, note),
+    release: (hold, note, research = null) => {
+      const supplierCosts = Array.isArray(research?.cost?.supplierCosts)
+        ? research.cost.supplierCosts
+        : [];
+      const aggregate = aggregateSupplierCosts(supplierCosts);
+      if (aggregate?.status === 'known') {
+        return credits.refundHold(hold, {
+          note,
+          supplierCostYuan: aggregate.costYuanOverride,
+          costSource: aggregate.costSource,
+        });
+      }
+      if (research?.provenance?.externalCall === true || supplierCosts.length) {
+        // No deliverable means the user receives every held credit. If the
+        // supplier receipt is late, keep the platform cost pending instead of
+        // claiming that no upstream cost was incurred.
+        return credits.refundHold(hold, { note });
+      }
+      return credits.releaseHold(hold, note);
+    },
   };
 }
 
@@ -818,7 +885,8 @@ function liveFacts(research, settlement) {
  * 趋势官 / 情报员 / 拆解师连接器的真联网执行。
  *
  * - 调用方已提供 liveData / samples 时沿用同步的本地整理路径（零联网、零计费）；
- * - 否则先 hold 再检索（D-014），按 lane 结算：Claude WebSearch 按真实 token，
+ * - 否则先 hold 再检索（D-014），按 lane 结算：360 Claude WebSearch 按真实
+ *   usage.amount 回执乘2，且实扣不超过调用前授权上限；
  *   TinyFish / 商业 API 按通道固定费用（默认 0）；未取得来源全额释放；
  * - 未配置任何检索通道时返回 status='unavailable'，绝不回退到模板冒充（D-019 / D-055）。
  *
@@ -845,7 +913,7 @@ export async function executeContentConnectorLive(kind, input = {}, context = {}
         descriptor,
         'unavailable',
         'CONTENT_CONNECTOR_LIVE_RESEARCH_UNAVAILABLE',
-        '联网检索未配置：请在接口管理中配置 TinyFish、Claude CLI（云雾）或博查 / Tavily / Serper 任一通道；也可改为提供 liveData 让本连接器只整理调用方来源。未配置前不会用模板冒充实时结果。',
+        '联网检索未配置：请在接口管理中配置 TinyFish、360 Claude WebSearch API 或博查 / Tavily / Serper 任一通道；也可改为提供 liveData 让本连接器只整理调用方来源。未配置前不会用模板冒充实时结果。',
         ['configured_live_research_lane|liveData'],
       ),
       liveResearch: { configured: false, readiness },
@@ -867,7 +935,8 @@ export async function executeContentConnectorLive(kind, input = {}, context = {}
   const runResearch = typeof deps.runLiveResearch === 'function'
     ? deps.runLiveResearch
     : engine.runContentLiveResearch;
-  const billingAdapter = deps.billing === null
+  const personalByok = providerContext()?.billingMode === 'personal';
+  const billingAdapter = personalByok || deps.billing === null
     ? null
     : plainObject(deps.billing)
       ? deps.billing
@@ -901,18 +970,52 @@ export async function executeContentConnectorLive(kind, input = {}, context = {}
     throw error;
   }
   let settlement = null;
+  let settlementAction = null;
   if (hold && !reusedHold && billingAdapter) {
-    settlement = research.ok || research.status === 'insufficient_evidence'
-      ? billingAdapter.settle(hold, research)
-      : billingAdapter.release(hold, `联网检索未取得可核验来源（${research.status}），预授权全额释放`);
+    if (research.ok || research.status === 'insufficient_evidence') {
+      settlement = billingAdapter.settle(hold, research);
+      settlementAction = 'settle';
+    } else {
+      settlement = billingAdapter.release(
+        hold,
+        `联网检索未取得可核验来源（${research.status}），预授权全额释放`,
+        research,
+      );
+      settlementAction = 'release';
+    }
   }
   const billingEvidence = {
+    billingMode: personalByok ? 'personal_byok' : 'platform_credits',
+    // releaseHold/refundHold 返回体通常没有 state；不能仅凭“有结算对象”写成 settled。
+    state: personalByok
+      ? 'not_required'
+      : settlement?.state
+        || (settlementAction === 'release'
+          ? 'released'
+          : settlement
+            ? 'settled'
+            : hold ? 'held' : 'not_held'),
     holdReused: reusedHold,
     heldCredits: hold ? Number(hold.credits || 0) : 0,
     settledCredits: settlement ? Number(settlement.credits || 0) : null,
     lane: research.lane,
     usage: research.cost?.usage || { inputTokens: 0, outputTokens: 0 },
     costUsd: research.cost?.costUsd || 0,
+    supplierCostStatus: research.cost?.supplierCosts?.[0]?.status || null,
+    knownSupplierCostYuan: research.cost?.supplierCosts
+      ?.filter(item => item?.status === 'known')
+      .reduce((sum, item) => sum + Number(item.costYuanOverride || 0), 0) || 0,
+    priceBasis: personalByok
+      ? 'personal_provider_key_no_platform_credits'
+      : settlement?.priceBasis || null,
+    authorizedCapCredits: settlement?.authorizedCapCredits ?? (hold ? Number(hold.credits || 0) : 0),
+    uncappedCredits: settlement?.uncappedCredits ?? null,
+    cappedAtAuthorizedAmount: settlement?.cappedAtAuthorizedAmount === true,
+    platformAbsorbedExcessSupplierCostYuan:
+      Number(settlement?.platformAbsorbedExcessSupplierCostYuan || 0),
+    pricingNotice: personalByok
+      ? '本次使用测试员或销售自己的供应商Key，不扣平台算力积分'
+      : `调用前最多授权${hold ? Number(hold.credits || 0) : 0}积分；真实360费用回执乘2结算，未用差额退回，超过授权的部分由平台承担`,
   };
   const evidence = {
     lane: research.lane,

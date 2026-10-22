@@ -119,6 +119,7 @@ import {
   buildContentStoreFactPack,
   storeFactPackPromptBlock,
 } from '../engines/content-store-facts.js';
+import { brandMatchExcerpts } from '../engines/brand-knowledge-pack.js';
 import { refsBlock, webSearch } from '../engines/websearch.js';
 import { realAiOutputViolations } from '../engines/ai-delivery-status.js';
 import { ensureContentAsset } from '../engines/content-assets.js';
@@ -5661,13 +5662,23 @@ async function collectAiSalesVideoGrounding({ brief, role, runtime = {}, signal,
     missing: Array.isArray(storeFacts?.missing) ? [...storeFacts.missing] : [],
     degraded: storeFacts?.degraded === true,
   };
+  let brandPack = '';
+  try {
+    brandPack = brandMatchExcerpts(`${brief} 带货视频`);
+  } catch {
+    brandPack = '';
+  }
+  const kbText = String(kb?.text || '').trim();
+  const knowledgeText = brandPack && !kbText.includes('【品牌知识包·优先匹配')
+    ? `${brandPack}\n${kbText}`.trim()
+    : kbText;
   const webText = evidence.web.verified ? refsBlock(evidence.web.results) : '';
   const promptContext = [
     storeFactsPrompt,
     [
-      kb?.text ? `【当前租户知识库召回】\n${String(kb.text).slice(0, 2200)}` : '',
+      knowledgeText ? `【当前租户知识库召回】\n${knowledgeText.slice(0, 2200)}` : '',
       webText ? `【本次已验证联网证据】\n${webText.slice(0, 1800)}` : '',
-      !kb?.text && !webText
+      !knowledgeText && !webText
         ? '【事实边界】未取得可引用的知识库或联网证据；不得补造价格、功效、口碑、营业信息或实时热度。'
         : '',
     ].filter(Boolean).join('\n\n').slice(0, 4200),
@@ -5773,6 +5784,7 @@ async function executeAiSalesVideoJob({
     providerExecution = aiSalesVideoProviderProgressSnapshot(plan, next);
   };
   try {
+    await withTaskProvider(plan, async () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nanowork-sales-provider-'));
     result = await executeAiSalesVideoPlan({
       plan,
@@ -5959,6 +5971,7 @@ async function executeAiSalesVideoJob({
       );
     } catch { /* 通知失败不回滚已交付成片 */ }
     logOp(actor, '内容生产仓', 'AI带货员成片完成', `media_job#${jobId}`);
+    });
   } catch (error) {
     if (deliveryPersisted) {
       const reason = sanitizeContentRuntimeErrorMessage(error).slice(0, 220);
@@ -6125,6 +6138,7 @@ async function executeAiSalesVideoRecoveryJob({
   let providerExecution = aiSalesVideoProviderProgressSnapshot(plan, initialProviderExecution);
   let billingState = initialBilling;
   try {
+    await withTaskProvider(plan, async () => {
     const recovered = await recoverAiSalesVideoFromExistingTasks({
       tenantId,
       plan,
@@ -6216,6 +6230,7 @@ async function executeAiSalesVideoRecoveryJob({
       );
       logOp(actor, '内容生产仓', '恢复AI带货员旧任务', `media_job#${jobId};provider_submissions=0`);
     } catch { /* 通知或日志失败不回滚真实成片 */ }
+    });
   } catch (error) {
     const reason = sanitizeContentRuntimeErrorMessage(error).slice(0, 220);
     providerExecution = aiSalesVideoProviderProgressSnapshot(
@@ -6318,7 +6333,9 @@ r.post('/ai-sales-video', async (req, res) => {
       if (created.run) setImmediate(() => { created.run().catch(error => console.error('[ai-sales-voiced] worker state unavailable:', error?.code || 'unknown')); });
       return undefined;
     }
-    const plan = buildAiSalesVideoPlan({ brief, references, model });
+    const plan = { ...buildAiSalesVideoPlan({ brief, references, model }), providerId: selectedProviderId() };
+    // Freeze the selected supplier before any hold or background generation.
+    await withTaskProvider(plan, () => undefined);
     const skillContext = buildNativeContentSkillContext(AI_SALES_VIDEO_EMPLOYEE.idx, { userId: req.user.id });
     const nativeEmployeeProfile = skillContext.profile;
     const employeeExecution = {
@@ -6538,6 +6555,7 @@ r.post('/media-jobs/:id/recover-ai-sales-video', async (req, res) => {
         code: 'AI_SALES_VIDEO_RECOVERY_NOT_AVAILABLE',
       });
     }
+    return await withTaskProvider({ model: job.model, providerId: recovery.snapshot.providerId }, async () => {
     const runtime = req.app?.locals?.aiSalesVideoRuntime || {};
     if (!runtime.recoverQuery && !runtime.querySegment && !yunwuAvailable()) {
       return res.status(503).json({
@@ -6683,6 +6701,7 @@ r.post('/media-jobs/:id/recover-ai-sales-video', async (req, res) => {
       runtime,
     })));
     return undefined;
+    });
   } catch (error) {
     if (claimed && jobId && !res.headersSent) {
       q.run(

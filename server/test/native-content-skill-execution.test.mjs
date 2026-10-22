@@ -339,6 +339,33 @@ function createVoiced(runtime) {
   );
 }
 
+test('15秒单参考图只省略冲突方法，技能原文、其他时长与小红书上下文不变', () => {
+  const recipes = (idx) => [...rawSkills(idx),
+    {id:`content-custom:${idx}:funnel`,title:'旧营销框架',detail:'用AIDA、PAS安排问题、社会证明和CTA。',enabled:true},
+    {id:`content-custom:${idx}:segments`,title:'旧分段方法',detail:'30秒视频拆成两段15秒。',enabled:true},
+    {id:`content-custom:${idx}:tts`,title:'旧声音方法',detail:'使用用户已选的预设音色，按实际配音时长分配字幕。',enabled:true},
+  ];
+  saveSkills(10, recipes(10));
+  const before = q.get('SELECT skills_json,revision FROM content_employee_workbench_configs WHERE tenant_id=? AND employee_idx=10',tenantId);
+  const scoped = runWithTenant(tenantId,()=>buildNativeContentSkillContext(10,{nativeVideoContext:{durationSeconds:15,referenceCount:1}}));
+  assertInjected(scoped.prompt,scoped);
+  assert.doesNotMatch(scoped.prompt,/AIDA|PAS|社会证明|30秒视频拆|预设音色|实际配音时长/u);
+  assert.deepEqual(scoped.evidence.omittedSkills.map(item=>item.reason),['long_form_sales_framework','legacy_segment_recipe','external_voice_recipe']);
+  assert.ok(scoped.evidence.omittedSkills.every(item=>item.contentHash.length===64));
+  assert.equal(scoped.evidence.methodScope,'native_sales_video_15s_single_reference');
+  assert.ok(scoped.evidence.customSkillIds.includes('content-custom:10:tone'));
+  assert.equal(scoped.evidence.customSkillIds.includes('content-custom:10:funnel'),false,'省略的方法不能冒充已注入');
+  for (const nativeVideoContext of [undefined,{durationSeconds:30,referenceCount:1},{durationSeconds:15,referenceCount:2}]) {
+    const ordinary=runWithTenant(tenantId,()=>buildNativeContentSkillContext(10,{nativeVideoContext}));
+    assert.match(ordinary.prompt,/AIDA/u);assert.match(ordinary.prompt,/预设音色/u);
+    assert.equal(ordinary.evidence.omittedSkills,undefined);
+  }
+  assert.deepEqual(q.get('SELECT skills_json,revision FROM content_employee_workbench_configs WHERE tenant_id=? AND employee_idx=10',tenantId),before);
+  saveSkills(11,recipes(11));
+  const xhs=runWithTenant(tenantId,()=>buildNativeContentSkillContext(11,{nativeVideoContext:{durationSeconds:15,referenceCount:1}}));
+  assert.match(xhs.prompt,/AIDA/u);assert.equal(xhs.evidence.omittedSkills,undefined);
+});
+
 test("小红书实际视觉请求注入本企业启用技能与必备卡；运行中编辑不改变快照、图片和完整原文", async () => {
   reset(11);
   const expected = contextFor(11);

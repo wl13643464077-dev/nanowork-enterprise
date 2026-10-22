@@ -29,6 +29,7 @@ import { publicVoicedSalesProgress, voicedSalesDeliveryVerified } from './ai-sal
 import { preserveSalesVideoClip } from './ai-sales-video-partials.js';
 import { resolveAiSalesVideoDuration } from './ai-sales-video-duration.js';
 import { aggregateSupplierCosts } from './provider-cost-receipts.js';
+import { prepareAiSalesVideoReferenceFrames } from './ai-sales-video-reference-frames.js';
 
 export const AI_SALES_VOICED_MODEL = 'wan2.6-i2v';
 const videoModel = () => provider360Active() ? PROVIDER_360_VIDEO_MODEL : AI_SALES_VOICED_MODEL;
@@ -37,6 +38,21 @@ const nativeSegmentCount = (duration, model = videoModel()) => model === PROVIDE
 const supportedSalesModel = model => ['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(model);
 const fail = (message, code = 'AI_SALES_VOICED_BLOCKED', status = 409) =>
   Object.assign(new Error(message), { code, status });
+// Script/contract errors are produced by our own validators (never raw provider
+// bodies); keep a bounded, printable copy so the boss can see why a run failed.
+const safeReasonText = value => String(value ?? '').replace(/\s+/gu, ' ').trim().slice(0, 300);
+export function voicedSalesFailureDetail(error) {
+  // Only our own script-contract errors are known to be free of provider text.
+  if (error?.name !== 'AiSalesVideoScriptError' || error?.blocked !== true) return null;
+  const attempts = Array.isArray(error?.attempts) ? error.attempts.slice(0, 3) : [];
+  return {
+    message: safeReasonText(error?.message).slice(0, 500),
+    errors: (Array.isArray(error?.errors) ? error.errors : []).slice(0, 6).map(safeReasonText).filter(Boolean),
+    attempts: attempts.map(item => ({ attempt: Number(item?.attempt) || 0, ok: item?.ok === true,
+      errors: (Array.isArray(item?.errors) ? item.errors : []).slice(0, 6).map(safeReasonText).filter(Boolean) })),
+    lastOutput: String(error?.lastOutput || '').slice(0, 1200),
+  };
+}
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const taskId = value => (/^[\p{L}\p{N}_.+^:/-]{1,500}$/u.test(String(value || '')) ? String(value) : null);
 
@@ -223,15 +239,16 @@ export function voicedSalesSettlement(plan) {
     new Set(videoEvents.map(event => event.taskId)).size !== segmentCount
   )
     throw fail('原任务调用/用量证据不完整，不能自动对账', 'AI_SALES_VIDEO_RECOVERY_BILLING_UNVERIFIED');
-  const requiresReceipts = priceBilling?.supplierCostPolicy?.enabled === true
+  const personalBilling = priceBilling?.billingMode === 'personal';
+  const requiresReceipts = personalBilling || priceBilling?.supplierCostPolicy?.enabled === true
     || events.some(event => event.supplierCosts?.length);
   const supplierCosts = requiresReceipts ? events.flatMap(event => event.supplierCosts?.length
     ? event.supplierCosts : [{ status: 'pending', requestId: event.providerRequestId || null, model: event.model }]) : [];
   const actual = aggregateSupplierCosts(supplierCosts);
   const referencePricing = priceBilling?.salePolicy?.basis === 'reference_360';
   const referenceYuan = actualCost(events, price);
-  const yuan = actual?.status === 'known' ? actual.costYuanOverride : referencePricing ? undefined : referenceYuan;
-  const credits = Math.ceil(((referencePricing ? referenceYuan : yuan) * price.margin) / price.creditYuan);
+  const yuan = actual?.status === 'known' ? actual.costYuanOverride : personalBilling || referencePricing ? undefined : referenceYuan;
+  const credits = personalBilling ? 0 : Math.ceil(((referencePricing ? referenceYuan : yuan) * price.margin) / price.creditYuan);
   const walletPricing = priceBilling?.supplierCostPolicy?.basis === 'upstream_debit';
   if (!Number.isSafeInteger(credits) || credits < 0 || (credits > price.maxCredits && !walletPricing))
     throw fail('实际费用不在原预授权范围内', 'AI_SALES_VIDEO_RECOVERY_BILLING_UNVERIFIED');
@@ -281,56 +298,6 @@ function actualCost(events, price) {
 
 // Locally decode and normalize each authorized reference before paid work. No
 // ffmpeg network protocols or original local paths are exposed to the vendor.
-async function prepareImages(images, workDir, binaries, runner) {
-  const prepared = [];
-  for (const [i, image] of images.entries()) {
-    const match = String(image).match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/u);
-    if (!match) throw fail('有声首帧只支持PNG/JPEG/WebP本地图片', 'AI_SALES_VIDEO_FRAME_INVALID', 400);
-    const input = path.join(workDir, `frame-${i}.${match[1]}`),
-      output = path.join(workDir, `frame-${i}.jpg`);
-    const bytes = Buffer.from(match[2], 'base64');
-    if (!bytes.length || bytes.length > 15 * 1024 * 1024)
-      throw fail('首帧大小不符合要求', 'AI_SALES_VIDEO_FRAME_INVALID', 400);
-    await fsp.writeFile(input, bytes, { flag: 'wx', mode: 0o600 });
-    const result = await runner(
-      binaries.ffprobePath,
-      ['-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_entries', 'stream=width,height', '-of', 'json', input],
-      { cwd: workDir },
-    );
-    const stream = JSON.parse(result.stdout).streams?.[0];
-    if (
-      !stream ||
-      !Number.isInteger(stream.width) ||
-      !Number.isInteger(stream.height) ||
-      stream.width < 240 ||
-      stream.height < 240 ||
-      stream.width > 8000 ||
-      stream.height > 8000
-    )
-      throw fail('首帧宽高须在240–8000像素', 'AI_SALES_VIDEO_FRAME_INVALID', 400);
-    await runner(
-      binaries.ffmpegPath,
-      [
-        '-hide_banner',
-        '-nostdin',
-        '-v',
-        'error',
-        '-protocol_whitelist',
-        'file,pipe',
-        '-i',
-        input,
-        '-vf',
-        'scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:color=white,format=rgb24',
-        '-frames:v',
-        '1',
-        output,
-      ],
-      { cwd: workDir },
-    );
-    prepared.push(`data:image/jpeg;base64,${(await fsp.readFile(output)).toString('base64')}`);
-  }
-  return prepared;
-}
 
 /** The caller supplies resolved attachments and tenant-scoped grounding, never
  * body-provided facts/cards/notes. Runtime seams exist only on app.locals. */
@@ -367,7 +334,8 @@ export async function createVoicedSalesVideoJob({
     throw fail('请提供1–6张参考图', 'AI_SALES_VIDEO_FRAME_INVALID', 400);
   if (quoteFingerprint !== undefined && quoteFingerprint !== salesVideoPriceQuote(textModel, { confirmedChat: !!approval, durationSeconds: duration }).fingerprint)
     throw fail('报价已变化，请关闭并重新打开面板确认预授权上限；未占扣', 'AI_SALES_VIDEO_QUOTE_CHANGED');
-  const skillContext = buildNativeContentSkillContext(10, { tenantId, userId: actor.id });
+  const skillContext = buildNativeContentSkillContext(10, { tenantId, userId: actor.id,
+    nativeVideoContext: { durationSeconds: duration, referenceCount: providerImages.length } });
   const plan = {
     workflow: AI_SALES_VIDEO_WORKFLOW,
     voiceMode: 'voiced',
@@ -485,7 +453,12 @@ export async function createVoicedSalesVideoJob({
           durationSeconds: duration,
         });
     workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nw-voiced-sales-'));
-    images = await (runtime.prepareImages || prepareImages)(providerImages, workDir, binaries, runner);
+    const preparedReferences = await (runtime.prepareImages || prepareAiSalesVideoReferenceFrames)(
+      providerImages, workDir, binaries, runner, { sizingMode: plan.model === PROVIDER_360_VIDEO_MODEL && providerImages.length > 1 ? 'preserve_aspect' : 'portrait_first_frame' });
+    // Runtime seams may return the historical array. Production also persists
+    // the exact original/prepared geometry and hashes before any paid call.
+    images = Array.isArray(preparedReferences) ? preparedReferences : preparedReferences.images;
+    if (!Array.isArray(preparedReferences)) plan.referencePreparation = preparedReferences.metadata;
     if (salesVideoPriceQuote(textModel, { confirmedChat: !!approval, durationSeconds: duration }).fingerprint !== quote.fingerprint)
       throw fail('检查期间报价发生变化，请重新确认预授权上限；未占扣', 'AI_SALES_VIDEO_QUOTE_CHANGED');
     const cards = listBenchmarkCards(tenantId, {
@@ -718,6 +691,7 @@ export async function createVoicedSalesVideoJob({
             subtitleCount: subtitleCues.length,
             audioVerification: delivered.audioVerification || [],
             audioSource: delivered.audioSource,
+            ...(delivered.nativeAudioLevel ? { nativeAudioLevel: delivered.nativeAudioLevel } : {}),
             subtitleTiming: 'script_estimated',
             ...(delivered.transition ? { transition: delivered.transition } : {}),
           };
@@ -753,14 +727,25 @@ export async function createVoicedSalesVideoJob({
           const hasDeliverable = row?.status === '成功' && !!row.url;
           if (!hasDeliverable) {
             try {
-              released = Boolean(hasPaid
-                ? refundHold(hold, { note: '带货视频最终失败且无完整成片，积分全退，供应商成本由平台承担',
+              if (hasPaid) {
+                const refundOptions = { note: '带货视频最终失败且无完整成片，积分全退，供应商成本由平台承担',
                     assertRefundable: () => {
                       const owned = q.get('SELECT snapshot_json FROM media_jobs WHERE tenant_id=? AND id=?', tenantId, jobId);
                       if (owned?.snapshot_json !== savedSnapshot) throw fail('任务已由其他执行者接管，不调整账本', 'AI_SALES_VIDEO_STATE_CONFLICT');
                       return true;
-                    } })
-                : releaseHold(hold, '供应商调用前失败，全额退回'));
+                    } };
+                let knownCost = {};
+                try {
+                  const actual = voicedSalesSettlement(plan);
+                  if (actual.costSource && Number.isFinite(actual.costYuanOverride))
+                    knownCost = { supplierCostYuan: actual.costYuanOverride, costSource: actual.costSource };
+                } catch { /* Missing or inconsistent cost evidence must not block the full refund. */ }
+                try { released = Boolean(refundHold(hold, { ...refundOptions, ...knownCost })); }
+                catch (costError) {
+                  if (!knownCost.costSource) throw costError;
+                  released = Boolean(refundHold(hold, refundOptions));
+                }
+              } else released = Boolean(releaseHold(hold, '供应商调用前失败，全额退回'));
             } catch {
               /* reconciliation */
             }
@@ -774,6 +759,9 @@ export async function createVoicedSalesVideoJob({
             releaseSuppressed: !released,
           };
           plan.failureCode = String(error?.code || 'AI_SALES_VOICED_FAILED');
+          // A bare failure code is not actionable for the boss. Keep the safe,
+          // already-sanitized contract errors (no prompts, keys or raw bodies).
+          plan.failureDetail = voicedSalesFailureDetail(error);
           if (['处理中', '成功'].includes(row?.status)) {
             try {
               persist(
@@ -826,6 +814,7 @@ export async function createVoicedSalesVideoJob({
     if (workDir) await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
     const reason = error?.code?.startsWith('AI_SALES_') ? error.message : '有声带货预检未通过，未发起供应商调用';
     plan.failureCode = error.code || 'AI_SALES_VOICED_PREFLIGHT_FAILED';
+    plan.failureDetail = voicedSalesFailureDetail(error);
     plan.reason = reason;
     persist('阻塞', reason, null, plan.billing.pendingReconciliation ? null : 0, '阻塞');
     const publicPlan = publicVoicedSalesProgress(plan, tenantId);

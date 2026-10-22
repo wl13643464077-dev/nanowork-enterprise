@@ -15,7 +15,8 @@ test("任务中心以安全 Markdown 呈现报告并可返回数字员工对话"
     path.join(root, "web/src/pages/TaskCenter.tsx"),
     "utf8",
   );
-  assert.match(page, /<Markdown content=\{detail\.report\.markdown\}/u);
+  assert.match(page, /CampaignMaterialsGallery items=\{resultView\.campaignMaterials\}/u);
+  assert.match(page, /restaurantResultView/u);
   assert.match(page, /detail\.conversationDeepLink/u);
   assert.match(page, /detail\.conversationAvailability\?\.available/u);
   assert.match(page, /回到数字员工对话/u);

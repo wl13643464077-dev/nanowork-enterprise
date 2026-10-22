@@ -86,6 +86,7 @@ import {
   startSkillLearningRun,
 } from "../engines/employee-skill-learning.js";
 import { routing, textModelFor, yunwuAvailable, isAllowedModel, allowedModelPreference, allowedModelCatalog } from "../engines/yunwu.js";
+import { isTesterBusinessActor, testerExecutionIdentity } from '../engines/tester-access.js';
 import {
   attachmentRefsForStorage,
   resolveRequestedAttachments,
@@ -293,7 +294,7 @@ function contentEmployeeRunReviewAccessForRun(user, snapshot) {
   const current = steps[currentStep] || steps[0] || null;
   if (routingSnapshot?.requiresReview === true && current) {
     if (current.level === "boss") {
-      const allowed = user?.role === "boss";
+      const allowed = user?.role === "boss" || isTesterBusinessActor(user);
       return {
         allowed,
         reason: allowed
@@ -309,7 +310,7 @@ function contentEmployeeRunReviewAccessForRun(user, snapshot) {
       // tenant's administrative roles retain their existing audit/recovery
       // authority.  A normal manager still has to match the locked assignee.
       const allowed =
-        ["boss", "admin", "platform_super"].includes(user?.role) ||
+        ["boss", "admin", "platform_super"].includes(user?.role) || isTesterBusinessActor(user) ||
         Number(user?.id) === assigned;
       return {
         allowed,
@@ -456,13 +457,13 @@ function tenantIdFor(user) {
 }
 
 function assertManager(user) {
-  if (!CONFIG_ADMIN_ROLES.has(user?.role)) {
+  if (!CONFIG_ADMIN_ROLES.has(user?.role) && !isTesterBusinessActor(user)) {
     throw new WorkbenchRouteError("仅老板或管理员可修改内容员工工作台", 403);
   }
 }
 
 function assertReviewer(user) {
-  if (!REVIEWER_ROLES.has(user?.role)) {
+  if (!REVIEWER_ROLES.has(user?.role) && !isTesterBusinessActor(user)) {
     throw new WorkbenchRouteError(
       "仅老板、管理员或运营负责人可审阅内容员工产出",
       403,
@@ -471,9 +472,9 @@ function assertReviewer(user) {
 }
 
 function permissionsFor(user, crewIdx = null) {
-  const configAdmin = CONFIG_ADMIN_ROLES.has(user?.role);
+  const configAdmin = CONFIG_ADMIN_ROLES.has(user?.role) || isTesterBusinessActor(user);
   const supportsGenericConfig = crewIdx === null || Number(crewIdx) < 10;
-  const reviewer = REVIEWER_ROLES.has(user?.role);
+  const reviewer = REVIEWER_ROLES.has(user?.role) || isTesterBusinessActor(user);
   // 派活权限走租户策略（员工级覆盖 > 分部级规则 > 默认放行）；无 idx 上下文时保持历史行为
   const dispatchAllowed =
     crewIdx === null
@@ -5429,6 +5430,7 @@ async function executeRun({
     });
     const generatedStatus = contractValid ? "待审阅" : "失败";
     const storedResult = snapshot.previewMarkdown;
+    testerExecutionIdentity({ userId, tenantId });
     phase = "persist";
     const persisted = q.run(
       `UPDATE content_employee_runs

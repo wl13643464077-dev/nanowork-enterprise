@@ -128,7 +128,9 @@ function searchConfigurationFacts() {
     claudeWebSearch: {
       credential: String(yunwuApiKey() || '').trim(),
       baseUrl: yunwuBaseUrl(),
+      transport: agentic.transport || '',
       cliReady: agentic.cliReady === true,
+      cliRequired: agentic.transport !== '360_search_api',
       cliPath: agentic.cliPath || '',
       model: agentic.model || '',
     },
@@ -339,12 +341,12 @@ function aiReadiness({ tenantId, now }) {
     ? 'blocked'
     : check.verified
       ? 'connected'
-      : 'configured_unverified';
+      : 'configured_ready';
   return readinessItem({
     key: 'ai',
     label: 'AI 生成通道',
     description: configured
-      ? '服务端已发现通道配置；只有最近一次显式连接测试通过才视为已连接。'
+      ? '服务端通道配置完整，可直接发起真实调用；显式连接诊断仅用于排障，不是使用前置。'
       : '真实 AI 生成通道未配置；任务不会启动，也不会形成替代业务产物。',
     configuration: configured ? 'ready' : 'missing',
     activation: configured ? 'enabled' : 'blocked',
@@ -352,24 +354,25 @@ function aiReadiness({ tenantId, now }) {
     ...check,
     canExecute: configured,
     canGenerateLocalDraft: false,
-    canDeliverForHumanReview: check.verified,
+    canDeliverForHumanReview: configured,
     canPerformExternalAction: false,
     capabilitySummary: !configured
       ? '真实生成通道未配置；任务不会启动，也不会形成业务产物'
-      : check.verified
-        ? '真实内容生成已就绪；内部产出通过质量与账务门后按企业策略采用；不执行外部业务动作'
-        : '真实生成通道已配置但连接尚未验证；任务结果以真实调用证据为准，不生成替代产物',
+      : '真实内容生成通道已配置，可直接调用；每次产出仍须取得供应商回执并通过质量与账务门，才可交付人工审阅；不执行外部业务动作',
     missing: configured ? [] : ['服务端 AI 通道凭证'],
     conditions: [
       '凭证只从服务端环境或受控兼容配置读取',
-      '显式连接测试通过后 15 分钟内有效',
-      'Base URL 或凭证变化会立即使旧验证过期',
+      '配置完整即可发起真实调用；显式连接诊断为可选操作且会实际调用上游',
+      '每次真实调用必须保留供应商回执，并通过质量与账务门后才可交付人工审阅',
+      'Base URL 或凭证变化会使旧诊断记录过期，但不会把验证状态伪造成已通过',
     ],
     nextAction: !configured
-      ? '配置 YUNWU_API_KEY 或 ANTHROPIC_API_KEY 服务端密钥后重启服务，再由管理员显式测试连接。'
+      ? '配置服务端 AI 通道密钥后重启服务；需要排障时可运行会实际调用上游的可选连接诊断。'
       : check.verified
-        ? '最近连接测试有效；到期或变更配置后重新测试。'
-        : '由平台管理员点击“测试连接”，成功后才会标记为已连接。',
+        ? '最近一次可选连接诊断通过；真实任务仍按逐次回执、质量与账务门执行。'
+        : check.verification === 'failed'
+          ? '最近一次可选连接诊断失败，请按错误检查配置；真实任务仍以逐次调用回执为准。'
+          : '配置已完整，可直接使用；需要排障时可运行会实际调用上游的可选连接诊断。',
     details: {
       provider: facts.provider,
       keySource: facts.keySource,
@@ -417,11 +420,15 @@ function searchReadiness({ tenantId, now }) {
   const agentic = agenticWebResearchReadiness();
   const configuredProviders = webSearchProviders();
   const tinyfishReady = agentic.primaryReady === true;
+  const claudeTransport = String(agentic.transport || '').trim();
+  const claudeUses360SearchApi = claudeTransport === '360_search_api';
   // agentic.ready 表示整条分层链路可用；这里必须读取 fallbackReady，不能把
   // TinyFish 已就绪误报成 Claude WebSearch 也已就绪。
-  const claudeFallbackReady = agentic.fallbackReady === true;
+  const claudeFallbackReady = agentic.fallbackReady === true
+    || (claudeUses360SearchApi && agentic.credentialReady === true);
   const claudeCredentialReady = agentic.credentialReady === true;
   const claudeCliReady = agentic.cliReady === true;
+  const claudeCliRequired = !claudeUses360SearchApi;
   const legacyProviders = configuredProviders.filter(
     provider => !['TinyFish', 'Claude WebSearch'].includes(provider),
   );
@@ -439,7 +446,7 @@ function searchReadiness({ tenantId, now }) {
   ).trim().toLowerCase();
   const tinyfishVerified = check.verified && verifiedProvider.includes('tinyfish');
   const claudeFallbackVerified = check.verified
-    && /(?:claude|yunwu|claude_websearch)/u.test(verifiedProvider);
+    && /(?:360|claude|yunwu|claude_websearch)/u.test(verifiedProvider);
   const providerRoute = [
     {
       id: 'tinyfish',
@@ -462,39 +469,57 @@ function searchReadiness({ tenantId, now }) {
       ready: claudeFallbackReady,
       verified: claudeFallbackVerified,
       reason: claudeFallbackVerified
-        ? '最近一次显式检索验证已通过；TinyFish 未交付时自动回退。'
+        ? '最近一次可选检索诊断已通过；TinyFish 未交付时自动回退。'
         : claudeFallbackReady
-          ? '服务端 Claude CLI 与网关凭证均可用；TinyFish 未交付时自动回退。'
+          ? claudeUses360SearchApi
+            ? '现有 360 Key 与 360 Claude WebSearch API 已配置；无需 Claude CLI，TinyFish 未交付时自动回退。'
+            : '服务端 Claude CLI 与网关凭证均可用；TinyFish 未交付时自动回退。'
           : claudeCredentialReady
-            ? '已配置网关凭证，但服务端 Claude CLI 不可用。'
+            ? claudeUses360SearchApi
+              ? '现有 360 Key 已配置，但 360 Claude WebSearch API 尚未就绪。'
+              : '已配置网关凭证，但服务端 Claude CLI 不可用。'
             : claudeCliReady
               ? '服务端 Claude CLI 可用，但未配置 YUNWU_API_KEY。'
-              : '未配置 YUNWU_API_KEY，且服务端 Claude CLI 不可用。',
+              : claudeUses360SearchApi
+                ? '未配置可用的 360 Key，360 Claude WebSearch API 不可用。'
+                : '未配置 YUNWU_API_KEY，且服务端 Claude CLI 不可用。',
       details: {
+        transport: claudeTransport || null,
+        cliRequired: claudeCliRequired,
         cliReady: claudeCliReady,
         credentialReady: claudeCredentialReady,
-        cliPath: agentic.cliPath || null,
+        cliPath: claudeCliRequired ? agentic.cliPath || null : null,
         model: agentic.model || null,
         provider: agentic.routes?.find(route => route.key === 'claude_websearch')?.label
-          || 'Yunwu Claude WebSearch gateway',
+          || (claudeUses360SearchApi
+            ? '360 Claude WebSearch API'
+            : 'Yunwu Claude WebSearch gateway'),
       },
     },
   ];
   const description = tinyfishReady
     ? claudeFallbackReady
-      ? 'TinyFish 为首选；未交付、失败或限流时自动回退 Claude WebSearch。'
+      ? claudeUses360SearchApi
+        ? 'TinyFish 为首选；未交付、失败或限流时使用现有 360 Key 自动回退 360 Claude WebSearch API，无需 Claude CLI。'
+        : 'TinyFish 为首选；未交付、失败或限流时自动回退 Claude WebSearch。'
       : 'TinyFish 首选通道已配置；Claude WebSearch 自动回退前置尚未齐全。'
     : claudeFallbackReady
-      ? 'TinyFish 尚未配置；Claude WebSearch 自动回退前置已齐全，仍需显式验证连接。'
+      ? claudeUses360SearchApi
+        ? 'TinyFish 尚未配置；现有 360 Key 与 360 Claude WebSearch API 已齐全，可直接使用，无需 Claude CLI。'
+        : 'TinyFish 尚未配置；Claude WebSearch 自动回退前置已齐全，可直接使用。'
       : legacyProviders.length > 0
         ? `TinyFish 与 Claude WebSearch 主备链路未就绪；当前仅配置兼容检索源：${legacyProviders.join('、')}。`
         : partiallyConfigured
-          ? 'TinyFish 尚未配置；Claude WebSearch 已有网关凭证，但服务端 CLI 前置尚未齐全。'
-          : 'TinyFish 首选与 Claude WebSearch 自动回退均未配置；无密钥来源不视为生产就绪。';
+          ? claudeUses360SearchApi
+            ? 'TinyFish 尚未配置；现有 360 Key 已配置，但 360 Claude WebSearch API 前置尚未齐全。'
+            : 'TinyFish 尚未配置；Claude WebSearch 已有网关凭证，但服务端 CLI 前置尚未齐全。'
+          : claudeUses360SearchApi
+            ? 'TinyFish 首选与 360 Claude WebSearch API 自动回退均未配置；请配置 TINYFISH_API_KEY 或现有 360 Key。'
+            : 'TinyFish 首选与 Claude WebSearch 自动回退均未配置；无密钥来源不视为生产就绪。';
   const effective = configured
     ? check.verified
       ? 'connected'
-      : 'configured_unverified'
+      : 'configured_ready'
     : partiallyConfigured
       ? 'blocked'
       : 'degraded';
@@ -513,27 +538,42 @@ function searchReadiness({ tenantId, now }) {
     capabilitySummary: configured
       ? check.verified
         ? '真实联网检索通道已验证；每次运行仍须取得可引用来源证据'
-        : '真实联网检索通道已配置但尚未显式验证；不会把无密钥结果冒充已验收通道'
+        : '真实联网检索通道已配置，可直接使用；每次运行仍须取得可引用来源证据，不能用配置状态替代本次结果'
       : partiallyConfigured
-        ? 'Claude WebSearch 网关凭证已配置，但 CLI 前置未齐；当前不视为真实通道就绪'
+        ? claudeUses360SearchApi
+          ? '现有 360 Key 已配置，但 360 Claude WebSearch API 前置未齐；当前不视为真实通道就绪'
+          : 'Claude WebSearch 网关凭证已配置，但 CLI 前置未齐；当前不视为真实通道就绪'
         : '主备真实检索通道未配置；仅能尝试无密钥来源，不视为生产就绪',
     missing: configured
       ? []
       : partiallyConfigured
-        ? ['服务端 Claude CLI 可执行文件（或 CONTENTCREW_CLAUDE_PATH）']
-        : ['TINYFISH_API_KEY（首选）或 Claude WebSearch 完整前置（YUNWU_API_KEY + 服务端 Claude CLI）'],
+        ? claudeUses360SearchApi
+          ? ['360 Claude WebSearch API 前置']
+          : ['服务端 Claude CLI 可执行文件（或 CONTENTCREW_CLAUDE_PATH）']
+        : claudeUses360SearchApi
+          ? ['TINYFISH_API_KEY（首选）或现有 360 Key + 360 Claude WebSearch API（自动回退）']
+          : ['TINYFISH_API_KEY（首选）或 Claude WebSearch 完整前置（YUNWU_API_KEY + 服务端 Claude CLI）'],
     conditions: [
-      'Provider 路由固定为 TinyFish 首选，未交付时自动回退 Claude WebSearch',
+      claudeUses360SearchApi
+        ? 'Provider 路由固定为 TinyFish 首选，未交付时使用现有 360 Key 自动回退 360 Claude WebSearch API'
+        : 'Provider 路由固定为 TinyFish 首选，未交付时自动回退 Claude WebSearch',
+      '配置完整即可发起真实检索；显式诊断为可选操作且会实际调用联网供应商',
       '检索成功且至少返回一条可引用来源，才算本次任务完成联网核验',
       '无凭证兜底源不构成生产通道验收证据',
     ],
     nextAction: configured
       ? check.verified
-        ? '最近检索连接测试有效；任务仍须逐次保留来源证据。'
-        : '使用授权查询显式验收当前真实检索通道，未验收前保持“已配置·待验证”。'
+        ? '最近一次可选检索诊断通过；任务仍须逐次保留来源证据。'
+        : check.verification === 'failed'
+          ? '最近一次可选检索诊断失败，请按错误检查配置；任务仍以逐次真实调用与来源证据为准。'
+          : '配置已完整，可直接使用；需要排障时可运行会实际调用联网供应商的可选诊断。'
       : partiallyConfigured
-        ? '安装或配置服务端 Claude CLI，或配置 TINYFISH_API_KEY 作为首选通道。'
-        : '优先配置 TINYFISH_API_KEY；需要自动回退时同时准备 YUNWU_API_KEY 与服务端 Claude CLI。',
+        ? claudeUses360SearchApi
+          ? '确认现有 360 Key 与 360 Claude WebSearch API 前置，或配置 TINYFISH_API_KEY 作为首选通道。'
+          : '安装或配置服务端 Claude CLI，或配置 TINYFISH_API_KEY 作为首选通道。'
+        : claudeUses360SearchApi
+          ? '优先配置 TINYFISH_API_KEY；需要自动回退时配置现有 360 Key，360 API 无需 Claude CLI。'
+          : '优先配置 TINYFISH_API_KEY；需要自动回退时同时准备 YUNWU_API_KEY 与服务端 Claude CLI。',
     details: {
       preferredProvider: 'tinyfish',
       fallbackProvider: 'claude_websearch',
@@ -544,6 +584,8 @@ function searchReadiness({ tenantId, now }) {
       legacyProviders,
       keylessFallback: 'Google News RSS / DuckDuckGo',
       evidenceRequiredPerRun: true,
+      diagnosticsOptional: true,
+      diagnosticsPerformExternalCall: true,
       configFingerprint: fingerprint,
     },
   });
@@ -850,7 +892,11 @@ function contentConnectorsReadiness(ai, search) {
     if (connector.mode === 'local_contract_assist') effective = 'local_ready';
     else if (connector.mode === 'verified_input_assist') effective = 'requires_input';
     else if (connector.mode === 'employee_generation') {
-      effective = ai.connected ? 'ready_with_verified_ai' : ai.configured ? 'configured_unverified' : 'blocked';
+      effective = ai.connected
+        ? 'ready_with_verified_ai'
+        : ai.canDeliverForHumanReview
+          ? 'configured_ready'
+          : 'blocked';
     }
     return {
       kind: connector.kind,
@@ -891,9 +937,9 @@ function contentConnectorsReadiness(ai, search) {
       `${counts.employeeGeneration} 项必须进入单员工生成链并服从其 AI、计费与输出契约`,
       '所有连接器的外部发布能力均为 0',
     ],
-    nextAction: search.connected || ai.connected
+    nextAction: search.configured || ai.configured
       ? '按每项连接器的输入、来源、模型和审批条件执行；不得用总体状态替代逐次结果。'
-      : '本地辅助可继续使用；需要联网或模型的连接器先完成对应通道显式验收。',
+      : '本地辅助可继续使用；需要联网或模型的连接器先补齐对应通道配置。',
     details: { counts, items },
   });
 }
@@ -921,6 +967,7 @@ export function buildRuntimeReadiness({
   const summary = {
     total: channels.length,
     connected: channels.filter(item => item.effective === 'connected').length,
+    configuredReady: channels.filter(item => item.effective === 'configured_ready').length,
     configuredUnverified: channels.filter(item => item.effective === 'configured_unverified').length,
     localReady: channels.filter(item => item.effective === 'local_ready').length,
     blocked: channels.filter(item => item.effective === 'blocked').length,

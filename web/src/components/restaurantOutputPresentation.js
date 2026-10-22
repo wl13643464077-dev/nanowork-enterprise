@@ -706,17 +706,48 @@ function markdownBossOverview(original) {
  * 将结构化餐饮岗位结果拆成“老板速览 / 岗位完整成果 / 质量记录 / 技术附录”四层。
  * 速览只改善阅读顺序；deliverables 里的岗位专属 section 与 item 会完整保留。
  */
+function extractCampaignMaterials(source) {
+  const match = String(source || '').match(/```nanowork-campaign-materials\s*\n([\s\S]*?)```/u);
+  if (!match) return [];
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed?.items) ? parsed.items.filter(item => item && item.id && item.title) : [];
+  } catch {
+    return [];
+  }
+}
+
+function stripInternalFences(source) {
+  return String(source || '')
+    .replace(/```nanowork-inspection[\s\S]*?```\s*/gu, '')
+    .replace(/```nanowork-campaign-materials[\s\S]*?```\s*/gu, '');
+}
+
+function stripInternalReportSections(source, { stripMaterialsList = false } = {}) {
+  const dropHeading = stripMaterialsList
+    ? /活动物料成图|文字覆盖层|textOverlay/iu
+    : /文字覆盖层|textOverlay/iu;
+  return String(source || '')
+    .split(/(?=^#{1,3} )/mu)
+    .filter((part) => {
+      const heading = part.match(/^#{1,3} [^\n]*/u)?.[0] || '';
+      return !heading || !dropHeading.test(heading);
+    })
+    .join('')
+    .replace(/\n{3,}/gu, '\n\n');
+}
+
 export function restaurantOutputPresentation(raw, taskContext = '') {
   const original = typeof raw === 'string' ? raw : '';
+  const campaignMaterials = extractCampaignMaterials(original);
   const output = findRestaurantOutput(raw);
   if (!output) {
-    // 机读归档块（如巡店 nanowork-inspection JSON）只供系统入档；
-    // 老板视图与导出文件里都不展示，原文仍原样留在数据库供审计。
-    // 没有归档块时必须逐字节原样返回（含结尾换行）。
+    // 机读归档块只供系统入档；老板视图与导出文件里都不展示。
+    // 成图清单改由画廊展示，叠字底稿也不进老板正文。
     const displayText = normalizeMarkdownBreaks(
-      original.includes('```nanowork-inspection')
-        ? original.replace(/```nanowork-inspection[\s\S]*?```\s*/gu, '').trimEnd()
-        : original,
+      stripInternalReportSections(stripInternalFences(original), {
+        stripMaterialsList: campaignMaterials.length > 0,
+      }),
     );
     const bossOverview = markdownBossOverview(displayText);
     return {
@@ -728,6 +759,7 @@ export function restaurantOutputPresentation(raw, taskContext = '') {
       governanceMarkdown: '',
       technicalAppendixMarkdown: '',
       fullMarkdown: displayText,
+      campaignMaterials,
       deliverableCount: 0,
       roleTitle: '',
     };
@@ -749,6 +781,7 @@ export function restaurantOutputPresentation(raw, taskContext = '') {
     governanceMarkdown: normalizeMarkdown([governance]),
     technicalAppendixMarkdown: normalizeMarkdown([technical]),
     fullMarkdown: normalizeMarkdown([overview, inputMethod, completeDeliverables, governance, technical]),
+    campaignMaterials,
     deliverableCount: deliverables.length,
     roleTitle: plainText(record(output.role).role_title),
   };

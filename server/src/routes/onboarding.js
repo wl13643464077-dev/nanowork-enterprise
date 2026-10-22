@@ -367,7 +367,7 @@ export function buildProfileMarkdown(answers, files = [], generatedAt = now()) {
 }
 
 function ensureKbCategory() {
-  const DEFAULT_KB_CATS = ["品牌资料", "招商政策", "产品资料", "话术案例", "客户画像", "数据规范", "员工产出"];
+  const DEFAULT_KB_CATS = ["品牌知识包", "品牌资料", "招商政策", "产品资料", "话术案例", "客户画像", "数据规范", "员工产出"];
   const cats = getTenantConfig("kb_categories", DEFAULT_KB_CATS);
   const list = Array.isArray(cats) && cats.length ? [...cats] : [...DEFAULT_KB_CATS];
   if (list.includes(KB_CATEGORY)) return;

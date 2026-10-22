@@ -137,16 +137,16 @@ test("任务页正文优先：完整报告不折叠，费用和异常在正文�
     "utf8",
   );
   assert.ok(
-    task.indexOf('<section className="task-center-result">') <
+    task.indexOf("task-center-result") <
       task.indexOf("<summary>任务输入</summary>"),
   );
   assert.ok(
     task.indexOf('message="执行异常"') <
-      task.indexOf('<section className="task-center-result">'),
+      task.indexOf("task-center-result"),
   );
   assert.match(
     task,
-    /navigator\.clipboard\.writeText\(detail\.report\?\.markdown \|\| detail\.output\)/,
+    /navigator\.clipboard\.writeText\(resultView\.markdown\)/,
   );
   assert.match(task, /canViewDiagnostics &&/);
   assert.doesNotMatch(task, /<Progress|percent=\{row\.progress\}/);

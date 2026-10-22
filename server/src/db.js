@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createPrivateArtifact, assertPrivateArtifact } from "./engines/private-artifact.js";
 import { prepareDatabaseStorage } from "./engines/database-storage.js";
+import { TESTER_BUSINESS_MODULES, testerExecutionIdentity } from "./engines/tester-access.js";
 
 // 本项目运行数据默认只允许当前用户访问。umask 会保护随后由 SQLite
 // 创建的数据库、WAL/SHM 以及运行期文件；不会修改 /tmp 或自定义路径的父目录权限。
@@ -428,6 +429,23 @@ export function initSchema() {
     CHECK(superseded_output_id <> replacement_output_id),
     UNIQUE(tenant_id,superseded_task_id)
   );
+  CREATE TABLE IF NOT EXISTS agent_task_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    base_revision_id INTEGER,
+    instruction TEXT NOT NULL,
+    body TEXT NOT NULL,
+    change_summary TEXT,
+    model TEXT,
+    hold_id INTEGER,
+    risk_level TEXT,
+    risk_flags TEXT,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,task_id,version)
+  );
   CREATE TABLE IF NOT EXISTS battle_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT UNIQUE NOT NULL,
@@ -463,6 +481,38 @@ export function initSchema() {
     version INTEGER DEFAULT 1,
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   );
+  CREATE TABLE IF NOT EXISTS brand_knowledge_packs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    brand_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'collecting',
+    version INTEGER NOT NULL DEFAULT 1,
+    window_days INTEGER NOT NULL DEFAULT 90,
+    source TEXT NOT NULL DEFAULT 'web_collect',
+    summary TEXT,
+    kb_doc_id INTEGER,
+    last_error TEXT,
+    collected_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS brand_knowledge_dimensions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    pack_id INTEGER NOT NULL,
+    dim_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sources_json TEXT,
+    included INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_brand_pack_tenant_status
+    ON brand_knowledge_packs(tenant_id, status, id);
+  CREATE INDEX IF NOT EXISTS idx_brand_dims_pack
+    ON brand_knowledge_dimensions(tenant_id, pack_id, sort_order);
   CREATE TABLE IF NOT EXISTS kb_chunks (
     -- RAG 分块召回：长文档切块分别向量化，按块检索（租户隔离经由 doc_id JOIN kb_docs 保证，不单独存 tenant_id）
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -696,6 +746,7 @@ export function initSchema() {
 
 // ===== 多租户上下文（数据隔离地基）=====
 const _tctx = new AsyncLocalStorage();
+export const activeTenantId = () => _tctx.getStore() ?? null;
 export const curTenant = () => _tctx.getStore() ?? 1; // 当前请求租户（无上下文=总部1）
 export const runWithTenant = (tid, fn) => _tctx.run(Number(tid) || 1, fn);
 
@@ -714,10 +765,13 @@ const ISOLATED = new Set([
   "content_templates",
   "agent_tasks",
   "agent_task_supersessions",
+  "agent_task_revisions",
   "battle_plans",
   "weekly_reviews",
   "approvals",
   "kb_docs",
+  "brand_knowledge_packs",
+  "brand_knowledge_dimensions",
   "goals",
   "tasks",
   "task_submissions",
@@ -2038,6 +2092,7 @@ export function migrateV2() {
   // 内容自动沉淀知识库的稳定来源键：旧库增量加列；NULL 来源的历史/手工知识不受唯一约束。
   addCol("kb_docs", "source_type", "TEXT");
   addCol("kb_docs", "source_id", "INTEGER");
+  addCol("brand_knowledge_dimensions", "included", "INTEGER NOT NULL DEFAULT 1");
   // 仅回填能唯一、可靠对应的旧内容知识：普通内容要求正文一致；AIPPT 的知识正文是
   // 结构化 deck 摘要，无法与 contents.body 直接相等，因此只在租户内标题两侧均唯一时回填。
   // 有歧义的历史记录继续保留 NULL，避免把手工知识误绑到内容。
@@ -3274,6 +3329,25 @@ export function migrateV2() {
   );
   CREATE INDEX IF NOT EXISTS idx_agent_task_supersessions_replacement
     ON agent_task_supersessions(tenant_id,replacement_task_id,created_at);
+  CREATE TABLE IF NOT EXISTS agent_task_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    base_revision_id INTEGER,
+    instruction TEXT NOT NULL,
+    body TEXT NOT NULL,
+    change_summary TEXT,
+    model TEXT,
+    hold_id INTEGER,
+    risk_level TEXT,
+    risk_flags TEXT,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id,task_id,version)
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_task_revisions_task
+    ON agent_task_revisions(tenant_id,task_id,version);
   CREATE TRIGGER IF NOT EXISTS trg_agent_task_supersessions_no_update
     BEFORE UPDATE ON agent_task_supersessions
     BEGIN
@@ -3509,6 +3583,8 @@ export function promptOverride(code) {
 
 // 解析用户可见模块：用户级覆盖 > （角色默认 ∪ 员工部门追加），再 ∩ 租户开通模块
 export function modulesFor(user) {
+  const tester = testerExecutionIdentity({ userId: user?.id, tenantId: user?.tenant_id });
+  if (tester) return [...TESTER_BUSINESS_MODULES];
   const row = db
     .prepare("SELECT modules, dept, role, tenant_id FROM users WHERE id = ?")
     .get(user.id);
@@ -3589,14 +3665,21 @@ export function getTenantConfig(key, dflt, tid = curTenant()) {
     "SELECT value FROM sys_config WHERE key = ?",
     `${key}:${tid}`,
   );
+  let value;
   if (own) {
     try {
-      return JSON.parse(own.value);
+      value = JSON.parse(own.value);
     } catch {
-      return own.value;
+      value = own.value;
     }
+  } else value = getConfig(key, dflt);
+  if (key === 'feature_flags' && testerExecutionIdentity({ tenantId: tid, requireActive: false })) {
+    const flags = { ...(value || {}) };
+    for (const name of ['content.copy', 'content.image', 'content.video'])
+      if (Array.isArray(flags[name])) flags[name] = [...new Set([...flags[name], 'sales'])];
+    return flags;
   }
-  return getConfig(key, dflt);
+  return value;
 }
 export function setTenantConfig(key, value, tid = curTenant()) {
   setConfig(`${key}:${tid}`, value);

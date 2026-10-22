@@ -110,6 +110,11 @@ function cleanText(value, max = POSTER_TEXT_MAX_CHARS) {
     .slice(0, max);
 }
 
+function posterImageDataUrl(value) {
+  const text = String(value || "").replace(/\s+/gu, "");
+  return /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/u.test(text) ? text : "";
+}
+
 function normalizePosition(value) {
   if (value === undefined || value === null || value === "") return "bottom";
   if (typeof value === "string") {
@@ -369,19 +374,34 @@ function blockPaths(block, canvas) {
  * 纯函数：生成叠字 SVG（可选嵌入底图 dataUrl）。文字全部以 <path> 轮廓输出，
  * 同时以 <desc> 携带转义后的原文便于审计/测试。
  */
-export function buildOverlaySvg({ canvas, layers, imageDataUrl = null, layout = null }) {
+export function buildOverlaySvg({ canvas, layers, imageDataUrl = null, layout = null, logoDataUrl = null }) {
   const size = normalizeCanvas(canvas, canvas);
-  const normalized = normalizePosterTextOverlay({ layers });
-  const computed = layout || layoutPosterTextLayers(normalized.layers, size);
+  const hasText = Array.isArray(layers) && layers.length > 0;
+  const normalized = hasText ? normalizePosterTextOverlay({ layers }) : { layers: [] };
+  const computed = layout || (normalized.layers.length
+    ? layoutPosterTextLayers(normalized.layers, size)
+    : { blocks: [] });
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${size.w}" height="${size.h}" viewBox="0 0 ${size.w} ${size.h}">`,
   ];
-  if (imageDataUrl) {
-    if (!/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/u.test(imageDataUrl)) {
-      throw failure("底图 dataUrl 格式无效", 400, "POSTER_TEXT_BASE_IMAGE_INVALID");
-    }
+  const baseImage = posterImageDataUrl(imageDataUrl);
+  if (imageDataUrl && !baseImage) {
+    throw failure("底图 dataUrl 格式无效", 400, "POSTER_TEXT_BASE_IMAGE_INVALID");
+  }
+  if (baseImage) {
     parts.push(
-      `<image href="${imageDataUrl}" xlink:href="${imageDataUrl}" x="0" y="0" width="${size.w}" height="${size.h}" preserveAspectRatio="xMidYMid slice"/>`,
+      `<image href="${baseImage}" xlink:href="${baseImage}" x="0" y="0" width="${size.w}" height="${size.h}" preserveAspectRatio="xMidYMid slice"/>`,
+    );
+  }
+  const logo = posterImageDataUrl(logoDataUrl);
+  if (logo) {
+    const mark = Math.max(48, Math.round(Math.min(size.w, size.h) * 0.13));
+    const pad = Math.round(Math.min(size.w, size.h) * 0.035);
+    parts.push(
+      `<g data-role="logo">`,
+      `<rect x="${pad - 8}" y="${pad - 8}" width="${mark + 16}" height="${mark + 16}" rx="${Math.round(mark * 0.12)}" fill="rgba(255,255,255,0.92)"/>`,
+      `<image href="${logo}" xlink:href="${logo}" x="${pad}" y="${pad}" width="${mark}" height="${mark}" preserveAspectRatio="xMidYMid meet"/>`,
+      `</g>`,
     );
   }
   for (const block of computed.blocks) {
@@ -501,8 +521,11 @@ async function readImageInput({ imageBuffer, imagePath }) {
 /**
  * 主入口：底图 + 文字层 → { png, svg, width, height, baseFormat, layout }。
  */
-export async function renderPosterTextOverlay({ imageBuffer, imagePath, layers, canvas } = {}) {
-  const normalized = normalizePosterTextOverlay({ layers });
+export async function renderPosterTextOverlay({ imageBuffer, imagePath, layers, canvas, logoDataUrl } = {}) {
+  const logo = posterImageDataUrl(logoDataUrl);
+  const hasText = Array.isArray(layers) && layers.length > 0;
+  if (!hasText && !logo) throw failure("textOverlay.layers 至少需要一层文字");
+  const normalized = hasText ? normalizePosterTextOverlay({ layers }) : { layers: [] };
   const bytes = await readImageInput({ imageBuffer, imagePath });
   if (bytes.length > POSTER_TEXT_MAX_IMAGE_BYTES) {
     throw failure("底图超过大小上限", 413, "POSTER_TEXT_BASE_IMAGE_TOO_LARGE");
@@ -510,12 +533,15 @@ export async function renderPosterTextOverlay({ imageBuffer, imagePath, layers, 
   const format = detectImageFormat(bytes);
   if (!format) throw failure("底图必须是 PNG/JPEG/WebP", 400, "POSTER_TEXT_BASE_IMAGE_INVALID");
   const size = normalizeCanvas(canvas, { w: format.width, h: format.height });
-  const layout = layoutPosterTextLayers(normalized.layers, size);
+  const layout = normalized.layers.length
+    ? layoutPosterTextLayers(normalized.layers, size)
+    : { blocks: [] };
   const svg = buildOverlaySvg({
     canvas: size,
     layers: normalized.layers,
     layout,
     imageDataUrl: `data:${format.mime};base64,${bytes.toString("base64")}`,
+    logoDataUrl: logo || undefined,
   });
   const png = await renderSvgToPng(svg, { width: size.w, height: size.h });
   return {

@@ -12,6 +12,42 @@ import { publish } from './event-bus.js';
 import { aggregateSupplierCosts, upstreamDebitCostApplies, provider360CostApplies } from './provider-cost-receipts.js';
 import { PROVIDER_360_RESERVATION_RATES, valid360Receipt } from './provider-360-cost.js';
 import { unifiedSalesPricing, usesUnifiedSalesPricing } from './unified-sales-pricing.js';
+import { testerExecutionIdentity, testerExecutionCredentials } from './tester-access.js';
+import { providerContext } from './tester-provider-context.js';
+
+// Personal-provider accounts still create real, auditable holds. Only the platform
+// wallet component is zero; supplier receipts and task settlement remain intact.
+function personalBillingIdentity(userId, tenantId, requireActive = true) {
+  const context = providerContext();
+  return testerExecutionIdentity({ userId, tenantId, requireActive,
+    ...(context?.billingMode === 'personal' && Number(context.ownerUserId) === Number(userId)
+      ? { provider: context.provider } : {}) });
+}
+
+function personalPriceSnapshot(identity, model) {
+  return JSON.stringify({ ...JSON.parse(priceSnapshot(billing(), model)), billingMode: 'personal',
+    ownerUserId: identity.ownerUserId, tenantId: identity.tenantId, provider: identity.provider });
+}
+
+function personalHoldIdentity(row) {
+  let price;
+  try { price = JSON.parse(row.pricing_snapshot_json || '{}'); } catch { return null; }
+  if (price.billingMode !== 'personal') return null;
+  const identity = testerExecutionIdentity({ userId: row.user_id, tenantId: row.tenant_id,
+    provider: price.provider, requireActive: false });
+  if (!identity || Number(price.ownerUserId) !== Number(row.user_id)
+    || Number(price.tenantId) !== Number(row.tenant_id)) throw holdIntegrityMismatch('personal billing owner');
+  return identity;
+}
+
+function personalExpenseSource(row, source) {
+  const full = row.pricing_snapshot_json ? row : q.get('SELECT * FROM credit_holds WHERE id=?', row.id);
+  const identity = full && personalHoldIdentity(full);
+  if (!identity) return source;
+  if (source?.provider && source.provider !== identity.provider)
+    throw holdIntegrityMismatch('personal supplier');
+  return { ...source, provider: identity.provider, billingMode: 'personal', costPayer: 'personal', ownerUserId: identity.ownerUserId };
+}
 
 // 余额变动后推送（与前端顶栏 credits-updated 同语义）；发布失败绝不影响账务结果。
 function publishCreditsUpdated(tenantId, balance, reason) {
@@ -581,6 +617,12 @@ export function precheck(userId, kind, model) {
   return precheckDetailed(userId, kind, model).balance;
 }
 export function precheckDetailed(userId, kind, model) {
+  const personal = personalBillingIdentity(userId, tenantOf(userId));
+  if (personal) {
+    testerExecutionCredentials({ userId, tenantId: personal.tenantId, provider: personal.provider });
+    return { balance: balanceOf(userId), budget: null, quotaState: 'within', quota: null,
+      billingMode: 'personal', provider: personal.provider };
+  }
   const b = billing();
   const floor = b.minBalance[kind] ?? 5;
   const need = Math.max(floor, model ? estimateMaxCredits(kind, model, b) : floor);
@@ -621,17 +663,18 @@ function costYuan(kind, model, usage, b = billing()) {
 // 实扣 + 流水（aiMode='template' 时记0分流水，保留审计）
 // 原子扣减：余额条件与扣减放在同一条 UPDATE 中，避免并发请求把企业积分池扣成负数。
 export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api', note = '', manageTransaction = true }) {
-  const pricing = priceSnapshot(billing(),model);
-  const b = JSON.parse(pricing);
   const tid = tenantOf(userId);
   if (!tid) throw Object.assign(new Error('计费账号不存在'), { status: 404 });
+  const personal = personalBillingIdentity(userId, tid);
+  const pricing = personal ? personalPriceSnapshot(personal, model) : priceSnapshot(billing(),model);
+  const b = JSON.parse(pricing);
   const unified = usesUnifiedSalesPricing(b);
-  const supplier = aiMode === 'api' ? supplierCostForUsage(usage,upstreamDebitCostApplies(model),unified) : null;
-  if (aiMode === 'api') assertDebitReceipt(b,supplier?.costSource);
+  const supplier = aiMode === 'api' ? supplierCostForUsage(usage,personal ? false : upstreamDebitCostApplies(model),unified || !!personal) : null;
+  if (aiMode === 'api' && !personal) assertDebitReceipt(b,supplier?.costSource);
   assertPositiveApiTextUsage({kind}, {usage,aiMode,verifiedCost:!!supplier && !unified});
-  const referenceYuan = aiMode === 'api' ? costYuan(kind, model, usage, b) : 0;
-  const yuan = supplier ? supplier.costYuanOverride : aiMode === 'api' ? (unified ? null : referenceYuan) : 0;
-  const credits = aiMode === 'api' ? Math.ceil(((unified ? referenceYuan : yuan) * b.marginMultiplier) / b.creditYuan) : 0;
+  const referenceYuan = aiMode === 'api' && !personal ? costYuan(kind, model, usage, b) : 0;
+  const yuan = supplier ? supplier.costYuanOverride : aiMode === 'api' ? (unified || personal ? null : referenceYuan) : 0;
+  const credits = aiMode === 'api' && !personal ? Math.ceil(((unified ? referenceYuan : yuan) * b.marginMultiplier) / b.creditYuan) : 0;
   validCreditAmount(credits, {zero:true});
   ensureHoldTable();
   if (manageTransaction) db.exec('BEGIN IMMEDIATE');
@@ -666,13 +709,13 @@ export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api
     const log = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
       tid, userId, feature, kind, model || '', usage.inputTokens || 0, usage.outputTokens || 0,
-      yuan == null ? null : Math.round(yuan * 10000) / 10000, credits, after, aiMode, note);
+      yuan == null ? null : Math.round(yuan * 10000) / 10000, credits, after, aiMode, personal ? `${note ? `${note}；` : ''}个人API账户付费，平台积分不扣费` : note);
     const linked = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,settled_credits,status,ref_type,ref_id,pricing_snapshot_json,settled_at)
       VALUES(?,?,?,?,?,?,?,?,'settled','direct_charge',?,?,datetime('now','localtime'))`,
       tid,userId,log.lastInsertRowid,feature,kind,model||'',credits,credits,log.lastInsertRowid,pricing);
     writeSupplierExpense({id:linked.lastInsertRowid,tenant_id:tid,user_id:userId,log_id:log.lastInsertRowid}, {
-      status:supplier ? 'known' : aiMode === 'api' ? (unified ? 'pending' : 'estimated') : 'not_incurred', costYuan:yuan,
-      source:supplier?.costSource || {type:aiMode === 'api' ? (unified ? 'supplier_cost_pending' : 'configured_rates') : aiMode,model,pricingSnapshot:true},
+      status:supplier ? 'known' : aiMode === 'api' ? (unified || personal ? 'pending' : 'estimated') : 'not_incurred', costYuan:yuan,
+      source:supplier?.costSource || {type:aiMode === 'api' ? (unified || personal ? 'supplier_cost_pending' : 'configured_rates') : aiMode,model,pricingSnapshot:true},
     });
     if (manageTransaction) db.exec('COMMIT');
   } catch (e) {
@@ -683,7 +726,8 @@ export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api
   }
   if(manageTransaction) publishCreditsUpdated(tid, after, 'charge');
   return { credits, balance: after, costYuan: yuan == null ? null : Math.round(yuan * 10000) / 10000,
-    supplierCostStatus:supplier ? 'known' : aiMode === 'api' ? (unified ? 'pending' : 'estimated') : 'not_incurred' };
+    supplierCostStatus:supplier ? 'known' : aiMode === 'api' ? (unified || personal ? 'pending' : 'estimated') : 'not_incurred',
+    ...(personal ? { billingMode: 'personal', provider: personal.provider } : {}) };
 }
 
 // 租户积分池入账/调整（充值确认、管理员补偿）：正数入账，负数扣减；统一记流水保证对账
@@ -998,15 +1042,18 @@ export function holdCredits({
   if (!billingUserId) {
     throw Object.assign(new Error('租户没有可用于后台计费归属的启用账号'), { status: 409 });
   }
-  const amount = validCreditAmount(credits);
-  const pricing = priceSnapshot(billing(),model);
+  const personal = personalBillingIdentity(billingUserId, tid);
+  if (personal) testerExecutionCredentials({ userId: billingUserId, tenantId: tid, provider: personal.provider });
+  const requested = validCreditAmount(credits);
+  const amount = personal ? 0 : requested;
+  const pricing = personal ? personalPriceSnapshot(personal, model) : priceSnapshot(billing(),model);
   // 租户月度预算门（只拦 AI 消耗；未设预算/平台超管放行）。放在事务外：预警通知与幂等占位不随占扣回滚。
-  if (kind === 'text' || kind === 'image' || kind === 'video') {
+  if (!personal && (kind === 'text' || kind === 'image' || kind === 'video')) {
     assertWithinBudget({ tenantId: tid, userId: userId ?? billingUserId, estimate: amount });
   }
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (['text','image','video'].includes(kind) && !isBudgetExempt(userId ?? billingUserId)) {
+    if (!personal && ['text','image','video'].includes(kind) && !isBudgetExempt(userId ?? billingUserId)) {
       const tenant = getTenant(tid);
       if (tenant?.monthly_credit_budget != null) {
         const currentBudget = budgetSummary(tenant);
@@ -1021,12 +1068,13 @@ export function holdCredits({
     const after = q.get('SELECT credits FROM tenants WHERE id = ?', tid)?.credits ?? 0;
     const logR = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-      tid, billingUserId, feature, kind, model || '', 0, 0, 0, amount, after, 'hold', note || '预授权占扣，结算时多退少补');
+      tid, billingUserId, feature, kind, model || '', 0, 0, 0, amount, after, 'hold', personal ? '个人API账户付费，平台积分不占扣' : note || '预授权占扣，结算时多退少补');
     const holdR = q.run(`INSERT INTO credit_holds(tenant_id,user_id,log_id,feature,kind,model,held_credits,ref_type,ref_id,pricing_snapshot_json)
            VALUES(?,?,?,?,?,?,?,?,?,?)`, tid, billingUserId, logR.lastInsertRowid, feature, kind, model || '', amount, refType, refId, pricing);
     db.exec('COMMIT');
     publishCreditsUpdated(tid, after, 'hold');
-    return { holdId: holdR.lastInsertRowid, logId: logR.lastInsertRowid, tenantId: tid, userId: billingUserId, feature, kind, model: model || '', credits: amount, balance: after };
+    return { holdId: holdR.lastInsertRowid, logId: logR.lastInsertRowid, tenantId: tid, userId: billingUserId, feature, kind, model: model || '', credits: amount, balance: after,
+      ...(personal ? { billingMode: 'personal', provider: personal.provider } : {}) };
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
     throw e;
@@ -1184,6 +1232,15 @@ function verifiedSupplierSource(costYuan, source) {
       if (ids.length !== 1 || !valid360Receipt({ ...source, requestId: ids[0] })) throw invalid();
       Object.assign(result, {rawRequestId: source.rawRequestId, model: source.model, actualModel: source.actualModel,
         amountField: source.amountField, reportedAmount: source.reportedAmount, responseOrigin: source.responseOrigin});
+      if (source.identityType !== undefined) result.identityType = source.identityType;
+      if (source.identityType === 'response_fingerprint') Object.assign(result, {
+        identityVersion: source.identityVersion,
+        identityBasis: source.identityBasis,
+        responseFingerprint: source.responseFingerprint,
+        responseCreated: source.responseCreated,
+        responseOutputCount: source.responseOutputCount,
+        responseOutputDigests: [...source.responseOutputDigests],
+      });
       return result;
     }
     if (ids.length!==1 || !Number.isSafeInteger(source.quota) || source.quota < 0
@@ -1241,6 +1298,7 @@ function claimSupplierReceipts(row, source) {
 }
 
 function writeSupplierExpense(row, {status,costYuan=null,source={}}) {
+  source = personalExpenseSource(row, source);
   if(status==='known') claimSupplierReceipts(row,source);
   q.run(`INSERT INTO credit_supplier_expenses(hold_id,tenant_id,user_id,log_id,status,cost_yuan,source_json)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(hold_id) DO UPDATE SET status=excluded.status,cost_yuan=excluded.cost_yuan,
@@ -1258,7 +1316,16 @@ export function getSupplierExpense(holdId, tenantId = curTenant()) {
     refundLogId:row.refund_log_id,refundedAt:row.refunded_at,updatedAt:row.updated_at };
 }
 
-export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: fixedCredits, costYuanOverride, costSource, note = '' } = {}) {
+export function settleHold(hold, {
+  usage = {},
+  model,
+  aiMode = 'api',
+  credits: fixedCredits,
+  authorizationCapCredits,
+  costYuanOverride,
+  costSource,
+  note = '',
+} = {}) {
   if (!hold?.holdId) return null;
   ensureHoldTable();
   db.exec('BEGIN IMMEDIATE');
@@ -1280,6 +1347,12 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       costSource=JSON.parse(recordedExpense.source_json);
     }
     const b = billingForHold(row);
+    const authorizedCap = authorizationCapCredits === undefined
+      ? null
+      : validCreditAmount(Number(authorizationCapCredits), { zero: true });
+    if (b.billingMode !== 'personal' && authorizedCap != null && authorizedCap !== Number(row.held_credits)) {
+      throw holdIntegrityMismatch('authorizationCapCredits');
+    }
     const log = q.get(
       'SELECT id,tenant_id,user_id,kind,credits,ai_mode FROM credit_logs WHERE tenant_id=? AND id=?',
       row.tenant_id,
@@ -1293,6 +1366,20 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
     }
 
     if (fixedCredits != null) validCreditAmount(fixedCredits, {zero:true});
+    if (b.billingMode === 'personal') {
+      const personal = personalHoldIdentity(row);
+      if (!personal || Number(row.held_credits) !== 0) throw holdIntegrityMismatch('personal hold');
+      const supplier = aiMode === 'api' ? supplierCostForUsage(usage, false, true) : null;
+      if (supplier) { costYuanOverride = supplier.costYuanOverride; costSource = supplier.costSource; }
+      const verified = costSource ? verifiedSupplierSource(costYuanOverride, costSource) : null;
+      if (verified && verified.provider !== personal.provider) throw holdIntegrityMismatch('personal supplier');
+      assertPositiveApiTextUsage(row, { usage, aiMode, fixedCredits, verifiedCost: !!verified });
+      const noCall = aiMode === 'template' || (fixedCredits === 0 && !verified && !usage?.supplierCosts);
+      return finalizeSettlement(row, { actual: 0, yuan: verified ? costYuanOverride : noCall ? 0 : null,
+        expenseStatus: verified ? 'known' : noCall ? 'not_incurred' : 'pending',
+        expenseSource: verified || { type: noCall ? 'explicit_release' : 'supplier_cost_pending', provider: personal.provider },
+        finalModel: model || row.model || '', usage, aiMode, note });
+    }
     // Unified retail pricing (salePolicy reference_360, frozen in the hold's
     // snapshot): the customer pays the reference schedule ×2 regardless of
     // which supplier ran the call. A missing or late receipt only leaves the
@@ -1317,7 +1404,8 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       // Retail credits come from the frozen reference schedule; composite jobs pass
       // their reference-priced total as fixedCredits. Receipts only fill the cost side.
       const referenceCredits = aiMode === 'api' ? Math.ceil((referenceYuan * b.marginMultiplier) / b.creditYuan) : 0;
-      const actual = fixedCredits != null ? fixedCredits : referenceCredits;
+      let actual = fixedCredits != null ? fixedCredits : referenceCredits;
+      if (authorizedCap != null) actual = Math.min(actual, authorizedCap);
       validCreditAmount(actual,{zero:true});
       if (row.kind==='text' && actual>0 && !fixedServiceSettlement(row,fixedCredits) && actual!==referenceCredits)
         throw Object.assign(new Error('文本固定积分与统一参考价不一致'),{status:409,code:'BILLING_FIXED_PRICE_MISMATCH'});
@@ -1344,9 +1432,10 @@ export function settleHold(hold, { usage = {}, model, aiMode = 'api', credits: f
       expenseSource = providerSource || {type:'configured_composite_rates',model:finalModel,pricingSnapshot:!!row.pricing_snapshot_json};
       expenseStatus = providerSource ? 'known' : 'estimated';
     }
-    const actual = expenseStatus === 'known' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : fixedCredits != null
+    let actual = expenseStatus === 'known' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : fixedCredits != null
       ? fixedCredits
       : aiMode === 'api' ? Math.ceil((yuan * b.marginMultiplier) / b.creditYuan) : 0;
+    if (authorizedCap != null) actual = Math.min(actual, authorizedCap);
     validCreditAmount(actual,{zero:true});
     const additional = actual - Number(row.held_credits);
     if (additional > 0 && !(b.supplierCostPolicy?.basis==='upstream_debit' && verifiedCost?.basis==='upstream_debit')) throw holdExceeded();
@@ -1396,13 +1485,15 @@ function finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, f
     SET credits=?,model=?,input_tokens=?,output_tokens=?,cost_yuan=?,balance_after=?,ai_mode=?,note=?
     WHERE tenant_id=? AND id=?`,
     actual, finalModel, usage.inputTokens || 0, usage.outputTokens || 0, yuan == null ? null : Math.round(yuan * 10000) / 10000, after, aiMode,
-    `${note ? `${note}；` : ''}预授权${row.held_credits}分→实扣${actual}分`,
+    `${note ? `${note}；` : ''}${personalHoldIdentity(row) ? '个人API账户付费，平台积分不扣费' : `预授权${row.held_credits}分→实扣${actual}分`}`,
     row.tenant_id, row.log_id);
   if (logUpdated.changes !== 1) throw holdIntegrityMismatch('logId');
   writeSupplierExpense(row,{status:expenseStatus,costYuan:yuan,source:expenseSource});
   db.exec('COMMIT');
   publishCreditsUpdated(row.tenant_id, after, actual === 0 ? 'release' : 'settle');
-  return { credits: actual, balance: after, costYuan: yuan == null ? null : Math.round(yuan * 10000) / 10000, supplierCostStatus:expenseStatus };
+  const personal = personalHoldIdentity(row);
+  return { credits: actual, balance: after, costYuan: yuan == null ? null : Math.round(yuan * 10000) / 10000, supplierCostStatus:expenseStatus,
+    ...(personal ? { billingMode: 'personal', provider: personal.provider } : {}) };
 }
 
 // 释放占扣（调用失败/上游任务失败，未交付任何产出）：全额退回，保留 0 分流水审计
@@ -1479,10 +1570,11 @@ export function refundHold(hold, {note='最终失败且没有可交付成果，�
 // reopen a refunded customer hold or cause a second customer charge.
 export function reconcileSupplierExpense(hold,{supplierCostYuan,costSource}={}) {
   ensureHoldTable();
-  const source=verifiedSupplierSource(supplierCostYuan,costSource);
+  let source=verifiedSupplierSource(supplierCostYuan,costSource);
   db.exec('BEGIN IMMEDIATE');
   try {
     const {row}=refundAuthority(hold);
+    source = personalExpenseSource(row, source);
     const current=q.get('SELECT * FROM credit_supplier_expenses WHERE tenant_id=? AND hold_id=?',row.tenant_id,row.id);
     if(current?.status==='known' && (Math.abs(Number(current.cost_yuan)-supplierCostYuan)>1e-9 || !sameReceiptAmount(JSON.parse(current.source_json),source)))
       throw Object.assign(new Error('已核实供应商费用不能被不同回执覆盖'),{status:409,code:'BILLING_SUPPLIER_COST_CONFLICT'});

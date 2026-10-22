@@ -90,7 +90,12 @@ test('照片到发布包、幂等提交、费用、选择和权限隔离', async
       if (outputMode === 'timeout') throw Object.assign(new Error('upstream timeout with secret sk-test-private'), { code: 'ETIMEDOUT' });
       if (outputMode === 'empty') return { text: '', mode: 'api', model: args.model, usage: { inputTokens: 100, outputTokens: 0 } };
       return { text: JSON.stringify({ title: '三石餐馆的招牌菜', body: '门店今天的菜品分享。', tags: ['三石餐馆'], firstComment: '你更想了解哪道菜？', imagePlan: [{ fileId: file.id, caption: '首图' }] }), mode: 'api', model: args.model,
-        usage: outputMode === 'usage_missing' ? {} : { inputTokens: 100, outputTokens: 100 } };
+        usage: outputMode === 'usage_missing' ? {} : { inputTokens: 100, outputTokens: 100,
+          supplierCosts: [{ status: 'known', costYuanOverride: 0.0002,
+            costSource: { type: 'provider_receipt', provider: 'openlux', basis: 'upstream_debit',
+              requestId: `xhs-test-${calls}`, currency: 'USD', amount: 0.0002, exchangeRate: 1,
+              quota: 100, quotaPerUnit: 500000, exchangeRateSource: 'https://api.openlux.ai/api/status',
+              statusRetrievedAt: '2026-09-07T00:00:00.000Z' } }] } };
     } };
   app.use('/workbench', workbenchRoutes);
   app.use(routes);

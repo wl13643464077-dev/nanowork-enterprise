@@ -1,4 +1,5 @@
 import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
+import { isTesterBusinessActor } from '../engines/tester-access.js';
 import { Router } from "express";
 import { db, q, curTenant, mergeMarshal, runWithTenant } from "../db.js";
 import { logOp, notify, pct, monthStart, today } from "../util.js";
@@ -22,6 +23,8 @@ import {
 } from "../engines/risk.js";
 import { recordKbCitations } from "../engines/rag.js";
 import { refundHold,
+  getSupplierExpense,
+  reconcileSupplierExpense,
   precheck,
   precheckByRole,
   estimateCallCredits,
@@ -29,7 +32,8 @@ import { refundHold,
   settleHold,
   releaseHold,
 } from "../engines/credits.js";
-import { textModelFor } from "../engines/yunwu.js";
+import { aggregateSupplierCosts } from "../engines/provider-cost-receipts.js";
+import { generateImage, editImage, textModelFor, chat } from "../engines/yunwu.js";
 import {
   directivesFor,
   skillByKey,
@@ -504,6 +508,32 @@ function employeeFailureDisposition(error) {
   const providerAttempts = Array.isArray(error?.providerAttempts)
     ? error.providerAttempts
     : [];
+  const safetySignals = [
+    ...(Array.isArray(error?.hardDelivery?.safetySignals)
+      ? error.hardDelivery.safetySignals
+      : []),
+    ...providerAttempts.flatMap((attempt) =>
+      Array.isArray(attempt?.hardDelivery?.safetySignals)
+        ? attempt.hardDelivery.safetySignals
+        : [],
+    ),
+  ]
+    .filter(
+      (signal, index, rows) =>
+        signal &&
+        rows.findIndex(
+          (candidate) =>
+            candidate?.ruleId === signal.ruleId &&
+            candidate?.match === signal.match &&
+            candidate?.snippet === signal.snippet,
+        ) === index,
+    )
+    .slice(0, 3)
+    .map((signal) => ({
+      ruleId: String(signal.ruleId || "external_action_safety").slice(0, 80),
+      match: String(signal.match || "").slice(0, 40),
+      snippet: String(signal.snippet || "").slice(0, 180),
+    }));
   const providerBudget =
     error?.providerBudget && typeof error.providerBudget === "object"
       ? error.providerBudget
@@ -572,6 +602,7 @@ function employeeFailureDisposition(error) {
     contractSkipped,
     providerAttempts,
     providerBudget,
+    safetySignals,
     requestedModel,
     effectiveModel,
     modelFailover,
@@ -691,7 +722,7 @@ function publicTaskWithExecution(task, user) {
 
 function employeeTaskBilling(taskId) {
   const hold = q.get(
-    `SELECT h.id,h.log_id,h.status,h.held_credits,h.settled_credits,
+    `SELECT h.id,h.user_id,h.log_id,h.status,h.held_credits,h.settled_credits,
       l.id ledger_id,l.credits ledger_credits,l.cost_yuan
     FROM credit_holds h
     LEFT JOIN credit_logs l ON l.tenant_id=h.tenant_id AND l.id=h.log_id
@@ -722,6 +753,48 @@ function employeeTaskBilling(taskId) {
     costYuan: hold.cost_yuan == null ? null : Number(hold.cost_yuan),
     authoritative: true,
   };
+  const expense = getSupplierExpense(hold.id, curTenant());
+  if (expense?.refundedAt) {
+    const refundedCredits = Number(expense.refundedCredits);
+    const refundLog = expense.refundLogId
+      ? q.get(
+          `SELECT credits,kind,ai_mode FROM credit_logs
+           WHERE tenant_id=? AND user_id=? AND id=?`,
+          curTenant(),
+          hold.user_id,
+          expense.refundLogId,
+        )
+      : null;
+    const refundVerified =
+      hold.status === "settled" &&
+      ledgerLinked &&
+      Number(expense.userId) === Number(hold.user_id) &&
+      Number.isSafeInteger(refundedCredits) &&
+      refundedCredits >= 0 &&
+      ((settledCredits === 0 &&
+        ledgerCredits === 0 &&
+        refundedCredits === heldCredits &&
+        !expense.refundLogId) ||
+        (settledCredits > 0 &&
+          ledgerCredits === settledCredits &&
+          refundedCredits === settledCredits &&
+          refundLog?.kind === "refund" &&
+          refundLog.ai_mode === "refund" &&
+          Number(refundLog.credits) === -refundedCredits));
+    return {
+      ...base,
+      costYuan: expense.costYuan ?? base.costYuan,
+      state: refundVerified ? "refunded" : "pending_reconciliation",
+      credits: refundVerified ? 0 : null,
+      refundedCredits: refundVerified ? refundedCredits : null,
+      refundLogId: expense.refundLogId || null,
+      refundedAt: expense.refundedAt,
+      label: refundVerified
+        ? `已退回 ${refundedCredits} 积分，实扣 0 积分`
+        : "退款账务待对账，对账前不可用于业务",
+      authoritative: refundVerified,
+    };
+  }
   if (hold.status === "held") {
     return {
       ...base,
@@ -953,6 +1026,49 @@ function employeeDraftOutput(draft, error, { web, kb, reviewDatasetImport }) {
       artifacts: [],
     },
   };
+}
+
+function refundNonAcceptableEmployeeDraft(hold, output, taskId) {
+  const refunded = refundHold(hold, {
+    note: `员工任务#${taskId}完整诊断草稿已保留，但来源质量门未通过且不可采纳；本次无可交付成果，积分全额退回`,
+    assertRefundable: (row) => {
+      const task = q.get(
+        `SELECT status FROM agent_tasks WHERE tenant_id=? AND id=? AND created_by=?`,
+        row.tenant_id,
+        taskId,
+        row.user_id,
+      );
+      if (
+        row.ref_type !== "agent_task" ||
+        Number(row.ref_id) !== taskId ||
+        task?.status !== AGENT_TASK_DRAFT_STATUS ||
+        hasStoredAiDelivery(hold)
+      ) {
+        throw Object.assign(new Error("任务草稿的不可交付状态已变化，退款需核对"), {
+          code: "EMPLOYEE_DRAFT_REFUND_STATE_MISMATCH",
+        });
+      }
+    },
+  });
+  // Customer refunds must not depend on supplier reconciliation. Keep the raw
+  // receipts in the task evidence; a late/invalid receipt never recharges it.
+  const supplier = aggregateSupplierCosts(output.usage?.supplierCosts);
+  if (supplier?.status === "known") {
+    try {
+      const expense = reconcileSupplierExpense(hold, {
+        supplierCostYuan: supplier.costYuanOverride,
+        costSource: supplier.costSource,
+      });
+      refunded.costYuan = expense.costYuan;
+      refunded.supplierCostStatus = expense.status;
+    } catch (error) {
+      console.error(
+        `[marshal] 任务#${taskId}用户积分已退，供应商成本待核对:`,
+        error?.code || "SUPPLIER_COST_RECONCILIATION_FAILED",
+      );
+    }
+  }
+  return refunded;
 }
 
 // —— 巡店看板（#161 巡店督导归档统计）——
@@ -1697,6 +1813,8 @@ export async function dispatchMarshalTask(req, res) {
         let taskDeadlineTimer = null;
         try {
           try {
+            let nonAcceptableDraft = null;
+            let draftRefund = null;
             const delivered = await executeHeldDelivery({
               hold,
               refund: refundHold,
@@ -1760,6 +1878,12 @@ export async function dispatchMarshalTask(req, res) {
                       // 若不经过此入口，不能冒充已经通过这道生产门。
                       requireAgenticResearch: Boolean(employeeExecution),
                       generateFn: employeeGenerate,
+                      generateImageFn: req.app?.locals?.generateImageFn || generateImage,
+                      editImageFn: req.app?.locals?.editImageFn || editImage,
+                      chatFn: req.app?.locals?.chatFn || chat,
+                      campaignJobKey: `task-${taskId}`,
+                      campaignSourceType: "agent_task",
+                      campaignSourceId: taskId,
                       signal: taskAbortController.signal,
                       onReviewDatasetImportComplete: (importEvidence) => {
                         employeeReviewDatasetEvidence = importEvidence || null;
@@ -1841,7 +1965,7 @@ export async function dispatchMarshalTask(req, res) {
                   taskDeadlineTimer = null;
                 }
                 if (out?.employeeDraft) {
-                  // 草稿不过最终硬门与契约门（它本来就没通过），直接进入落库与结算。
+                  // 草稿保留诊断正文；可接受草稿才结算，不可接受草稿在落库后退款。
                   return out;
                 }
                 if (out?.mode !== "api") {
@@ -1999,6 +2123,9 @@ export async function dispatchMarshalTask(req, res) {
                         usage: {
                           inputTokens: Number(out.usage?.inputTokens || 0),
                           outputTokens: Number(out.usage?.outputTokens || 0),
+                          ...(Array.isArray(out.usage?.supplierCosts)
+                            ? { supplierCosts: out.usage.supplierCosts }
+                            : {}),
                         },
                       },
                       internalProfileLeakage: out.internalProfileLeakage || null,
@@ -2220,9 +2347,21 @@ export async function dispatchMarshalTask(req, res) {
                   };
                 });
               },
-              settle: settleHold,
+              settle: (activeHold, args) => {
+                if (!nonAcceptableDraft) return settleHold(activeHold, args);
+                draftRefund = refundNonAcceptableEmployeeDraft(
+                  activeHold,
+                  nonAcceptableDraft,
+                  taskId,
+                );
+                return draftRefund;
+              },
               release: releaseHold,
               settlement: (out) => {
+                if (out.employeeDraft && out.employeeDraft.acceptable !== true) {
+                  nonAcceptableDraft = out;
+                  return { note: `员工任务#${taskId}不可采纳诊断草稿不计费` };
+                }
                 const inputTokens = Number(out.usage?.inputTokens);
                 const outputTokens = Number(out.usage?.outputTokens);
                 if (
@@ -2253,7 +2392,7 @@ export async function dispatchMarshalTask(req, res) {
                   outputTokens,
                   overheadTokens: inputTokens,
                 });
-                if (actualCredits > Number(hold.credits || 0)) {
+                if (hold.billingMode !== 'personal' && actualCredits > Number(hold.credits || 0)) {
                   throw Object.assign(
                     new Error(
                       `员工任务#${taskId}实际用量超过预授权上限，已保留占扣并转待账务对账`,
@@ -2270,10 +2409,20 @@ export async function dispatchMarshalTask(req, res) {
               },
               releaseNote: `员工任务#${taskId}生成或业务落库失败，预授权全额退回`,
             });
+            if (draftRefund) {
+              delivered.billing = {
+                ...delivered.billing,
+                state: "released",
+                refundedCredits: draftRefund.refundedCredits,
+                note: "完整诊断草稿已保留；本次无可交付成果，积分已全额退回。",
+              };
+            }
             const billingText =
-              delivered.billing.state === "settled"
-                ? `消耗${delivered.billing.chargedCredits}积分`
-                : "积分结算待账务对账";
+              delivered.billing.state === "released"
+                ? "积分已全额退回，实扣0积分"
+                : delivered.billing.state === "settled"
+                  ? `消耗${delivered.billing.chargedCredits}积分`
+                  : "积分结算待账务对账";
             if (delivered.delivery.draft) {
               // 未达标草稿：不自动采用、不进审批；通知老板去处理（重新派活或就用这份草稿）。
               const draftLink = selectedSpecialist
@@ -2474,7 +2623,14 @@ export async function dispatchMarshalTask(req, res) {
                     presentationKey: failureDisposition.presentationKey,
                     phase: failureDisposition.phase,
                     retryable: failureDisposition.retryable,
-                    message: String(e.message || "生成失败").slice(0, 300),
+                    // 老板视图优先用业务化说明（为什么没拿到 + 怎么改）；内部原因保留在 detail。
+                    message: String(e.bossMessage || e.message || "生成失败").slice(0, 400),
+                    ...(e.bossMessage
+                      ? { detail: String(e.message || "").slice(0, 300) }
+                      : {}),
+                    ...(failureDisposition.safetySignals.length
+                      ? { safetySignals: failureDisposition.safetySignals }
+                      : {}),
                     // P0-1：为什么没有保留“未达标草稿”（safety / no_text / not_api /
                     // no_deliverable / no_usage / incomplete）；无候选的执行异常为 null。
                     draftBlockedBy:
@@ -2503,8 +2659,12 @@ export async function dispatchMarshalTask(req, res) {
             notify(
               userId,
               "marshal",
-              `${m.name}任务「${taskTitle}」生成失败`,
-              `${String(e.message).slice(0, 100)}（${billingText}）`,
+              e.bossMessage
+                ? `${m.name}任务「${taskTitle}」公开资料不足，未生成`
+                : `${m.name}任务「${taskTitle}」生成失败`,
+              e.bossMessage
+                ? String(e.bossMessage).slice(0, 220)
+                : `${String(e.message).slice(0, 100)}（${billingText}）`,
               taskLink,
             );
           }
@@ -2715,7 +2875,7 @@ r.post("/tasks/:taskId/supersede", (req, res) => {
 // - 按任务锁定的审批策略：要求审阅则进审批队列（contents=待审核/agent_tasks=待审阅），
 //   否则任务转为终态“草稿已接受”；两条路径都记 op_logs 与审批快照。
 r.post("/tasks/:taskId/accept-draft", (req, res) => {
-  if (!["boss", "admin"].includes(req.user?.role)) {
+  if (!["boss", "admin"].includes(req.user?.role) && !isTesterBusinessActor(req.user)) {
     return res.status(403).json({ error: "只有老板或管理员可以决定就用这份草稿" });
   }
   const taskId = Number(req.params.taskId);
@@ -3089,10 +3249,10 @@ function employeeTaskDraftInfo(task, user) {
       0,
     ),
     acceptable,
-    canAccept: pending && acceptable && ["boss", "admin"].includes(user?.role),
+    canAccept: pending && acceptable && (["boss", "admin"].includes(user?.role) || isTesterBusinessActor(user)),
     acceptBlockedReason: pending
       ? acceptable
-        ? ["boss", "admin"].includes(user?.role)
+        ? (["boss", "admin"].includes(user?.role) || isTesterBusinessActor(user))
           ? null
           : "只有老板或管理员可以决定就用这份草稿"
         : "草稿引用了本次未核验的来源，不能直接采用；请带原要求重新派活"

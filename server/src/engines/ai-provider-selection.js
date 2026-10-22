@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getConfig, curTenant } from '../db.js';
-import { providerContext } from './tester-provider-context.js';
+import { providerContext, runWithTesterIdentity } from './tester-provider-context.js';
+import { testerExecutionIdentity, testerExecutionCredentials } from './tester-access.js';
 
 const platformContext = new AsyncLocalStorage();
 const definitions = Object.freeze({
@@ -28,9 +29,13 @@ function legacyProvider() {
   return 'yunwu';
 }
 
-export function selectedProviderId(tenantId = curTenant()) {
-  return providerContext()?.provider || platformContext.getStore()?.providerId
-    || knownId(config(`ai_provider_tenant_${Number(tenantId)}`))
+export function selectedProviderId(tenantId) {
+  const personal = providerContext();
+  if (personal) return personal.provider;
+  const tester = testerExecutionIdentity({ tenantId, requireActive: false });
+  if (tester) return tester.provider;
+  return platformContext.getStore()?.providerId
+    || knownId(config(`ai_provider_tenant_${Number(tenantId ?? curTenant())}`))
     || knownId(config('ai_provider_default')) || legacyProvider();
 }
 export function platformDefaultProviderId() { return knownId(config('ai_provider_default')) || legacyProvider(); }
@@ -56,7 +61,17 @@ function platformCredentials(providerId) {
 }
 export function selectedProviderCredentials() {
   const personal = providerContext();
-  if (!personal) return platformCredentials(selectedProviderId());
+  if (personal?.testerManaged) {
+    const owned = testerExecutionCredentials({ userId: personal.ownerUserId, tenantId: personal.tenantId, provider: personal.provider,
+      requireActive: personal.accountingOnly !== true });
+    if (!owned) throw Object.assign(new Error('个人调用身份已失效'), { status: 403, code: 'TESTER_INACTIVE' });
+    return { ...providerDefinition(owned.provider), apiKey: owned.apiKey, keySource: 'personal', billingMode: 'personal', ownerUserId: owned.ownerUserId };
+  }
+  if (!personal) {
+    const owned = testerExecutionCredentials();
+    if (owned) return { ...providerDefinition(owned.provider), apiKey: owned.apiKey, keySource: 'personal', billingMode: 'personal', ownerUserId: owned.ownerUserId };
+    return platformCredentials(selectedProviderId());
+  }
   const definition = providerDefinition(personal.provider);
   if (personal.baseUrl !== definition.baseUrl || !clean(personal.apiKey))
     throw Object.assign(new Error('请配置所选供应商的个人 API Key'), { status: 403, code: 'PERSONAL_KEY_REQUIRED' });
@@ -87,7 +102,21 @@ export function taskProviderId({ providerId, provider, model } = {}) {
   if (explicit || inferred) return explicit || inferred;
   throw Object.assign(new Error('任务缺少可核验的原供应商信息，请先核对历史任务'), { status: 409, code: 'TASK_PROVIDER_UNKNOWN' });
 }
-export function withTaskProvider(binding, action) {
+export function withTaskProvider(binding, action) { return taskProviderContext(binding, action); }
+// Only receipt lookup uses this internal scope. It permits recording the cost
+// of an already-issued call after Super pauses its owner; never a new job.
+export function withTaskProviderCost(binding, action) { return taskProviderContext(binding, action, true); }
+function taskProviderContext(binding, action, accountingOnly = false) {
+  const context = providerContext();
+  const tester = testerExecutionIdentity({
+    ...(context?.testerManaged ? { userId: context.ownerUserId, tenantId: context.tenantId } : {}),
+    requireActive: !accountingOnly,
+  });
+  if (tester) {
+    const provider = taskProviderId(binding);
+    return runWithTesterIdentity({ ...testerExecutionIdentity({ userId: tester.ownerUserId, tenantId: tester.tenantId, provider,
+      requireActive: !accountingOnly }), ...(accountingOnly ? { accountingOnly: true } : {}) }, action);
+  }
   if (binding?.providerId === 'yunwu' || binding?.provider === 'yunwu') {
     if (selectedProviderId() !== 'yunwu')
       throw Object.assign(new Error('旧兼容通道任务需先核对原供应商'), { status: 409, code: 'TASK_PROVIDER_UNKNOWN' });

@@ -7,7 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 
-import { mdToPdf, resolvePdfFontPath } from '../src/engines/skillrun.js';
+import {
+  PDF_RENDER_VERSION,
+  mdToPdf,
+  resolvePdfFontPath,
+} from '../src/engines/skillrun.js';
 
 const require = createRequire(import.meta.url);
 const originalPdfFontPath = process.env.PDF_FONT_PATH;
@@ -59,6 +63,7 @@ function countDarkPixelsInTitle(pngPath) {
 }
 
 test('中文 PDF 字体只接受可嵌入且包含中文字形的 TTF/OTF', () => {
+  assert.equal(PDF_RENDER_VERSION, 'pdf-report-layout/3');
   const resolved = resolvePdfFontPath();
   assert.match(resolved.path, /\.(?:ttf|otf)$/i);
   assert.doesNotMatch(resolved.path, /\.woff2?$/i);
@@ -81,6 +86,50 @@ test('中文 PDF 字体只接受可嵌入且包含中文字形的 TTF/OTF', () =
     if (originalPdfFontPath === undefined) delete process.env.PDF_FONT_PATH;
     else process.env.PDF_FONT_PATH = originalPdfFontPath;
   }
+});
+
+test('PDF 长表跨页重复表头，并正确呈现分隔线与 Mermaid 源码', async t => {
+  const pdfToText = bundledPopplerBinary('pdftotext');
+  if (!pdfToText) {
+    t.skip('pdftotext 不可用，跳过跨页文字层断言');
+    return;
+  }
+
+  const rows = Array.from({ length: 36 }, (_, index) => [
+    `客户 ${index + 1}`,
+    index % 2 === 0 ? '待跟进' : '已触达',
+    `第 ${index + 1} 行需要复核来源、时间范围、负责人和下一步动作，不能把公开线索写成已成交事实。`,
+  ].join(' | '));
+  const markdown = [
+    '# 客户生命周期行动报告',
+    '',
+    '---',
+    '',
+    '| 客户 | 状态 | 老板下一步 |',
+    '| --- | --- | --- |',
+    ...rows.map(row => `| ${row} |`),
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  线索 --> 到店 --> 复购',
+    '```',
+  ].join('\n');
+  const pdfPath = path.join(tmpDir, '跨页表格与流程.pdf');
+  const textPath = path.join(tmpDir, '跨页表格与流程.txt');
+  fs.writeFileSync(pdfPath, await mdToPdf(markdown, '客户生命周期行动报告'));
+  const result = spawnSync(pdfToText, ['-layout', '-enc', 'UTF-8', pdfPath, textPath], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const extracted = fs.readFileSync(textPath, 'utf8');
+  assert.ok(
+    [...extracted.matchAll(/客户\s+状态\s+老板下一步/gu)].length >= 2,
+    '长表换页后必须重复表头',
+  );
+  assert.match(extracted, /流程说明（Mermaid）/u);
+  assert.match(extracted, /flowchart LR/u);
+  assert.doesNotMatch(extracted, /^\s*---\s*$/gmu, 'Markdown 分隔符不能作为正文泄漏');
+  assert.doesNotMatch(extracted, /```/u, '代码围栏字符不能作为正文泄漏');
 });
 
 test('实际生成的中文 PDF 嵌入字体、可提取文本且 Poppler 渲染有可见中文字形', async t => {

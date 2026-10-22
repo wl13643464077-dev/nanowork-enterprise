@@ -988,6 +988,18 @@ test('餐饮最终硬门独立于岗位契约状态阻断伪URL、越权动作�
   assert.equal(forged.valid, false);
   assert.match(forged.errors.join('；'), /未在本次输入|禁止补造/u);
 
+  const campaignFence = restaurantEmployeeHardDeliveryDecision({
+    ...base,
+    text: `# 国庆家庭聚餐活动方案
+## 一、同类活动扫描
+本店可改良后落地，价格待确认。
+
+\`\`\`nanowork-campaign-materials
+{"record_type":"nanowork-campaign-materials","items":[{"id":"kv_poster","title":"主KV海报","status":"failed","note":"POST https://api.360.cn/v1/images 超时"}]}
+\`\`\``,
+  });
+  assert.equal(campaignFence.valid, true, campaignFence.errors.join('；'));
+
   const external = restaurantEmployeeHardDeliveryDecision({
     ...base,
     text: '# 报告\n内容已经发布并自动投放，无需老板授权。',
@@ -1049,6 +1061,63 @@ test('餐饮最终硬门阻断伪造平台身份、规避平台规则与未经�
     const governed = restaurantEmployeeHardDeliveryDecision({ ...base, text });
     assert.equal(governed.valid, true, text);
   }
+});
+
+test('CRM自动触达只放行语义明确的事前授权门禁，并为真实越权留下短诊断', () => {
+  const base = {
+    mode: 'api',
+    model: 'qa-real-delivery-model',
+    usage: { inputTokens: 11, outputTokens: 19 },
+    internalProfileLeakage: { detected: false },
+    task: {
+      title: '会员CRM与生命周期运营方案',
+      type: '内部方案',
+      requirement: '营销必须取得同意；只形成内部方案，不发送消息、不改系统。',
+    },
+    allowedSources: [],
+  };
+
+  // 这是由线上CRM任务暴露出的确定性语义类别，不冒充已经遗失的原始候选：
+  // 旧规则只看“自动发送”前面的短窗口，把明确的事前审批条件也当成已执行。
+  for (const text of [
+    '自动发送前必须核验营销同意、退订状态并取得负责人审批；本次仅形成方案，不执行发送。',
+    '仅在营销同意有效、退订校验通过并取得负责人批准后，系统才可自动发送；本次未发送。',
+    '自动发送须经老板授权后才执行；本次未发送。',
+  ]) {
+    const governed = restaurantEmployeeHardDeliveryDecision({ ...base, text });
+    assert.equal(governed.valid, true, text);
+    assert.equal(governed.safetySignals, undefined, text);
+  }
+
+  for (const text of [
+    '系统自动发送欢迎短信。',
+    '系统自动发送后再由负责人审核。',
+    '自动发送必须在发送后获得负责人审批。',
+    '系统已经发送营销短信。',
+    '无需老板授权，系统自动发送营销短信。',
+  ]) {
+    const unsafe = restaurantEmployeeHardDeliveryDecision({ ...base, text });
+    assert.equal(unsafe.valid, false, text);
+    assert.match(unsafe.errors.join('；'), /外发|付款|不可逆|授权/u, text);
+    assert.ok(Array.isArray(unsafe.safetySignals) && unsafe.safetySignals.length > 0, text);
+    assert.equal(unsafe.safetySignals[0].ruleId, 'unauthorized_external_action_claim', text);
+    assert.ok(unsafe.safetySignals.every(signal => signal.snippet.length <= 180), text);
+  }
+
+  const redacted = restaurantEmployeeHardDeliveryDecision({
+    ...base,
+    text: '系统自动发送给13800138000，详情 https://unsafe.example/private 。',
+  });
+  assert.equal(redacted.valid, false);
+  assert.doesNotMatch(JSON.stringify(redacted.safetySignals), /13800138000|unsafe\.example/u);
+  assert.match(JSON.stringify(redacted.safetySignals), /\[手机号\]|\[URL\]/u);
+
+  const capped = restaurantEmployeeHardDeliveryDecision({
+    ...base,
+    text: '系统自动发送；已经发布；自动付款；已经调价；自动删除。',
+  });
+  assert.equal(capped.valid, false);
+  assert.equal(capped.safetySignals.length, 3);
 });
 
 test('餐饮平台不合规建议可确定性改写为授权沙盒或纯线下验证并留下字段级审计', () => {

@@ -100,21 +100,26 @@ export function publicVoicedSalesProgress(plan, tenantId) {
         : '字幕按原配音时长分句估时；请预览核对。',
     recovering: plan.phase === 'recovery' && plan.recovery?.stage !== 'failed',
     failureCode: /^[A-Z0-9_]{1,100}$/u.test(String(plan.failureCode || '')) ? plan.failureCode : null,
+    failureReasons: Array.isArray(plan.failureDetail?.errors)
+      ? plan.failureDetail.errors.filter(item => typeof item === 'string' && item).slice(0, 6) : [],
   };
 }
 
 export function voicedSalesRecoveryAvailable(job, plan, billing) {
   const duration = plan?.durationSeconds ?? 30, segmentCount = plan?.model === PROVIDER_360_VIDEO_MODEL ? 1 : duration / 15;
+  const refundedWithSavedClips = billing?.state === 'released' && plan?.audioMode === 'provider_native'
+    && Array.isArray(plan?.partialResults) && plan.partialResults.length === segmentCount
+    && plan.partialResults.every((part, i) => part.index === i + 1 && /^[a-f0-9]{64}$/u.test(String(part.sha256 || '')));
   if (
     plan?.voiceMode !== 'voiced' ||
     ![15, 30].includes(duration) ||
     plan?.workflow !== 'ai_sales_video' ||
     !['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(job?.model) || job?.model !== plan?.model ||
     !['失败', '阻塞', '成功'].includes(job?.status) ||
-    !['held', 'pending_reconciliation', 'settled'].includes(billing?.state)
+    (!['held', 'pending_reconciliation', 'settled'].includes(billing?.state) && !refundedWithSavedClips)
   )
     return false;
-  if (job.status === '成功' && billing.state === 'settled' && plan.phase === 'complete') return false;
+  if (job.status === '成功' && ['settled', 'released'].includes(billing.state) && plan.phase === 'complete') return false;
   if (job.url === plan.result?.url && voicedSalesDeliveryVerified(plan.result, job.tenant_id, plan.audioMode, duration))
     return true;
   const segments = plan.providerExecution?.segments,

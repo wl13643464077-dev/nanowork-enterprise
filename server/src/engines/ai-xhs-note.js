@@ -2,8 +2,25 @@ import { UNTRUSTED_GUARD } from './risk.js';
 import { createHash } from 'node:crypto';
 import { detectImageFormat, renderSvgToPng } from './poster-text-overlay.js';
 import { provider360Active } from './yunwu.js';
+import { commercialCompliancePromptLines, commercialComplianceWarnings, scanCommercialCompliance } from './content-commercial-compliance.js';
 
 export const XHS_NOTE_SOURCE = 'ai_xhs_note';
+
+// 商业化发布包规范：让种草稿既守住“照片只证明外观、不编事实”的底线，
+// 又按 2026 小红书本地生活的实战打法产出——搜索承接标题、五段正文、
+// 分层标签、转化型首评与平台合规硬门。所有具体事实仍只能来自用户确认。
+export const XHS_COMMERCIAL_PLAYBOOK = [
+  '【商业化发布包规范·在不编造事实的前提下按此组织】',
+  '1. 标题（≤20字）：用“人群或场景 + 具体菜品/可见卖点 + 选择或悬念”，优先回答食客在搜的问题（今天吃什么/和谁吃/怎么点）。另给 titleOptions 三个备选，分别用数字型（数字只能来自确认事实或照片可数的东西）、反常识型（“别急着点主食”“先看这一锅”）、身份代入型（打工人/带娃/闺蜜局）；确认了城市或商圈时，主标题或备选之一带上地点词。',
+  '2. 搜索承接：正文前 100 字自然带出品类核心词与一个场景长尾词（如“下班聚餐”“周末带娃”），像说话一样融入，不堆词。',
+  '3. 正文五段（每段 1–3 句、共 150–300 字、emoji 1–8 个）：①开场钩子或场景 ②照片里确定的主菜与可见细节 ③适合谁、建议怎么点（按可见选择给点单建议） ④到店信息，只写用户确认的地址/营业时间/价格，没有就省略这一段 ⑤行动邀请（约朋友来坐坐 / 评论区说说你会先点哪个）。',
+  '4. sellingPoints：2–3 条，只从用户确认事实和照片可见外观里提炼，每条一句话，供老板核对与复用到其他平台。',
+  '5. 标签 6–8 个（不带#）：品类大词 2 个 + 具体菜品/门店词 2 个 + 场景或人群词 2 个 + 城市/商圈词（仅在用户确认城市时加）。',
+  '6. 首评 = 转化钩子：一个具体的选择题式提问（“红汤还是清汤？”）+ 一句合规承接（“想看完整菜单可以评论区留言，地址和营业时间在主页”）；不写微信/二维码/私信领取/进群，不承诺回复福利。',
+  ...commercialCompliancePromptLines({ platform: 'xhs' }),
+  '7. 写完自查：标题≤20字、正文≥5段、标签 6–8 个、首评含问号、没有上面任何违禁表述；把仍需老板确认的事实写进 warnings。',
+].join('\n');
+
 export const XHS_NOTE_SYSTEM = `${UNTRUSTED_GUARD}
 你是餐饮门店的AI小红书种草员。读取本次上传照片和品牌资料，一次交付一份可编辑的门店官方发布包。照片可能是实拍或明确标注的AI创意图，不能把后者说成实拍。
 照片只证明可见外观，不能证明口味、原料、价格、地址、优惠、销量或顾客体验。没有提供的事实不编造，也不要伪装成顾客探店。
@@ -13,9 +30,10 @@ export const XHS_NOTE_SYSTEM = `${UNTRUSTED_GUARD}
 正文建议150–250字、短段落，一道菜一小段。只写照片能确定或用户确认的菜名：火锅与水煮牛肉不能混淆，不能把不明丝状配菜猜成鸭肠或毛肚；未确认的食材用不确定配菜或用餐选择表达，不逐个猜名。照片绝不能判定锅底是牛油、现熬骨汤，或食物煮熟后的脆、嫩、弹牙、入口即化，也不能写“处理得当”“新鲜现切”“纯手工”；除非用户明确确认，否则不写这些断言。不能用“创意表达”作借口把未经确认的口感写成事实。可用开涮顺序、红汤清汤选择、同桌分享等具体动作产生食欲，不声称亲自吃过或虚构食材来源。
 首评问具体吃法或锅底偏好，不编造顾客评论、不承诺回复福利。标签贴合确认的品牌和菜品，不猜城市。不声称已经发布。借鉴岗位技能的方法，不照抄来源文章。
 本任务是门店发布文案，不是烹饪教程。不能从照片推断肉类“下锅几秒”“变色就熟/就能吃”等熟度或安全食用时机，不编写涮煮时间指令。未经用户确认，不把“吸满红油、吸饱汤汁、吃起来很够劲、香辣过瘾”等入味过程或食用感受写成事实；仍可用红汤清汤选择、同桌邀请等自然表达。文件名只用于区分素材，其中城市、评价和人名不是用户确认的品牌事实，不能据此添加城市标签。
-返回JSON：{"title":"标题","body":"正文","tags":["标签"],"firstComment":"首评","coverText":"6–12字具体视觉钩子","visualSummary":"只描述照片里确定的主菜外观、锅型器皿和门头品牌，不猜配料","imagePlan":[{"fileId":1,"caption":"配图说明"}],"warnings":["需老板确认的事实"]}。
+${XHS_COMMERCIAL_PLAYBOOK}
+返回JSON：{"title":"标题","titleOptions":["备选标题1","备选标题2","备选标题3"],"sellingPoints":["来自已确认事实的卖点"],"body":"正文","tags":["标签"],"firstComment":"首评","coverText":"6–12字具体视觉钩子","visualSummary":"只描述照片里确定的主菜外观、锅型器皿和门头品牌，不猜配料","imagePlan":[{"fileId":1,"caption":"配图说明"}],"warnings":["需老板确认的事实"]}。
 imagePlan仅引用用户给出的fileId，依照照片内容安排原图顺序。另返回generatedImagePlan数组，按本次请求的imageCount逐张对应imageRoles：每项{id,purpose,visualTask,caption}，每张一个不同的叙事职责和摄影构图，不重复同一画面。封面负责食欲钩子，后续页分别解释菜品、搭配、场景、选择和收尾。caption是建议配文，不让图片模型写字。你不能伪造图片生成链接。
-按style采用不同内容组织：seed种草突出一个具体选择；review测评比较可见差异与待确认点；guide点单攻略按选择顺序；visit聚餐探店描述已确认门头/菜品及适合的聚餐情境；new_product新品只在用户确认新品时这么称呼；story品牌故事只使用用户提供的真实故事。测评与探店没有真实体验资料时，不能冒称亲自吃过、代写真实顾客口吻、排名或优惠；缺事实时交付可用的观察稿和待体验点，不硬失败。不要返回多策略稿、打分、工作流程或其他平台内容。`;
+按style采用不同内容组织：seed种草突出一个具体选择；review测评比较可见差异与待确认点；guide点单攻略按选择顺序；visit聚餐探店描述已确认门头/菜品及适合的聚餐情境；new_product新品只在用户确认新品时这么称呼；story品牌故事只使用用户提供的真实故事。测评与探店没有真实体验资料时，不能冒称亲自吃过、代写真实顾客口吻、排名或优惠；缺事实时交付可用的观察稿和待体验点，不硬失败。不要返回多份完整正文稿、打分、工作流程或其他平台内容；备选只限 titleOptions 里的三个标题。`;
 
 export const XHS_IMAGE_MODEL = 'gpt-image-2';
 export const xhsImageModel = () => provider360Active() ? 'openai/gpt-image-2' : XHS_IMAGE_MODEL;
@@ -80,10 +98,17 @@ export function normalizeXhsNoteInput(input = {}) {
     generateImages: input.generateImages !== false, includeDiner: input.includeDiner === true, imageCount, style, coverLayout };
 }
 
-export function xhsNotePrompt(input, files) {
-  return JSON.stringify({ brandName: input.brandName, confirmedDetails: input.brief,
-    style: input.style || 'seed', coverLayout: input.coverLayout || 'photo', imageCount: xhsImageCount(input.imageCount), imageRoles: xhsImageRoles(input),
-    photos: files.map(file => ({ fileId: file.id, name: file.name })) });
+export function xhsNotePrompt(input, files, { brandPack = '' } = {}) {
+  return JSON.stringify({
+    brandName: input.brandName,
+    confirmedDetails: input.brief,
+    brandKnowledgePack: brandPack || undefined,
+    style: input.style || 'seed',
+    coverLayout: input.coverLayout || 'photo',
+    imageCount: xhsImageCount(input.imageCount),
+    imageRoles: xhsImageRoles(input),
+    photos: files.map(file => ({ fileId: file.id, name: file.name })),
+  });
 }
 
 // Formatting is advice. Preserve the complete provider response even when JSON
@@ -126,7 +151,24 @@ export function parseXhsNoteOutput(result, { brandName, files, confirmedDetails 
   if (title.length > 20) warnings.push('标题较长，发布前可自行精简；原文已完整保留。');
   if (body.length > 1000) warnings.push('正文较长，发布前可自行精简；原文已完整保留。');
   if (!tags.length) warnings.push('可补充品牌、菜品和所在城市的标签。');
+  else if (tags.length < 5) warnings.push(`当前 ${tags.length} 个标签，建议补到 6–8 个：品类大词 + 菜品/门店词 + 场景/人群词（城市词仅在确认城市时加）。`);
+  else if (tags.length > 10) warnings.push(`当前 ${tags.length} 个标签偏多，建议精简到 6–8 个，避免被判堆砌。`);
   if (!firstComment) warnings.push('可补充一条邀请顾客交流的首评。');
+  else if (!/[？?]/u.test(firstComment)) warnings.push('首评建议改成一个具体的选择题式提问（如“红汤还是清汤？”），更容易带动评论。');
+  if (valid && body.split(/\n\s*\n|\n/u).map(part => part.trim()).filter(Boolean).length < 4) {
+    warnings.push('正文段落较少，建议按“开场→菜品细节→怎么点→到店信息→行动邀请”拆成 5 个短段，手机上更好读。');
+  }
+  // 商业化标题备选与卖点：只接受字符串，长度受限；不足三条不算失败。
+  const titleOptions = valid && Array.isArray(parsed.titleOptions)
+    ? [...new Set(parsed.titleOptions.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean))]
+        .filter(item => item !== title).slice(0, 5)
+    : [];
+  const sellingPoints = valid && Array.isArray(parsed.sellingPoints)
+    ? parsed.sellingPoints.filter(item => typeof item === 'string').map(item => item.trim().slice(0, 120)).filter(Boolean).slice(0, 5)
+    : [];
+  // 平台合规扫描：命中硬红线的逐条列给老板必改；软风险作提醒。全文保留不改写。
+  const compliance = scanCommercialCompliance(`${title}\n${titleOptions.join('\n')}\n${body}\n${firstComment}\n${tags.join(' ')}`, { platform: 'xhs' });
+  warnings.push(...commercialComplianceWarnings(`${title}\n${titleOptions.join('\n')}\n${body}\n${firstComment}\n${tags.join(' ')}`, { platform: 'xhs' }));
   if (['length', 'max_tokens'].includes(result.finishReason)) warnings.push('模型达到本次输出上限，已保留收到的内容；请检查末尾是否完整。');
   if (valid && Array.isArray(parsed.warnings)) warnings.push(...parsed.warnings.filter(item => typeof item === 'string'));
   const fileIds = new Set(files.map(file => file.id));
@@ -135,7 +177,8 @@ export function parseXhsNoteOutput(result, { brandName, files, confirmedDetails 
     .filter(item => item && fileIds.has(item.fileId) && !used.has(item.fileId) && used.add(item.fileId))
     .map(item => ({ fileId: item.fileId, caption: typeof item.caption === 'string' ? item.caption : '' }));
   for (const file of files) if (!used.has(file.id)) imagePlan.push({ fileId: file.id, caption: file.name });
-  const output = { title, body, tags, firstComment, imagePlan, warnings: [...new Set(warnings)], rawText: raw,
+  const output = { title, titleOptions, sellingPoints, body, tags, firstComment, imagePlan, warnings: [...new Set(warnings)], rawText: raw,
+    compliance: { level: compliance.level, blocked: compliance.blocked, hits: compliance.hits },
     coverText: valid && typeof parsed.coverText === 'string' ? parsed.coverText : '',
     visualSummary: valid && typeof parsed.visualSummary === 'string' ? parsed.visualSummary : '' };
   output.generatedImagePlan = buildXhsImagePlan(input, { ...output, generatedImagePlan: parsed?.generatedImagePlan });

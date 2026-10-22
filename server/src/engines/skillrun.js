@@ -16,6 +16,23 @@ function parseMd(md) {
   while (i < lines.length) {
     const t = lines[i].trim();
     if (!t) { i++; continue; }
+    const fence = t.match(/^(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      const marker = fence[1][0];
+      const minimumLength = fence[1].length;
+      const language = fence[2].trim();
+      const body = [];
+      i++;
+      while (i < lines.length && !new RegExp(`^${marker}{${minimumLength},}\\s*$`).test(lines[i].trim())) {
+        body.push(lines[i]); i++;
+      }
+      if (i < lines.length) i++;
+      blocks.push({ type: 'code', language, text: body.join('\n') });
+      continue;
+    }
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(t)) {
+      blocks.push({ type: 'rule' }); i++; continue;
+    }
     if (/^\|.*\|$/.test(t)) {
       const rows = [];
       while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
@@ -496,19 +513,19 @@ function pdfDrawTable(doc, rows, { ink, muted }) {
   const totalWidth = PDF_PAGE_RIGHT - PDF_PAGE_LEFT - gutter * (columnCount - 1);
   const widths = pdfColumnWidths(rows, columnCount, totalWidth);
   const cellFont = index => (index === 0 ? 9.5 : 9);
-
-  rows.forEach((row, rowIndex) => {
+  const rowHeight = (row, rowIndex) => {
     doc.fontSize(cellFont(rowIndex));
     const heights = row.map((cell, column) =>
       doc.heightOfString(String(cell || ''), { width: widths[column], lineGap: 2 }));
-    const rowHeight = Math.max(14, ...heights) + 8;
-    if (doc.y + rowHeight > PDF_PAGE_BOTTOM) doc.addPage();
+    return Math.max(14, ...heights) + 8;
+  };
+  const drawRow = (row, rowIndex, height) => {
     const top = doc.y;
     if (rowIndex === 0) {
-      doc.save().rect(PDF_PAGE_LEFT - 3, top - 3, PDF_PAGE_RIGHT - PDF_PAGE_LEFT + 6, rowHeight)
+      doc.save().rect(PDF_PAGE_LEFT - 3, top - 3, PDF_PAGE_RIGHT - PDF_PAGE_LEFT + 6, height)
         .fill('#2e5b72').restore();
     } else if (rowIndex % 2 === 0) {
-      doc.save().rect(PDF_PAGE_LEFT - 3, top - 3, PDF_PAGE_RIGHT - PDF_PAGE_LEFT + 6, rowHeight)
+      doc.save().rect(PDF_PAGE_LEFT - 3, top - 3, PDF_PAGE_RIGHT - PDF_PAGE_LEFT + 6, height)
         .fill('#f5f7fa').restore();
     }
     let x = PDF_PAGE_LEFT;
@@ -519,9 +536,23 @@ function pdfDrawTable(doc, rows, { ink, muted }) {
       x += widths[column] + gutter;
     });
     doc.x = PDF_PAGE_LEFT;
-    doc.y = top + rowHeight;
+    doc.y = top + height;
     doc.strokeColor('#d8cebb').lineWidth(0.5)
       .moveTo(PDF_PAGE_LEFT - 3, doc.y - 3).lineTo(PDF_PAGE_RIGHT + 3, doc.y - 3).stroke();
+  };
+
+  const header = rows[0];
+  const headerHeight = rowHeight(header, 0);
+  rows.forEach((row, rowIndex) => {
+    const height = rowHeight(row, rowIndex);
+    if (rowIndex === 0) {
+      const firstDataHeight = rows[1] ? rowHeight(rows[1], 1) : 0;
+      if (doc.y + height + firstDataHeight > PDF_PAGE_BOTTOM) doc.addPage();
+    } else if (doc.y + height > PDF_PAGE_BOTTOM) {
+      doc.addPage();
+      drawRow(header, 0, headerHeight);
+    }
+    drawRow(row, rowIndex, height);
   });
   doc.moveDown(0.5);
 }
@@ -574,6 +605,42 @@ export async function mdToPdf(md, title = '报告') {
         doc.fillColor(ink).fontSize(10.5).text(`• ${block.text}`, { indent: 12, lineGap: 4 });
       } else if (block.type === 'table') {
         pdfDrawTable(doc, block.rows, { ink, muted });
+      } else if (block.type === 'rule') {
+        doc.moveDown(0.35).strokeColor('#d8cebb').lineWidth(0.8)
+          .moveTo(PDF_PAGE_LEFT, doc.y).lineTo(PDF_PAGE_RIGHT, doc.y).stroke();
+        doc.moveDown(0.55);
+      } else if (block.type === 'code') {
+        const source = String(block.text || '').trimEnd();
+        const caption = /^mermaid\b/iu.test(String(block.language || ''))
+          ? '流程说明（Mermaid）'
+          : String(block.language || '').trim()
+            ? `代码 · ${String(block.language).trim()}`
+            : '代码';
+        doc.fontSize(9.25);
+        const textHeight = doc.heightOfString(source, {
+          width: PDF_PAGE_RIGHT - PDF_PAGE_LEFT - 18,
+          lineGap: 3,
+        });
+        const blockHeight = Math.max(30, textHeight + 35);
+        if (doc.y + Math.min(blockHeight, PDF_PAGE_BOTTOM - 54) > PDF_PAGE_BOTTOM)
+          doc.addPage();
+        const top = doc.y;
+        doc.save().roundedRect(
+          PDF_PAGE_LEFT - 3,
+          top - 3,
+          PDF_PAGE_RIGHT - PDF_PAGE_LEFT + 6,
+          Math.min(blockHeight, PDF_PAGE_BOTTOM - top),
+          4,
+        ).fill('#f5f7fa').restore();
+        doc.fillColor(muted).fontSize(8.5).text(caption, PDF_PAGE_LEFT + 6, top + 5, {
+          width: PDF_PAGE_RIGHT - PDF_PAGE_LEFT - 12,
+        });
+        doc.fillColor(ink).fontSize(9.25).text(source, PDF_PAGE_LEFT + 6, doc.y + 5, {
+          width: PDF_PAGE_RIGHT - PDF_PAGE_LEFT - 18,
+          lineGap: 3,
+        });
+        doc.x = PDF_PAGE_LEFT;
+        doc.y = Math.max(doc.y + 8, top + blockHeight + 5);
       } else {
         doc.fillColor(ink).fontSize(10.5).text(block.text, { lineGap: 5 });
         doc.moveDown(0.35);
@@ -584,9 +651,9 @@ export async function mdToPdf(md, title = '报告') {
   });
 }
 
-// /2：表格改为按列宽真实排版（表头深底、隔行浅灰、跨页续排），封面标题
-// 改用正文首个H1，不再印被截断的任务标题。
-export const PDF_RENDER_VERSION = 'pdf-report-layout/2';
+// /3：表格按列宽真实排版；Markdown 分隔线与代码围栏不再漏成正文字符，
+// Mermaid 以清晰的流程源码块保留，避免误删业务内容。
+export const PDF_RENDER_VERSION = 'pdf-report-layout/3';
 
 // 文件类技能：key → 渲染器（对应 skills.js 的 docx/xlsx/pptx/pdf）
 export const FILE_SKILLS = {

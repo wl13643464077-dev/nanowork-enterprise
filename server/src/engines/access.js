@@ -1,11 +1,12 @@
 import { q, curTenant } from '../db.js';
 import { storeClauseFor } from './store-scope.js';
+import { isTesterBusinessActor } from './tester-access.js';
 
 export const FULL_DATA_ROLES = new Set(['boss', 'admin', 'platform_super']);
 export const MANAGER_DATA_ROLES = new Set(['ops_director', 'manager']);
 
 export function hasFullDataAccess(user) {
-  return FULL_DATA_ROLES.has(String(user?.role || ''));
+  return FULL_DATA_ROLES.has(String(user?.role || '')) || isTesterBusinessActor(user);
 }
 
 export function isManagerRole(user) {

@@ -326,9 +326,11 @@ function validManagerId(raw, tid, targetId = null) {
 
 function configuredKbCategories() {
   const categories = getTenantConfig("kb_categories", DEFAULT_KB_CATS);
-  return Array.isArray(categories) && categories.length
-    ? categories
-    : DEFAULT_KB_CATS;
+  const list = Array.isArray(categories) && categories.length
+    ? [...categories]
+    : [...DEFAULT_KB_CATS];
+  if (!list.includes("品牌知识包")) list.unshift("品牌知识包");
+  return list;
 }
 
 function normalizedKbRoleJson(value, label) {
@@ -1844,6 +1846,7 @@ r.get("/kb", (req, res) => {
 
 // 知识库分类管理（每家企业自定义自己的分类体系；未改则用平台推荐默认）
 const DEFAULT_KB_CATS = [
+  "品牌知识包",
   "品牌资料",
   "招商政策",
   "产品资料",
@@ -1873,13 +1876,13 @@ function kbVectorReadinessPayload() {
 }
 
 r.get("/kb/categories", (req, res) => {
-  res.json(getTenantConfig("kb_categories", DEFAULT_KB_CATS));
+  res.json(configuredKbCategories());
 });
 r.post("/kb/categories", requireRole("boss", "admin"), (req, res) => {
   const { name } = req.body || {};
   if (typeof name !== "string" || !name.trim())
     return res.status(400).json({ error: "分类名必填" });
-  const cats = getTenantConfig("kb_categories", DEFAULT_KB_CATS); // 首次自定义从平台默认起步，不会丢掉默认分类
+  const cats = configuredKbCategories(); // 首次自定义从平台默认起步，不会丢掉默认分类和品牌知识包
   const n = String(name).trim();
   if (n.length > 60) return res.status(400).json({ error: "分类名最长60字" });
   if (!Array.isArray(cats) || cats.length >= 50)
@@ -2189,7 +2192,7 @@ r.post("/kb/upload", async (req, res) => {
       return res.status(400).json({ error: "文件名与文件内容必填" });
     if (name.length > 200)
       return res.status(400).json({ error: "文件名最长200字" });
-    const categories = getTenantConfig("kb_categories", DEFAULT_KB_CATS);
+    const categories = configuredKbCategories();
     if (!category || category.length > 60 || !categories.includes(category))
       return res.status(400).json({ error: "请选择本企业已配置的知识库分类" });
     const ext = String(name.split(".").pop() || "").toLowerCase();
@@ -2489,7 +2492,10 @@ r.get("/kb/gaps", (req, res) => {
       .filter((x) => x.docs === 0)
       .map((x) => ({
         ...x,
-        hint: `上传「${x.category}」资料可解锁该领域AI精准模式，当前为通用模板模式`,
+        hint:
+          x.category === "品牌知识包"
+            ? "还没有品牌知识包：到「品牌知识包」入口输入品牌名，系统会联网采集近三个月公开资料并自动入库；已上传的资料也会继续给数字员工调用。"
+            : `上传「${x.category}」资料可解锁该领域AI精准模式，当前为通用模板模式`,
       })),
   );
 });
@@ -2549,7 +2555,9 @@ r.get("/kb/readiness", (req, res) => {
       hint:
         Number(row.enabled || 0) > 0
           ? "已可供AI调用"
-          : `请上传或录入「${category}」，也可先执行初始化`,
+          : category === "品牌知识包"
+            ? "到「品牌知识包」入口输入品牌名即可自动采集入库"
+            : `请上传或录入「${category}」，也可先执行初始化`,
     };
   });
   const ready = categories.filter((x) => x.ready).length;

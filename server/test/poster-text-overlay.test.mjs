@@ -277,6 +277,30 @@ test('renderPosterTextOverlay：底图 + 三层文字渲染成同尺寸 PNG，�
   );
 });
 
+test('效果图可把品牌 Logo 叠进左上角，不只写店名', async () => {
+  const logoPng = await renderSvgToPng(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#c8102e"/></svg>',
+    { width: 80, height: 80 },
+  );
+  const withLogo = await renderPosterTextOverlay({
+    imageBuffer: basePng,
+    layers: [
+      { text: '中秋国庆家庭宴', role: 'title', position: 'top' },
+      { text: '北京大鸭梨烤鸭', role: 'store', position: 'bottom' },
+    ],
+    logoDataUrl: `data:image/png;base64,${logoPng.toString('base64')}`,
+  });
+  const withoutLogo = await renderPosterTextOverlay({
+    imageBuffer: basePng,
+    layers: [
+      { text: '中秋国庆家庭宴', role: 'title', position: 'top' },
+      { text: '北京大鸭梨烤鸭', role: 'store', position: 'bottom' },
+    ],
+  });
+  assert.match(withLogo.svg, /data-role="logo"/u);
+  assert.notEqual(withLogo.png.toString('base64'), withoutLogo.png.toString('base64'));
+});
+
 test('stripOverlayTextFromPrompt：剥离用户文字与裸价格数字，并追加“无字”指令', () => {
   const prompt = '做一张海报，标题：招牌酸汤鱼双人套餐，价格 ¥99.9，门店名：老王家酸汤鱼，暖色调，真实商业摄影';
   const stripped = stripOverlayTextFromPrompt(prompt, [

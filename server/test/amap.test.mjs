@@ -22,11 +22,13 @@ process.env.AMAP_BASE_URL = "";
 
 const {
   AMAP_RESTAURANT_TYPECODE,
+  AMAP_REQUEST_INTERVAL_MS,
   AMAP_UNCONFIGURED_REASON,
   AmapError,
   amapRuntimeState,
   classifyAmapInfocode,
   createAmapClient,
+  createAmapRequestPacer,
   createMemoryGeoPoiCache,
   createSqliteGeoPoiCache,
   geocode,
@@ -85,6 +87,79 @@ beforeEach(() => {
   resetFetch();
   process.env.AMAP_WEB_KEY = "";
   process.env.AMAP_BASE_URL = "";
+});
+
+test("共享origin节流器跨客户端限制启动间隔，其他origin不被错误串行", async () => {
+  assert.equal(AMAP_REQUEST_INTERVAL_MS, 1100);
+  const pacer = createAmapRequestPacer({ intervalMs: 30 });
+  const starts = [];
+  const fetchImpl = async input => {
+    starts.push({ at: performance.now(), host: new URL(input).host });
+    return jsonResponse({ status: "1", geocodes: [] });
+  };
+  const first = createAmapClient({ apiKey: TEST_KEY, requestPacer: pacer, fetchImpl, cache: false });
+  const second = createAmapClient({ apiKey: "another-test-key", requestPacer: pacer, fetchImpl, cache: false });
+  const other = createAmapClient({ apiKey: TEST_KEY, baseUrl: "https://isolated.amap.test", requestPacer: pacer, fetchImpl, cache: false });
+  await Promise.all([first.geocode("a"), second.geocode("b"), first.geocode("c"), other.geocode("d")]);
+  const shared = starts.filter(item => item.host === "restapi.amap.com");
+  assert.equal(shared.length, 3);
+  assert.ok(shared[1].at - shared[0].at >= 25);
+  assert.ok(shared[2].at - shared[1].at >= 25);
+  assert.ok(starts.find(item => item.host === "isolated.amap.test").at < shared[1].at);
+});
+
+test("10020/10021/10022受限重试最多两次且每次重新排队，不泄露Key", async () => {
+  assert.equal(classifyAmapInfocode("10022").category, "transient");
+  for (const code of ["10020", "10021", "10022"]) {
+    let requests = 0;
+    const starts = [];
+    const client = createAmapClient({
+      apiKey: TEST_KEY, cache: false, requestPacer: createAmapRequestPacer({ intervalMs: 15 }),
+      fetchImpl: async () => {
+        starts.push(performance.now());
+        requests += 1;
+        return requests < 3
+          ? jsonResponse({ status: "0", infocode: code, info: `QPS ${TEST_KEY}` })
+          : jsonResponse({ status: "1", geocodes: [] });
+      },
+    });
+    const result = await client.geocode("a");
+    assert.equal(requests, 3);
+    assert.equal(result.source.requestAttempts, 3);
+    assert.ok(starts[1] - starts[0] >= 10);
+    assert.ok(starts[2] - starts[1] >= 10);
+    assert.ok(!JSON.stringify({ result, state: amapRuntimeState() }).includes(TEST_KEY));
+  }
+  let attempts = 0;
+  const client = createAmapClient({ apiKey: TEST_KEY, cache: false,
+    requestPacer: createAmapRequestPacer({ intervalMs: 0 }),
+    fetchImpl: async () => { attempts++; return jsonResponse({ status: "0", infocode: "10021", info: "QPS" }); },
+  });
+  await assert.rejects(() => client.geocode("a"), error => error.infocode === "10021");
+  assert.equal(attempts, 3, "连续QPS错误不可无限重试");
+});
+
+test("队列中的取消与截止时间停止后续请求，凭证/日配额失败绝不重试", async () => {
+  const pacer = createAmapRequestPacer({ intervalMs: 80 });
+  let calls = 0;
+  const client = createAmapClient({ apiKey: TEST_KEY, cache: false, requestPacer: pacer,
+    fetchImpl: async () => { calls++; return jsonResponse({ status: "1", geocodes: [] }); },
+  });
+  await client.geocode("a");
+  const controller = new AbortController();
+  const pending = client.geocode("b", null, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.code === "AMAP_CANCELLED");
+  assert.equal(calls, 1);
+  await assert.rejects(() => pacer.wait("https://restapi.amap.com", { deadlineAt: Date.now() + 5 }), error => error.name === "TimeoutError");
+  for (const code of ["10001", "10003", "10009"]) {
+    let attempts = 0;
+    const blocked = createAmapClient({ apiKey: TEST_KEY, cache: false, requestPacer: createAmapRequestPacer({ intervalMs: 0 }),
+      fetchImpl: async () => { attempts++; return jsonResponse({ status: "0", infocode: code, info: TEST_KEY }); },
+    });
+    await assert.rejects(() => blocked.geocode("a"), error => error.blocked && !JSON.stringify(error).includes(TEST_KEY));
+    assert.equal(attempts, 1);
+  }
 });
 
 test("未配置密钥时所有调用返回 unavailable，且不触发任何 fetch、不抛错", async () => {

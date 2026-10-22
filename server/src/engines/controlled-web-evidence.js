@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { providerContext } from './tester-provider-context.js';
 import { tinyfishAvailable, tinyfishFetchPages } from './tinyfish.js';
 
 const MAX_REDIRECTS = 3;
@@ -186,6 +187,65 @@ function decodeEntity(value) {
     .replace(/&#x([0-9a-f]+);/giu, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)));
 }
 
+const IMAGE_EXT = /\.(?:png|jpe?g|gif|svg|webp|bmp)(?:[?#]|$)/iu;
+const LOGO_HINT = /logo|brandmark|wordmark|标志|司徽|商标|厂标/iu;
+const SKIP_ASSET = /nav_ico|go_next|spacer|pixel|1x1|sprite|share[_-]?icon|qrcode|二维码|wechat|weixin|icon_share|banner0|testing\/banner/iu;
+const FOLLOW_HREF = /About|News|Newslist|Culture|Honor|Intro|Brand|Join|Franchise|Contact|Menu|关于|简介|文化|荣誉|理念|使命|价值|加盟|菜单|资质|食品安全/iu;
+
+function resolvePageUrl(value, baseUrl) {
+  try {
+    const href = new URL(String(value || '').trim(), baseUrl).href;
+    return href.startsWith('http') ? href : '';
+  } catch {
+    return '';
+  }
+}
+
+export function extractHtmlAssets(rawHtml, baseUrl) {
+  const html = String(rawHtml || '');
+  const images = [];
+  const seenImages = new Set();
+  const pushImage = (src, extra = '') => {
+    const url = resolvePageUrl(decodeEntity(src), baseUrl);
+    if (!url || seenImages.has(url) || !IMAGE_EXT.test(url) || SKIP_ASSET.test(url)) return;
+    seenImages.add(url);
+    images.push({
+      url,
+      isLogo: LOGO_HINT.test(`${url} ${extra}`),
+    });
+  };
+  for (const tag of html.matchAll(/<img\b[^>]*>/giu)) {
+    const src = tag[0].match(/(?:src|data-src|data-original)=["']([^"']+)/iu)?.[1];
+    const alt = tag[0].match(/alt=["']([^"']*)/iu)?.[1] || '';
+    const cls = tag[0].match(/class=["']([^"']*)/iu)?.[1] || '';
+    if (src) pushImage(src, `${alt} ${cls}`);
+  }
+  for (const tag of html.matchAll(/<meta\b[^>]*>/giu)) {
+    if (!/og:image|twitter:image/iu.test(tag[0])) continue;
+    const src = tag[0].match(/content=["']([^"']+)/iu)?.[1];
+    if (src) pushImage(src, 'og:image');
+  }
+  const pageLinks = [];
+  const seenLinks = new Set();
+  for (const tag of html.matchAll(/<a\b[^>]*>/giu)) {
+    const href = tag[0].match(/href=["']([^"']+)/iu)?.[1];
+    const url = resolvePageUrl(decodeEntity(href), baseUrl);
+    if (!url || seenLinks.has(url) || !FOLLOW_HREF.test(url)) continue;
+    try {
+      if (new URL(url).host !== new URL(baseUrl).host) continue;
+    } catch {
+      continue;
+    }
+    seenLinks.add(url);
+    pageLinks.push(url);
+  }
+  images.sort((left, right) => Number(right.isLogo) - Number(left.isLogo));
+  return {
+    images: images.slice(0, 8),
+    pageLinks: pageLinks.slice(0, 12),
+  };
+}
+
 const PUBLISHED_AT_META_PATTERNS = [
   /<meta[^>]+(?:property|name)=["'](?:article:published_time|og:article:published_time|article:modified_time|og:updated_time|pubdate|publishdate|publish_date|publication_date|dc\.date(?:\.issued)?|datePublished|date|weibo:article:create_at|og:release_date)["'][^>]+content=["']([^"']+)["']/iu,
   /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:article:published_time|og:article:published_time|pubdate|publishdate|publish_date|publication_date|datePublished)["']/iu,
@@ -231,16 +291,20 @@ function pageEvidence(buffer, contentType, finalUrl) {
     .replace(/[\t\r ]+/gu, ' ')
     .replace(/ *\n+ */gu, '\n')
     .replace(/\n{3,}/gu, '\n\n')
-    .trim()
-    .slice(0, 3000);
+    .trim();
   if (text.length < 80) {
     throw Object.assign(new Error('公开网页没有形成足够正文证据'), { code: 'CONTROLLED_WEB_BODY_EMPTY' });
   }
+  const mainIndex = text.search(/成立于|集团简介|公司简介|我们的愿景|价值准则|秉承[“"「『]|京ICP备/u);
+  const main = mainIndex >= 0 ? text.slice(Math.max(0, mainIndex - 40), mainIndex + 8000) : text.slice(0, 8000);
+  const assets = extractHtmlAssets(raw, finalUrl);
   return {
     title: title || new URL(finalUrl).hostname,
     url: finalUrl,
-    snippet: text.slice(0, 1200),
-    body: text,
+    snippet: main.slice(0, 1600),
+    body: text.slice(0, 16000),
+    images: assets.images,
+    pageLinks: assets.pageLinks,
     publishedAt,
     fetchedAt: new Date().toISOString(),
   };
@@ -252,6 +316,7 @@ export async function fetchPublicPageEvidence(rawUrl, {
   redirectCount = 0,
   signal = null,
   lookupFn = lookup,
+  userAgent = 'NanoWork-Public-Evidence/1.0',
 } = {}) {
   const parsed = parsePublicUrl(rawUrl);
   const hostname = parsed.hostname.replace(/^\[|\]$/gu, '');
@@ -277,7 +342,7 @@ export async function fetchPublicPageEvidence(rawUrl, {
         'Accept-Encoding': 'identity',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.5',
         Host: parsed.host,
-        'User-Agent': 'NanoWork-Public-Evidence/1.0',
+        'User-Agent': userAgent || 'NanoWork-Public-Evidence/1.0',
       },
       ...(isIP(hostname) ? {} : { servername: hostname }),
       lookup: (_host, options, callback) => {
@@ -303,7 +368,7 @@ export async function fetchPublicPageEvidence(rawUrl, {
           return;
         }
         fetchPublicPageEvidence(redirected, {
-          timeoutMs, maxBytes, redirectCount: redirectCount + 1, signal, lookupFn,
+          timeoutMs, maxBytes, redirectCount: redirectCount + 1, signal, lookupFn, userAgent,
         }).then(value => finish(null, value), finish);
         return;
       }
@@ -370,7 +435,7 @@ export async function fetchControlledWebEvidence(sources, {
 } = {}) {
   const urls = [...new Set((Array.isArray(sources) ? sources : [])
     .map(source => String(source?.url || '').trim()).filter(Boolean))]
-    .slice(0, Math.max(1, Math.min(8, Number(limit) || 4)));
+    .slice(0, Math.max(1, Math.min(12, Number(limit) || 4)));
   const results = [];
   const failures = [];
   let usedTinyfish = false;
@@ -386,7 +451,11 @@ export async function fetchControlledWebEvidence(sources, {
       failures.push({ ...auditFailureTarget(url), code: error?.code || 'CONTROLLED_WEB_URL_UNSAFE' });
     }
   }
-  if (pending.length && tinyfishAvailable()) {
+  // 测试员及其邀请客户的全部付费调用必须归属销售自己的供应商 Key。
+  // TinyFish 是平台凭证，个人供应商上下文只能使用本地受控 HTTP 抓取，
+  // 避免搜索走个人 360、正文抓取又暗中消耗平台 TinyFish。
+  const personalProviderKey = providerContext()?.billingMode === 'personal';
+  if (pending.length && !personalProviderKey && tinyfishAvailable()) {
     try {
       const batch = await tinyfishFetchFn(pending, { signal, purpose: '为门店经营调研核验公开网页正文' });
       const got = new Set();
@@ -444,6 +513,7 @@ export async function fetchControlledWebEvidence(sources, {
       rawResponseStored: false,
       extractedTextStored: true,
       renderedFetch: usedTinyfish,
+      platformTinyfishSkipped: personalProviderKey,
     },
   };
 }

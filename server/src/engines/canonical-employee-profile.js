@@ -353,6 +353,7 @@ function restaurantDefaultWorkConfig(skillProfile) {
     // 派活原结构里的岗位研究能力按每次任务运行；不能再由关键词猜测是否联网。
     webMode: "required",
     knowledgeScopes: [
+      "品牌知识包",
       "品牌资料",
       "招商政策",
       "产品资料",

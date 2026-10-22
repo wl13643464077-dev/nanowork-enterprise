@@ -32,8 +32,11 @@ const {
   ensureTradeAreaProvenanceSection,
   extractTradeAreaAddress,
   hasTradeAreaProvenanceSection,
+  isCoarseAmapGeocode,
   renderTradeAreaProvenanceMarkdown,
   resolveTradeAreaFacts,
+  applyPublicMenuEvidence,
+  matchesCategoryKeyword,
   tradeAreaFactsPromptSummary,
 } = await import("../src/engines/location-intelligence.js");
 const { createAmapClient, createMemoryGeoPoiCache, resetAmapRuntimeState } =
@@ -132,6 +135,9 @@ function amapFixture({ withCost = true, geocodeStatus = "1", geocodeInfocode = "
         })),
       });
     }
+    if (url.pathname === "/v3/place/text") {
+      return jsonResponse({ status: "1", infocode: "10000", count: "0", pois: [] });
+    }
     throw new Error(`unexpected amap URL ${url.pathname}`);
   };
   return { calls, fetchImpl };
@@ -188,6 +194,9 @@ test("extractTradeAreaAddress 只对可地理编码的场所返回地址与城�
   assert.equal(isTradeAreaEmployee(104), true);
   assert.equal(isTradeAreaEmployee(103), false);
   assert.equal(tradeAreaCategoryKeyword("太原吾悦广场开一家火锅店"), "火锅");
+  assert.equal(tradeAreaCategoryKeyword("我在酒仙桥附近开了一家牛肉面馆"), "牛肉面");
+  assert.equal(tradeAreaCategoryKeyword("帮我聚焦同类型牛肉面馆"), "牛肉面");
+  assert.equal(tradeAreaCategoryKeyword("酒仙桥开一家面馆"), "面馆");
   assert.equal(tradeAreaCategoryKeyword("太原吾悦广场选址"), null);
 });
 
@@ -240,7 +249,7 @@ test("高德可用：事实结构完整、逐字段 provenance=amap、分布与 
   assert.equal(facts.topCompetitors.matchedCategoryKeyword, true);
   assert.equal(facts.topCompetitors.value.length, 4);
   assert.ok(facts.topCompetitors.value.every((item) => /火锅/u.test(item.name)));
-  assert.deepEqual(Object.keys(facts.topCompetitors.value[0]).sort(), ["address", "cost", "distance", "name", "rating", "type"]);
+  assert.deepEqual(Object.keys(facts.topCompetitors.value[0]).sort(), ["address", "categoryEvidence", "coords", "cost", "distance", "id", "name", "rating", "type"]);
   const distances = facts.topCompetitors.value.map((item) => item.distance);
   assert.deepEqual(distances, [...distances].sort((a, b) => a - b), "按距离升序");
 
@@ -263,7 +272,7 @@ test("高德可用：事实结构完整、逐字段 provenance=amap、分布与 
   assert.ok(facts.sources.some((source) => source.provider === "amap" && source.endpoint === "/v3/geocode/geo"));
   assert.ok(facts.sources.some((source) => source.provider === "osm"));
   assert.equal(calls.filter((url) => url.pathname === "/v3/geocode/geo").length, 1);
-  assert.equal(calls.filter((url) => url.pathname === "/v3/place/around" && url.searchParams.get("types") === "050000").length, 3);
+  assert.equal(calls.filter((url) => url.pathname === "/v3/place/around" && url.searchParams.get("types") === "050000").length, 4, "三个全餐饮半径与一次最大半径品类搜索");
   assert.equal(calls.filter((url) => url.pathname === "/v3/place/around" && url.searchParams.get("types") !== "050000").length, 7);
   assert.doesNotMatch(JSON.stringify(facts), new RegExp(TEST_KEY, "u"), "事实快照不得泄露密钥");
 
@@ -332,6 +341,139 @@ test("高德未配置：不发起任何高德请求，回落 OSM 证据，provid
   assert.equal(facts.priceDistribution, null);
 });
 
+test("普通商圈任务不强制等时圈；不同品类的餐饮参考不能标成同品类", async () => {
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const { fetchImpl } = amapFixture();
+  const facts = await resolveTradeAreaFacts({
+    addressText: "太原吾悦广场",
+    city: "太原",
+    categoryKeyword: "烘焙",
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }),
+    osmEvidence: { ...osmEvidenceFixture({ withIsochrones: false }), isochroneRequired: false },
+    now: NOW,
+  });
+  assert.equal(facts.isochrones, null);
+  assert.ok(!facts.missingCriticalFacts.some(item => item.field === "isochrones"));
+  assert.equal(facts.topCompetitors.matchedCategoryKeyword, false);
+  assert.match(facts.topCompetitors.note, /仅为周边餐饮参考/u);
+  assert.ok(facts.missingCriticalFacts.some(item => item.field === "topCompetitors.sameCategory"));
+  const report = renderTradeAreaProvenanceMarkdown(facts);
+  assert.match(report, /周边餐饮参考 Top 10/u);
+  assert.doesNotMatch(report, /\| 同品类竞品 Top 10/u);
+  assert.match(report, /本次没有取得路网等时圈/u);
+  assert.doesNotMatch(report, /等时圈由 OpenStreetMap 路网计算/u);
+});
+
+test("烘焙品类另行按最大半径检索并核验名称/类别，宠物烘焙及非同类门店不得混入", async () => {
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const base = amapFixture();
+  const categoryCalls = [];
+  const fetchImpl = async input => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v3/place/around" && url.searchParams.get("keywords")) {
+      categoryCalls.push(url);
+      return jsonResponse({ status: "1", infocode: "10000", count: "5", pois: [
+        restaurantPoi(101, { name: "梅朵手作Cake", type: "餐饮服务;糕饼店" }),
+        restaurantPoi(102, { name: "本地面包坊", type: "餐饮服务;糕饼店" }),
+        restaurantPoi(103, { name: "绿爪宠物鲜食烘焙店", type: "生活服务;宠物服务" }),
+        restaurantPoi(104, { name: "附近火锅店", type: "餐饮服务;中餐厅;火锅店" }),
+        restaurantPoi(105, { name: "独立西饼屋", type: "餐饮服务;糕饼店" }),
+      ] });
+    }
+    return base.fetchImpl(input);
+  };
+  const facts = await resolveTradeAreaFacts({
+    addressText: "太原吾悦广场", radii: [1000, 2000, 3000], categoryKeyword: "烘焙",
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }), now: NOW,
+  });
+  assert.equal(categoryCalls.length, 1);
+  assert.equal(categoryCalls[0].searchParams.get("radius"), "3000");
+  assert.equal(categoryCalls[0].searchParams.get("types"), "050000");
+  assert.equal(categoryCalls[0].searchParams.get("keywords"), "烘焙");
+  assert.deepEqual(facts.topCompetitors.value.map(poi => poi.name), ["梅朵手作Cake", "本地面包坊", "独立西饼屋"]);
+  assert.equal(facts.topCompetitors.provenance.keywords, "烘焙");
+  assert.equal(facts.topCompetitors.coverage.providerCount, 5);
+  assert.equal(facts.topCompetitors.coverage.matchedInReturned, 3);
+  assert.equal(facts.topCompetitors.matchedCategoryKeyword, true);
+  assert.equal(facts.topCompetitors.value[0].cost, null);
+  assert.equal(facts.competitors.byRadius.at(-1).value.count, 14, "全餐饮计数不得被品类命中数替换");
+  assert.match(facts.priceDistribution.note, /周边全部餐饮返回明细/u);
+});
+
+test("牛肉面馆按牛肉面检索：兰州拉面计入同类，刀削面和普通面馆不得凭店名混入", async () => {
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const categoryCalls = [];
+  const base = amapFixture();
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v3/place/around" && url.searchParams.get("keywords")) {
+      const keyword = url.searchParams.get("keywords");
+      categoryCalls.push(keyword);
+      const pois = keyword === "兰州拉面"
+        ? [restaurantPoi(201, { name: "马记兰州拉面", type: "餐饮服务;中餐厅;中餐厅" })]
+        : [
+          restaurantPoi(202, { name: "陈氏牛肉面", type: "餐饮服务;中餐厅;中餐厅" }),
+          restaurantPoi(203, { name: "酒仙桥刀削面馆", type: "餐饮服务;中餐厅;中餐厅" }),
+          restaurantPoi(204, { name: "老刘面馆", type: "餐饮服务;中餐厅;中餐厅" }),
+          restaurantPoi(205, { name: "绿爪宠物鲜食面", type: "生活服务;宠物服务" }),
+        ];
+      return jsonResponse({ status: "1", infocode: "10000", count: String(pois.length), pois });
+    }
+    return base.fetchImpl(input);
+  };
+  assert.equal(matchesCategoryKeyword({ name: "马记兰州拉面", type: "餐饮服务;中餐厅" }, "牛肉面"), true);
+  assert.equal(matchesCategoryKeyword({ name: "酒仙桥刀削面馆", type: "餐饮服务;中餐厅" }, "牛肉面"), false);
+  assert.equal(matchesCategoryKeyword({ name: "老刘面馆", type: "餐饮服务;中餐厅" }, "牛肉面"), false);
+  const facts = await resolveTradeAreaFacts({
+    addressText: "北京酒仙桥",
+    radii: [500, 1000, 1500],
+    categoryKeyword: "牛肉面",
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }),
+    now: NOW,
+  });
+  assert.deepEqual([...categoryCalls].sort(), ["兰州拉面", "牛肉面"]);
+  assert.deepEqual(facts.topCompetitors.value.map((poi) => poi.name).sort(), ["陈氏牛肉面", "马记兰州拉面"]);
+  assert.equal(facts.topCompetitors.matchedCategoryKeyword, true);
+  assert.equal(facts.topCompetitors.provenance.keywords, "牛肉面、兰州拉面");
+});
+
+test("打开商户页后：菜单含牛肉面的普通面馆补进清单，刀削面馆剔除", () => {
+  const facts = {
+    topCompetitors: {
+      matchedCategoryKeyword: true,
+      value: [
+        { id: "1", name: "陈氏牛肉面", type: "餐饮服务;中餐厅" },
+        { id: "2", name: "酒仙桥刀削面馆", type: "餐饮服务;中餐厅" },
+      ],
+      coverage: {},
+    },
+    missingCriticalFacts: [],
+  };
+  applyPublicMenuEvidence(facts, [
+    {
+      title: "酒仙桥刀削面馆(酒仙桥店)_北京美食_大众点评",
+      url: "https://www.dianping.com/shop/dao",
+      snippet: "刀削面 烩面",
+      body: "主打刀削面、烩面，没有牛肉面。",
+    },
+    {
+      title: "老刘面馆(酒仙桥)_北京美食_大众点评",
+      url: "https://www.dianping.com/shop/liu",
+      snippet: "招牌牛肉面",
+      body: "菜单：清汤牛肉面 28元，牛肉拉面 26元。",
+    },
+    {
+      title: "张仲景牛肉面(酒仙桥店)_北京美食_大众点评",
+      url: "https://www.dianping.com/shop/zhang",
+      snippet: "牛肉面",
+      body: "兰州牛肉面、牛肉拉面。",
+    },
+  ], "牛肉面");
+  assert.deepEqual(facts.topCompetitors.value.map((item) => item.name), ["陈氏牛肉面", "老刘面馆", "张仲景牛肉面"]);
+  assert.equal(facts.topCompetitors.value.find((item) => item.name === "老刘面馆").categoryEvidence, "page_menu");
+  assert.ok(facts.topCompetitors.rejectedDifferentCategory.some((item) => item.name === "酒仙桥刀削面馆"));
+});
+
 test("高德日配额超限（10003）：amap.blocked=true，自动回落 OSM，不抛错", async () => {
   process.env.AMAP_WEB_KEY = TEST_KEY;
   const { calls, fetchImpl } = amapFixture({ geocodeStatus: "0", geocodeInfocode: "10003" });
@@ -353,7 +495,7 @@ test("高德日配额超限（10003）：amap.blocked=true，自动回落 OSM，
   assert.doesNotMatch(JSON.stringify(facts), new RegExp(TEST_KEY, "u"));
 });
 
-test("高德与 OSM 均不可用：ok=false，全部关键事实进入 missingCriticalFacts 并说明原因", async () => {
+test("高德与 OSM 均不可用：ok=false，用户所需关键事实进入 missingCriticalFacts 并说明原因", async () => {
   const facts = await resolveTradeAreaFacts({
     addressText: "太原吾悦广场",
     city: "太原",
@@ -366,7 +508,7 @@ test("高德与 OSM 均不可用：ok=false，全部关键事实进入 missingCr
   assert.equal(facts.provider, null);
   assert.equal(facts.center, null);
   const fields = facts.missingCriticalFacts.map((item) => item.field).sort();
-  assert.deepEqual(fields, ["center", "competitors", "facilities", "isochrones", "priceDistribution", "ratingDistribution", "topCompetitors"]);
+  assert.deepEqual(fields, ["center", "competitors", "facilities", "priceDistribution", "ratingDistribution", "topCompetitors"]);
   assert.ok(facts.missingCriticalFacts.every((item) => item.reason.length > 0));
   assert.ok(facts.attempts.some((item) => item.step === "osm_fallback" && item.ok === false));
 
@@ -389,7 +531,8 @@ test("“数据来源与时效”一节：按 provider 诚实措辞、未获取�
   assert.match(amapSection, /^## 数据来源与时效/mu);
   assert.match(amapSection, /高德地图 Web 服务 API（\/v3\/geocode\/geo）/u);
   assert.match(amapSection, /2026-09-03 02:00:00Z/u);
-  assert.match(amapSection, /人均消费分布 \| — \| — \| 未获取：高德未提供人均/u);
+  assert.match(amapSection, /人均消费分布 \| — \| — \| 待补采：高德未提供人均/u);
+  assert.match(amapSection, /补采方式见“待补数据与现场核实清单”/u);
   assert.match(amapSection, /由高德地图 Web 服务 API 实时抓取/u);
   assert.match(amapSection, /高德通道状态：已调用成功/u);
 
@@ -643,6 +786,172 @@ test("marshalWork：高德未配置时 101 仍产出 OSM 回落事实并如实�
   assert.doesNotMatch(other.generationCalls.at(-1).system, /商圈数据引用规则/u);
   assert.doesNotMatch(other.generationCalls.at(-1).userMsg, /数据来源与时效/u);
   assert.equal(other.output.employeeContract.tradeAreaProvenance, undefined);
+});
+
+test("烤鸭任务抽出同品类；周边没有烤鸭时改用关键字搜索补采，不把咖啡快餐交给老板", async () => {
+  assert.equal(
+    tradeAreaCategoryKeyword("北京大鸭梨烤鸭计划在北京市朝阳区酒仙桥看一个临街铺"),
+    "烤鸭",
+  );
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const base = amapFixture();
+  const textCalls = [];
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v3/place/around" && url.searchParams.get("keywords")) {
+      return jsonResponse({
+        status: "1",
+        infocode: "10000",
+        count: "2",
+        pois: [
+          restaurantPoi(1, { name: "星巴克(酒仙桥店)", type: "餐饮服务;咖啡厅" }),
+          restaurantPoi(2, { name: "麦当劳", type: "餐饮服务;快餐厅;快餐厅" }),
+        ],
+      });
+    }
+    if (url.pathname === "/v3/place/text") {
+      textCalls.push(url.searchParams.get("keywords"));
+      return jsonResponse({
+        status: "1",
+        infocode: "10000",
+        count: "2",
+        pois: [
+          restaurantPoi(301, { name: "大鸭梨烤鸭(酒仙桥店)", type: "餐饮服务;中餐厅;烤鸭" }),
+          restaurantPoi(302, { name: "四季民福烤鸭店", type: "餐饮服务;中餐厅;北京菜" }),
+        ],
+      });
+    }
+    return base.fetchImpl(input);
+  };
+  const facts = await resolveTradeAreaFacts({
+    addressText: "酒仙桥",
+    city: "北京",
+    categoryKeyword: "烤鸭",
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }),
+    now: NOW,
+  });
+  assert.ok(textCalls.some((item) => /烤鸭/.test(item || "")));
+  assert.equal(facts.topCompetitors.matchedCategoryKeyword, true);
+  assert.deepEqual(
+    facts.topCompetitors.value.map((poi) => poi.name),
+    ["大鸭梨烤鸭(酒仙桥店)", "四季民福烤鸭店"],
+  );
+  assert.ok(!facts.missingCriticalFacts.some((item) => item.field === "topCompetitors.sameCategory"));
+});
+
+test("高德关键字也没有烤鸭时，用公开地图店名补采，不把缺失表交给老板", async () => {
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const base = amapFixture();
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v3/place/around" && url.searchParams.get("keywords")) {
+      return jsonResponse({
+        status: "1",
+        infocode: "10000",
+        count: "1",
+        pois: [restaurantPoi(1, { name: "星巴克", type: "餐饮服务;咖啡厅" })],
+      });
+    }
+    return base.fetchImpl(input);
+  };
+  const facts = await resolveTradeAreaFacts({
+    addressText: "酒仙桥",
+    city: "北京",
+    categoryKeyword: "烤鸭",
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }),
+    now: NOW,
+    osmEvidence: {
+      ...osmEvidenceFixture(),
+      restaurants: [
+        { name: "大鸭梨烤鸭(酒仙桥)", distance: 120, cuisine: "beijing_duck", lat: 39.98, lon: 116.49 },
+        { name: "星巴克", distance: 80, cuisine: "coffee_shop", lat: 39.98, lon: 116.49 },
+      ],
+    },
+  });
+  assert.equal(facts.topCompetitors.matchedCategoryKeyword, true);
+  assert.deepEqual(facts.topCompetitors.value.map((poi) => poi.name), ["大鸭梨烤鸭(酒仙桥)"]);
+  assert.ok(!facts.missingCriticalFacts.some((item) => item.field === "topCompetitors.sameCategory"));
+});
+
+test("高德只定位到市级时不得把王府井竞品当成酒仙桥，改用公开地图坐标做周边检索", async () => {
+  assert.equal(
+    isCoarseAmapGeocode(
+      { level: "区县", city: "北京市", district: "朝阳区" },
+      "北京市朝阳区酒仙桥",
+      "北京",
+    ),
+    true,
+  );
+  assert.equal(
+    isCoarseAmapGeocode(
+      { level: "兴趣点", city: "北京市" },
+      "北京市朝阳区酒仙桥",
+      "北京",
+    ),
+    false,
+  );
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const aroundLocations = [];
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v3/geocode/geo") {
+      return jsonResponse({
+        status: "1",
+        infocode: "10000",
+        geocodes: [{
+          formatted_address: "北京市",
+          province: "北京市",
+          city: "北京市",
+          district: "",
+          adcode: "110000",
+          location: "116.407387,39.904179",
+          level: "市",
+        }],
+      });
+    }
+    if (url.pathname === "/v3/place/around") {
+      aroundLocations.push(`${url.searchParams.get("location")}|${url.searchParams.get("keywords") || ""}`);
+      if (url.searchParams.get("keywords")) {
+        return jsonResponse({
+          status: "1",
+          infocode: "10000",
+          count: "2",
+          pois: [
+            restaurantPoi(401, { name: "大鸭梨烤鸭(酒仙桥店)", type: "餐饮服务;中餐厅;烤鸭" }),
+            restaurantPoi(402, { name: "四季民福烤鸭店(将台路店)", type: "餐饮服务;中餐厅;北京菜" }),
+          ],
+        });
+      }
+      return jsonResponse({
+        status: "1",
+        infocode: "10000",
+        count: "1",
+        pois: [restaurantPoi(1, { name: "星巴克(酒仙桥店)", type: "餐饮服务;咖啡厅" })],
+      });
+    }
+    return jsonResponse({ status: "1", infocode: "10000", count: "0", pois: [] });
+  };
+  const facts = await resolveTradeAreaFacts({
+    addressText: "北京市朝阳区酒仙桥",
+    city: "北京",
+    categoryKeyword: "烤鸭",
+    radii: [1000],
+    amapClient: createAmapClient({ fetchImpl, cache: false, now: NOW }),
+    now: NOW,
+    osmEvidence: {
+      ...osmEvidenceFixture(),
+      center: { displayName: "酒仙桥", lat: 39.967992, lon: 116.483582 },
+    },
+  });
+  assert.ok(facts.attempts.some((item) => item.step === "amap_geocode" && item.ok === false));
+  assert.ok(facts.attempts.some((item) => item.step === "amap_geocode_osm_pin" && item.ok === true));
+  assert.equal(facts.center.value.level, "osm_pin");
+  assert.ok(aroundLocations.some((item) => item.startsWith("116.483582,39.967992")));
+  assert.ok(!aroundLocations.some((item) => item.startsWith("116.407387,39.904179")));
+  assert.deepEqual(
+    facts.topCompetitors.value.map((poi) => poi.name),
+    ["大鸭梨烤鸭(酒仙桥店)", "四季民福烤鸭店(将台路店)"],
+  );
 });
 
 after(async () => {

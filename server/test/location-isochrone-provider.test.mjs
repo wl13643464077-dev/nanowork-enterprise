@@ -264,7 +264,7 @@ test('requireIsochrones 缺任一交通模式时 collectLocationIntelligence 必
   }
 });
 
-test('marshalWork 强制要求四模式等时圈：摘要进prompt，polygon只留employee_web_snapshot证据', async () => {
+test('marshalWork 只问站点距离时不自动生成多方式等时圈', async () => {
   const profile = buildEmployeeExecutionProfile(102, {
     tenantId: 1,
     user: { id: 1, role: 'boss', tenant_id: 1 },
@@ -281,7 +281,9 @@ test('marshalWork 强制要求四模式等时圈：摘要进prompt，polygon只�
   const task = {
     title: '毛血旺 太原吾悦广场',
     type: '商圈画像',
-    requirement: '核验竞品、客群与四种交通方式时间等时圈，形成可执行结论。',
+    // 用户只问附近站点距离和步行分钟数，并没有授权生成多个交通方式、
+    // 多个时长的等时圈；这种任务应保留真实POI距离，而不是扩成12次路由。
+    requirement: '核验竞品、客群、地铁站距离与步行分钟数；只要求周边POI到中心距离，不要求多方式等时圈。',
   };
   const fixture = structuredClone(profile.outputContract.validFixture);
   fixture.decision_context.problem = `${task.title}：${fixture.decision_context.problem}`;
@@ -292,6 +294,7 @@ test('marshalWork 强制要求四模式等时圈：摘要进prompt，polygon只�
     item.evidence_refs = [fixture.decision_context.sources[0].source];
   const generated = [];
   let locationOptions = null;
+  let isochroneProviderCalls = 0;
 
   const output = await marshalWork(marshal, task, 'boss', {
     employeeExecution: profile,
@@ -340,7 +343,14 @@ test('marshalWork 强制要求四模式等时圈：摘要进prompt，polygon只�
         ...options,
         fetchImpl: mapFetchFixture(),
         timeoutMs: 100,
-        isochroneProvider: ({ modes, minutes }) => isochroneFixture({ modes, minutes }),
+        ...(options.requireIsochrones
+          ? {
+              isochroneProvider: ({ modes, minutes }) => {
+                isochroneProviderCalls += 1;
+                return isochroneFixture({ modes, minutes });
+              },
+            }
+          : {}),
       });
     },
     generateFn: async args => {
@@ -354,23 +364,23 @@ test('marshalWork 强制要求四模式等时圈：摘要进prompt，polygon只�
     },
   });
 
-  assert.equal(locationOptions.requireIsochrones, true);
+  assert.equal(locationOptions.requireIsochrones, false);
   assert.deepEqual(locationOptions.isochroneModes, [...MODES]);
   assert.deepEqual(locationOptions.isochroneMinutes, [...MINUTES]);
+  assert.equal(isochroneProviderCalls, 0);
   assert.equal(output.employeeContract.valid, true);
   assert.equal(generated.length, 1);
   const prompt = generated[0].userMsg;
-  for (const mode of MODES) assert.match(prompt, new RegExp(mode, 'u'));
-  for (const minutes of MINUTES) assert.match(prompt, new RegExp(`${minutes}分钟`, 'u'));
-  assert.match(prompt, /https:\/\/valhalla1\.openstreetmap\.de\/isochrone\/walking\/10/u);
+  assert.doesNotMatch(prompt, /Valhalla时间等时圈/u);
+  assert.doesNotMatch(prompt, /https:\/\/valhalla1\.openstreetmap\.de\/isochrone/u);
   assert.doesNotMatch(prompt, /"coordinates"/u, 'polygon坐标不能膨胀进模型正文');
   assert.doesNotMatch(prompt, /112\.549/u, 'polygon坐标不能膨胀进模型正文');
 
   const locationChannel = output.web.channels.find(channel => channel.kind === 'location_intelligence');
   assert.ok(locationChannel);
-  assert.equal(locationChannel.evidence.isochrones.length, MODES.length * MINUTES.length);
-  assert.ok(locationChannel.evidence.isochrones.every(zone => zone.polygon?.type === 'Polygon'));
-  assert.match(JSON.stringify(locationChannel.evidence), /"coordinates"/u);
+  assert.equal(locationChannel.evidence.isochroneRequired, false);
+  assert.equal(locationChannel.evidence.isochrones.length, 0);
+  assert.doesNotMatch(JSON.stringify(locationChannel.evidence), /"coordinates"/u);
 });
 
 after(() => {

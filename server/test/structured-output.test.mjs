@@ -8,6 +8,11 @@ import path from 'node:path';
 const DBP = path.join(os.tmpdir(), `shanmei-structured-${process.pid}.db`);
 for (const f of [DBP, `${DBP}-wal`, `${DBP}-shm`]) { try { fs.rmSync(f, { force: true }); } catch {} }
 process.env.NANOWORK_DB = DBP;
+// Standalone runs must not inherit the developer's real provider switch/key
+// from server/.env. The suite runner already applies the same isolation.
+process.env.NANOWORK_TEST_TEMPLATE_AI = '1';
+process.env.NANOWORK_AI_PROVIDER = '';
+process.env.AI360_API_KEY = '';
 process.env.YUNWU_API_KEY = '';
 process.env.ANTHROPIC_API_KEY = '';
 
@@ -140,6 +145,55 @@ test('generate：responseSchema 经云雾通道下发，正文即合法 JSON（�
     assert.equal(captured.response_format.json_schema.name, 'activity_plan');
     assert.equal(JSON.parse(out.text).theme, '品鉴会');
     assert.equal(out.finishReason, 'stop');
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env.YUNWU_API_KEY = '';
+  }
+});
+
+test('generate：受限 JSON Object mode 原样下发，普通请求保持无 response_format', async () => {
+  process.env.YUNWU_API_KEY = 'sk-test-json-object';
+  const realFetch = globalThis.fetch;
+  const captured = [];
+  globalThis.fetch = async (_url, opts) => {
+    captured.push(JSON.parse(opts.body));
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '{"briefs":[]}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 8, completion_tokens: 4 },
+      }),
+    };
+  };
+  const call = (extra = {}) => generate({
+    kind: 'test-json-object',
+    system: '输出 JSON 对象',
+    userMsg: '拆解任务',
+    fallback: () => '',
+    providerPolicy: 'yunwu_only',
+    ...extra,
+  });
+  try {
+    const jsonObject = await call({ responseFormat: { type: 'json_object' } });
+    assert.equal(jsonObject.mode, 'api');
+    assert.deepEqual(captured[0].response_format, { type: 'json_object' });
+
+    await call();
+    assert.equal(captured[1].response_format, undefined);
+
+    const callsBeforeInvalid = captured.length;
+    await assert.rejects(
+      call({ responseFormat: { type: 'json_schema' } }),
+      /仅支持/u,
+    );
+    await assert.rejects(
+      call({
+        responseSchema: ACTIVITY_PLAN_SCHEMA,
+        responseFormat: { type: 'json_object' },
+      }),
+      /不能同时使用/u,
+    );
+    assert.equal(captured.length, callsBeforeInvalid, '非法或冲突格式必须在外调前拒绝');
   } finally {
     globalThis.fetch = realFetch;
     process.env.YUNWU_API_KEY = '';

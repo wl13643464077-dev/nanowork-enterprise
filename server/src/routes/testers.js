@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import QRCode from 'qrcode';
 import { authMiddleware } from '../util.js';
-import { applyTester, updateTesterStatus, listTesters, testerMe, setTesterKey, clearTesterKey, setTesterProvider,
+import { applyTester, updateTesterStatus, updateTesterDepartment, listTesters, testerMe, setTesterKey, clearTesterKey, setTesterProvider,
   changeTesterPassword, createTesterInvitation, listTesterInvitations, pauseTesterInvitation,
-  publicTrial, applyTrial, trialSession, listTesterLeads, testerLeadDetail, updateLeadStatus,
+  publicTrial, applyTrial, trialSession, trialCampaignMaterialFile, listTesterLeads, testerLeadDetail, updateLeadStatus,
   ownConversations, testerChat, trialChat, recordTrialInterest } from '../engines/tester-trials.js';
 import { testerAnalytics } from '../engines/tester-analytics.js';
 
@@ -43,7 +43,7 @@ async function withQr(invitation) {
 function analyticsOptions(query) {
   const options = {};
   for (const [key, value] of Object.entries(query)) {
-    if (!['days', 'scope', 'ownerUserId'].includes(key) || typeof value !== 'string') {
+    if (!['days', 'scope', 'ownerUserId', 'department'].includes(key) || typeof value !== 'string') {
       throw Object.assign(new Error('客户看板查询参数无效'), { status: 400, code: 'INVALID_ANALYTICS_QUERY' });
     }
     options[key] = value;
@@ -70,6 +70,7 @@ export function createTesterRouter({ chatFn } = {}) {
   r.get('/leads/:id', endpoint((req, res) => res.json(testerLeadDetail(req.user, req.params.id))));
   r.patch('/leads/:id', endpoint((req, res) => res.json(updateLeadStatus(req.user, req.params.id, req.body?.status))));
   r.get('/admin/applications', endpoint((req, res) => res.json(listTesters(req.user))));
+  r.patch('/admin/applications/:id/department', endpoint((req, res) => res.json(updateTesterDepartment(req.user, req.params.id, req.body?.department))));
   r.get('/admin/analytics', endpoint((req, res) => res.json(testerAnalytics(req.user, analyticsOptions(req.query), true))));
   r.patch('/admin/applications/:id', endpoint((req, res) => res.json(updateTesterStatus(req.user, req.params.id, req.body?.status))));
   r.get('/admin/invitations', endpoint(async (req, res) => res.json(await Promise.all(listTesterInvitations(req.user, origin(req), true).map(withQr)))));
@@ -86,6 +87,14 @@ export function createPublicTrialRouter({ chatFn } = {}) {
   r.get('/:token', endpoint((req, res) => res.json(publicTrial(req.params.token))));
   r.post('/:token/apply', requestLimit(12, 3600000), endpoint((req, res) => res.status(201).json(applyTrial(req.params.token, req.body))));
   r.get('/:token/session', endpoint((req, res) => res.json(trialSession(req.params.token, accessToken(req)))));
+  r.get('/:token/conversations/:id/materials/:slot', endpoint(async (req, res) => {
+    const file = await trialCampaignMaterialFile(req.params.token, accessToken(req), req.params.id, req.params.slot);
+    res.setHeader('Content-Type', file.mimeType);
+    res.setHeader('Content-Length', file.bytes.length);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Disposition', `inline; filename="${file.fileName}"`);
+    res.end(file.bytes);
+  }));
   r.post('/:token/interest', endpoint((req, res) => res.json(recordTrialInterest(req.params.token, accessToken(req), req.body))));
   r.post('/:token/chat', endpoint(async (req, res) => res.json(await trialChat(req.params.token, accessToken(req), req.body,
     { ...(chatFn ? { chatFn } : {}), signal: req.requestSignal }))));

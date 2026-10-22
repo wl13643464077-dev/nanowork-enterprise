@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isTesterBusinessActor } from "./tester-access.js";
 
 export const CONTENT_PAID_MEDIA_AUTHORIZATION_SCHEMA =
   "nanowork.content-paid-media-authorization/3";
@@ -166,7 +167,7 @@ export function contentPaidMediaPricingSnapshot({
 function normalizedActor(actor) {
   const id = positiveInteger(actor?.id, "授权人id");
   const role = cleanText(actor?.role, 64);
-  if (!AUTHORIZER_ROLES.has(role)) {
+  if (!AUTHORIZER_ROLES.has(role) && !isTesterBusinessActor(actor)) {
     fail(
       "付费媒体provider只能由老板、管理员或平台超管授权",
       "CONTENT_PAID_MEDIA_AUTHORITY_REQUIRED",

@@ -449,13 +449,13 @@ export const FEATURE_GUIDES: FeatureGuide[] = [
   {
     id: 'system',
     path: '/system',
-    aliases: ['/data-intake'],
+    aliases: ['/data-intake', '/brand-kb'],
     title: '系统管理',
     shortTitle: '系统管理',
     summary: '查看本企业使用情况，管理数据、审批、知识、账号和经营配置。',
     category: '系统配置',
     module: 'system',
-    keywords: ['系统', '配置', '数据录入', '知识库', '审批', '提示词', '经营目标', '模型'],
+    keywords: ['系统', '配置', '数据录入', '知识库', '品牌知识包', '审批', '提示词', '经营目标', '模型'],
     whenToUse: ['首次配置企业工作环境时', '数据、审批或AI能力异常时', '维护门店知识时'],
     preparation: [
       '确认当前企业、岗位和可操作权限',
@@ -525,9 +525,10 @@ export const FEATURE_GUIDES: FeatureGuide[] = [
       kb: {
         roles: ['boss', 'ops_director', 'admin'],
         title: '系统管理 · 知识库',
-        summary: '上传企业可复用知识，设置分类、权限与启用状态，供数字员工有据可查。',
+        summary: '上传企业可复用知识，设置分类、权限与启用状态，供数字员工有据可查。没有现成资料时，可到品牌知识包入口输入品牌名自动采集。',
         steps: [
           '先搜索避免重复文档',
+          '没有资料时打开品牌知识包入口，输入品牌名采集近三个月公开信息',
           '上传文件并填写来源、分类与可见权限',
           '保存后确认解析与启用状态',
           '用目标数字员工抽查是否能正确引用',

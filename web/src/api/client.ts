@@ -38,6 +38,9 @@ function timeoutFor(url: string) {
   // 一句话找人链路是重推理调用：组队/拆解/汇总在供应商慢时可达 60-90 秒，
   // 60 秒默认超时会把还在生成的请求掐断（老板看到报错但后端其实在跑）。
   if (/\/employees\/(match-team|team-plan|team-summary)/.test(url)) return 150000;
+  // 报告多轮优化要重写整份报告：服务端供应商窗口 120s，前端预算再留余量。
+  if (/\/task-center\/restaurant\/\d+\/refine$/.test(url)) return 150000;
+  if (/\/brand-kb\/(collect|upgrade|recollect)/.test(url)) return 180000;
   return 60000;
 }
 

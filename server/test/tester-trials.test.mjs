@@ -44,7 +44,7 @@ function leadFor(owner) {
   api.updateLeadStatus(owner, applied.lead.id, 'approved');
   return { invitation, ...applied, phone: input.phone };
 }
-const message = requestId => ({ employeeId: 'content-3', message: '帮我的火锅店写一个种草标题。', requestId });
+const message = requestId => ({ employeeId: 'content-11', message: '帮我的火锅店写一个种草标题。', requestId });
 
 test('测试员申请独立空间，审核才能登录，禁止重复手机号及用户名，不创建企业共享席位', () => {
   const input = data(); const result = api.applyTester(input);
@@ -59,7 +59,7 @@ test('测试员申请独立空间，审核才能登录，禁止重复手机号�
   assert.throws(() => api.updateTesterStatus(user, user.id, 'approved'), error => error.status === 403);
   api.updateTesterStatus(admin, user.id, 'approved');
   assert.equal(api.testerMe(user).accountType, 'tester');
-  assert.equal(api.testerMe(user).activeProvider, 'openlux');
+  assert.equal(api.testerMe(user).activeProvider, '360');
   assert.equal(api.testerMe(user).employees.length, 73);
 });
 
@@ -70,7 +70,7 @@ test('个人Key加密，接口与DB不能泄露明文；不同账号ALS并发完
   assert.ok(!a.api_key_cipher.includes(keyA)); assert.ok(!JSON.stringify(api.testerMe(first)).includes(keyA));
   assert.ok(api.testerMe(first).keyMasked.includes('••••'));
   await Promise.all([first, second].map(async owner => {
-    const result = await api.testerChat(owner, message(`private-${owner.id}`), { chatFn: async () => {
+    const result = await api.testerChat(owner, { ...message(`private-${owner.id}`), employeeId: 'content-3' }, { chatFn: async () => {
       await new Promise(resolve => setTimeout(resolve, 3));
       assert.equal(providerContext().ownerUserId, owner.id);
       assert.equal(providerContext().apiKey, access.decryptTesterSecret(owner.id === first.id ? a.api_key_cipher : b.api_key_cipher));
@@ -216,7 +216,7 @@ test('已过租约的旧请求晚到只记录它的成本，不能覆盖或终�
   assert.ok(Math.abs(final.conversation.supplierCostCny - 0.1) < 1e-12);
 });
 
-test('HTTP权限闭环：tester登录态不能访问企业/子账号/API配置或冒充Super，自己的门户和客户token正常', async () => {
+test('HTTP权限闭环：tester可访问业务和附件守卫入口，不能管理子账号/API配置或冒充Super', async () => {
   const owner = tester(); const customer = leadFor(owner);
   const app = express(); app.use(express.json());
   app.use('/api/tester', createTesterRouter({ chatFn: async () => reply() }));
@@ -230,8 +230,11 @@ test('HTTP权限闭环：tester登录态不能访问企业/子账号/API配置�
   const token = signToken({ id: owner.id, auth_version: user.auth_version });
   const headers = { Authorization: `Bearer ${token}` };
   try {
-    for (const route of ['/api/admin/users', '/api/sys/config', '/api/employee-workbench', '/uploads/private.png', '/api/tester/admin/applications']) {
+    for (const route of ['/api/admin/users', '/api/sys/config', '/api/tester/admin/applications']) {
       const result = await fetch(`${base}${route}`, { headers }); assert.equal(result.status, 403, route);
+    }
+    for (const route of ['/api/employee-workbench', '/uploads/private.png']) {
+      const result = await fetch(`${base}${route}`, { headers }); assert.equal(result.status, 200, `${route}: auth permits business; mounted ownership guards remain required`);
     }
     const me = await fetch(`${base}/api/tester/me`, { headers }); assert.equal(me.status, 200); assert.equal((await me.json()).accountType, 'tester');
     const publicResult = await fetch(`${base}/api/trial/${customer.invitation.token}/chat`, {
@@ -246,7 +249,7 @@ test('体验正文里模型自行添加的口味、人群、价格、工艺、�
   const owner = tester(); const customer = leadFor(owner);
   const invented = '周末来店里聚一聚。鲜切牛肉入口即化，麻辣鲜香，秘制老汤慢炖8小时，人均58元，回头客都说必点，老少皆宜。';
   const result = await api.trialChat(customer.invitation.token, customer.accessToken,
-    { employeeId: 'content-3', message: '我们店只确认一道菜：鲜切牛肉，主题是周末聚餐。写一段文案。', requestId: 'fact-advice-001' },
+    { employeeId: 'content-11', message: '我们店只确认一道菜：鲜切牛肉，主题是周末聚餐。写一段文案。', requestId: 'fact-advice-001' },
     { chatFn: async () => reply({ text: invented }) });
   assert.equal(result.conversation.output, invented, '正文原样保存交付，不做改写');
   assert.equal(result.lead.usedTurns, 1, '有正文即计次，建议不影响计次');
@@ -259,7 +262,7 @@ test('体验正文里模型自行添加的口味、人群、价格、工艺、�
   assert.ok(advice.some(line => /价格\/折扣.*58元/u.test(line)));
   assert.ok(!advice.some(line => /鲜切/u.test(line)), '用户确认过的菜名不能被当作编造');
   const grounded = await api.trialChat(customer.invitation.token, customer.accessToken,
-    { employeeId: 'content-3', message: '第二段。', requestId: 'fact-advice-002' }, { chatFn: async () => reply() });
+    { employeeId: 'content-11', message: '第二段。', requestId: 'fact-advice-002' }, { chatFn: async () => reply() });
   assert.deepEqual(grounded.conversation.factAdvice, []);
   assert.deepEqual(api.testerLeadDetail(owner, customer.lead.id).conversations.map(item => item.factAdvice.length > 0), [true, false]);
 });

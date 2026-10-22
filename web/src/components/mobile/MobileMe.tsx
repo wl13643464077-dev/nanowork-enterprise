@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Avatar, Button, Empty, message } from 'antd';
-import { BellOutlined, DesktopOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { BellOutlined, DesktopOutlined, LogoutOutlined, QrcodeOutlined, UserOutlined } from '@ant-design/icons';
 import { api, clearAuth } from '../../api/client';
 import { REALTIME_EVENTS, useRealtimeEvent } from '../../hooks/useRealtimeEvents';
 import { mobilePath, toMobilePath } from './mobileRoutes';
@@ -37,18 +37,19 @@ function noticeTarget(notice: Notice) {
 }
 
 export default function MobileMe({ user, nav }: { user: any; nav: (path: string) => void }) {
+  const isTester = user.accountType === 'tester';
   const [bal, setBal] = useState<any>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
   const [noticesError, setNoticesError] = useState('');
   const [marking, setMarking] = useState(false);
 
   useEffect(() => {
-    if (user.role === 'boss')
+    if (!isTester && user.role === 'boss')
       api
         .get('/recharge/balance', { silent: true })
         .then(setBal)
         .catch(() => {});
-  }, [user.role]);
+  }, [isTester, user.role]);
 
   const loadNotices = useCallback(() => {
     api
@@ -93,11 +94,25 @@ export default function MobileMe({ user, nav }: { user: any; nav: (path: string)
         <div>
           <div className="m-profile-name">{user.name}</div>
           <div className="m-profile-role">
-            {user.tenant?.name} · {ROLE_LABEL[String(user.role || '')] || '员工'}
+            {user.tenant?.name} · {isTester ? '测试员 / 销售伙伴' : ROLE_LABEL[String(user.role || '')] || '员工'}
           </div>
         </div>
       </div>
-      {bal && (
+      {isTester && (
+        <section className="m-card m-stack" aria-label="测试员体验管理">
+          <div>
+            <div className="m-card-title">体验管理</div>
+            <div className="m-muted">填写个人 Key、设置客户体验次数、生成二维码、审核客户与查看使用看板。</div>
+          </div>
+          <Button block type="primary" icon={<QrcodeOutlined />} onClick={() => nav('/tester')}>
+            管理个人 Key 与客户体验
+          </Button>
+          <div className="m-muted">
+            本人及所邀请客户的 AI 调用由个人供应商账户付费，不重复扣企业算力。实际费用以供应商账单为准。
+          </div>
+        </section>
+      )}
+      {!isTester && user.role === 'boss' && bal && (
         <div className="m-card">
           <div className="m-card-title">企业积分</div>
           <div className="m-credits">
@@ -154,7 +169,7 @@ export default function MobileMe({ user, nav }: { user: any; nav: (path: string)
         )}
       </section>
       <Button block icon={<DesktopOutlined />} onClick={() => nav('/')}>
-        切换到电脑版（功能更全）
+        {isTester ? '打开完整产品工作台' : '切换到电脑版（功能更全）'}
       </Button>
       <Button
         block

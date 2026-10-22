@@ -53,7 +53,7 @@ test('连接测试只把360 Key发往360 models，绝不发送到旧数据库地
   const data = await res.json(); assert.equal(data.ok, true, JSON.stringify(data)); assert.equal(calls.length, 1);
 });
 
-test('360生成失败不请求Anthropic备用通道，联网Claude备用也关闭', async () => {
+test('360生成失败不请求外部Anthropic备用；联网Claude使用同一360 API独立就绪', async () => {
   const { generate, aiChannel } = await import('../src/engines/ai.js');
   const { agenticWebResearchReadiness } = await import('../src/engines/agentic-web-research.js');
   const calls = [];
@@ -64,7 +64,11 @@ test('360生成失败不请求Anthropic备用通道，联网Claude备用也关�
   const result = await generate({ kind: 'boundary', userMsg: '写一句话', fallback: () => '', model: 'deepseek/deepseek-v4-flash' });
   assert.equal(result.mode, 'template'); assert.equal(result.text, '');
   assert.equal(calls.length, 1); assert.equal(aiChannel(), '360');
-  assert.equal(agenticWebResearchReadiness().fallbackReady, false);
+  const readiness = agenticWebResearchReadiness();
+  assert.equal(readiness.fallbackReady, true);
+  assert.equal(readiness.transport, '360_search_api');
+  assert.match(readiness.provider, /360 Claude/);
+  assert.equal(readiness.model, 'anthropic/claude-sonnet-4-6');
 });
 
 test('360已扣款但正文为空时，编排层保留费用证据供全退用户后核算平台成本', async () => {

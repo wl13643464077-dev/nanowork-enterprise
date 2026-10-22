@@ -20,6 +20,7 @@ import { validateStoreFactClosure } from './content-output-contract.js';
 import { contentBenchmarkFewShotBlock } from './content-benchmark-cards.js';
 import { evolutionNotesPromptLines, sanitizeEvolutionNotesForPrompt } from './employee-evolution-prompt.js';
 import { resolveAiSalesVideoDuration } from './ai-sales-video-duration.js';
+import { commercialCompliancePromptLines, scanCommercialCompliance } from './content-commercial-compliance.js';
 
 export const AI_SALES_VIDEO_SCRIPT_SCHEMA_NAME = 'ai_sales_video_script';
 export const AI_SALES_VIDEO_SCRIPT_SHOT_COUNT = 2;
@@ -30,24 +31,20 @@ export const AI_SALES_VIDEO_CHARS_PER_SECOND_MAX = 4.5;
 export const AI_SALES_VIDEO_HOOK_MAX_CHARS = 14; // 3 秒 × 4.5 字/秒，向上取整
 export const AI_SALES_VIDEO_REFERENCE_HINTS = Object.freeze(['person', 'dish', 'storefront']);
 export const AI_SALES_VIDEO_SCRIPT_MAX_ATTEMPTS = 2;
-export const AI_SALES_NATIVE_NARRATION_STYLE = '一位成年女性用自然普通话说话，像与朋友聊天；情绪轻松亲切，温暖清楚的音色，正常说话音高，随句意有轻重、停顿和轻微换气，语速从容自然';
+export const AI_SALES_NATIVE_NARRATION_STYLE = '自然普通话女声，像轻松邀请朋友吃饭，音量适中，按句意停顿';
 export const AI_SALES_NATIVE_NARRATION_TIMING = 'native_pause_v1';
 
-// Wan2.6 generates speech when audio_url is omitted. Keep narration explicit;
-// the app adds subtitles after generation and records their estimated timing.
+// Keep visual motion and exact dialogue explicit. The model generates audio;
+// the app adds subtitles separately and records their estimated timing.
 export function wanNativeAudioPrompt(shot, { durationSeconds = 15, segmentDurationSeconds = 15, singleGeneration = false } = {}) {
   const multiple = resolveAiSalesVideoDuration(durationSeconds) === 30 && !singleGeneration;
   const segmentSeconds = singleGeneration ? resolveAiSalesVideoDuration(segmentDurationSeconds) : 15;
   return [
-    `【画面，不朗读】${String(shot?.visual || '').trim()}`,
-    '参考图确定主体、场景和品牌。保留标牌文字、菜品和光线，只做轻微运动或缓慢单向运镜；单镜头、首尾平稳，不改造门头。',
-    `本段${segmentSeconds}秒，由Wan原生生成普通话中文独白和视频。`,
-    `【声音设定，不朗读】${AI_SALES_NATIVE_NARRATION_STYLE}。`,
-    `开头留短暂环境音再自然起句，尽量在${segmentSeconds - 1}秒前说完整句，句间可停顿和换气；结尾保留环境音，不把一句话跨过片段边界。`,
-    `请完整说出以下中文内容：「${String(shot?.voiceover || '').trim()}」`,
-    `没有人物参考时使用画外音，不增加人物。${multiple ? '两段使用相同声音设定。' : ''}只说给定台词，不朗读画面或制作指令。`,
-    '人声近而清楚，保留轻微现场环境音；无广告配乐、无混响，不唱歌、不喊口号，不生成画面字幕或额外促销文字。',
-    `说完后自然停留，不为填满${segmentSeconds}秒重复或新增台词。`,
+    `本段${segmentSeconds}秒，生成单镜头。${String(shot?.visual || '').trim()}`,
+    '沿用参考照片中的主体、陈设和光线，不添加其他物体或画面文字。',
+    `${AI_SALES_NATIVE_NARRATION_STYLE}。${shot?.reference_hint === 'person' ? '由参考人物说话。' : '使用画外音。'}${multiple ? '两段保持同一人声。' : ''}`,
+    `请完整说出：「${String(shot?.voiceover || '').trim()}」`,
+    '只说给定台词，说完保留轻微环境音。无背景音乐，无画面字幕。',
   ]
     .join('\n');
 }
@@ -63,7 +60,7 @@ const CJK_OR_ALNUM_RE = /[\p{Script=Han}\p{L}\p{N}]/u;
 export class AiSalesVideoScriptError extends Error {
   constructor(
     message,
-    { code = 'AI_SALES_VIDEO_SCRIPT_BLOCKED', status = 409, errors = [], attempts = [], usage = null } = {},
+    { code = 'AI_SALES_VIDEO_SCRIPT_BLOCKED', status = 409, errors = [], attempts = [], usage = null, lastOutput = '' } = {},
   ) {
     super(message);
     this.name = 'AiSalesVideoScriptError';
@@ -73,6 +70,8 @@ export class AiSalesVideoScriptError extends Error {
     this.errors = errors;
     this.attempts = attempts;
     this.usage = usage;
+    // Model text only (never provider errors), kept so a blocked script can be reviewed.
+    this.lastOutput = String(lastOutput || '').slice(0, 1200);
   }
 }
 
@@ -169,7 +168,7 @@ export function aiSalesVideoScriptResponseSchema({ durationSeconds = 15 } = {}) 
       required: ['hook_3s', 'shots', 'cta', 'facts_used', 'total_chars', 'estimated_seconds', 'risk_flags'],
       properties: {
         hook_3s: stringField({
-          description: '前 3 秒钩子，≤14 个汉字，必须是第 1 段口播的开头。',
+          description: '口播自然开场的首句或前缀，建议≤14字，必须是第1段口播开头，不必提问或制造悬念。',
         }),
         shots: {
           type: 'array',
@@ -221,6 +220,29 @@ export function aiSalesVideoScriptResponseSchema({ durationSeconds = 15 } = {}) 
   };
 }
 
+// The conversational envelope must also be structured. Enforcing only the
+// inner script leaves quotes in reply free to invalidate an otherwise paid
+// response, preventing the confirmation step from ever seeing that script.
+export function aiSalesVideoChatResponseSchema({ durationSeconds = 15 } = {}) {
+  const scriptSchema = aiSalesVideoScriptResponseSchema({ durationSeconds }).schema;
+  return {
+    name: 'ai_sales_video_chat',
+    schema: {
+      type: 'object', additionalProperties: false,
+      required: ['reply', 'ready', 'brandName', 'brief', 'summary', 'script', 'output'],
+      properties: {
+        reply: { type: 'string', description: '给老板的自然回复；引号必须按JSON转义。完整口播写在script中，不在此嵌套原始JSON。' },
+        ready: { type: 'boolean' },
+        brandName: { type: 'string' },
+        brief: { type: 'string' },
+        summary: { type: 'string' },
+        script: { anyOf: [scriptSchema, { type: 'null' }] },
+        output: { type: 'null' },
+      },
+    },
+  };
+}
+
 /**
  * 纯函数契约校验。返回 { ok, errors, script }，script 为规范化副本（不改写口播正文）。
  * @param {object} raw 模型输出（已解析为对象）
@@ -241,11 +263,26 @@ export function validateAiSalesVideoScript(
 ) {
   const errors = [];
   const warnings = [];
+  const normalizations = [];
   if (shotSeconds !== 15 || shotCount !== resolveAiSalesVideoDuration(durationSeconds) / 15)
     return { ok: false, errors: ['脚本分段与所选15或30秒时长不一致'], warnings, script: null };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, errors: ['脚本必须是 JSON 对象'], script: null };
   }
+  // Strip only exact internal field annotations, never real parenthetical
+  // narration such as “（微辣）”. Keep a copy and an audit trail; paid raw text
+  // remains unchanged in the chat message. All factual/contract checks follow.
+  const spokenText = (value, field) => {
+    if (typeof value !== 'string') return value;
+    return value.replace(/\(\s*(?:brandName|storeName)\s*\)|（\s*(?:brandName|storeName)\s*）/gu, removed => {
+      normalizations.push({ field, removed, rule: 'internal_field_annotation' });
+      return '';
+    });
+  };
+  raw = { ...raw, hook_3s: spokenText(raw.hook_3s, 'hook_3s'), cta: spokenText(raw.cta, 'cta'),
+    ...(Array.isArray(raw.shots) ? { shots: raw.shots.map((shot, index) => shot && typeof shot === 'object' && !Array.isArray(shot)
+      ? { ...shot, voiceover: spokenText(shot.voiceover, `shots[${index}].voiceover`), subtitle: spokenText(shot.subtitle, `shots[${index}].subtitle`) } : shot) } : {}) };
+  if (normalizations.length) warnings.push('已去掉口播中的内部字段注记，实际台词保留；原始回复仍可在历史记录中查看。');
   const requireFields = (obj, keys, label) => {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
       errors.push(`${label}必须是对象`);
@@ -303,7 +340,11 @@ export function validateAiSalesVideoScript(
     }
     const voiceover = text(shot?.voiceover, 400);
     const subtitleText = String(shot?.subtitle || '').replace(/[|｜\s]/gu, '');
-    if (subtitleText !== voiceover.replace(/\s/gu, '')) errors.push(`第${offset + 1}段字幕必须与口播一致`);
+    // The burned-in caption is derived from the narration. A model that
+    // paraphrases the subtitle has not broken any fact rule, so use the
+    // narration verbatim instead of failing the run (deliver first).
+    const subtitleMatches = subtitleText === voiceover.replace(/\s/gu, '');
+    if (!subtitleMatches && subtitleText) warnings.push(`第${offset + 1}段字幕与口播不一致，已按口播原文生成字幕。`);
     if (/<#|\([^)]*\)|\{[^}]*\}/u.test(voiceover)) errors.push(`第${offset + 1}段口播不得包含TTS控制标记`);
     const chars = countSpeechChars(voiceover);
     const seconds = Number.isFinite(end - start) && end > start ? end - start : shotSeconds;
@@ -332,7 +373,7 @@ export function validateAiSalesVideoScript(
       end: expectedEnd,
       visual,
       voiceover,
-      subtitle: text(shot?.subtitle, 400) || voiceover,
+      subtitle: subtitleMatches && text(shot?.subtitle, 400) ? text(shot?.subtitle, 400) : voiceover,
       sfx: text(shot?.sfx, 120) || '无',
       reference_hint: referenceHint,
       chars,
@@ -387,6 +428,14 @@ export function validateAiSalesVideoScript(
       errors.push(`口播命中风控禁用词：${hits.map(hit => hit.name || hit.code).join('、')}`);
     }
   }
+  // 平台商业合规（2026 抖音/小红书口径）：极限词、功效词、站外导流是硬红线，
+  // 直接进入修复重试；诱导互动、虚假紧迫、虚假背书作为提醒交给老板复核。
+  const compliance = scanCommercialCompliance(`${hook}\n${allText}\n${cta}`, { platform: 'douyin' });
+  for (const hit of compliance.hits) {
+    const line = `${hit.label}：“${hit.words.slice(0, 6).join('”“')}”。${hit.suggestion}`;
+    if (hit.severity === 'block') errors.push(`口播/字幕含平台红线表述，${line}`);
+    else warnings.push(`发布前建议调整，${line}`);
+  }
 
   // References are metadata, not evidence. Drop unknown IDs rather than paying
   // for a rewrite; actual narration still passes price/address/risk closure.
@@ -403,7 +452,24 @@ export function validateAiSalesVideoScript(
       const name = normalizeForCompare(fact.value || fact.claim);
       if (name.length >= 2 && bodyNormalized.includes(name)) registered.push({ claim: fact.claim, factId: fact.id });
     }
-    raw = { ...raw, facts_used: registered };
+    // The fact ID is the evidence; the claim text must be the pack's own
+    // wording. Paraphrased claims are replaced by the registered statement
+    // (with a warning) instead of rejecting an otherwise grounded script.
+    const canonical = registered.filter(entry => {
+      // A registration the narration never uses is padding, not a fabrication:
+      // drop it (with a warning) instead of rejecting an otherwise grounded script.
+      const fact = facts.find(item => item.id === entry.factId);
+      const mention = normalizeForCompare(fact?.value || quotedName(fact) || fact?.claim || '');
+      if (!fact || mention.length < 2 || bodyNormalized.includes(mention)) return true;
+      warnings.push(`已移除口播未引用的事实登记 [${entry.factId}]。`);
+      return false;
+    }).map(entry => {
+      const fact = facts.find(item => item.id === entry.factId);
+      if (!fact || entry.claim === fact.claim) return entry;
+      warnings.push(`事实[${entry.factId}]的引用说明已按本店事实包原文登记。`);
+      return { ...entry, claim: fact.claim };
+    });
+    raw = { ...raw, facts_used: canonical };
   }
   const registration = validateFactsUsed(raw.facts_used ?? [], pack || { facts: [] });
   errors.push(...registration.errors);
@@ -464,12 +530,35 @@ export function validateAiSalesVideoScript(
     ok: uniqueErrors.length === 0,
     errors: uniqueErrors,
     warnings: [...new Set(warnings)],
+    normalizations,
     script,
   };
 }
 
 function benchmarkBlock(cards) {
   return contentBenchmarkFewShotBlock(cards, { limit: 3 });
+}
+
+// 带货结构：按抖音本地生活“钩子→可信→卖点→顾虑消除→行动”的实战节奏排布，
+// 但每一步只能用已确认事实填充；15 秒一段浓缩，30 秒两段分工。
+export function aiSalesVideoCommercialStructureLines({ shotCount = 1 } = {}) {
+  const lines = [
+    '【带货结构·本地生活实战节奏，只用已确认事实填充】',
+    '- 0–3 秒钩子（hook_3s）三选一：①价格反差（只用事实包里的价格）②可见的食欲细节（照片里确定的热气/色泽/份量）③人群或场景痛点（“下班不知道吃什么”“带娃出门怕等位”）。不用提问式套话开场。',
+    '- 卖点：从事实包与照片里挑 1–2 个最能让人到店的具体点（招牌菜名、人均、位置、营业时间），一句一个，说清“对食客有什么好”；不罗列形容词。',
+    '- 顾虑消除：只在事实包有依据时说一句（位置好找/营业到几点/人均多少）；没有依据就不说，不编“不用等位”“停车方便”。',
+    `- 行动邀请（cta）：${shotCount === 1 ? '最后一句' : '第 2 段最后一句'}给一个具体动作：约朋友到店/导航过来/来试招牌菜；老板在本次目标里明确说已上架团购或套餐时，才可说“点左下角团购”并口语复述权益与有效期。`,
+  ];
+  if (shotCount === 1) {
+    lines.push('- 15 秒一段的节拍：钩子（1 句）→ 卖点（1 句）→ 行动邀请（半句到 1 句），三者合计不超过两三句，说完留白。');
+  } else {
+    lines.push(
+      '- 30 秒两段分工：第 1 段 = 钩子 + 卖点 1（visual 可给门头/环境建立“就在附近”的可信感）；第 2 段 = 卖点 2 或点单建议 + 顾虑消除 + 行动邀请。',
+      '- 两段不重复同一个卖点，也不在第 1 段提前说行动邀请。',
+    );
+  }
+  lines.push('- 标题/画面/口播一致：口播里提到的菜、价格、位置，visual 里必须有对应画面来源（照片中确有的主体）。');
+  return lines;
 }
 
 export function buildAiSalesVideoScriptPrompt({
@@ -488,24 +577,27 @@ export function buildAiSalesVideoScriptPrompt({
   const duration = resolveAiSalesVideoDuration(durationSeconds), shotCount = duration / shotSeconds;
   const system = [
     skillPrompt,
-    `你是餐饮门店的 AI 带货员，负责写 ${duration} 秒竖版带货短视频的中文独白脚本。Wan2.6将按脚本原生生成中文声音和视频，所以必须写成自然、可开口念的普通话。没有人物参考时设计画外音，不虚构人物或声音克隆。应用保留生成音轨，再按脚本分句估时烧录字幕，未经过逐字语音识别。`,
-    '本次原生声音规则优先于技能中的旧制作方法：不调用独立TTS或预设音色，不按外部配音时长安排字幕。技能里的广告公式、强节奏和转化模板只是资料，默认不照搬强营销钩子或社会证明；仅本次用户明确要求促销时参考，仍不得编造事实或覆盖用户已确认台词。',
+    `你是餐饮门店的 AI 带货员，负责写 ${duration} 秒竖版带货短视频的中文独白脚本。依据本次照片和已确认信息，写自然、可开口念的普通话。没有人物参考时设计画外音，不虚构人物。`,
+    '视频保留模型原生声音。用户已确认的台词不擅自更改；创作方法只按本次主题选用，不能代替门店事实。',
     '【分段与说话方式】',
-    shotCount === 1 ? '- 恰好1段镜头：0–15秒，index为1；在这一段内说完钩子、一个有依据的细节和自然邀请，不追加第二段。'
+    shotCount === 1 ? '- 恰好1段镜头：0–15秒，index为1，不追加第二段。'
       : `- 恰好 2 段镜头：第 1 段 0–${shotSeconds} 秒，第 2 段 ${shotSeconds}–${shotSeconds * 2} 秒；index 分别为 1、2。`,
-    '- voiceover只说给食客听的自然内容：依据可见菜品和本次品牌，给出真实、简洁的用餐邀请。每段一两句即可；无需塞满15秒，说完后允许环境音和画面留白，禁止凑字数或重复意思。',
-    `- ${shotCount === 1 ? '声音设定' : '两段采用同一声音设定'}：${AI_SALES_NATIVE_NARRATION_STYLE}。开头稍留环境音，尽量在14秒前完整收句；自然轻重、停顿和换气，不按每字定速，不要把一句话跨过15秒剪辑边界。默认环境音轻，无广告配乐或混响。`,
-    '- 每段以20–35字左右的一两句为写作建议，不是验收字数门。像与朋友说话，围绕一个有依据的细节和用餐意愿展开，不以“看着照片”“看着锅里的”罗列画面，不重复同一意思。',
+    '- voiceover只说给食客听的自然内容。每段写两句，合计约20–35字；全片品牌邀约只说一次，其余内容围绕一个已确认的菜品细节。无需塞满15秒，说完后允许环境音和画面留白，不凑字数。',
+    `- ${shotCount === 1 ? '声音设定' : '两段采用同一声音设定'}：${AI_SALES_NATIVE_NARRATION_STYLE}。按句意停顿，不按每字定速；${shotCount === 1 ? '说完保留轻微环境音' : '不要把一句话跨过15秒剪辑边界'}，无背景音乐。`,
     '- 拍摄、运镜、制作动作只写visual，绝不能写进voiceover或subtitle。门头文字保持、参考图一致等要求是制作约束，不是卖点；“门头字样还在”“画面保持清楚”这类制作结果描述也不能当台词。',
-    `- visual每段只设计参考图内的一种轻微动作或单向缓慢运镜，首尾0.3秒保持平稳；${shotCount === 1 ? '全段' : '两段'}保持同一光线色调和叙事口吻。不要设计从菜桌穿越到门口，也不要凭文字重造真实门头。`,
-    `- hook_3s 是前 3 秒钩子（≤${AI_SALES_VIDEO_HOOK_MAX_CHARS} 字），必须原样作为第 1 段口播的开头。`,
-    `- ${shotCount === 1 ? '本段结尾接住用餐意愿' : '第 2 段接住前段用餐意愿'}，品牌自然带入邀请，cta原句出现在口播里。表达示例：“下班路过，来【本次品牌】坐坐。”只学习说话方式，不照抄模板，品牌取本次输入；不固定以“欢迎到店”结尾。不逐项念门头画面，不硬补无依据的新卖点。没有已证实的优惠或渠道，不写“到店说某某”、报暗号、扫码或外卖搜索指令。`,
+    `- visual每段固定一个视角，只选一次小幅推进，或固定镜头下图内主体的细微动态；主体和周围陈设保持稳定，${shotCount === 1 ? '全段' : '两段'}保持同一光线色调。不增加照片中没有的场景。`,
+    `- hook_3s沿用字段名，内容是口播的自然开场首句或前缀（建议≤${AI_SALES_VIDEO_HOOK_MAX_CHARS}字），不必写成提问或悬念；必须原样作为第1段口播开头。`,
+    '- cta原样摘取末段口播的收尾句，不另写一份台词，不固定以“欢迎到店”结尾。没有已证实的优惠或渠道，不写报暗号、扫码或外卖搜索指令。',
     '- 每段口播以完整句收尾（。！？），按句意自然停顿，不逐句数汉字。使用日常口语，不堆成语，不用“匠心”“臻选”类广告腔。',
     '- reference_hint 标注该段首帧用什么素材：person（人物出镜）/ dish（菜品）/ storefront（门头）。',
+    ...aiSalesVideoCommercialStructureLines({ shotCount }),
     '【事实边界】',
     '- 本次用户明确的品牌与素材范围优先；事实包中其他门店的品牌、菜名、地址、价格不得移用，也不为了登记facts_used强行引用不相关资料。',
+    '- 只使用本次品牌、菜名与已确认信息。不得自行添加营业中、营业时间、受欢迎、销量、食材新鲜或味道好等未经确认的陈述；照片不能证明这些事实。不要把字段名brandName或括号占位符念入口播。',
+    '- 静态照片不能证明上菜、烹饪或顾客聚餐的过程；未由用户明确提供的这些行为和顾客经历，不得写成已经发生的事实。涉及用餐场景时可使用未来邀约语气。',
     '- 价格、地址、菜名、营业时间只能引用【门店真实事实】里的条目，并在 facts_used 中逐条登记 { claim, factId }；事实包没有的数字不许出现，可以说“以门店公示为准”。',
     '- 不得写评价原句、不得承诺效果/收益、不得出现“最”“第一”“治疗”类绝对化或功效词；写完自查，risk_flags 必须为空数组。',
+    ...commercialCompliancePromptLines({ platform: 'douyin' }),
     `【输出】只输出一个合法 JSON 对象，字段：hook_3s、shots[${shotCount}]{index,start,end,visual,voiceover,subtitle,sfx,reference_hint}、cta、facts_used、total_chars、estimated_seconds、risk_flags。`,
   ].join('\n');
   const user = [
@@ -517,7 +609,7 @@ export function buildAiSalesVideoScriptPrompt({
     promptContext ? text(promptContext, 3200) : '',
     benchmarkBlock(benchmarkCards),
     evolutionNotesPromptLines(sanitizeEvolutionNotesForPrompt(evolutionNotes)).join('\n'),
-    '【口播复核】把voiceover单独读一遍：每句都应让食客知道吃什么、为什么想来，或如何自然受邀；只是在描述制作是否完成的句子删去。拍摄指令留在visual，以自然、真实为先，不为了时长和字数填充；台词说完可留环境音。',
+    '【口播复核】把voiceover单独读一遍，删去重复意思和只描述制作是否完成的句子；拍摄指令留在visual。',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -605,6 +697,7 @@ export async function generateAiSalesVideoScript({
   let usage = { inputTokens: 0, outputTokens: 0 };
   let usedModel = model || null;
   let userMsg = prompt.user;
+  let lastOutput = '';
   const attemptLimit = Math.min(AI_SALES_VIDEO_SCRIPT_MAX_ATTEMPTS, Math.max(1, Math.trunc(Number(maxAttempts) || 2)));
   for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
     const output = await generateFn({
@@ -636,6 +729,7 @@ export async function generateAiSalesVideoScript({
         usage,
       });
     }
+    lastOutput = String(output.text || '');
     const { parsed, error } = parseJsonObject(output.text);
     const validation = parsed
       ? validateAiSalesVideoScript(parsed, { pack: storeFacts, scanText, durationSeconds })
@@ -675,6 +769,7 @@ export async function generateAiSalesVideoScript({
     errors: last?.errors || [],
     attempts,
     usage,
+    lastOutput,
   });
 }
 

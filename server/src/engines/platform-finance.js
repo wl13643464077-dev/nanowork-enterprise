@@ -32,6 +32,7 @@ export function platformFinancialLedger({ where = 'WHERE l.tenant_id > 0', param
     let price;
     try { price=JSON.parse(raw || '{}'); } catch { price={}; }
     const frozen = price.version === 1 && typeof price.creditYuan === 'number' && Number.isFinite(price.creditYuan) && price.creditYuan > 0;
+    const personal = price.billingMode === 'personal';
     const unit = frozen ? price.creditYuan : fallbackUnit;
     const credit = Number(row.credits) || 0;
     const refund = row.kind === 'refund' && row.ai_mode === 'refund' && credit < 0;
@@ -54,7 +55,8 @@ export function platformFinancialLedger({ where = 'WHERE l.tenant_id > 0', param
       net_consumed_credits:net,held_credits:held ? Math.max(0,credit) : 0,refunded_credits:refund ? -credit : 0,
       spend_yuan:refund || consumption ? round(net*unit) : null,
       credit_yuan:refund || consumption ? unit : null,price_source:refund || consumption ? frozen ? 'snapshot' : 'legacy_estimate' : null,
-      supplier_cost_status:status,supplier_cost_yuan:['known','estimated','not_incurred'].includes(status) ? cost : null};
+      supplier_cost_status:status,supplier_cost_yuan:['known','estimated','not_incurred'].includes(status) ? cost : null,
+      billing_mode: personal ? 'personal' : 'platform', cost_payer: personal ? 'tester' : 'platform'};
   });
 }
 
@@ -62,6 +64,8 @@ export function summarizePlatformFinance(rows) {
   const totals={spent:0,heldCredits:0,refundedCredits:0,consumedYuan:0,estimatedConsumedYuan:0,
     knownCostYuan:0,estimatedCostYuan:0,pendingCostCount:0,estimatedPriceCount:0,calls:0};
   for (const row of rows) {
+    // BYOK supplier costs belong to the tester's own account, never platform COGS.
+    if (row.billing_mode === 'personal') continue;
     totals.spent+=row.net_consumed_credits;
     totals.heldCredits+=row.held_credits;
     totals.refundedCredits+=row.refunded_credits;

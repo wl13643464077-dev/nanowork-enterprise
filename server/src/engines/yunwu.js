@@ -5,8 +5,10 @@ import { getConfig, q, curTenant } from "../db.js";
 import { parseProviderMediaUrl } from './provider-media-download.js';
 import { readOpenLuxCost } from './provider-cost-receipts.js';
 import { read360Cost, is360Base } from './provider-360-cost.js';
+import { imageHttpDispatcher } from './image-http-dispatcher.js';
 import { providerContext } from './tester-provider-context.js';
-import { selectedProviderId, selectedProviderCredentials, withPlatformProvider, withTaskProvider, providerForModel } from './ai-provider-selection.js';
+import { selectedProviderId, selectedProviderCredentials, withPlatformProvider, withTaskProvider, withTaskProviderCost, providerForModel } from './ai-provider-selection.js';
+import { testerExecutionIdentity } from './tester-access.js';
 import {
   PROVIDER_360_IMAGE_MODEL, PROVIDER_360_VIDEO_MODEL,
   PROVIDER_360_TEXT_MODEL, PROVIDER_360_BOSS_MODEL, PROVIDER_360_VISION_MODEL,
@@ -44,7 +46,13 @@ if (process.env.NANOWORK_TEST_TEMPLATE_AI !== "1" && fs.existsSync(envPath)) {
 export const provider360Active = () => selectedProviderId() === '360';
 const KEY = () => selectedProviderCredentials().apiKey;
 const BASE = () => selectedProviderCredentials().baseUrl;
-export const yunwuAvailable = () => !!KEY();
+export const yunwuAvailable = () => {
+  try { return !!KEY(); }
+  catch (error) {
+    if (['PERSONAL_KEY_REQUIRED', 'PERSONAL_KEY_UNREADABLE', 'TESTER_INACTIVE'].includes(error?.code)) return false;
+    throw error;
+  }
+};
 export const maskedKey = () => {
   const k = KEY();
   return k ? `${k.slice(0, 8)}****${k.slice(-4)}` : "（未配置）";
@@ -59,7 +67,7 @@ export const supplierRequestCost = ({ requestId, model, response, providerId, pr
         ...(providerContext() ? { settings: { enabled: true, ready: true, basis: 'upstream_debit' } } : {}) });
   if (providerId === 'yunwu' && selectedProviderId() === 'yunwu') return read();
   return providerId || provider || providerForModel(model)
-    ? withTaskProvider({ providerId, provider, model }, read)
+    ? withTaskProviderCost({ providerId, provider, model }, read)
     : Promise.resolve({ status: 'pending', requestId: requestId || null, model, reason: 'unknown_provider' });
 };
 const currentRequestCost = args => supplierRequestCost({ ...args, providerId: selectedProviderId() });
@@ -79,7 +87,7 @@ export const responseRequestId = res => {
 // H3 直连 MiniMax 官方，不复用 YUNWU/OpenLux 的 key 或 base URL。
 // 这两个凭证函数只在服务端内部传递；对路由仅导出不含密钥的可用性摘要。
 const miniMaxH3EnvironmentKey = () =>
-  String(process.env.MINIMAX_API_KEY || "").trim();
+  providerContext()?.billingMode === 'personal' ? '' : String(process.env.MINIMAX_API_KEY || "").trim();
 const miniMaxH3EnvironmentBase = () =>
   String(process.env.MINIMAX_BASE_URL || "").trim();
 const MINIMAX_H3_BASE = () =>
@@ -881,6 +889,7 @@ function timedSignal(timeoutMs, externalSignal) {
 }
 
 function normalizeFetchError(error, timedOut, externalSignal) {
+  if (['PERSONAL_KEY_REQUIRED', 'PERSONAL_KEY_UNREADABLE', 'TESTER_INACTIVE', 'TESTER_OWNER_MISMATCH'].includes(error?.code)) return error;
   if (error?.name !== "AbortError") {
     const normalized = sanitizeProviderError(error, { service: provider360Active() ? '360 AI服务' : "云雾AI服务" });
     // Only normalized billing receipts cross this boundary; never retain the
@@ -917,8 +926,19 @@ async function post(
       },
       body: JSON.stringify(body),
       signal: timed.signal,
+      ...(pathName.startsWith('/images/') ? { dispatcher: imageHttpDispatcher(timeoutMs) } : {}),
     });
     const data = await res.json().catch(() => ({}));
+    const personal = providerContext();
+    if (personal?.testerManaged) {
+      try { testerExecutionIdentity({ userId: personal.ownerUserId, tenantId: personal.tenantId }); }
+      catch (error) {
+        const receipt = await currentRequestCost({ requestId: responseRequestId(res) || data.id, model: body.model, response: data });
+        if (receipt) error.supplierCosts = [receipt];
+        error.providerUsage = rawChatUsage(data.usage);
+        throw error;
+      }
+    }
     if (!res.ok || data?.error) {
       const error = providerResponseError(res.ok ? 502 : res.status, data, { service: provider360Active() ? '360 AI服务' : "云雾AI服务" });
       if (selectedProviderId() !== 'yunwu') {
@@ -1211,7 +1231,19 @@ export async function chatStream({
       text = "",
       u = null,
       finishReason = null;
-    let providerId = null, returnedModel = null;
+    let providerId = null, returnedModel = null, revokedError = null;
+    const personalStream = providerContext();
+    // 测试员被停用要能中断正在进行的流，但不必每个 token 都查 3 条 SQL：
+    // 每 2 秒复核一次即可，流结束后还有一次权威复核兜底。
+    let lastTesterIdentityCheckAt = 0;
+    const emitDelta = delta => {
+      if (personalStream?.testerManaged && Date.now() - lastTesterIdentityCheckAt >= 2000) {
+        lastTesterIdentityCheckAt = Date.now();
+        try { testerExecutionIdentity({ userId: personalStream.ownerUserId, tenantId: personalStream.tenantId }); }
+        catch (error) { revokedError ||= error; }
+      }
+      if (!revokedError) onDelta?.(delta);
+    };
     const consumeLine = (rawLine) => {
       const line = rawLine.trim();
       if (!line.startsWith("data:")) return;
@@ -1230,7 +1262,7 @@ export async function chatStream({
       const delta = json.choices?.[0]?.delta?.content || "";
       if (delta) {
         text += delta;
-        onDelta?.(delta);
+        emitDelta(delta);
       }
       const streamedFinishReason = safeFinishReason(
         json.choices?.[0]?.finish_reason,
@@ -1275,7 +1307,7 @@ export async function chatStream({
         const content = String(whole?.choices?.[0]?.message?.content || "");
         if (content) {
           text = content;
-          onDelta?.(content);
+          emitDelta(content);
           const wholeFinish = safeFinishReason(whole?.choices?.[0]?.finish_reason);
           if (wholeFinish) finishReason = wholeFinish;
           if (whole?.usage) u = whole.usage;
@@ -1286,6 +1318,15 @@ export async function chatStream({
     }
     const supplierCost = await currentRequestCost({ requestId: responseRequestId(res) || providerId, model: m,
       response: { id: providerId, model: returnedModel || m, usage: u } });
+    if (personalStream?.testerManaged) {
+      try { testerExecutionIdentity({ userId: personalStream.ownerUserId, tenantId: personalStream.tenantId }); }
+      catch (error) { revokedError ||= error; }
+    }
+    if (revokedError) {
+      if (supplierCost) revokedError.supplierCosts = [supplierCost];
+      revokedError.providerUsage = rawChatUsage(u);
+      throw revokedError;
+    }
     if (!text) {
       const e = new Error("AI流式返回为空");
       e.status = 502;
@@ -1494,6 +1535,7 @@ export async function editImage({
         ...(provider360Active() ? { 'Content-Type': 'application/json' } : {}) },
       body: provider360Active() ? JSON.stringify(build360ImageEditBody({ model: m, prompt, size, images: references, mask })) : fd,
       signal: timed.signal,
+      dispatcher: imageHttpDispatcher(imageTimeout),
     });
     responseStatus = res.status;
     providerRequestId = responseRequestId(res);

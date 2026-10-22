@@ -15,6 +15,7 @@ export function stageServerRuntime() {
   for (const directory of ['src', 'catalog']) {
     fs.cpSync(path.join(source, directory), path.join(serverDir, directory), { recursive: true });
   }
+  fs.cpSync(path.resolve(source, '../shared'), path.join(root, 'shared'), { recursive: true });
   const dependencyLink = path.join(serverDir, 'node_modules');
   fs.symlinkSync(path.join(source, 'node_modules'), dependencyLink, process.platform === 'win32' ? 'junction' : 'dir');
   return {

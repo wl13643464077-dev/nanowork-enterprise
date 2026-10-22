@@ -338,6 +338,16 @@ test("六类详情均在任务中心内可读，跨员工详情返回404", async
           response.body.deliverables[0].downloadUrl,
           `/api/files/artifacts/${restaurantArtifactId}/download`,
         );
+        assert.deepEqual(response.body.deliverableAvailability, {
+          status: "ready",
+          message: "已生成 1 份可下载交付文件",
+          canGenerate: true,
+          sourceType: "agent_task",
+          sourceId: restaurantId,
+          generateMethod: "POST",
+          generateUrl: `/api/files/artifacts/source/agent_task/${restaurantId}`,
+          formats: ["pdf", "docx"],
+        });
       }
       if (kind === "content") {
         assert.equal(
@@ -346,6 +356,15 @@ test("六类详情均在任务中心内可读，跨员工详情返回404", async
         );
         assert.match(response.body.report.markdown, /推文结果/u);
         assert.equal(response.body.deliverables[0].label, "Word");
+        assert.equal(response.body.deliverableAvailability.canGenerate, true);
+        assert.equal(
+          response.body.deliverableAvailability.generateUrl,
+          `/api/files/artifacts/source/content_employee_run/${contentRunId}`,
+        );
+        assert.deepEqual(response.body.deliverableAvailability.formats, [
+          "pdf",
+          "docx",
+        ]);
       }
     }
   });

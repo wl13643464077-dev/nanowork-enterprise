@@ -5,6 +5,7 @@
 // （TINYFISH_API_KEY 免费 / BOCHA_API_KEY / TAVILY_API_KEY / SERPER_API_KEY）。
 // 失败安全：超时/网络受限时返回空数组并附 note，不阻塞会诊主流程。
 import { providerResponseError, sanitizeProviderError } from './provider-errors.js';
+import { providerContext } from './tester-provider-context.js';
 import {
   agenticWebResearch,
   agenticWebResearchReadiness,
@@ -198,7 +199,7 @@ export function webSearchProviders() {
   return [
     ...(tiered.primaryReady ? ['TinyFish'] : []),
     ...(tiered.fallbackReady ? ['Claude WebSearch'] : []),
-    ...PROVIDERS.filter(p => p.key()).map(p => p.name),
+    ...PROVIDERS.filter(p => !providerContext() && p.key()).map(p => p.name),
   ];
 }
 
@@ -238,9 +239,10 @@ export async function webSearch(query, {
   fallbackOrder = 'news_first',
   tieredResearchFn = agenticWebResearch,
   skipTiered = false,
+  allowBroadFallback = true,
 } = {}) {
   const perAttemptTimeoutMs = Math.max(1, Math.floor(Number(timeoutMs) || 9000));
-  const configuredProviders = PROVIDERS.filter(provider => provider.key());
+  const configuredProviders = PROVIDERS.filter(provider => !providerContext() && provider.key());
   const tieredReadiness = agenticWebResearchReadiness();
   // 只有首选 TinyFish 确实配置后才进入 TinyFish→Claude。单独存在 Claude
   // 凭证时，深度员工链仍可直接使用 Claude；轻量检索不意外启动 CLI。
@@ -381,7 +383,7 @@ export async function webSearch(query, {
     const broadFallbackEnabled =
       fetchImpl === RUNTIME_FETCH ||
       process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK === '1';
-    if (String(query || '').trim() && broadFallbackEnabled) {
+    if (allowBroadFallback && String(query || '').trim() && broadFallbackEnabled) {
       for (const broadQuery of broadQueries) {
         if (String(query).trim() === broadQuery) continue;
         for (const fallback of freeFallbacks) {

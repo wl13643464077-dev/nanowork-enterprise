@@ -1,6 +1,7 @@
 import { q } from '../db.js';
 import { ensureTesterSchema, testerAccount, requireActiveTester, testerError } from './tester-access.js';
 import { testerEmployee } from './tester-employee-catalog.js';
+import { testerDepartment } from './tester-trials.js';
 import { loadTesterCallEvidence, testerCostEvidence, testerMoney as money } from './tester-cost-evidence.js';
 
 const DAY = 86400000;
@@ -44,6 +45,12 @@ function analyticsScope(actor, options, admin) {
 export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date.now()) {
   ensureTesterSchema();
   const ownerId = analyticsScope(actor, options, admin);
+  if (!admin && options.department !== undefined)
+    throw testerError('只能查看自己的客户看板', 403, 'ANALYTICS_DEPARTMENT_FORBIDDEN');
+  const department = options.department === undefined ? undefined : testerDepartment(options.department);
+  const accounts = admin ? q.all('SELECT user_id,department,status FROM tester_accounts')
+    .filter(row => (ownerId === null || row.user_id === ownerId) && (department === undefined || row.department === department)) : [];
+  const departmentsByOwner = new Map(accounts.map(row => [row.user_id, row.department]));
   if (options.scope !== undefined && options.scope !== 'customers') throw testerError('客户看板只支持customers统计范围');
   const days = options.days === undefined ? '30' : String(options.days);
   if (!['7', '30', '90', 'all'].includes(days)) throw testerError('请选择最近7天、30天、90天或全部');
@@ -51,11 +58,15 @@ export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date
   const toSeconds = Math.floor(nowMs / 1000);
   const fromMs = days === 'all' ? 0 : startOfDay(nowMs) - (Number(days) - 1) * DAY;
   const inPeriod = seconds => Number.isFinite(seconds) && seconds * 1000 >= fromMs && seconds <= toSeconds;
-  const filter = alias => ownerId === null ? { sql: '', args: [] } : { sql: ` AND ${alias}.owner_user_id=?`, args: [ownerId] };
+  const filter = alias => ({
+    sql: (ownerId === null ? '' : ` AND ${alias}.owner_user_id=?`)
+      + (department === undefined ? '' : ` AND ${alias}.owner_user_id IN (SELECT user_id FROM tester_accounts WHERE department=?)`),
+    args: [...(ownerId === null ? [] : [ownerId]), ...(department === undefined ? [] : [department])],
+  });
   const leadsScope = filter('l'); const conversationScope = filter('c'); const interestsScope = filter('i');
-  const leads = q.all(`SELECT l.id,l.status,l.used_turns,${epochSql('l.created_at')} event_at
+  const leads = q.all(`SELECT l.id,l.owner_user_id,l.status,l.used_turns,l.turn_limit,${epochSql('l.created_at')} event_at
     FROM tester_leads l WHERE 1=1${leadsScope.sql}`, ...leadsScope.args).filter(row => inPeriod(row.event_at));
-  const conversations = q.all(`SELECT c.id,c.lead_id,c.employee_id,c.status,
+  const conversations = q.all(`SELECT c.id,c.owner_user_id,c.lead_id,c.employee_id,c.status,
     ${epochSql('COALESCE(c.completed_at,c.created_at)')} event_at FROM tester_conversations c
     WHERE c.lead_id IS NOT NULL${conversationScope.sql}`, ...conversationScope.args).filter(row => inPeriod(row.event_at));
   const interests = q.all(`SELECT i.lead_id,i.employee_id,${epochSql('i.created_at')} event_at
@@ -66,7 +77,8 @@ export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date
     .filter(row => Number.isFinite(row.event_at) && row.event_at <= toSeconds);
   const costByCall = testerCostEvidence(availableCalls);
 
-  const scopedCalls = availableCalls.filter(call => inPeriod(call.event_at));
+  const scopedCalls = availableCalls.filter(call => inPeriod(call.event_at)
+    && (department === undefined || departmentsByOwner.has(call.owner_user_id)));
   const customerCalls = scopedCalls.filter(call => call.lead_id !== null);
   const personalCalls = scopedCalls.filter(call => call.lead_id === null);
   const summary = { totalCustomers: leads.length,
@@ -76,7 +88,7 @@ export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date
     pausedCustomers: leads.filter(lead => lead.status === 'paused').length,
     usedCustomers: leads.filter(lead => lead.used_turns > 0).length,
     unusedCustomers: leads.filter(lead => lead.used_turns === 0).length,
-    exhaustedCustomers: leads.filter(lead => lead.used_turns >= 2).length,
+    exhaustedCustomers: leads.filter(lead => lead.used_turns >= lead.turn_limit).length,
     successfulConversations: conversations.filter(conversation => conversation.status === 'succeeded').length,
     failedConversations: conversations.filter(conversation => conversation.status === 'failed').length,
     interestSelections: interests.length, legacyRecordCount: customerCalls.filter(call => call.legacy_record).length, ...metric() };
@@ -120,8 +132,32 @@ export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date
   const employees = [...byEmployee.values()].map(({ selected, used, ...item }) => ({
     ...item, selectedCustomers: selected.size, usedCustomers: used.size,
   })).sort((a, b) => b.totalCalls - a.totalCalls || b.selectedCustomers - a.selectedCustomers || a.employeeId.localeCompare(b.employeeId));
+  const departmentRows = new Map();
+  for (const account of accounts) {
+    if (!departmentRows.has(account.department)) departmentRows.set(account.department, {
+      department: account.department, testerCount: 0, approvedTesters: 0, totalCustomers: 0,
+      usedCustomers: 0, unusedCustomers: 0, successfulConversations: 0, ...metric(),
+    });
+    const row = departmentRows.get(account.department);
+    row.testerCount++; if (account.status === 'approved') row.approvedTesters++;
+  }
+  if (admin) {
+    for (const lead of leads) {
+      const row = departmentRows.get(departmentsByOwner.get(lead.owner_user_id));
+      if (row) { row.totalCustomers++; if (lead.used_turns > 0) row.usedCustomers++; else row.unusedCustomers++; }
+    }
+    for (const conversation of conversations) {
+      const row = departmentRows.get(departmentsByOwner.get(conversation.owner_user_id));
+      if (row && conversation.status === 'succeeded') row.successfulConversations++;
+    }
+    for (const call of customerCalls) {
+      const row = departmentRows.get(departmentsByOwner.get(call.owner_user_id));
+      if (row) addCall(row, call, costByCall.get(call.id));
+    }
+  }
   return { period: { days, from: new Date(firstDay).toISOString(), to: new Date(nowMs).toISOString(), timeZone: 'Asia/Shanghai' },
-    scope: 'customers', ownerUserId: ownerId, summary, personalSummary,
+    scope: 'customers', ownerUserId: ownerId, department, summary, personalSummary,
+    ...(admin ? { departments: [...departmentRows.values()].sort((a,b) => b.usedCustomers-a.usedCustomers || a.department.localeCompare(b.department, 'zh-CN')) } : {}),
     timeline: [...timeline.values()].map(({ used, ...day }) => ({ ...day, usedCustomers: used.size })),
     employees, models: [...byModel.values()].sort((a, b) => b.totalCalls - a.totalCalls || a.model.localeCompare(b.model)),
     interests: employees.filter(item => item.selectedCustomers || item.usedCustomers).map(item => ({
@@ -136,5 +172,6 @@ export function testerAnalytics(actor, options = {}, admin = false, nowMs = Date
       costs: '金额合计自有Key的上游实际扣费，包含失败调用；360人民币回执直接计入，OpenLux按已核验quota、USD及汇率换算CNY。同一账号、供应商、请求的扣费回执只计一次；未知费用另计待核次数，不是平台统一销售定价。',
       interests: '选择人数是已同意记录选岗的客户首次主动选择；使用人数是成功完成对应岗位对话的客户，不推测客户心理或购买意向。',
       personal: '主图表仅包含客户体验，测试员本人用量单独列在personalSummary。',
+      departments: '按测试员当前所属部门／团队归集；调整分类后历史客户与使用记录随之归入新部门，不改变原邀请人、Key、体验额度或账号权限。测试员人数统计当前账号，客户和使用指标沿用所选时间范围。',
     } };
 }

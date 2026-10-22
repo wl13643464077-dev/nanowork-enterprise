@@ -26,7 +26,7 @@ globalThis.fetch = async (input) => {
   throw new Error(`测试环境禁止真实联网：${String(input?.url || input)}`);
 };
 
-const { db, initSchema, migrateV2, q, runWithTenant } = await import('../src/db.js');
+const { db, getConfig, initSchema, migrateV2, q, runWithTenant, setConfig } = await import('../src/db.js');
 const {
   CONTENT_CONNECTOR_REGISTRY,
   CONTENT_LIVE_RESEARCH_CONNECTORS,
@@ -44,7 +44,9 @@ const {
 } = await import('../src/engines/content-output-contract.js');
 const { compileContentEmployeeSoloPrompt } = await import('../src/engines/content-employee-workbench.js');
 const { renderContentFreshnessSection } = await import('../src/engines/content-live-research.js');
-const { findHoldByRef } = await import('../src/engines/credits.js');
+const { findHoldByRef, getSupplierExpense } = await import('../src/engines/credits.js');
+const { read360Cost } = await import('../src/engines/provider-360-cost.js');
+const { runWithProviderContext } = await import('../src/engines/tester-provider-context.js');
 
 initSchema();
 migrateV2();
@@ -254,7 +256,7 @@ test('TinyFish 车道：先 hold 再检索，零 token 车道按固定费用 0 �
   assert.equal(balance(), before);
 });
 
-test('Claude WebSearch 车道按真实 token 结算，实扣不超过预授权且余额按实扣减少', async () => {
+test('旧Claude WebSearch无供应商回执夹具仍按token兼容结算，实扣不超过预授权', async () => {
   const before = balance();
   const result = await runWithTenant(1, () => executeContentConnectorLive(
     'evidence_research',
@@ -285,6 +287,243 @@ test('Claude WebSearch 车道按真实 token 结算，实扣不超过预授权�
   assert.equal(result.liveResearch.billing.settledCredits, hold.settled_credits);
 });
 
+test('360 Claude WebSearch成功时保留usage.amount真实回执；无交付失败时用户全退且成本由平台承担', async () => {
+  const model = 'qiniu/claude-sonnet-4-6';
+  const receipt = read360Cost({
+    model,
+    response: {
+      id: 'content-search-receipt-success',
+      model,
+      usage: { amount: '0.125', prompt_tokens: 900, completion_tokens: 300 },
+    },
+  });
+  assert.equal(receipt.status, 'known');
+
+  const beforeSuccess = balance();
+  const delivered = await runWithTenant(1, () => executeContentConnectorLive(
+    'evidence_research',
+    { task: '360 Claude真实联网结算' },
+    {},
+    { userId: bossId, tenantId: 1 },
+    {
+      readinessFn: configured,
+      runLiveResearch: async () => {
+        const value = researchResult({
+          lane: 'claude_websearch',
+          usage: { inputTokens: 900, outputTokens: 300, supplierCosts: [receipt] },
+        });
+        return {
+          ...value,
+          kind: 'intel',
+          cost: {
+            ...value.cost,
+            model,
+            supplierCosts: [receipt],
+            usage: { inputTokens: 900, outputTokens: 300, supplierCosts: [receipt] },
+          },
+        };
+      },
+    },
+  ));
+  assert.equal(delivered.ok, true);
+  const deliveredHold = liveHolds().at(-1);
+  const deliveredExpense = getSupplierExpense(deliveredHold.id, 1);
+  assert.equal(deliveredExpense.status, 'known');
+  assert.equal(deliveredExpense.costYuan, 0.125);
+  assert.equal(deliveredHold.held_credits, 100, '未单独配置时，联网检索只预授权100积分上限');
+  assert.equal(deliveredHold.settled_credits, 25, '真实0.125元回执乘2后实扣25积分');
+  assert.equal(delivered.liveResearch.billing.supplierCostStatus, 'known');
+  assert.equal(delivered.liveResearch.billing.knownSupplierCostYuan, 0.125);
+  assert.equal(delivered.liveResearch.billing.priceBasis, 'verified_supplier_usage_amount_x2');
+  assert.equal(delivered.liveResearch.billing.uncappedCredits, 25);
+  assert.equal(delivered.liveResearch.billing.cappedAtAuthorizedAmount, false);
+  assert.equal(balance(), beforeSuccess - deliveredHold.settled_credits);
+
+  const failedReceipt = read360Cost({
+    model,
+    response: {
+      id: 'content-search-receipt-failed-no-deliverable',
+      model,
+      usage: { amount: '0.075', prompt_tokens: 400, completion_tokens: 20 },
+    },
+  });
+  const beforeFailure = balance();
+  const failed = await runWithTenant(1, () => executeContentConnectorLive(
+    'trend_research',
+    { task: '360已扣费但未取得来源' },
+    {},
+    { userId: bossId, tenantId: 1 },
+    {
+      readinessFn: configured,
+      runLiveResearch: async () => {
+        const value = researchResult({ status: 'no_results' });
+        return {
+          ...value,
+          cost: {
+            lane: 'claude_websearch',
+            model,
+            supplierCosts: [failedReceipt],
+            usage: { inputTokens: 400, outputTokens: 20, supplierCosts: [failedReceipt] },
+            costUsd: 0,
+            credits: null,
+          },
+        };
+      },
+    },
+  ));
+  assert.equal(failed.ok, false);
+  const failedHold = liveHolds().at(-1);
+  const failedExpense = getSupplierExpense(failedHold.id, 1);
+  assert.equal(failedHold.settled_credits, 0);
+  assert.equal(failedExpense.status, 'known');
+  assert.equal(failedExpense.costYuan, 0.075);
+  assert.equal(failedExpense.refundedCredits, failedHold.held_credits);
+  assert.equal(balance(), beforeFailure, '用户预授权积分全部退回');
+});
+
+test('360联网真实成本超过100积分授权上限时仍交付，只收授权额并由平台承担超出成本', async () => {
+  const model = 'qiniu/claude-sonnet-4-6';
+  const receipt = read360Cost({
+    model,
+    response: {
+      id: 'content-search-receipt-over-cap',
+      model,
+      usage: { amount: '1.5', prompt_tokens: 9_000, completion_tokens: 2_000 },
+    },
+  });
+  const before = balance();
+  const result = await runWithTenant(1, () => executeContentConnectorLive(
+    'evidence_research',
+    { task: '360联网超过预授权上限但已有可交付证据' },
+    {},
+    { userId: bossId, tenantId: 1 },
+    {
+      readinessFn: configured,
+      runLiveResearch: async () => {
+        const value = researchResult({
+          lane: 'claude_websearch',
+          usage: { inputTokens: 9_000, outputTokens: 2_000, supplierCosts: [receipt] },
+        });
+        return {
+          ...value,
+          kind: 'intel',
+          cost: {
+            ...value.cost,
+            model,
+            supplierCosts: [receipt],
+            usage: { inputTokens: 9_000, outputTokens: 2_000, supplierCosts: [receipt] },
+          },
+        };
+      },
+    },
+  ));
+  const hold = liveHolds().at(-1);
+  const expense = getSupplierExpense(hold.id, 1);
+  assert.equal(result.ok, true, '费用超过授权上限不能抹掉已有交付');
+  assert.equal(hold.held_credits, 100);
+  assert.equal(hold.settled_credits, 100);
+  assert.equal(balance(), before - 100);
+  assert.equal(expense.status, 'known');
+  assert.equal(expense.costYuan, 1.5, '账本仍保留供应商完整真实成本');
+  assert.equal(result.liveResearch.billing.uncappedCredits, 300);
+  assert.equal(result.liveResearch.billing.cappedAtAuthorizedAmount, true);
+  assert.equal(result.liveResearch.billing.platformAbsorbedExcessSupplierCostYuan, 1);
+  assert.match(result.liveResearch.billing.pricingNotice, /最多授权100积分/u);
+});
+
+test('联网检索余额不足时在上游调用前阻断；个人Key模式不占扣平台积分', async () => {
+  const originalBalance = balance();
+  const holdsBefore = liveHolds().length;
+  q.run('UPDATE tenants SET credits=50 WHERE id=1');
+  let upstreamCalls = 0;
+  await assert.rejects(
+    runWithTenant(1, () => executeContentConnectorLive(
+      'trend_research',
+      { task: '余额不足不得发出联网请求' },
+      {},
+      { userId: bossId, tenantId: 1 },
+      {
+        readinessFn: configured,
+        runLiveResearch: async () => {
+          upstreamCalls += 1;
+          return researchResult();
+        },
+      },
+    )),
+    error => error?.status === 402 && /积分余额不足/u.test(error.message),
+  );
+  assert.equal(upstreamCalls, 0);
+  assert.equal(balance(), 50);
+  assert.equal(liveHolds().length, holdsBefore);
+  q.run('UPDATE tenants SET credits=? WHERE id=1', originalBalance);
+
+  const byokBefore = balance();
+  const byokHoldsBefore = liveHolds().length;
+  const byok = await runWithProviderContext({
+    provider: '360',
+    baseUrl: 'https://api.360.cn/v1',
+    apiKey: 'personal-key-content-live-test',
+    ownerUserId: bossId,
+  }, () => runWithTenant(1, () => executeContentConnectorLive(
+    'evidence_research',
+    { task: '测试员个人Key联网' },
+    {},
+    { userId: bossId, tenantId: 1 },
+    { readinessFn: configured, runLiveResearch: async () => ({ ...researchResult({ lane: 'claude_websearch', usage: { inputTokens: 100, outputTokens: 20 } }), kind: 'intel' }) },
+  )));
+  assert.equal(byok.ok, true);
+  assert.equal(byok.liveResearch.billing.billingMode, 'personal_byok');
+  assert.equal(byok.liveResearch.billing.state, 'not_required');
+  assert.equal(byok.liveResearch.billing.heldCredits, 0);
+  assert.equal(byok.liveResearch.billing.settledCredits, null);
+  assert.equal(byok.liveResearch.billing.priceBasis, 'personal_provider_key_no_platform_credits');
+  assert.equal(balance(), byokBefore);
+  assert.equal(liveHolds().length, byokHoldsBefore);
+});
+
+test('360联网回执未知时账本保持待对账，不把供应商成本捏造成0', async () => {
+  const previousUnified = getConfig('unified_360_pricing', null);
+  setConfig('unified_360_pricing', {
+    enabled: true,
+    imageBenchmarkCny: 0.5,
+    imagePriceBasis: '联网检索待对账测试所需的完整统一定价配置',
+  });
+  try {
+    const pending = { status: 'pending', requestId: null, model: 'qiniu/claude-sonnet-4-6', provider: '360' };
+    const result = await runWithTenant(1, () => executeContentConnectorLive(
+      'evidence_research',
+      { task: '360费用回执延迟' },
+      {},
+      { userId: bossId, tenantId: 1 },
+      {
+        readinessFn: configured,
+        runLiveResearch: async () => {
+          const value = researchResult({ lane: 'claude_websearch', usage: { inputTokens: 900, outputTokens: 300, supplierCosts: [pending] } });
+          return {
+            ...value,
+            kind: 'intel',
+            cost: {
+              ...value.cost,
+              model: pending.model,
+              supplierCosts: [pending],
+              usage: { inputTokens: 900, outputTokens: 300, supplierCosts: [pending] },
+            },
+          };
+        },
+      },
+    ));
+    const hold = liveHolds().at(-1);
+    const expense = getSupplierExpense(hold.id, 1);
+    assert.equal(result.ok, true);
+    assert.equal(result.liveResearch.billing.state, 'pending_reconciliation');
+    assert.equal(result.liveResearch.billing.priceBasis, 'supplier_receipt_pending');
+    assert.equal(expense.status, 'pending');
+    assert.equal(expense.costYuan, null);
+  } finally {
+    setConfig('unified_360_pricing', previousUnified || { enabled: false });
+  }
+});
+
 test('检索未取得来源时全额释放预授权并返回 no_results；检索抛错同样释放', async () => {
   const before = balance();
   const empty = await runWithTenant(1, () => executeContentConnectorLive(
@@ -299,6 +538,8 @@ test('检索未取得来源时全额释放预授权并返回 no_results；检索
   assert.equal(empty.code, 'CONTENT_CONNECTOR_LIVE_RESEARCH_NO_RESULTS');
   assert.equal(empty.output, undefined);
   assert.equal(empty.networkAccess, true, '确实联网过，但没有来源');
+  assert.equal(empty.liveResearch.billing.state, 'released', '无来源释放不得报成已结算');
+  assert.equal(empty.liveResearch.billing.settledCredits, 0);
   let hold = liveHolds().at(-1);
   assert.equal(hold.status, 'settled');
   assert.equal(hold.settled_credits, 0);

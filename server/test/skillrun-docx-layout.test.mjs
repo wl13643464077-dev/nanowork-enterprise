@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import JSZip from "jszip";
 import { PNG } from "pngjs";
@@ -15,6 +16,14 @@ import {
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nanowork-docx-layout-"));
 const keepArtifacts = process.env.KEEP_DOCX_LAYOUT_ARTIFACTS === "1";
+const bundledFontPath = fileURLToPath(new URL(
+  "../assets/fonts/NotoSansSC.ttf",
+  import.meta.url,
+));
+const bundledFontLicensePath = fileURLToPath(new URL(
+  "../assets/fonts/OFL.txt",
+  import.meta.url,
+));
 
 after(() => {
   if (!keepArtifacts) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -52,6 +61,8 @@ const reportMarkdown = `# 太原吾悦广场毛血旺开店报告
 | 家庭聚餐需求 | 初步成立 | 验证午晚餐与周末客流 |
 | 商场内竞争强度 | 待补证 | 采集同层竞品与菜单价格 |
 
+- 数据字段必须原样保留：customer_id、phone_hash、wechat_unionid；_说明文字_ 可使用斜体。
+
 ## 证据、风险与行动台账
 
 | 来源 | 期间 | 支持事实 | 下一步行动 |
@@ -87,9 +98,21 @@ function occurrences(source, pattern) {
 function renderRuntime() {
   const python = process.env.CODEX_BUNDLED_PYTHON
     || "/Users/wanglei/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
-  const script = process.env.CODEX_RENDER_DOCX_SCRIPT
-    || "/Users/wanglei/.codex/plugins/cache/openai-primary-runtime/documents/26.805.11740/skills/documents/render_docx.py";
-  return fs.existsSync(python) && fs.existsSync(script) ? { python, script } : null;
+  const skillRoot = path.join(
+    os.homedir(),
+    ".codex/plugins/cache/openai-primary-runtime/documents",
+  );
+  const discoveredScript = fs.existsSync(skillRoot)
+    ? fs.readdirSync(skillRoot)
+      .map((version) => path.join(skillRoot, version, "skills/documents/render_docx.py"))
+      .filter((candidate) => fs.existsSync(candidate))
+      .sort()
+      .at(-1)
+    : null;
+  const script = process.env.CODEX_RENDER_DOCX_SCRIPT || discoveredScript;
+  return fs.existsSync(python) && script && fs.existsSync(script)
+    ? { python, script }
+    : null;
 }
 
 function pageMetrics(filePath) {
@@ -121,13 +144,15 @@ function pageMetrics(filePath) {
   return { width: png.width, height: png.height, ink, bodyInk, minX, minY, maxX, maxY };
 }
 
-test("DOCX 报告嵌入按文档子集化的中文字体并提供稳定的 A4 报告结构", async () => {
-  assert.equal(DOCX_RENDER_VERSION, "docx-report-layout/2");
+test("DOCX 报告完整嵌入跨端可读的中文字体并提供稳定的 A4 报告结构", async () => {
+  assert.equal(DOCX_RENDER_VERSION, "docx-report-layout/3");
+  assert.ok(fs.statSync(bundledFontPath).size > 10_000_000, "部署包必须自带完整中文 TrueType 字体");
+  assert.match(fs.readFileSync(bundledFontLicensePath, "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/u);
   const buffer = await reportBuffer();
-  assert.ok(buffer.length > 40_000, "DOCX 必须实际嵌入中文字体子集，而不是空 fontTable");
+  assert.ok(buffer.length > 1_000_000, "DOCX 必须实际嵌入完整中文字体，而不是空 fontTable");
   assert.ok(
-    buffer.length < 3_000_000,
-    "字体必须按文档字符子集化；整包嵌入曾让单份报告膨胀到15MB",
+    buffer.length < 30_000_000,
+    "完整中文字体及报告内容不应超过可交付文件上限",
   );
 
   const zip = await JSZip.loadAsync(buffer);
@@ -145,17 +170,22 @@ test("DOCX 报告嵌入按文档子集化的中文字体并提供稳定的 A4 �
   assert.match(fontTableXml, /w:fontKey="\{34ef3e0d-f556-fb84-37ac-32166042f660\}"/u);
   assert.match(fontTableXml, /<w:charset w:val="86"/u);
   assert.match(fontRelsXml, /relationships\/font/u);
-  assert.ok(embeddedFont.length > 20_000, "嵌入字体不能是占位文件");
+  assert.ok(embeddedFont.length > 1_000_000, "嵌入字体必须是完整中文字体，不能是占位或动态子集");
 
-  // 子集化不许丢字形：解开OOXML混淆（前32字节与GUID逆序异或）后，
-  // 正文与页眉页脚的每个字符都必须能在嵌入字体里找到字形。
+  // 解开OOXML混淆（前32字节与GUID逆序异或）后，正文、页眉和页脚的
+  // 每个字符都必须能在完整嵌入字体里找到字形。
   const fontKeyBytes = Buffer.from("34ef3e0df556fb8437ac32166042f660", "hex").reverse();
   const deobfuscated = Buffer.from(embeddedFont);
   for (let index = 0; index < Math.min(32, deobfuscated.length); index += 1) {
     deobfuscated[index] ^= fontKeyBytes[index % fontKeyBytes.length];
   }
+  assert.ok(
+    ["00010000", "74727565"].includes(deobfuscated.subarray(0, 4).toString("hex")),
+    "DOCX 只能嵌入 TrueType 轮廓字体；CFF OTF 在 LibreOffice 中会丢失中文",
+  );
   const fontkit = await import("fontkit");
   const embedded = fontkit.create(deobfuscated);
+  assert.ok(embedded.numGlyphs > 10_000, "完整中文字体必须保留跨报告所需的通用字形");
   const requiredText = `${reportMarkdown}纳米Work行业版数字员工交付报告数据明细（长内容按字段展开）第页…`;
   const missingGlyphs = [...new Set([...requiredText])]
     .filter((char) => /\S/u.test(char))
@@ -266,6 +296,7 @@ test("DOCX 经 documents 技能 render_docx 全页渲染后中文、分页和边
   assert.equal(extracted.status, 0, extracted.stderr || extracted.stdout);
   assert.match(extracted.stdout, /太原吾悦广场毛血旺开店报告/u);
   assert.match(extracted.stdout, /公开页面只能支持地点存在性/u);
+  assert.match(extracted.stdout, /customer_id、phone_hash、wechat_unionid/u);
   assert.match(extracted.stdout, /自动外发、付费采购、签约和财务承诺均未授权/u);
   assert.match(extracted.stdout, /1\.\s*第一天完成同层竞品与菜单价格采集/u);
   assert.doesNotMatch(extracted.stdout, /3\.\s*第一天完成同层竞品与菜单价格采集/u);

@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getConfig } from '../db.js';
+import { providerContext } from './tester-provider-context.js';
 import { yunwuApiKey, provider360Active } from './yunwu.js';
+import {
+  provider360ClaudeWebSearchReadiness,
+  publicResearchSearchQuery,
+  run360ClaudeWebSearch,
+} from './provider-360-websearch.js';
+import { sanitizeProviderError } from './provider-errors.js';
 import {
   tinyfishAvailable,
   tinyfishFetchPages,
@@ -61,10 +68,7 @@ export function resolveAgenticResearchCli() {
 }
 
 function claudeGatewayReadiness() {
-  if (provider360Active()) return {
-    ready: false, cliReady: false, credentialReady: false, cliPath: null,
-    model: null, provider: '360通道未启用Claude联网接口',
-  };
+  if (provider360Active()) return provider360ClaudeWebSearchReadiness();
   const cliPath = resolveAgenticResearchCli();
   const apiKey = yunwuApiKey();
   return {
@@ -73,30 +77,41 @@ function claudeGatewayReadiness() {
     credentialReady: Boolean(apiKey),
     cliPath: cliPath ? path.basename(cliPath) : null,
     model: process.env.NANOWORK_RESEARCH_MODEL || DEFAULT_MODEL,
+    transport: 'isolated_claude_cli',
     provider: 'Yunwu Claude WebSearch gateway',
   };
 }
 
 export function agenticWebResearchReadiness() {
   const claude = claudeGatewayReadiness();
-  const tinyfishReady = tinyfishAvailable();
+  const personalByok = providerContext()?.billingMode === 'personal';
+  const tinyfishReady = !personalByok && tinyfishAvailable();
   return {
     ...claude,
     ready: tinyfishReady || claude.ready,
     primaryReady: tinyfishReady,
     fallbackReady: claude.ready,
-    preferred: 'tinyfish',
+    preferred: personalByok ? 'claude_websearch' : 'tinyfish',
     fallback: 'claude_websearch',
     autoFallback: true,
     routes: [
-      { key: 'tinyfish', label: 'TinyFish Search + Fetch', ready: tinyfishReady, role: 'primary' },
+      {
+        key: 'tinyfish',
+        label: 'TinyFish Search + Fetch',
+        ready: tinyfishReady,
+        role: 'primary',
+        ...(personalByok ? { disabledReason: 'personal_provider_key_isolation' } : {}),
+      },
       { key: 'claude_websearch', label: claude.provider, ready: claude.ready, role: 'fallback' },
     ],
     provider: tinyfishReady
       ? claude.ready
-        ? 'TinyFish → Yunwu Claude WebSearch gateway'
+        ? `TinyFish → ${claude.provider}`
         : 'TinyFish Search + Fetch'
       : claude.provider,
+    routePolicy: personalByok
+      ? 'personal_provider_key_direct_360'
+      : 'platform_tinyfish_then_claude',
   };
 }
 
@@ -444,6 +459,7 @@ function promptFor(query, maxResults, researchMode = 'location_business') {
 }
 
 async function claudeAgenticWebResearch(query, {
+  searchQuery = null,
   maxResults = 12,
   timeoutMs = 240_000,
   signal = null,
@@ -451,6 +467,16 @@ async function claudeAgenticWebResearch(query, {
   researchMode = 'location_business',
 } = {}) {
   const readiness = claudeGatewayReadiness();
+  if (readiness.transport === '360_search_api') {
+    return run360ClaudeWebSearch(query, {
+      searchQuery,
+      maxResults,
+      timeoutMs,
+      signal,
+      onProgress,
+      researchMode,
+    });
+  }
   // readiness 对外只暴露 basename，避免把本机目录写进任务证据；真正
   // spawn 必须重新解析绝对可执行路径，不能拿展示字段 cliPath 启动。
   const cliExecutable = resolveAgenticResearchCli();
@@ -730,17 +756,6 @@ const TINYFISH_REQUIRED_BODY_CHARS = 1200;
 const TINYFISH_REQUIRED_RELEVANT_PAGES = 2;
 const TINYFISH_REQUIRED_UNIQUE_BODIES = 3;
 
-function tinyfishQueryFor(value) {
-  const lines = String(value || '')
-    .split(/\r?\n/u)
-    .map(line => safeText(line, 500))
-    .filter(Boolean);
-  const prioritized = lines.filter(line =>
-    /(?:老板的任务|具体要求|取证查询|公开链接|选题|检索任务|任务目标|打开并核验)/u.test(line),
-  );
-  return safeText((prioritized.length ? prioritized : lines).slice(0, 4).join(' '), 400);
-}
-
 function normalizedTinyfishCandidates(rows, limit) {
   const seen = new Set();
   const candidates = [];
@@ -758,6 +773,21 @@ function normalizedTinyfishCandidates(rows, limit) {
     if (candidates.length >= limit) break;
   }
   return candidates;
+}
+
+async function validatedTinyfishRows(rows, validateCandidates) {
+  if (typeof validateCandidates !== 'function') return rows;
+  let accepted;
+  try {
+    accepted = await validateCandidates(rows.map(row => ({ ...row })));
+    if (!Array.isArray(accepted)) throw new Error('invalid validator result');
+  } catch {
+    throw Object.assign(new Error('TinyFish任务来源校验未完成'), { code: 'TINYFISH_CANDIDATE_VALIDATION_FAILED' });
+  }
+  // The hook is an acceptance filter, not a new source/provider adapter. Keep
+  // only original rows, so it cannot inject URLs, bodies or provider provenance.
+  const acceptedUrls = new Set(accepted.map(row => safeHttpUrl(row?.url)).filter(Boolean));
+  return rows.filter(row => acceptedUrls.has(row.url));
 }
 
 function querySignals(value) {
@@ -863,19 +893,70 @@ function safeFailureCode(error, fallback = 'TINYFISH_FAILED') {
   return /^[A-Z0-9_]{3,80}$/u.test(code) ? code : fallback;
 }
 
+function failedClaudeResearch(error, readiness) {
+  const is360 = readiness.transport === '360_search_api';
+  const safe = sanitizeProviderError(error?.name === 'TimeoutError'
+    ? { name: 'AbortError' }
+    : error, { service: is360 ? '360联网检索服务' : 'Claude WebSearch服务' });
+  const providerStatus = Number(safe.providerStatus);
+  return defineFetchCandidates({
+    attempted: true,
+    ok: false,
+    candidateReady: false,
+    provider: readiness.provider,
+    results: [],
+    note: is360 ? safe.message : 'Claude WebSearch 回退通道执行失败',
+    evidence: {
+      schemaVersion: 'nanowork.agentic-web-research/1',
+      executionMode: readiness.transport || 'isolated_claude_cli',
+      transport: readiness.transport || 'isolated_claude_cli',
+      failureCode: safeFailureCode(error, is360
+        ? `PROVIDER_360_SEARCH_${safe.providerReason.toUpperCase()}`
+        : 'CLAUDE_WEBSEARCH_FAILED'),
+      providerReason: safe.providerReason,
+      providerStatus: Number.isInteger(providerStatus) && providerStatus >= 100 && providerStatus <= 599
+        ? providerStatus
+        : null,
+      externalCall: true,
+    },
+  }, []);
+}
+
 function tieredFallbackEvidence(tinyfish, claude, reasonCode) {
+  const claudeEvidence = claude?.evidence || null;
   return {
     schemaVersion: TIERED_RESEARCH_SCHEMA,
     executionMode: 'tinyfish_then_claude',
     providerRoute: ['tinyfish', 'claude_websearch'],
     fallback: { triggered: true, reasonCode },
     tinyfish,
-    claude: claude?.evidence || null,
+    claude: claudeEvidence,
+    model: claudeEvidence?.model || null,
+    transport: claudeEvidence?.transport || null,
+    ...(claudeEvidence?.failureCode ? {
+      failureCode: claudeEvidence.failureCode,
+      providerReason: claudeEvidence.providerReason || null,
+      providerStatus: claudeEvidence.providerStatus ?? null,
+    } : {}),
+    usage: claudeEvidence?.usage || { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0 },
+    supplierCosts: Array.isArray(claudeEvidence?.supplierCosts)
+      ? claudeEvidence.supplierCosts
+      : [],
+    costYuan: Number.isFinite(Number(claudeEvidence?.costYuan))
+      ? Number(claudeEvidence.costYuan)
+      : null,
+    costStatus: claudeEvidence?.costStatus || null,
+    costUsd: Number(claudeEvidence?.costUsd || 0) || 0,
     externalCall: true,
   };
 }
 
 export async function agenticWebResearch(query, {
+  searchQuery: explicitSearchQuery = null,
+  // Optional task-specific filter: rows -> accepted rows. Applied to TinyFish
+  // candidates and fetched pages; 360 records retain their own provenance and
+  // still go through the caller's candidate/body quality gates.
+  validateCandidates = null,
   maxResults = 12,
   timeoutMs = 240_000,
   signal = null,
@@ -887,18 +968,44 @@ export async function agenticWebResearch(query, {
   claudeResearchFn = claudeAgenticWebResearch,
 } = {}) {
   const normalizedQuery = safeText(query, 12_000);
+  const searchQuery = publicResearchSearchQuery(query, { searchQuery: explicitSearchQuery });
+  const personalByok = providerContext()?.billingMode === 'personal';
+  // 测试员及其邀请体验客户必须把所有付费模型调用归到销售自己的
+  // provider Key。平台 TinyFish 没有个人 Key 归属，因此个人上下文直接
+  // 使用其360搜索API；调用方即使误传 tinyfishEnabled=true 也不能越界。
+  const useTinyfish = !personalByok && tinyfishEnabled;
   const totalBudgetMs = Math.max(1, Number(timeoutMs) || 240_000);
   // 未配置 TinyFish 时完全保留旧 Claude 路径自己的 timeout / abort 语义。
   // 若在这里再叠一只同期限时钟，会在高并发下与 Claude 定时器竞态，
   // 把真实超时误判为调用方取消。
-  if (!tinyfishEnabled || !normalizedQuery) {
-    return claudeResearchFn(query, {
-      maxResults,
-      timeoutMs: totalBudgetMs,
-      signal,
-      onProgress,
-      researchMode,
-    });
+  if (!useTinyfish || !normalizedQuery || !searchQuery) {
+    let direct;
+    try {
+      direct = await claudeResearchFn(query, {
+        searchQuery,
+        maxResults,
+        timeoutMs: totalBudgetMs,
+        signal,
+        onProgress,
+        researchMode,
+      });
+    } catch (error) {
+      const readiness = claudeGatewayReadiness();
+      if (signal?.aborted || readiness.transport !== '360_search_api') throw error;
+      // A direct 360 request must preserve the same failure evidence as a
+      // TinyFish fallback; otherwise callers only receive a thrown message.
+      direct = failedClaudeResearch(error, readiness);
+    }
+    if (!personalByok) return direct;
+    return defineFetchCandidates({
+      ...direct,
+      evidence: {
+        ...(direct?.evidence || {}),
+        providerRoute: ['claude_websearch'],
+        routePolicy: 'personal_provider_key_direct_360',
+        platformTinyfishSkipped: true,
+      },
+    }, direct?.fetchCandidates);
   }
   const deadlineAt = Date.now() + totalBudgetMs;
   const deadlineController = new AbortController();
@@ -909,6 +1016,7 @@ export async function agenticWebResearch(query, {
     : deadlineController.signal;
   const remainingBudget = cap => Math.max(1, Math.min(cap, deadlineAt - Date.now()));
   const claudeOptions = () => ({
+    searchQuery,
     maxResults,
     timeoutMs: remainingBudget(totalBudgetMs),
     signal: tieredSignal,
@@ -921,8 +1029,9 @@ export async function agenticWebResearch(query, {
     let fetchedPages = [];
     let fallbackReasonCode = null;
     let tinyfishFailureCodes = [];
+    let rejectedCandidateCount = 0;
+    let rejectedPageCount = 0;
     try {
-      const searchQuery = tinyfishQueryFor(query);
       onProgress?.({ kind: 'search', tool: 'TinyFish Search', query: searchQuery, at: new Date().toISOString() });
       const searched = await tinyfishSearchFn(searchQuery, {
         max: sourceLimit,
@@ -930,10 +1039,16 @@ export async function agenticWebResearch(query, {
         signal: tieredSignal,
         purpose: safeText(`纳米Work公开业务调研：${normalizedQuery}`, 500),
       });
-      candidates = normalizedTinyfishCandidates(searched, sourceLimit);
-      if (!candidates.length) fallbackReasonCode = 'TINYFISH_NO_RESULTS';
+      const normalizedCandidates = normalizedTinyfishCandidates(searched, sourceLimit);
+      candidates = await validatedTinyfishRows(normalizedCandidates, validateCandidates);
+      rejectedCandidateCount = normalizedCandidates.length - candidates.length;
+      if (!candidates.length) fallbackReasonCode = rejectedCandidateCount
+        ? 'TINYFISH_TASK_CANDIDATES_INSUFFICIENT'
+        : 'TINYFISH_NO_RESULTS';
       else if (candidates.length < TINYFISH_REQUIRED_CANDIDATES) {
-        fallbackReasonCode = 'TINYFISH_CANDIDATES_INSUFFICIENT';
+        fallbackReasonCode = rejectedCandidateCount
+          ? 'TINYFISH_TASK_CANDIDATES_INSUFFICIENT'
+          : 'TINYFISH_CANDIDATES_INSUFFICIENT';
       }
 
       if (!fallbackReasonCode) {
@@ -943,13 +1058,17 @@ export async function agenticWebResearch(query, {
           signal: tieredSignal,
           purpose: '核验公开网页正文是否足以支持餐饮经营任务',
         });
-        fetchedPages = tinyfishFetchedPages(fetched?.results, candidates);
+        const normalizedPages = tinyfishFetchedPages(fetched?.results, candidates);
+        fetchedPages = await validatedTinyfishRows(normalizedPages, validateCandidates);
+        rejectedPageCount = normalizedPages.length - fetchedPages.length;
         tinyfishFailureCodes = [...new Set((Array.isArray(fetched?.failures) ? fetched.failures : [])
           .map(item => safeFailureCode({ code: item?.code }, 'TINYFISH_PAGE_FAILED')))]
           .slice(0, 20);
         const quality = materialQuality(fetchedPages, searchQuery);
         if (quality.fetchedPageCount < TINYFISH_REQUIRED_FETCHED_PAGES) {
-          fallbackReasonCode = 'TINYFISH_FETCH_INSUFFICIENT';
+          fallbackReasonCode = rejectedPageCount
+            ? 'TINYFISH_TASK_PAGES_INSUFFICIENT'
+            : 'TINYFISH_FETCH_INSUFFICIENT';
         } else if (!quality.passed) {
           fallbackReasonCode = 'TINYFISH_ORGANIZATION_INSUFFICIENT';
         }
@@ -961,11 +1080,13 @@ export async function agenticWebResearch(query, {
       if (deadlineController.signal.aborted) {
         throw Object.assign(new Error('分层联网检索超过本次总预算'), { status: 504, code: 'AGENTIC_RESEARCH_TIMEOUT' });
       }
-      fallbackReasonCode = candidates.length ? 'TINYFISH_FETCH_FAILED' : 'TINYFISH_SEARCH_FAILED';
+      fallbackReasonCode = error?.code === 'TINYFISH_CANDIDATE_VALIDATION_FAILED'
+        ? 'TINYFISH_CANDIDATE_VALIDATION_FAILED'
+        : candidates.length ? 'TINYFISH_FETCH_FAILED' : 'TINYFISH_SEARCH_FAILED';
       tinyfishFailureCodes = [safeFailureCode(error)];
     }
 
-    const tinyfishQuality = materialQuality(fetchedPages, tinyfishQueryFor(query));
+    const tinyfishQuality = materialQuality(fetchedPages, searchQuery);
     const tinyfishEvidence = {
       attempted: true,
       candidateCount: candidates.length,
@@ -975,6 +1096,9 @@ export async function agenticWebResearch(query, {
       relevantPageCount: tinyfishQuality.relevantPageCount,
       totalBodyChars: tinyfishQuality.totalBodyChars,
       failureCodes: tinyfishFailureCodes,
+      ...(typeof validateCandidates === 'function' ? {
+        taskValidation: { enabled: true, rejectedCandidateCount, rejectedPageCount },
+      } : {}),
       qualityGate: {
         requiredCandidates: TINYFISH_REQUIRED_CANDIDATES,
         requiredFetchedPages: TINYFISH_REQUIRED_FETCHED_PAGES,
@@ -1019,9 +1143,10 @@ export async function agenticWebResearch(query, {
       }, enrichedCandidates);
     }
 
+    const fallbackReadiness = claudeGatewayReadiness();
     onProgress?.({
       kind: 'fallback',
-      tool: 'Claude WebSearch',
+      tool: fallbackReadiness.transport === '360_search_api' ? '360联网检索' : 'Claude WebSearch',
       reasonCode: fallbackReasonCode,
       at: new Date().toISOString(),
     });
@@ -1036,25 +1161,12 @@ export async function agenticWebResearch(query, {
       if (deadlineController.signal.aborted || error?.code === 'AGENTIC_RESEARCH_TIMEOUT') {
         throw Object.assign(new Error('分层联网检索超过本次总预算'), { status: 504, code: 'AGENTIC_RESEARCH_TIMEOUT' });
       }
-      claude = {
-        attempted: true,
-        ok: false,
-        candidateReady: false,
-        provider: 'Yunwu Claude WebSearch gateway',
-        results: [],
-        note: 'Claude WebSearch 回退通道执行失败',
-        evidence: {
-          schemaVersion: 'nanowork.agentic-web-research/1',
-          executionMode: 'isolated_claude_cli',
-          failureCode: safeFailureCode(error, 'CLAUDE_WEBSEARCH_FAILED'),
-          externalCall: true,
-        },
-      };
+      claude = failedClaudeResearch(error, fallbackReadiness);
     }
     const claudeCandidates = Array.isArray(claude?.fetchCandidates) ? claude.fetchCandidates : [];
     return defineFetchCandidates({
       ...(claude || {}),
-      provider: claude?.provider || 'Yunwu Claude WebSearch gateway',
+      provider: claude?.provider || claudeGatewayReadiness().provider,
       evidence: tieredFallbackEvidence(tinyfishEvidence, claude, fallbackReasonCode),
     }, claudeCandidates);
   } finally {

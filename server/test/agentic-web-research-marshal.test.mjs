@@ -419,7 +419,7 @@ test(
     );
     assert.ok(
       locationGenericCalls.filter((call) => call.idx === 102).length >= 5,
-      "102必须并发执行高德/点评/美团/窄门/等时圈取证计划",
+      "102必须并发执行客源主题与商户取证计划",
     );
     assert.equal(
       genericCalls.filter((call) => call.idx === 103).length,
@@ -432,7 +432,7 @@ test(
     );
     assert.ok(
       locationGenericCalls.some((call) =>
-        /官方\s+商场\s+餐饮\s+品牌\s+门店列表/u.test(call.query),
+        /商场\s+官网\s+品牌\s+门店/u.test(call.query),
       ),
     );
     assert.ok(
@@ -447,12 +447,12 @@ test(
     );
     assert.ok(
       locationGenericCalls.some(
-        (call) => call.idx === 102 && /site:canyandata\.com/u.test(call.query),
+        (call) => call.idx === 102 && /写字楼\s+产业园/u.test(call.query),
       ),
     );
     assert.ok(
       locationGenericCalls.some(
-        (call) => call.idx === 102 && /高德地图\s+扫街榜/u.test(call.query),
+        (call) => call.idx === 102 && /社区\s+住宅/u.test(call.query),
       ),
     );
     assert.deepEqual(
@@ -1047,6 +1047,67 @@ test(
     }
   },
 );
+
+test("高德已拿到结构化餐饮POI时，360检索不够5条不得把选址报告整单作废", async () => {
+  const idx = 102;
+  const execution = employeeExecution(idx);
+  const task = {
+    title: "地点 深圳南山区 塘朗宝能城附近3公里内，想开一家海南清补凉",
+    type: "分析",
+    requirement: "核验公开位置与周边餐饮供给，形成可追溯的内部证据包；不执行任何外部动作。",
+  };
+  const generationCalls = [];
+  let failure = null;
+  let result = null;
+  try {
+    result = await marshalWork(testMarshal, task, "boss", {
+    employeeExecution: execution,
+    requireAgenticResearch: true,
+    agenticWebResearchFn: async () => ({
+      attempted: true,
+      ok: false,
+      candidateReady: false,
+      provider: "360 Claude WebSearch API",
+      results: [],
+      note: "360联网检索已执行，但未取得至少5条可交给受控WebFetch的真实候选来源（实际2条）",
+    }),
+    webSearchFn: async () => ({ attempted: true, ok: false, results: [], note: "personal key isolation" }),
+    locationIntelligenceFn: async () => ({
+      attempted: true,
+      ok: true,
+      provider: "高德地图",
+      results: [
+        {
+          title: "高德定位·深圳塘朗宝能城",
+          url: "https://uri.amap.com/marker?position=113.96,22.59",
+          snippet: "地图中心=深圳塘朗宝能城；地点定位证据。",
+        },
+        {
+          title: "高德周边餐饮·宝能城海南清补凉",
+          url: "https://uri.amap.com/marker?position=113.961,22.591",
+          snippet: "地图中心=深圳塘朗宝能城；餐饮门店=宝能城海南清补凉；类别=餐饮服务;甜品店；地址=南山区塘朗宝能城。",
+          evidenceKind: "structured_location_restaurant_poi",
+        },
+      ],
+    }),
+    controlledWebFetchFn: async () => ({
+      attempted: true,
+      ok: false,
+      provider: "mock-controlled-web-evidence",
+      results: [],
+      note: "本轮没有可供读取的网页候选",
+    }),
+    generateFn: validGenerate(idx, execution, task, generationCalls),
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(generationCalls.length >= 1, "地图餐饮POI已核验时必须继续生成报告");
+  assert.notEqual(failure?.code, "EMPLOYEE_PUBLIC_RESEARCH_INCOMPLETE");
+  const web = result?.web || failure?.web;
+  assert.ok(Number(web?.sourceQuality?.directRestaurantStructuredCount || 0) >= 1);
+  assert.equal(web?.sourceQuality?.passed, true);
+});
 
 after(() => {
   for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {

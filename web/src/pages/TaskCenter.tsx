@@ -20,6 +20,7 @@ import {
   WalletOutlined,
 } from '@ant-design/icons';
 import { api, getUser } from '../api/client';
+import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from '../components/personalApiBilling.js';
 import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import AvatarStudio from '../components/AvatarStudio';
 import EmployeeDraftCard from '../components/EmployeeDraftCard';
@@ -28,6 +29,11 @@ import EmployeeResearchPlan from '../components/EmployeeResearchPlan';
 import TaskFeedback from '../components/TaskFeedback';
 import NativeDeliverableDownloadButton from '../components/NativeDeliverableDownloadButton';
 import { Markdown } from '../components/Markdown';
+import TaskDocumentDownloads from '../components/TaskDocumentDownloads';
+import ReportRefinePanel from '../components/ReportRefinePanel';
+import CampaignMaterialsGallery from '../components/CampaignMaterialsGallery';
+import { restaurantOutputPresentation } from '../components/restaurantOutputPresentation.js';
+import { cleanReportBody } from '../../../shared/report-body.mjs';
 import './TaskCenter.css';
 
 const FILTERS = [
@@ -168,8 +174,10 @@ function evidenceFactValue(value: unknown): string {
 
 function EvidenceFacts({ data, rawLabel = '查看原始证据（审计用）' }: { data: any; rawLabel?: string }) {
   if (!data || typeof data !== 'object') return null;
+  const personalApi = isPersonalApiUser(getUser());
   const scalarEntries = Object.entries(data).filter(
-    ([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value),
+    ([key, value]) => (!personalApi || !/credits/i.test(key)) &&
+      (value === null || ['string', 'number', 'boolean'].includes(typeof value)),
   );
   return (
     <details className="task-center-evidence">
@@ -192,6 +200,20 @@ function EvidenceFacts({ data, rawLabel = '查看原始证据（审计用）' }:
       )}
     </details>
   );
+}
+
+function restaurantResultView(detail: any) {
+  if (detail?.kind !== 'restaurant') {
+    return { campaignMaterials: [], markdown: cleanReportBody(detail?.report?.markdown || '') };
+  }
+  const view = restaurantOutputPresentation(detail.output || '');
+  const campaignMaterials = Array.isArray(detail.campaignMaterials) && detail.campaignMaterials.length
+    ? detail.campaignMaterials
+    : view.campaignMaterials;
+  return {
+    campaignMaterials,
+    markdown: view.fullMarkdown || cleanReportBody(detail.report?.markdown || ''),
+  };
 }
 
 function TaskMediaPreview({ media }: { media: any }) {
@@ -226,6 +248,7 @@ function duration(ms: number | null) {
 }
 
 export default function TaskCenter() {
+  const personalApi = isPersonalApiUser(getUser());
   const nav = useNavigate();
   const canViewDiagnostics = getUser()?.role === 'platform_super';
   const [data, setData] = useState<any>(null);
@@ -244,6 +267,7 @@ export default function TaskCenter() {
   const detailRequestSerial = useRef(0);
   const [pipelineLifecycleMutation, setPipelineLifecycleMutation] = useState('');
   const [wechatMutation, setWechatMutation] = useState('');
+  const resultView = restaurantResultView(detail);
 
   const load = useCallback(
     (background = false) => {
@@ -490,10 +514,10 @@ export default function TaskCenter() {
               </div>
             ))}
             <div>
-              <small>预授权占用</small>
-              <strong>
-                {s.heldCredits || 0}
-                <em>积分</em>
+              <small>{personalApi ? '调用计费' : '预授权占用'}</small>
+              <strong title={personalApi ? PERSONAL_API_PRICING_NOTE : undefined}>
+                {personalApi ? '个人API' : s.heldCredits || 0}
+                <em>{personalApi ? '供应商账户扣费' : '积分'}</em>
               </strong>
             </div>
           </section>
@@ -604,7 +628,7 @@ export default function TaskCenter() {
                       <ClockCircleOutlined /> {duration(row.elapsedMs)}
                     </span>
                     <span>
-                      <WalletOutlined /> {row.billing.label}
+                      <WalletOutlined /> {personalApi ? personalApiBillingLabel(row.billing) : row.billing.label}
                       {canViewDiagnostics && row.billing.costYuan != null && row.billing.costYuan > 0
                         ? ` · ¥${row.billing.costYuan.toFixed(4)}`
                         : ''}
@@ -637,7 +661,9 @@ export default function TaskCenter() {
           )}
         </>
       )}
-      <AvatarStudio />
+      {personalApi ? (
+        <Alert type="info" showIcon message="数字人摄影棚需单独配置服务，当前个人API暂不支持" />
+      ) : <AvatarStudio />}
 
       <Drawer
         className="task-center-drawer"
@@ -653,7 +679,7 @@ export default function TaskCenter() {
             刷新任务状态
           </Button>
         }
-        width="min(920px, 100vw)"
+        width="min(1100px, 100vw)"
         open={Boolean(detailKey)}
         onClose={closeDetail}
         destroyOnHidden
@@ -727,7 +753,7 @@ export default function TaskCenter() {
                   <ClockCircleOutlined /> {duration(detail.elapsedMs)}
                 </span>
                 <span>
-                  <WalletOutlined /> {detail.billing.label}
+                  <WalletOutlined /> {personalApi ? personalApiBillingLabel(detail.billing) : detail.billing.label}
                 </span>
               </div>
               {detail.state === 'running' && (
@@ -749,7 +775,7 @@ export default function TaskCenter() {
                 <EmployeeDraftCard
                   taskId={Number(detail.id)}
                   draft={detail.draft}
-                  body={detail.report?.markdown || detail.output || ''}
+                  body={cleanReportBody(detail.report?.markdown || detail.output || '')}
                   bodyOpen
                   onRedispatch={
                     detail.conversationDeepLink && detail.conversationAvailability?.available !== false
@@ -765,26 +791,34 @@ export default function TaskCenter() {
                   }}
                 />
               )}
-              <section className="task-center-result">
+              <section className={`task-center-result${resultView.campaignMaterials.length ? ' has-campaign' : ''}`}>
                 <header>
                   <h3>结果正文</h3>
-                  <NativeDeliverableDownloadButton url={detail.downloadUrl} name={detail.downloadName} />
-                  {(detail.report?.markdown || detail.output) && (
-                    <Button
-                      size="small"
-                      icon={<CopyOutlined />}
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(detail.report?.markdown || detail.output);
-                          message.success('正文已复制');
-                        } catch {
-                          message.error('复制失败，请选择正文手动复制');
-                        }
-                      }}
-                    >
-                      复制正文
-                    </Button>
-                  )}
+                  <div className="task-center-result-actions">
+                    <TaskDocumentDownloads
+                      key={detail.sourceKey}
+                      availability={detail.deliverableAvailability}
+                      deliverables={detail.deliverables}
+                      onGenerated={() => void refreshCurrentDetail()}
+                    />
+                    <NativeDeliverableDownloadButton url={detail.downloadUrl} name={detail.downloadName} />
+                    {resultView.markdown && (
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined aria-hidden />}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(resultView.markdown);
+                            message.success('正文已复制');
+                          } catch {
+                            message.error('复制失败，请选择正文手动复制');
+                          }
+                        }}
+                      >
+                        复制正文
+                      </Button>
+                    )}
+                  </div>
                 </header>
                 {detail.kind === 'restaurant' && detail.draft ? (
                   <Alert
@@ -795,15 +829,18 @@ export default function TaskCenter() {
                     }
                     description="该结果未通过质量门，不会自动进入业务可用状态，也不会生成正式导出文件。"
                   />
-                ) : detail.report?.markdown ? (
-                  <Markdown content={detail.report.markdown} />
+                ) : resultView.markdown || resultView.campaignMaterials.length ? (
+                  <>
+                    <CampaignMaterialsGallery items={resultView.campaignMaterials} />
+                    {resultView.markdown ? <Markdown content={resultView.markdown} /> : null}
+                  </>
                 ) : detail.output ? (
                   /^(https?:\/\/|\/)/.test(detail.output) ? (
                     <a href={detail.output} target="_blank" rel="noreferrer">
                       打开媒体结果
                     </a>
                   ) : (
-                    <Markdown content={detail.output} />
+                    <Markdown content={cleanReportBody(detail.output)} />
                   )
                 ) : (
                   <Empty
@@ -812,6 +849,12 @@ export default function TaskCenter() {
                   />
                 )}
               </section>
+              {detail.kind === 'restaurant' &&
+                !detail.draft &&
+                detail.state !== 'running' &&
+                cleanReportBody(detail.report?.markdown || detail.output || '') && (
+                  <ReportRefinePanel key={`refine:${detail.id}`} taskId={Number(detail.id)} />
+                )}
               {Array.isArray(detail.media) && detail.media.length > 0 && (
                 <section className="task-center-media" aria-label="图片与媒体结果">
                   {detail.media.map((media: any, index: number) => (
@@ -821,7 +864,7 @@ export default function TaskCenter() {
                       {media.error && <Alert type="warning" showIcon message={media.error} />}
                       {media.warning && <Alert type="warning" showIcon message={media.warning} />}
                       {!media.url && ['pending', 'running'].includes(media.status) && <p>正在生成，请稍候</p>}
-                      {media.billing?.label && <p>{media.billing.label}</p>}
+                      {media.billing?.label && <p>{personalApi ? personalApiBillingLabel(media.billing) : media.billing.label}</p>}
                       {/^(https?:\/\/|\/uploads\/)/i.test(media.downloadUrl || media.url || '') && (
                         <Button icon={<DownloadOutlined />} href={media.downloadUrl || media.url} download>
                           下载
@@ -871,7 +914,7 @@ export default function TaskCenter() {
                   </div>
                 )}
               </details>
-              {detail.originalOutput && detail.originalOutput !== detail.output && (
+              {canViewDiagnostics && detail.originalOutput && detail.originalOutput !== detail.output && (
                 <details className="task-center-disclosure">
                   <summary>原始生成稿</summary>
                   <Markdown content={detail.originalOutput} />
@@ -892,7 +935,7 @@ export default function TaskCenter() {
                   </div>
                   <div>
                     <dt>费用状态</dt>
-                    <dd>{detail.billing.label}</dd>
+                    <dd>{personalApi ? personalApiBillingLabel(detail.billing) : detail.billing.label}</dd>
                   </div>
                   {canViewDiagnostics && (
                     <div>
@@ -944,67 +987,31 @@ export default function TaskCenter() {
                 </section>
               </details>
               <EmployeeResearchPlan evidence={detail.researchEvidence} />
-              {['restaurant', 'content'].includes(String(detail.kind || '')) && (
-                <section className="task-center-pipeline-chain" aria-label="交付文件">
-                  <header>
-                    <h3>交付文件</h3>
-                    {detail.conversationDeepLink && (
-                      <Button
-                        size="small"
-                        type="link"
-                        href={detail.conversationAvailability?.available ? detail.conversationDeepLink : undefined}
-                        disabled={detail.conversationAvailability?.available === false}
-                        title={detail.conversationAvailability?.reason || undefined}
-                      >
-                        在员工对话中查看全部
-                      </Button>
-                    )}
-                  </header>
-                  {(detail.deliverables || []).length ? (
-                    (detail.deliverables || []).map((artifact: any) => (
-                      <article key={artifact.id}>
-                        <header>
-                          <span>
-                            <FileTextOutlined aria-hidden="true" />{' '}
-                            <strong>{artifact.fileName || artifact.title}</strong>
-                          </span>
-                          <Tag color="blue">{artifact.label || artifact.format?.toUpperCase()}</Tag>
-                        </header>
-                        <p>
-                          <Button
-                            size="small"
-                            type="primary"
-                            icon={<DownloadOutlined />}
-                            href={artifact.downloadUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            disabled={artifact.downloadAvailable === false}
-                          >
-                            下载{artifact.label || '文件'}
-                          </Button>
-                        </p>
-                      </article>
-                    ))
-                  ) : (
-                    <Alert
-                      type="info"
-                      showIcon
-                      message={detail.deliverableAvailability?.message || '交付文件尚未生成'}
-                      action={
-                        detail.conversationDeepLink ? (
-                          <Button
-                            size="small"
-                            href={detail.conversationAvailability?.available ? detail.conversationDeepLink : undefined}
-                            disabled={detail.conversationAvailability?.available === false}
-                            title={detail.conversationAvailability?.reason || undefined}
-                          >
-                            打开员工对话
-                          </Button>
-                        ) : undefined
-                      }
-                    />
-                  )}
-                </section>
+              {['restaurant', 'content'].includes(String(detail.kind || '')) && detail.deliverables?.length > 0 && (
+                <details className="task-center-disclosure task-center-pipeline-chain">
+                  <summary>全部交付文件（{detail.deliverables.length}）</summary>
+                  {detail.deliverables.map((artifact: any) => (
+                    <article key={artifact.id}>
+                      <header>
+                        <span>
+                          <FileTextOutlined aria-hidden="true" /> <strong>{artifact.fileName || artifact.title}</strong>
+                        </span>
+                        <Tag color="blue">{artifact.label || artifact.format?.toUpperCase()}</Tag>
+                      </header>
+                      <p>
+                        <Button
+                          size="small"
+                          icon={<DownloadOutlined />}
+                          href={artifact.downloadUrl}
+                          download
+                          disabled={artifact.downloadAvailable === false}
+                        >
+                          下载{artifact.label || '文件'}
+                        </Button>
+                      </p>
+                    </article>
+                  ))}
+                </details>
               )}
               {detail.kind === 'content_pipeline' && detail.pipeline && (
                 <section className="task-center-pipeline-chain">

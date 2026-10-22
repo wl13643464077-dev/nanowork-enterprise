@@ -202,6 +202,25 @@ test('本地片段安全标准化并合成30秒竖屏H264/AAC，返回受保护U
   assert.ok(ffmpegCall.args.includes('aac'));
 });
 
+test('临时合成文件与最终目录同盘，跨盘部署不抛EXDEV且仅清理自己的临时目录', async t => {
+  const root=await tempRoot('composer-persistent-disk-'), input=await tempRoot('composer-input-disk-');
+  const clips=await localClips(input);const tenantDir=path.join(root,'9');
+  await fsp.mkdir(tenantDir);await fsp.writeFile(path.join(tenantDir,'existing.mp4'),'keep');
+  const rename=fsp.rename.bind(fsp);let moves=0;
+  t.mock.method(fsp,'rename',async(source,destination)=>{
+    if(path.dirname(path.dirname(source))!==path.dirname(destination))throw Object.assign(new Error('cross-device link'),{code:'EXDEV'});
+    moves++;return rename(source,destination);
+  });
+  const runner=async(cmd,args)=>{
+    if(cmd.includes('ffprobe'))return {stdout:probeJson(args.at(-1).endsWith('composed.mp4')?30:15,{output:args.at(-1).endsWith('composed.mp4')})};
+    await fsp.writeFile(args.at(-1),'composed');return {code:0};
+  };
+  const result=await composeAiSalesVideo({tenantId:9,segments:clips,outputRoot:root,ffmpegPath:'/mock/ffmpeg',ffprobePath:'/mock/ffprobe',runner});
+  assert.equal(moves,1);assert.equal(await fsp.readFile(result.path,'utf8'),'composed');
+  assert.equal(await fsp.readFile(path.join(tenantDir,'existing.mp4'),'utf8'),'keep');
+  assert.equal((await fsp.readdir(tenantDir)).some(name=>name.startsWith('.compose-')),false);
+});
+
 test('拒绝URL、相对路径、数量越界与shell注入式伪路径', async () => {
   const root = await tempRoot('nanowork-video-composer-input-validation-');
   const clips = await localClips(root);
@@ -274,8 +293,7 @@ test('ffmpeg失败时清理临时目录与未提交输出，不留下半成品',
     }),
     error => error.code === 'AI_SALES_VIDEO_COMPOSER_COMMAND_FAILED',
   );
-  assert.equal(await fsp.access(path.join(root, '99')).then(() => true, () => false), false);
-  assert.equal((await fsp.readdir(root)).length, 0);
+  assert.deepEqual(await fsp.readdir(path.join(root, '99')), [], '失败只留下空租户目录，没有半成品或任务临时目录');
 });
 
 after(async () => {

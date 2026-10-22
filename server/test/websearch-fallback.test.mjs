@@ -669,3 +669,26 @@ test('调用方在分层入口取消后不再调用商业或免 Key 后续源', 
     },
   );
 });
+
+test('地点定向查询未命中时可禁止跨地域行业宽查询', async () => {
+  const previous = process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK;
+  process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK = '1';
+  try {
+    await withIsolatedSearchEnvironment({}, async () => {
+      const calls = [];
+      const result = await webSearch('酒仙桥 学校 校区 官方', {
+        skipTiered: true, allowBroadFallback: false, fallbackOrder: 'web_first', timeoutMs: 200,
+        fetchImpl: async url => {
+          calls.push(String(url));
+          return new Response('<html><body></body></html>', {status: 200});
+        },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(calls.length, 2);
+      assert.ok(calls.every(url => !decodeURIComponent(url).includes('中国餐饮行业')));
+    });
+  } finally {
+    if (previous === undefined) delete process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK;
+    else process.env.NANOWORK_ENABLE_BROAD_WEB_FALLBACK = previous;
+  }
+});

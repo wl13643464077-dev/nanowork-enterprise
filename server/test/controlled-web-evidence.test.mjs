@@ -7,8 +7,10 @@ import { syncBuiltinESMExports } from 'node:module';
 const {
   fetchControlledWebEvidence,
   fetchPublicPageEvidence,
+  extractHtmlAssets,
   isPublicWebAddress,
 } = await import('../src/engines/controlled-web-evidence.js');
+const { runWithProviderContext } = await import('../src/engines/tester-provider-context.js');
 
 function restoreHttpRequest(original) {
   http.request = original;
@@ -482,4 +484,61 @@ test('TinyFish路径不虚报逐跳重定向复验，本地路径仍保留真实
     if (previousApiKey === undefined) delete process.env.TINYFISH_API_KEY;
     else process.env.TINYFISH_API_KEY = previousApiKey;
   }
+});
+
+test('个人360 Key上下文跳过平台TinyFish Fetch，只使用本地受控网页抓取', { concurrency: false }, async () => {
+  const previousApiKey = process.env.TINYFISH_API_KEY;
+  let tinyfishCalls = 0;
+  let localCalls = 0;
+  try {
+    process.env.TINYFISH_API_KEY = 'platform-tinyfish-must-not-run';
+    const result = await runWithProviderContext({
+      provider: '360',
+      baseUrl: 'https://api.360.cn/v1',
+      apiKey: 'personal-360-key',
+      ownerUserId: 17,
+    }, () => fetchControlledWebEvidence([
+      { title: '公开正文', url: 'https://public.example/article' },
+    ], {
+      tinyfishFetchFn: async () => {
+        tinyfishCalls += 1;
+        throw new Error('个人Key上下文不得调用平台TinyFish');
+      },
+      fetchPageFn: async url => {
+        localCalls += 1;
+        return {
+          title: '本地受控正文',
+          url,
+          snippet: '本地受控摘要',
+          body: '本地受控抓取的公开网页正文满足最小证据长度。'.repeat(5),
+        };
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(tinyfishCalls, 0);
+    assert.equal(localCalls, 1);
+    assert.equal(result.provider, 'NanoWork controlled WebFetch');
+    assert.equal(result.evidence.renderedFetch, false);
+    assert.equal(result.evidence.platformTinyfishSkipped, true);
+  } finally {
+    if (previousApiKey === undefined) delete process.env.TINYFISH_API_KEY;
+    else process.env.TINYFISH_API_KEY = previousApiKey;
+  }
+});
+
+test('公开网页证据会抽出 Logo 图片和关于我们内页链接', () => {
+  const html = `
+    <html><body>
+      <a href="/About.aspx?CateId=64">企业文化</a>
+      <img class="img100" src="/skin/images/logo.png">
+      <img src="/skin/images/nav_ico.png">
+      <p>${'北京大鸭梨餐饮有限公司成立于1997年4月26日，公司公开资料用于核验正文长度。'.repeat(3)}</p>
+    </body></html>
+  `;
+  const assets = extractHtmlAssets(html, 'http://www.dayalihome.com/');
+  assert.equal(assets.images[0]?.isLogo, true);
+  assert.equal(assets.images[0]?.url, 'http://www.dayalihome.com/skin/images/logo.png');
+  assert.ok(assets.images.every(image => !/nav_ico/.test(image.url)));
+  assert.ok(assets.pageLinks.includes('http://www.dayalihome.com/About.aspx?CateId=64'));
 });

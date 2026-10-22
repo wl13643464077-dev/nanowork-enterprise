@@ -73,9 +73,10 @@ test('旧密文原样迁移到360槽、旧账号和旧码保持360；删除后�
   assert.equal(restartedAccess.testerProviderKey(oldUserId, '360'), null);
 });
 
-test('新账号默认OpenLux，两家Key独立加密与删除；缺少选中Key拒绝调用而不取其他槽', async () => {
+test('新账号默认360，可切换备用供应商；两家Key独立加密与删除且不借用其他槽', async () => {
   const user = owner();
-  assert.equal(api.testerMe(user).activeProvider, 'openlux');
+  assert.equal(api.testerMe(user).activeProvider, '360');
+  api.setTesterProvider(user, 'openlux');
   const key = 'fake-openlux-private-slot-key';
   api.setTesterKey(user, key);
   api.setTesterKey(user, 'fake-360-private-slot-key', '360');
@@ -93,10 +94,10 @@ test('新账号默认OpenLux，两家Key独立加密与删除；缺少选中Key�
 });
 
 test('在途对话与失败重试绑定创建时供应商；切换只影响新对话且不改原记录', async () => {
-  const user = owner(); api.setTesterKey(user, 'openlux-bound-test-key'); api.setTesterKey(user, '360-bound-test-key', '360');
+  const user = owner(); api.setTesterProvider(user, 'openlux'); api.setTesterKey(user, 'openlux-bound-test-key'); api.setTesterKey(user, '360-bound-test-key', '360');
   let release; const barrier = new Promise(resolve => { release = resolve; });
   const running = api.testerChat(user, input('bound-failed-turn'), { chatFn: async options => {
-    assert.equal(options.model, 'deepseek-v4-flash'); assert.equal(options.thinking, false); assert.equal(options.maxTokens, 2400);
+    assert.equal(options.model, 'deepseek-v4-flash'); assert.equal(options.thinking, false); assert.equal(options.maxTokens, 4000);
     assert.equal(providerContext().provider, 'openlux'); await barrier;
     assert.equal(providerContext().provider, 'openlux'); return reply('openlux', 'failed-upstream-cost', '');
   } });
@@ -117,7 +118,7 @@ test('在途对话与失败重试绑定创建时供应商；切换只影响新�
 });
 
 test('旧二维码固定供应商，两次额度不因切换重置；新码使用新选择且成本由对应销售Key承担', async () => {
-  const user = owner(); api.setTesterKey(user, 'openlux-invitation-test-key'); api.setTesterKey(user, '360-invitation-test-key', '360');
+  const user = owner(); api.setTesterProvider(user, 'openlux'); api.setTesterKey(user, 'openlux-invitation-test-key'); api.setTesterKey(user, '360-invitation-test-key', '360');
   const lead = customer(user); assert.equal(lead.invitation.provider, 'openlux');
   api.setTesterProvider(user, '360');
   assert.equal(api.createTesterInvitation(user, {}, 'https://example.test').provider, '360');
@@ -162,7 +163,7 @@ test('OpenLux回执验证quota/USD/汇率并按owner+provider+request去重，�
 });
 
 test('个人OpenLux实际chat协议独立查真实成本，不被平台计价配置关闭或走平台Key', async () => {
-  const user = owner(); const key = 'personal-openlux-protocol-only-key'; api.setTesterKey(user, key);
+  const user = owner(); api.setTesterProvider(user, 'openlux'); const key = 'personal-openlux-protocol-only-key'; api.setTesterKey(user, key);
   const previousFetch = globalThis.fetch; const urls = [];
   const { chat } = await import('../src/engines/yunwu.js');
   globalThis.fetch = async (url, options) => {
@@ -187,7 +188,7 @@ test('个人OpenLux实际chat协议独立查真实成本，不被平台计价配
 });
 
 test('OpenLux HTTP失败仍保存已核实上游费用，客户不扣次数且不消费平台余额', async () => {
-  const user = owner(); api.setTesterKey(user, 'openlux-error-receipt-private-key'); const lead = customer(user);
+  const user = owner(); api.setTesterProvider(user, 'openlux'); api.setTesterKey(user, 'openlux-error-receipt-private-key'); const lead = customer(user);
   const previousFetch = globalThis.fetch; const { chat } = await import('../src/engines/yunwu.js');
   globalThis.fetch = async url => {
     const target = new URL(url); assert.equal(target.origin, 'https://api.openlux.ai');
@@ -215,7 +216,7 @@ test('HTTP仅允许本人选择和分槽Key，返回profile不含密文、平台
   const url = `http://127.0.0.1:${server.address().port}/api/tester`;
   try {
     let result = await fetch(`${url}/key`, { method: 'PUT', headers, body: JSON.stringify({ apiKey: 'http-openlux-only-fake-key', provider: 'openlux', ownerUserId: oldUserId }) });
-    assert.equal(result.status, 200); let profile = await result.json(); assert.equal(profile.activeProvider, 'openlux');
+    assert.equal(result.status, 200); let profile = await result.json(); assert.equal(profile.activeProvider, '360');
     assert.ok(!JSON.stringify(profile).includes('http-openlux-only-fake-key')); assert.equal(access.testerProviderKey(oldUserId, 'openlux'), null);
     result = await fetch(`${url}/provider`, { method: 'PUT', headers, body: JSON.stringify({ provider: '360' }) });
     profile = await result.json(); assert.equal(result.status, 200); assert.equal(profile.activeProvider, '360'); assert.equal(profile.keyConfigured, false);

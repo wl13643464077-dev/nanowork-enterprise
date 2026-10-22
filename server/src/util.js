@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { q, db } from './db.js';
 import { jwtSecretStrengthError } from './security-config.js';
 import { publish } from './engines/event-bus.js';
-import { testerAccount, testerRequestAllowed } from './engines/tester-access.js';
+import { testerAccount, testerRequestAllowed, isTesterBusinessActor } from './engines/tester-access.js';
 
 export const SESSION_COOKIE = 'nanowork_session';
 const configuredSecret = String(process.env.JWT_SECRET || '');
@@ -161,7 +161,7 @@ export function authMiddleware(req, res, next) {
     return res.status(403).json({ error: '测试员账号未开通或已暂停', code: 'TESTER_INACTIVE' });
   }
   if (!testerRequestAllowed(tester, req)) {
-    return res.status(403).json({ error: '测试员账号仅可使用个人体验工作台，不能访问企业功能或创建子账号', code: 'TESTER_PORTAL_ONLY' });
+    return res.status(403).json({ error: '测试员可使用业务功能，不能管理平台配置、人员、席位或使用未适配个人Key的服务', code: 'TESTER_CAPABILITY_DENIED' });
   }
   req.user = { ...payload, ...current, tenant_id: Number(current.tenant_id) || 1,
     ...(tester ? { accountType: 'tester' } : {}) };
@@ -192,6 +192,8 @@ export function csrfOriginGuard({ allowedOrigins = new Set(), production = proce
 
 export function requireRole(...roles) {
   return (req, res, next) => {
+    if (roles.some(role => ['boss', 'admin', 'ops_director', 'manager'].includes(role))
+      && isTesterBusinessActor(req.user) && testerRequestAllowed({}, req)) return next();
     if (!roles.includes(req.user.role)) return res.status(403).json({ error: '无权限执行此操作' });
     next();
   };

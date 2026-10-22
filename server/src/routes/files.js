@@ -25,7 +25,10 @@ import {
   isImageExt,
 } from "../engines/filehub.js";
 import { FILE_SKILLS } from "../engines/skillrun.js";
-import { prepareRestaurantOutputForExport } from "../engines/restaurant-output-export.js";
+import {
+  prepareRestaurantArtifactSource,
+  SOURCE_ARTIFACT_RENDER_VERSION,
+} from "../engines/restaurant-output-export.js";
 import {
   loadAgentTaskSupersession,
   loadContentDeliveryState,
@@ -33,6 +36,7 @@ import {
 } from "../engines/delivery-state.js";
 import * as yunwu from "../engines/yunwu.js";
 import { canAccessOwner, userScopeClause } from "../engines/access.js";
+import { loadRevisionArtifactSource } from "../engines/report-refine.js";
 import crypto from "node:crypto";
 import { embedDoc } from "../engines/rag.js";
 
@@ -52,10 +56,11 @@ const LEGACY_SKILL_ARTIFACT_DIR = path.join(
 const MANAGERS = new Set(["boss", "ops_director", "admin"]);
 const AUTHORITATIVE_SOURCE_TYPES = new Set([
   "agent_task",
+  "agent_task_revision",
   "content_employee_run",
 ]);
 const DEFAULT_SOURCE_FORMATS = ["pdf", "docx", "xlsx"];
-export const SOURCE_ARTIFACT_RENDER_VERSION = "restaurant-readable-markdown/1";
+export { SOURCE_ARTIFACT_RENDER_VERSION };
 const ARTIFACT_MIME_TYPES = Object.freeze({
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -132,6 +137,10 @@ function authoritativeArtifactDraft(row) {
       WHERE tenant_id=? AND id=?`, curTenant(), sourceId);
     return run ? contentEmployeeRunDraftState(run) : null;
   }
+  if (sourceType === "agent_task_revision") {
+    // 修订稿是老板亲自定稿的工作版本，不走质量门草稿语义。
+    return loadRevisionArtifactSource(sourceId) ? false : null;
+  }
   return null;
 }
 
@@ -179,33 +188,10 @@ export function prepareAuthoritativeSourceBody(
     };
   }
 
-  const prepared = prepareRestaurantOutputForExport(original, {
+  return prepareRestaurantArtifactSource(original, {
     title: fallbackTitle,
     requirement,
   });
-  const rawSourceHash = sha256(original);
-  if (!prepared.candidate) {
-    // prepared.body 已剥掉机读归档块（若有）；导出文件用剥净正文并按其哈希缓存。
-    return {
-      body: prepared.body,
-      rawSourceHash,
-      sourceHash: sha256(prepared.body),
-      renderVersion: null,
-      sourceBodyKind: "markdown_or_text",
-      transformed: false,
-    };
-  }
-
-  return {
-    body: prepared.body,
-    rawSourceHash,
-    sourceHash: sha256(`${SOURCE_ARTIFACT_RENDER_VERSION}\0${prepared.body}`),
-    renderVersion: SOURCE_ARTIFACT_RENDER_VERSION,
-    sourceBodyKind: prepared.transformed
-      ? "restaurant_structured_json"
-      : "restaurant_structured_json_fallback",
-    transformed: prepared.transformed,
-  };
 }
 
 function parseArtifactMetadata(value) {
@@ -276,6 +262,20 @@ function resolveArtifactSource(
         updatedAt: row.updated_at || null,
       };
     }
+  } else if (type === "agent_task_revision") {
+    const revision = loadRevisionArtifactSource(id);
+    if (revision) {
+      source = {
+        type,
+        id,
+        ownerId: revision.ownerId,
+        title: revision.title.slice(0, 100),
+        body: revision.body,
+        status: revision.status,
+        draft: false,
+        updatedAt: revision.updatedAt,
+      };
+    }
   } else {
     row = q.get(
       `SELECT id,title,status,result_md,created_by,updated_at
@@ -310,6 +310,9 @@ function resolveArtifactSource(
     source.title,
     source.requirement,
   );
+  if (requireBody && !String(prepared.body || "").trim()) {
+    throw httpError(409, "数字员工尚未生成可供审阅的报告正文");
+  }
   return {
     ...source,
     ...prepared,

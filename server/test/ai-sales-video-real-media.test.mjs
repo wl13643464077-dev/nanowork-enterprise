@@ -105,7 +105,7 @@ test('真实FFmpeg：PNG中文字幕兼容无ASS环境，形成有声30秒1080p�
     const short = path.join(root, 'short.mp4');
     await run(['-i', clips[0], '-t', '10', '-c', 'copy', short]);
     await assert.rejects(composeAiSalesVideo({ ...options, segments: [short, clips[1]] }), /时长/u);
-    assert.equal(await fsp.access(path.join(root, 'rejected')).then(() => true, () => false), false);
+    assert.deepEqual(await fsp.readdir(path.join(root, 'rejected', '183')), [], '同盘任务临时目录清理完成，拒绝的音视频不留下半成品；空租户目录可保留');
 
     // Optional evidence directory is explicitly supplied by the test command;
     // never persist random tests/media into the application's live upload root.

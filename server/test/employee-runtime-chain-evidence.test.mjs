@@ -332,7 +332,14 @@ test(
         }),
       );
       const task = taskFor(idx);
-      const expectedPlan = compileEmployeePublicResearchPlan(execution, task);
+      // The search plan uses public place/category entities. The complete user
+      // task remains in research/generation context and must stay out of system.
+      const expectedSearchQuery = "太原吾悦广场 毛血旺 门店 地址 菜单 评价";
+      const expectedPlan = compileEmployeePublicResearchPlan(execution, {
+        ...task,
+        title: "太原吾悦广场",
+        requirement: expectedSearchQuery,
+      });
       const currentBindings =
         execution.workbench.runtimeBindings.currentRuntimeBindings;
 
@@ -498,6 +505,21 @@ test(
       assert.equal(generationCalls.length, 1);
       assert.ok(genericCalls.length >= 1);
       assert.deepEqual(result.web.skillResearchPlan, expectedPlan);
+      assert.equal(agenticCalls[0].options.searchQuery, expectedSearchQuery);
+      assert.doesNotMatch(
+        agenticCalls[0].options.searchQuery,
+        /USER_ONLY_TASK_|INTERNAL_SYSTEM_ONLY_|数字员工|岗位职责|只形成内部报告/u,
+        "实际搜索词只保留地点和品类，不能复制任务标记、执行指令或私有system",
+      );
+      assert.ok(
+        agenticCalls[0].query.includes(task.title) &&
+          agenticCalls[0].query.includes(task.requirement),
+        "精简实际搜索词不能丢失调研上下文中的完整用户任务",
+      );
+      for (const query of result.web.skillResearchPlan.queries) {
+        assert.ok(query.startsWith(expectedSearchQuery));
+        assert.doesNotMatch(query, /USER_ONLY_TASK_|INTERNAL_SYSTEM_ONLY_/u);
+      }
       assert.equal(
         result.web.skillResearchPlan.skillCount,
         execution.snapshot.skills.length,

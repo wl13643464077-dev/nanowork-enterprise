@@ -5,6 +5,7 @@ const text = value => String(value ?? '').trim();
 export const READINESS_STATUS_META = Object.freeze({
   connected: Object.freeze({ label: '已验证就绪', color: 'green', badge: 'success' }),
   local_ready: Object.freeze({ label: '本地能力已就绪', color: 'blue', badge: 'success' }),
+  configured_ready: Object.freeze({ label: '已配置，可直接使用', color: 'blue', badge: 'success' }),
   configured_unverified: Object.freeze({ label: '已配置，需验证', color: 'gold', badge: 'warning' }),
   degraded: Object.freeze({ label: '真实通道未配置', color: 'orange', badge: 'warning' }),
   blocked: Object.freeze({ label: '前置条件未满足', color: 'red', badge: 'error' }),
@@ -22,6 +23,12 @@ const READINESS_VERIFICATION_LABEL = Object.freeze({
 });
 
 export function runtimeReadinessMeta(item) {
+  // AI 与联网检索的显式诊断是可选排障工具。只要服务端仍确认配置完整，
+  // 主状态就保持“可直接使用”；verification 字段另行如实展示失败/过期，
+  // 不能让一次旧诊断重新变成使用前置门。
+  if (item?.effective === 'configured_ready') {
+    return READINESS_STATUS_META.configured_ready;
+  }
   if (item?.verification === 'failed') {
     return { label: '最近验证失败', color: 'red', badge: 'error' };
   }
@@ -39,6 +46,9 @@ export function runtimeReadinessConfigLabel(item) {
 }
 
 export function runtimeReadinessVerificationLabel(item) {
+  if (item?.effective === 'configured_ready' && item?.verification === 'never') {
+    return '无需验证，可直接使用';
+  }
   return READINESS_VERIFICATION_LABEL[item?.verification] || '验证状态未上报';
 }
 

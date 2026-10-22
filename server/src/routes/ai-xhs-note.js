@@ -12,6 +12,7 @@ import { holdCredits, settleHold, releaseHold, refundHold, getSupplierExpense, e
 import { executeHeldDelivery, twoPhaseBillingSummary, withImmediateTransaction } from '../engines/two-phase-delivery.js';
 import { scanText } from '../engines/risk.js';
 import { buildNativeContentSkillContext } from '../engines/native-content-skill-context.js';
+import { brandMatchExcerpts, campaignBrandIdentity, isPlatformBrandStamp } from '../engines/brand-knowledge-pack.js';
 import { activeContentEvolutionNotes } from '../engines/employee-evolution.js';
 import { evolutionNotesPromptLines, sanitizeEvolutionNotesForPrompt } from '../engines/employee-evolution-prompt.js';
 import { approvedNativeChatPlan } from '../engines/native-creative-chat-store.js';
@@ -718,6 +719,12 @@ router.post('/ai-xhs-note', (req, res) => {
     }
     const actor = { ...req.user }, tenantId = curTenant();
     const input = normalizeXhsNoteInput(req.body);
+    try {
+      const identity = campaignBrandIdentity();
+      if (identity?.brandName && isPlatformBrandStamp(input.brandName)) {
+        input.brandName = identity.brandName;
+      }
+    } catch { /* 知识包未就绪时沿用表单品牌名 */ }
     if (input.generateImages && !imageRoleAllowed(req.user.role)) throw fail('当前角色未开通图片生成，可关闭配图仅生成文案。尚未发起生成或扣费。', 403);
     const inputHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
     const existing = q.get(`SELECT * FROM contents WHERE tenant_id=? AND creator_id=? AND source_type=? AND json_extract(snapshot_json,'$.input.requestKey')=?`, tenantId, actor.id, XHS_NOTE_SOURCE, input.requestKey);
@@ -737,8 +744,9 @@ router.post('/ai-xhs-note', (req, res) => {
     });
     const skillContext = buildNativeContentSkillContext(11, { tenantId, userId: actor.id });
     const notes = sanitizeEvolutionNotesForPrompt(activeContentEvolutionNotes(11, { tenantId }));
-    const system = [skillContext.prompt, ...evolutionNotesPromptLines(notes), XHS_NOTE_SYSTEM].join('\n\n');
-    const prompt = xhsNotePrompt(input, files);
+    const brandPack = brandMatchExcerpts(`${input.brandName} ${input.brief} 小红书种草`);
+    const system = [skillContext.prompt, brandPack, ...evolutionNotesPromptLines(notes), XHS_NOTE_SYSTEM].filter(Boolean).join('\n\n');
+    const prompt = xhsNotePrompt(input, files, { brandPack });
     const model = routing().vision;
     const estimate = (runtime.estimate || estimateCallCredits)({ model, texts: [system, prompt], outputTokens: 6000, overheadTokens: 12000 * files.length });
     let hold, id, duplicateRow;
@@ -790,7 +798,12 @@ router.post('/ai-xhs-note', (req, res) => {
               maxTokens: 6000, timeoutMs: 300000, providerPolicy: 'yunwu_only', fallback: () => '' });
           },
           persist: result => {
-            const output = parseXhsNoteOutput(result, { brandName: input.brandName, files, confirmedDetails: input.brief, input });
+            const output = parseXhsNoteOutput(result, {
+              brandName: input.brandName,
+              files,
+              confirmedDetails: [input.brief, brandPack].filter(Boolean).join('\n'),
+              input,
+            });
             const body = xhsNoteMarkdown(output);
             const risk = scanText(body);
             if (risk.hits.length) output.warnings.push(...risk.hits.map(hit => `发布前请核对：${hit.name}`));

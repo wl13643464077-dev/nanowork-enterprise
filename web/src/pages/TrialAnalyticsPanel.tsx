@@ -34,6 +34,19 @@ type EmployeeAnalytics = AnalyticsAmount & {
   failedCalls: number;
 };
 type AnalyticsData = {
+  departments?: Array<
+    AnalyticsAmount & {
+      department: string;
+      testerCount: number;
+      approvedTesters: number;
+      totalCustomers: number;
+      usedCustomers: number;
+      unusedCustomers: number;
+      successfulConversations: number;
+      totalCalls: number;
+      failedCalls: number;
+    }
+  >;
   summary: AnalyticsSummary;
   period: { days: string | number; from?: string; to: string; timeZone: string };
   timeline: Array<
@@ -67,9 +80,10 @@ type AnalyticsData = {
   definitions?: Record<string, string>;
 };
 
-export function trialAnalyticsPath(admin: boolean, days: string, ownerUserId?: number) {
+export function trialAnalyticsPath(admin: boolean, days: string, ownerUserId?: number, department?: string) {
   const params = new URLSearchParams({ days, scope: 'customers' });
   if (admin && ownerUserId) params.set('ownerUserId', String(ownerUserId));
+  if (admin && department !== undefined) params.set('department', department);
   return `/tester/${admin ? 'admin/' : ''}analytics?${params}`;
 }
 export function actuallyUsedEmployees<T extends { totalCalls: number; successfulConversations: number }>(rows: T[]) {
@@ -90,19 +104,22 @@ export default function TrialAnalyticsPanel({
   admin = false,
   testers = [],
   refreshKey = 0,
+  department,
 }: {
   admin?: boolean;
   testers?: Array<{ id: number; name: string; phone: string }>;
   refreshKey?: number;
+  department?: string;
 }) {
   const [days, setDays] = useState('30');
-  const [dimension, setDimension] = useState('functions');
+  const [dimension, setDimension] = useState(admin ? 'departments' : 'functions');
   const [ownerUserId, setOwnerUserId] = useState<number>();
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
-  const path = trialAnalyticsPath(admin, days, ownerUserId);
+  const selectedOwnerUserId = testers.some(tester => tester.id === ownerUserId) ? ownerUserId : undefined;
+  const path = trialAnalyticsPath(admin, days, selectedOwnerUserId, department);
   const retry = useCallback(() => setReload(value => value + 1), []);
   useEffect(() => {
     let active = true;
@@ -160,7 +177,7 @@ export default function TrialAnalyticsPanel({
             optionFilterProp="label"
             aria-label="按销售筛选看板"
             placeholder="全部销售 / 测试员"
-            value={ownerUserId}
+            value={selectedOwnerUserId}
             onChange={setOwnerUserId}
             options={testers.map(tester => ({ value: tester.id, label: `${tester.name} · ${tester.phone}` }))}
             style={{ minWidth: 240 }}
@@ -225,7 +242,7 @@ export default function TrialAnalyticsPanel({
                     </span>
                     <span>未体验 {summary.unusedCustomers} 人</span>
                   </div>
-                  <p className="trial-muted trial-small">其中 2 次已用完：{metric(summary.exhaustedCustomers)} 人</p>
+                  <p className="trial-muted trial-small">其中体验额度已用完：{metric(summary.exhaustedCustomers)} 人</p>
                 </>
               ) : (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个时间范围还没有客户申请" />
@@ -270,6 +287,53 @@ export default function TrialAnalyticsPanel({
             activeKey={dimension}
             onChange={setDimension}
             items={[
+              ...(admin
+                ? [
+                    {
+                      key: 'departments',
+                      label: '部门效果',
+                      children: (
+                        <>
+                          <p className="trial-muted">
+                            按测试员当前部门归集。已体验率是客户成功体验比例，不代表付费成交率；通过上方部门与销售筛选，继续查看功能和模型。
+                          </p>
+                          <Table
+                            rowKey="department"
+                            dataSource={data.departments || []}
+                            pagination={{ pageSize: 10 }}
+                            scroll={{ x: 1000 }}
+                            columns={[
+                              { title: '部门／团队', dataIndex: 'department', render: value => value || '未分类' },
+                              {
+                                title: '测试员 / 已开通',
+                                render: (_, row) => `${row.testerCount} / ${row.approvedTesters}`,
+                              },
+                              {
+                                title: '申请客户',
+                                dataIndex: 'totalCustomers',
+                                sorter: (a, b) => a.totalCustomers - b.totalCustomers,
+                              },
+                              {
+                                title: '已体验 / 未体验',
+                                render: (_, row) => `${row.usedCustomers} / ${row.unusedCustomers}`,
+                              },
+                              {
+                                title: '已体验率',
+                                render: (_, row) =>
+                                  row.totalCustomers
+                                    ? `${Math.round((row.usedCustomers / row.totalCustomers) * 100)}%`
+                                    : '—',
+                              },
+                              { title: '成功问答', dataIndex: 'successfulConversations' },
+                              { title: '调用 / 失败', render: (_, row) => `${row.totalCalls} / ${row.failedCalls}` },
+                              { title: '已核实成本', render: (_, row) => <CostCell {...row} /> },
+                            ]}
+                          />
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
               {
                 key: 'functions',
                 label: '实际使用的功能',
@@ -338,7 +402,7 @@ export default function TrialAnalyticsPanel({
                       className="trial-notice"
                       showIcon
                       message="关注依据是客户主动选择过的岗位，以及实际成功使用的岗位；不是购买意向预测。"
-                      description="同一客户多次选择同一岗位只计 1 人。选择岗位不会消耗两次体验额度。"
+                      description="同一客户多次选择同一岗位只计 1 人。选择岗位不会消耗体验次数。"
                     />
                     <Table
                       rowKey="employeeId"

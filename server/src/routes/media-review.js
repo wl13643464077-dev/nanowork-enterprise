@@ -6,6 +6,8 @@ import { twoPhaseBillingSummary } from '../engines/two-phase-delivery.js';
 import { loadContentDeliveryState } from '../engines/delivery-state.js';
 import { publicVoicedSalesProgress, voicedSalesDeliveryVerified, voicedSalesRecoveryAvailable } from '../engines/ai-sales-video-presentation.js';
 import { nativeDownloadMetadata } from '../engines/native-deliverables.js';
+import { getSupplierExpense } from '../engines/credits.js';
+import { isTesterBusinessActor } from '../engines/tester-access.js';
 
 const r = Router();
 
@@ -32,7 +34,7 @@ const MANUAL_MEDIA_SOURCE_TYPES = new Set([
 ]);
 
 export function canReviewMedia(user) {
-  return MEDIA_REVIEW_ROLES.has(String(user?.role || ''));
+  return MEDIA_REVIEW_ROLES.has(String(user?.role || '')) || isTesterBusinessActor(user);
 }
 
 function canViewInternalProfile(user) {
@@ -331,6 +333,29 @@ function mediaBilling(job) {
     });
   }
   const settledCredits = Number(holdRow.settled_credits || 0);
+  const snapshot = safeJson(job?.snapshot_json, {}) || {};
+  const refundedRecovery = job?.status === '成功' && snapshot.workflow === 'ai_sales_video'
+    && snapshot.audioMode === 'provider_native' && snapshot.phase === 'complete'
+    && snapshot.billing?.recoveredAfterRefund === true && snapshot.billing?.state === 'released'
+    && snapshot.recovery?.source === 'verified_local_clips' && snapshot.recovery?.stage === 'complete'
+    && snapshot.recovery?.providerSubmissions === 0 && snapshot.recovery?.refundedBillPreserved === true
+    && holdRow.status === 'settled' && settledCredits === 0
+    && Number(snapshot.billing?.holdId) === Number(holdRow.id)
+    && Number(holdRow.user_id) === Number(job.user_id) && Number(holdRow.billing_log_user_id) === Number(job.user_id)
+    && holdRow.kind === 'video' && holdRow.billing_log_kind === 'video'
+    && holdRow.billing_log_ai_mode === 'failed' && Number(holdRow.billing_log_credits) === 0;
+  if (refundedRecovery) {
+    const expense = getSupplierExpense(holdRow.id, curTenant());
+    if (expense?.refundedAt && Number(expense.userId) === Number(job.user_id)
+      && Number(expense.tenantId) === Number(curTenant()) && Number(expense.holdId) === Number(holdRow.id)
+      && Number(expense.refundedCredits) === Number(holdRow.held_credits)) {
+      return { state: 'not_required', code: 'MEDIA_BILLING_RECOVERED_AFTER_REFUND', exempt: true, authoritative: true,
+        holdId: Number(holdRow.id), estimatedCredits: 0, heldCredits: 0, chargedCredits: 0, credits: 0,
+        balance: holdRow.balance_after ?? null, costYuan: expense.costYuan ?? null, pendingReconciliation: false,
+        evidenceSource: 'refunded_supplier_expense_and_local_recovery', evidenceSourceId: Number(holdRow.id),
+        note: '已免费恢复原片并完成字幕；原退款保留，用户不扣积分，供应商成本由平台承担。', error: null };
+    }
+  }
   const released = String(job?.status || '') === '失败' && settledCredits === 0;
   if (released) return {
     ...twoPhaseBillingSummary({

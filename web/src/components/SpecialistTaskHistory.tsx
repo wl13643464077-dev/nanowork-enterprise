@@ -334,6 +334,10 @@ export function HistoryItem({
   );
 }
 
+// 历史默认折叠：对话区的最新结果才是主角，历史只在老板想翻的时候展开，
+// 且一次只显示最近几条，避免页面被几十条记录拉得很长。
+const HISTORY_PAGE_SIZE = 5;
+
 export default function SpecialistTaskHistory({
   title,
   rows,
@@ -342,29 +346,58 @@ export default function SpecialistTaskHistory({
   onReload,
   onBusinessDecision,
 }: SpecialistTaskHistoryProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE);
+  const visibleRows = rows.slice(0, visibleCount);
+  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return (
     <section className="specialist-task-history" aria-label={title}>
       <header>
         <div>
-          <h3>{title}</h3>
-          <p>每次输入和结果都保留在这里。展开即可查看、下载，并选择采纳或不采纳。</p>
+          <h3>
+            {title}
+            {rows.length > 0 && <span className="specialist-task-history__count">（{rows.length} 条）</span>}
+          </h3>
+          <p>
+            {expanded
+              ? '每次输入和结果都保留在这里。展开单条即可查看、下载，并选择采纳或不采纳。'
+              : '历史记录已收起，不影响上方最新结果；需要回看或采纳旧记录时再展开。'}
+          </p>
         </div>
-        {onReload && (
-          <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => void onReload()}>
-            刷新历史
+        <div className="specialist-task-history__actions">
+          <Button
+            size="small"
+            aria-expanded={expanded}
+            onClick={() => {
+              setExpanded(value => !value);
+              setVisibleCount(HISTORY_PAGE_SIZE);
+            }}
+          >
+            {expanded ? '收起历史' : '展开历史'}
           </Button>
-        )}
-      </header>
-      {error && <Alert type="warning" showIcon message={error} />}
-      {!rows.length && !loading ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有生成记录" />
-      ) : (
-        <div className="specialist-task-history__list">
-          {rows.map(row => (
-            <HistoryItem key={`${row.kind}:${row.id}`} row={row} onBusinessDecision={onBusinessDecision} />
-          ))}
+          {expanded && onReload && (
+            <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => void onReload()}>
+              刷新历史
+            </Button>
+          )}
         </div>
-      )}
+      </header>
+      {expanded && error && <Alert type="warning" showIcon message={error} />}
+      {expanded &&
+        (!rows.length && !loading ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有生成记录" />
+        ) : (
+          <div className="specialist-task-history__list">
+            {visibleRows.map(row => (
+              <HistoryItem key={`${row.kind}:${row.id}`} row={row} onBusinessDecision={onBusinessDecision} />
+            ))}
+            {hiddenCount > 0 && (
+              <Button block size="small" onClick={() => setVisibleCount(value => value + HISTORY_PAGE_SIZE)}>
+                显示更早的 {hiddenCount} 条
+              </Button>
+            )}
+          </div>
+        ))}
     </section>
   );
 }

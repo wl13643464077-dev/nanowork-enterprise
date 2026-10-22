@@ -3,14 +3,14 @@
  *
  * 锁定：
  * 1) 非安全类质量失败：所有尝试用尽后落“未达标草稿”，正文原样入库，agent_tasks=草稿待处理，
- *    fail_reason/contract_report/contract_tier 落库，预授权按真实用量结算（不释放）；
+ *    fail_reason/contract_report/contract_tier 落库；不可采纳的来源错误草稿退款，可交付正文维持计费；
  * 2) 安全类失败（声称已外发/付款）：不落草稿，任务失败，预授权释放；
  * 3) accept-draft：权限、状态翻转、来源类失败不可接受；
  * 4) supersede 对草稿任务仍可用；/meta/enums 含新状态；
  * 5) marshalWork 墙钟耗尽时错误对象带 failReason=timeout 的草稿；
  * 6) 契约 JSON 模式的 repair 提示词包含首轮产物片段、失败规则清单与“原样保留”指令。
  */
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,10 +33,21 @@ process.env.ENABLE_BACKGROUND_EMBEDDINGS = "false";
 process.env.ENABLE_SCHEDULER = "false";
 delete process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE;
 
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (input, options) => {
+  const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+  assert.ok(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname),
+    "离线草稿回归只允许访问本机测试 HTTP 服务");
+  return originalFetch(input, options);
+};
+after(() => { globalThis.fetch = originalFetch; });
+
 const { initSchema, migrateV2, q, runWithTenant } = await import("../src/db.js");
 const { ensureBaselineCatalogs } = await import("../src/baseline.js");
 const { buildEmployeeExecutionProfile } = await import("../src/employee-workbench.js");
 const { marshalWork } = await import("../src/engines/ai.js");
+const { holdCredits, settleHold, refundHold, getSupplierExpense } = await import("../src/engines/credits.js");
+const { hasStoredAiDelivery } = await import("../src/engines/stored-ai-delivery.js");
 const marshalRoutes = (await import("../src/routes/marshals.js")).default;
 const metaRoutes = (await import("../src/routes/meta.js")).default;
 
@@ -88,6 +99,22 @@ function restaurantSource(index) {
   };
 }
 const ALLOWED_SOURCE = restaurantSource(1);
+
+let receiptSequence = 0;
+function offlineSupplierCost(amount = 0.01) {
+  return {
+    status: "known",
+    costYuanOverride: amount,
+    costSource: {
+      type: "provider_receipt", provider: "openlux", basis: "upstream_debit",
+      requestId: `draft-refund-offline-${++receiptSequence}`,
+      currency: "USD", amount, exchangeRate: 1,
+      quota: amount * 500000, quotaPerUnit: 500000,
+      exchangeRateSource: "https://api.openlux.ai/api/status",
+      statusRetrievedAt: "2026-09-06T00:00:00.000Z",
+    },
+  };
+}
 
 const GOOD_MARKDOWN = `# 太原吾悦广场粤菜馆晚市机会判断
 
@@ -247,7 +274,7 @@ function readTask(taskId) {
 
 function readHold(taskId) {
   return q.get(
-    `SELECT h.status,h.held_credits,h.settled_credits FROM credit_holds h
+    `SELECT h.id,h.log_id,h.status,h.held_credits,h.settled_credits FROM credit_holds h
       WHERE h.tenant_id=? AND h.ref_type='agent_task' AND h.ref_id=? ORDER BY h.id DESC LIMIT 1`,
     TENANT_ID,
     taskId,
@@ -275,16 +302,17 @@ async function dispatchAndWait(base, body) {
 
 const REQUIREMENT = "工作日晚市上座不足，评估两人套餐机会并给出可执行动作。";
 
-test("非安全类失败：所有尝试用尽后落未达标草稿，正文原样入库，预授权按真实用量结算", async () => {
+test("来源错误草稿：正文原样留底但不可采纳，积分全退且任务查询显示净扣零", async () => {
   const { app, generated } = bootApp((args) => ({
     text: FABRICATED_SOURCE_MARKDOWN,
     mode: "api",
     model: args.model,
-    usage: { inputTokens: 1000, outputTokens: 500 },
+    usage: { inputTokens: 1000, outputTokens: 500, supplierCosts: [offlineSupplierCost()] },
     finishReason: "stop",
   }));
   const { server, base } = await listen(app);
   try {
+    const balanceBefore = q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits;
     const { taskId, row } = await dispatchAndWait(base, {
       title: "粤菜馆 太原吾悦广场 晚市机会评估·补造来源",
       type: "经营诊断",
@@ -305,19 +333,34 @@ test("非安全类失败：所有尝试用尽后落未达标草稿，正文原�
     assert.equal(snapshot.outputContract.valid, false);
     assert.equal(snapshot.outputContract.draft, true);
     assert.equal(snapshot.failure.presentationKey, "draft_pending");
-    // 账务：模型真实消耗了，按三轮聚合用量结算，不是释放
+    // 不可采纳草稿仅供诊断留底，模型消耗不能变成用户扣费。
     const hold = readHold(taskId);
     assert.equal(hold?.status, "settled");
-    assert.ok(Number(hold.settled_credits) > 0, `应按真实用量结算，实际=${hold.settled_credits}`);
+    assert.equal(Number(hold.settled_credits), 0, "来源错误草稿应在结算前全额退款");
+    assert.equal(hasStoredAiDelivery({ holdId: hold.id, tenantId: TENANT_ID, userId: bossId }), false,
+      "非空诊断正文不应被误认为可交付成果");
+    assert.equal(q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits, balanceBefore);
+    const expense = getSupplierExpense(hold.id, TENANT_ID);
+    assert.equal(expense?.status, "known", "退款不能抹掉已核实供应商支出");
+    assert.ok(Math.abs(expense.costYuan - generated.length * 0.01) < 1e-9);
+    assert.equal(expense.costSource.requestIds.length, generated.length);
+    assert.equal(expense.refundedCredits, Number(hold.held_credits));
+    assert.ok(expense.refundedAt);
 
     // 状态接口：老板可读文案，不出现契约 ID/指纹/字段路径
     const statusResponse = await fetch(`${base}/marshals/tasks/${taskId}/status`);
     const status = await statusResponse.json();
+    assert.equal(statusResponse.status, 200, JSON.stringify(status));
     assert.equal(status.presentationKey, "draft_pending");
     assert.equal(status.displayStatus, "未达标草稿（待老板处理）");
     assert.equal(status.draft?.state, "pending");
     assert.equal(status.draft?.acceptable, false);
     assert.equal(status.draft?.canAccept, false);
+    assert.equal(status.billing?.state, "refunded");
+    assert.equal(status.billing?.credits, 0);
+    assert.equal(status.billing?.settledCredits, 0);
+    assert.equal(status.billing?.refundedCredits, Number(hold.held_credits));
+    assert.equal(status.billing?.authoritative, true);
     assert.ok(status.draft.failedCheckCount >= 1);
     assert.match(status.flow.join("|"), /质量门未通过（已保留草稿）/u);
     const draftText = JSON.stringify(status.draft);
@@ -333,6 +376,111 @@ test("非安全类失败：所有尝试用尽后落未达标草稿，正文原�
     assert.equal(accept.status, 409);
     assert.equal((await accept.json()).code, "DRAFT_NOT_ACCEPTABLE");
   } finally {
+    server.close();
+  }
+});
+
+test("历史已结算任务退款：保留原账单，重复调用不增发，任务查询显示净扣零", async () => {
+  const taskId = Number(q.run(
+    `INSERT INTO agent_tasks(tenant_id,marshal_id,specialist_id,title,type,status,created_by)
+     VALUES(?,?,?,?,?,'失败',?)`,
+    TENANT_ID, specialist.marshal_id, specialist.id, "历史已结算退款账务探针", "经营诊断", bossId,
+  ).lastInsertRowid);
+  const balanceBefore = q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits;
+  const hold = holdCredits({
+    tenantId: TENANT_ID, userId: bossId, feature: "历史员工任务", kind: "text",
+    model: "deepseek-v4-flash", credits: 100, refType: "agent_task", refId: taskId,
+  });
+  const settled = settleHold(hold, {
+    usage: { inputTokens: 1000, outputTokens: 500, supplierCosts: [offlineSupplierCost()] },
+    note: "隔离测试：模拟旧版本已经结算的任务",
+  });
+  assert.ok(settled?.credits > 0);
+  const originalHold = readHold(taskId);
+  const originalLog = q.get("SELECT * FROM credit_logs WHERE tenant_id=? AND id=?", TENANT_ID, hold.logId);
+  const originalExpense = getSupplierExpense(hold.holdId, TENANT_ID);
+  const refunded = refundHold(hold, { note: "隔离测试：历史任务最终无可交付成果" });
+  assert.equal(refunded.refundedCredits, settled.credits);
+  assert.equal(refunded.duplicate, false);
+  assert.equal(q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits, balanceBefore);
+  assert.deepEqual(readHold(taskId), originalHold);
+  assert.deepEqual(q.get("SELECT * FROM credit_logs WHERE tenant_id=? AND id=?", TENANT_ID, hold.logId), originalLog);
+  const expense = getSupplierExpense(hold.holdId, TENANT_ID);
+  assert.equal(expense.status, originalExpense.status);
+  assert.equal(expense.costYuan, originalExpense.costYuan);
+  assert.deepEqual(expense.costSource, originalExpense.costSource);
+  const refundLog = q.get("SELECT * FROM credit_logs WHERE tenant_id=? AND id=?", TENANT_ID, expense.refundLogId);
+  assert.equal(refundLog.credits, -settled.credits);
+  assert.equal(refundLog.kind, "refund");
+  assert.equal(refundLog.cost_yuan, 0);
+  const ledgerBeforeRetry = q.all("SELECT * FROM credit_logs WHERE tenant_id=? ORDER BY id", TENANT_ID);
+  assert.equal(refundHold(hold).duplicate, true);
+  assert.deepEqual(q.all("SELECT * FROM credit_logs WHERE tenant_id=? ORDER BY id", TENANT_ID), ledgerBeforeRetry);
+  assert.equal(q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits, balanceBefore);
+
+  const { server, base } = await listen(bootApp(() => { throw new Error("账务查询不得调用模型"); }).app);
+  try {
+    const response = await fetch(`${base}/marshals/tasks/${taskId}/status`);
+    const status = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(status));
+    assert.equal(status.billing?.state, "refunded");
+    assert.equal(status.billing?.credits, 0);
+    assert.equal(status.billing?.refundedCredits, settled.credits);
+    assert.equal(status.billing?.settledCredits, settled.credits, "原结算金额保留供审计");
+    assert.equal(status.billing?.authoritative, true);
+  } finally {
+    server.close();
+  }
+});
+
+test("可采纳草稿：非来源质量缺陷保留正文，仍结算真实用量且允许老板选择", async () => {
+  const { buildRestaurantOutputDeliverableFixture, getRestaurantOutputContract } = await import(
+    "../src/engines/restaurant-output-contract.js"
+  );
+  const task = {
+    title: "粤菜馆 太原吾悦广场 晚市机会评估·责任分工待完善",
+    type: "经营诊断", requirement: REQUIREMENT,
+  };
+  const contract = getRestaurantOutputContract(102);
+  const { app } = bootApp(args => {
+    const fixture = buildRestaurantOutputDeliverableFixture(102, task);
+    fixture.decision_context.sources.push({
+      source: `${ALLOWED_SOURCE.title}｜${ALLOWED_SOURCE.url}`,
+      period: new Date().toISOString().slice(0, 10),
+      fact: "离线测试来源，仅用于验证链路。",
+    });
+    const action = fixture.deliverables[contract.deliverableKeys[0]].actions[0];
+    action.owner = "相关人员";
+    action.deadline = "尽快";
+    return {
+      text: JSON.stringify(fixture), mode: "api", model: args.model, finishReason: "stop",
+      usage: { inputTokens: 900, outputTokens: 400, supplierCosts: [offlineSupplierCost()] },
+    };
+  });
+  const { server, base } = await listen(app);
+  const previousStyle = process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE;
+  process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE = "contract_json";
+  try {
+    const balanceBefore = q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits;
+    const { taskId, row } = await dispatchAndWait(base, task);
+    assert.equal(row?.status, "草稿待处理", row?.contract_report || row?.employee_web_snapshot);
+    assert.equal(row.content_status, "未达标草稿");
+    assert.equal(JSON.parse(row.contract_report).acceptable, true, row.contract_report);
+    const hold = readHold(taskId);
+    assert.equal(hold?.status, "settled");
+    assert.ok(Number(hold.settled_credits) > 0);
+    assert.equal(hasStoredAiDelivery({ holdId: hold.id, tenantId: TENANT_ID, userId: bossId }), true);
+    assert.equal(q.get("SELECT credits FROM tenants WHERE id=?", TENANT_ID).credits,
+      balanceBefore - Number(hold.settled_credits));
+    assert.equal(getSupplierExpense(hold.id, TENANT_ID)?.refundedAt, null);
+    const status = await (await fetch(`${base}/marshals/tasks/${taskId}/status`)).json();
+    assert.equal(status.draft?.acceptable, true);
+    assert.equal(status.draft?.canAccept, true);
+    assert.equal(status.billing?.state, "settled");
+    assert.equal(status.billing?.credits, Number(hold.settled_credits));
+  } finally {
+    if (previousStyle === undefined) delete process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE;
+    else process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE = previousStyle;
     server.close();
   }
 });
@@ -357,6 +505,17 @@ test("安全类失败（声称已付款/已外发）：不落草稿，任务失�
     assert.equal(row.fail_reason, null);
     const snapshot = JSON.parse(row.employee_web_snapshot);
     assert.equal(snapshot.failure.category, "quality_rework");
+    assert.ok(snapshot.failure.safetySignals.length > 0);
+    assert.equal(
+      snapshot.failure.safetySignals[0].ruleId,
+      "unauthorized_external_action_claim",
+    );
+    assert.match(snapshot.failure.safetySignals[0].match, /已(?:完成)?付款|已经付款/u);
+    assert.ok(
+      snapshot.failure.safetySignals.every(
+        (signal) => signal.snippet.length <= 180,
+      ),
+    );
     const hold = readHold(taskId);
     assert.equal(hold?.status, "settled");
     assert.equal(Number(hold.settled_credits), 0, "安全类失败应全额退回");
@@ -368,7 +527,7 @@ test("安全类失败（声称已付款/已外发）：不落草稿，任务失�
 test("短稿正常交付：普通员工不能越权采纳，老板采纳后可用于业务且只生成一次", async () => {
   const { app, generated } = bootApp((args) => ({
     text: SHORT_MARKDOWN, mode: "api", model: args.model,
-    usage: { inputTokens: 600, outputTokens: 120 }, finishReason: "stop",
+    usage: { inputTokens: 600, outputTokens: 120, supplierCosts: [offlineSupplierCost()] }, finishReason: "stop",
   }));
   const { server, base } = await listen(app);
   let taskId, outputId;
@@ -385,6 +544,12 @@ test("短稿正常交付：普通员工不能越权采纳，老板采纳后可�
     const snapshot = JSON.parse(dispatched.row.employee_web_snapshot);
     assert.equal(snapshot.outputContract.valid, true);
     assert.equal(snapshot.outputContract.qualityReview.requiresUserDecision, true);
+    const hold = readHold(taskId);
+    assert.equal(hold?.status, "settled");
+    assert.ok(Number(hold.settled_credits) > 0, "可交付短稿仍按用量计费");
+    const status = await (await fetch(`${base}/marshals/tasks/${taskId}/status`)).json();
+    assert.equal(status.billing?.state, "settled");
+    assert.equal(status.billing?.credits, Number(hold.settled_credits));
   } finally { server.close(); }
 
   const sales = await listen(bootApp(() => ({}), { id: salesId, name: "普通员工", role: "sales" }).app);
@@ -419,7 +584,7 @@ test("supersede 对草稿任务仍可用：合格新任务可以取代草稿任�
     text: attempt <= 3 ? FABRICATED_SOURCE_MARKDOWN : GOOD_MARKDOWN,
     mode: "api",
     model: args.model,
-    usage: { inputTokens: 1000, outputTokens: 500 },
+    usage: { inputTokens: 1000, outputTokens: 500, supplierCosts: [offlineSupplierCost()] },
     finishReason: "stop",
   }));
   const { server, base } = await listen(app);

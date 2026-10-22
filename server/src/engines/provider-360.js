@@ -52,22 +52,20 @@ export function is360ImageModelId(id) {
   return typeof id === 'string' && !/video|vision|-vl|embedding/i.test(id) && IMAGE_MODEL_ID.test(id);
 }
 
-// 2026-09-07 finding: every 1001 image failure (Image2, Nano Banana, 万相2.7,
-// Seedream) came with a same-key directory that listed the working video model
-// and zero image models. The directory therefore does reflect what this
-// organization may call; the block is on the provider side, not in our body.
+// The directory is informational. Hidden image routes can work even when
+// /models lists no image models; only a generation response verifies access.
 export function describe360ImageAvailability(models, configured = {}) {
   const ids = directoryIds(models);
   const configuredModel = configured.image || PROVIDER_360_IMAGE_MODEL;
   const imageModels = [...ids].filter(is360ImageModelId);
   const videoListed = ids.has(configured.videoDefault || PROVIDER_360_VIDEO_MODEL);
   if (ids.has(configuredModel)) return { verdict: 'configured_listed', configuredModel, imageModels, videoListed,
-    message: `目录已向本组织开放 ${configuredModel}；是否真实出图仍以生成接口返回为准` };
+    message: `目录包含 ${configuredModel}；是否真实出图仍以生成接口返回为准` };
   if (imageModels.length) return { verdict: 'other_image_models_only', configuredModel, imageModels, videoListed,
-    message: `目录未开放 ${configuredModel}，但已开放其他图片模型：${imageModels.join('、')}。请按需求核对后再决定是否切换，不能把其他模型的成功当作Image2验收` };
+    message: `目录未列出 ${configuredModel}，已列出其他图片模型：${imageModels.join('、')}。目录不代表完整权限，仍可按官方模型名调用Image2核验` };
   return { verdict: 'no_image_models', configuredModel, imageModels, videoListed,
-    message: `360 当前未向本组织开放任何图片生成模型（目录 ${ids.size} 个模型，图片模型 0 个${videoListed ? '，视频模型万相3.0在目录中且可用' : ''}）。`
-      + '图片请求返回 1001“模型不存在或未授权”属于供应商侧未开通，不是参数或代码问题；请携带组织ID、请求时间和模型名联系 360 接入人员开通。开通前小红书图文仅交付文字与配图方案，不收取图片费用' };
+    message: `360 目录中未列出图片模型（共 ${ids.size} 个模型${videoListed ? '，包含万相3.0视频模型' : ''}）。`
+      + `这不能据此判断图片权限；请按官方接口使用 ${configuredModel} 实测。1001需结合请求格式、模型名和供应商路由核查，不能单凭目录认定账号未授权` };
 }
 
 // DeepSeek V4 defaults to thinking, which shares max_tokens with the answer.
@@ -148,7 +146,10 @@ export function build360VideoBody({ model, prompt, images = [], duration = 15, r
     input: { prompt: String(prompt || ''), ...(images.length ? {
       media: images.map(url => ({ type: images.length === 1 ? 'first_frame' : 'reference_image', url: mediaReference(url) })),
     } : {}) },
-    parameters: { duration: seconds, resolution: String(resolution).toUpperCase(), ratio: '9:16',
+    // A fixed first frame defines the composition. Our sales workflow prepares
+    // it as portrait already; adaptive preserves those exact proportions. With
+    // reference images (or text only), request a portrait composition explicitly.
+    parameters: { duration: seconds, resolution: String(resolution).toUpperCase(), ratio: images.length === 1 ? 'adaptive' : '9:16',
       audio: true, prompt_extend: promptExtend === true, watermark: false },
   } };
 }

@@ -1,3 +1,4 @@
+import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Modal, Space, Tag, message } from 'antd';
 import NativeEmployeeChat, { type NativeGeneration } from './NativeEmployeeChat';
@@ -122,6 +123,7 @@ export default function AiSalesVideoPanel({
   onTaskSubmitted,
   presetBrief = null,
 }: AiSalesVideoPanelProps) {
+  const personalBilling = isPersonalApiUser(getUser());
   const [recovering, setRecovering] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [polling, setPolling] = useState(false);
@@ -273,8 +275,12 @@ export default function AiSalesVideoPanel({
               await Promise.all([loadMaterials(), loadSummary(), loadMediaJobs('video', { silent: true })]);
             } else if (status === 'failed') {
               message.error(
-                `${current?.error || current?.reason || 'AI带货员成片失败'}；${
-                  current?.billing?.state === 'released' ? '预授权已退回' : '积分待对账'
+                `${isPersonalApiUser(getUser()) && /积分|预授权|未扣费/.test(current?.error || current?.reason || '') ? 'AI带货员成片失败，原任务记录已保留' : current?.error || current?.reason || 'AI带货员成片失败'}；${
+                  isPersonalApiUser(getUser())
+                    ? personalApiBillingLabel(current?.billing)
+                    : current?.billing?.state === 'released'
+                      ? '预授权已退回'
+                      : '积分待对账'
                 }`,
               );
             } else {
@@ -435,8 +441,10 @@ export default function AiSalesVideoPanel({
       );
       Modal.confirm({
         title: `确认恢复这条${salesVideoDuration(result)}秒成片？`,
-        content: `原任务预授权已经退回。本次只复用原供应商任务，不会重新生成；恢复成功后按原授权${credits > 0 ? `最多${credits}积分` : '上限'}结算。`,
-        okText: '确认恢复并预授权',
+        content: isPersonalApiUser(getUser())
+          ? '本次只复用原供应商任务，不会重新生成。原调用费用仍以你的供应商账户账单为准。'
+          : `原任务预授权已经退回。本次只复用原供应商任务，不会重新生成；恢复成功后按原授权${credits > 0 ? `最多${credits}积分` : '上限'}结算。`,
+        okText: isPersonalApiUser(getUser()) ? '确认恢复' : '确认恢复并预授权',
         cancelText: '暂不恢复',
         onOk: runRecovery,
       });
@@ -510,13 +518,17 @@ export default function AiSalesVideoPanel({
             </p>
           )}
           <p>
-            {result.reason ||
+            {(personalBilling && /积分|预授权|未扣费/.test(result.reason || '')
+              ? '成片尚未完成，原任务记录已保留；上游费用以供应商账单为准。'
+              : result.reason) ||
               (currentStatus === 'success'
                 ? '先播放核对口播与字幕，再选择采纳或不采纳。'
                 : currentStatus === 'failed'
-                  ? result.billing?.state === 'released'
-                    ? '本次未形成可交付成片，预授权已退回。'
-                    : '本次未形成可交付成片，积分状态待对账。'
+                  ? personalBilling
+                    ? '本次未形成可交付成片，上游费用以供应商账单为准。'
+                    : result.billing?.state === 'released'
+                      ? '本次未形成可交付成片，预授权已退回。'
+                      : '本次未形成可交付成片，积分状态待对账。'
                   : '可关闭窗口，任务会继续在后台执行。')}
           </p>
           {voicedResult ? (
@@ -556,14 +568,43 @@ export default function AiSalesVideoPanel({
               </details>
               <p>
                 账务：
-                {result.billing?.state === 'settled'
-                  ? `已结算 ${result.billing.chargedCredits ?? result.credits ?? 0} 积分`
-                  : result.billing?.state === 'released'
-                    ? '预授权已退回'
-                    : result.billing?.state === 'not_held'
-                      ? '未占扣'
-                      : `预授权 ${result.billing?.heldCredits ?? result.billing?.estimatedCredits ?? 0} 积分${result.billing?.pendingReconciliation ? '，待对账' : ''}`}
+                {personalBilling
+                  ? personalApiBillingLabel(result.billing)
+                  : result.billing?.state === 'settled'
+                    ? `已结算 ${result.billing.chargedCredits ?? result.credits ?? 0} 积分`
+                    : result.billing?.state === 'released'
+                      ? '预授权已退回'
+                      : result.billing?.state === 'not_held'
+                        ? '未占扣'
+                        : `预授权 ${result.billing?.heldCredits ?? result.billing?.estimatedCredits ?? 0} 积分${result.billing?.pendingReconciliation ? '，待对账' : ''}`}
               </p>
+              {(voicedResult.script?.hook_3s || voicedResult.script?.cta) && (
+                <p>
+                  {voicedResult.script.hook_3s ? `前3秒钩子：${voicedResult.script.hook_3s}` : ''}
+                  {voicedResult.script.hook_3s && voicedResult.script.cta ? ' · ' : ''}
+                  {voicedResult.script.cta ? `行动邀请：${voicedResult.script.cta}` : ''}
+                </p>
+              )}
+              {Array.isArray(voicedResult.scriptWarnings) && voicedResult.scriptWarnings.length > 0 && (
+                <Alert
+                  type={
+                    voicedResult.scriptWarnings.some((line: string) => /红线|必改/u.test(line)) ? 'error' : 'warning'
+                  }
+                  showIcon
+                  message={
+                    voicedResult.scriptWarnings.some((line: string) => /红线|必改/u.test(line))
+                      ? '发布前必改：口播命中平台红线'
+                      : '发布前建议调整口播'
+                  }
+                  description={
+                    <ul className="ai-sales-video-script-warnings" aria-label="口播发布前提醒">
+                      {voicedResult.scriptWarnings.map((line: string) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  }
+                />
+              )}
               {!!voicedResult.script?.shots?.length && (
                 <details>
                   <summary>查看中文口播稿</summary>
@@ -610,7 +651,11 @@ export default function AiSalesVideoPanel({
             )}
             {currentStatus === 'failed' && (
               <Tag color={result.billing?.state === 'released' ? 'green' : 'orange'}>
-                {result.billing?.state === 'released' ? '预授权已退回' : '积分待对账'}
+                {personalBilling
+                  ? personalApiBillingLabel(result.billing)
+                  : result.billing?.state === 'released'
+                    ? '预授权已退回'
+                    : '积分待对账'}
               </Tag>
             )}
           </Space>
@@ -630,9 +675,11 @@ export default function AiSalesVideoPanel({
         onVideoDurationChange={setDurationSeconds}
         mediaReady={videoOptions?.ready === true && selectedQuote != null}
         mediaQuote={
-          selectedQuote?.estimatedMaxCredits != null
-            ? `${durationSeconds}秒视频参考预占 ${selectedQuote.estimatedMaxCredits} 积分。按上游实际扣费结算，多退少补；余额不足时保留成片，补足余额后核对费用。`
-            : undefined
+          personalBilling
+            ? `${durationSeconds}秒视频。${PERSONAL_API_PRICING_NOTE}`
+            : selectedQuote?.estimatedMaxCredits != null
+              ? `${durationSeconds}秒视频参考预占 ${selectedQuote.estimatedMaxCredits} 积分。按上游实际扣费结算，多退少补；余额不足时保留成片，补足余额后核对费用。`
+              : undefined
         }
         initialText={presetBrief}
         resultFirst={resultFirst}

@@ -92,3 +92,49 @@ test('测试员费用和Key文案不再把所有记录写死为360', () => {
   assert.match(page('TesterApply.tsx'), /OpenLux 或 360 智脑/);
   assert.match(page('TrialAnalyticsPanel.tsx'), /已核实供应商成本/);
 });
+
+
+test('体验管理默认客户看板，Key、邀请和客户页面支持独立深链接，旧工作入口映射只读历史', () => {
+  const portal = loadPortal();
+  assert.equal(portal.testerPortalTab(null), 'analytics');
+  assert.equal(portal.testerPortalTab('unknown'), 'analytics');
+  for (const tab of ['analytics', 'key', 'invitations', 'leads', 'history', 'guide', 'password'])
+    assert.equal(portal.testerPortalTab(tab), tab);
+  assert.equal(portal.testerPortalTab('work'), 'history');
+  assert.match(portal.source, /useLocation\(\)/);
+  assert.match(portal.source, /search\.set\('tab', testerPortalTab\(next\)\)/);
+  assert.match(portal.source, /embedded = false/);
+  assert.match(portal.source, /!embedded &&/);
+  assert.doesNotMatch(portal.source, /trialRequest\('\/tester\/chat'/);
+});
+
+
+test('完整产品导航为测试员保留业务入口，后台移至右上角且不展示企业配置和充值', () => {
+  const source = fs.readFileSync(new URL('../../web/src/layouts/MainLayout.tsx', import.meta.url), 'utf8');
+  const output = ts.transpileModule(source, { compilerOptions: {
+    target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', `${output}\nmodule.exports.menusFor = menusFor; module.exports.menus = MENUS;`)(
+    name => name === 'react/jsx-runtime' ? { jsx: (type, props) => ({ type, props }) } : {},
+    module, module.exports,
+  );
+  const allModules = [...new Set(module.exports.menus.map(menu => menu.mod).filter(Boolean))];
+  const testerMenus = module.exports.menusFor(allModules, 'sales', true).map(menu => menu.key);
+  assert.ok(!testerMenus.includes('/tester'));
+  for (const path of ['/employees', '/tasks', '/content', '/toolbox', '/store-data', '/advisor'])
+    assert.ok(testerMenus.includes(path), path);
+  assert.ok(!testerMenus.includes('/system'));
+  assert.ok(!testerMenus.includes('/brand-kb'));
+  assert.ok(!testerMenus.includes('/recharge'));
+  const bossMenus = module.exports.menusFor(allModules, 'boss', false).map(menu => menu.key);
+  assert.ok(!bossMenus.includes('/tester'));
+  assert.ok(bossMenus.includes('/system'));
+  assert.ok(bossMenus.includes('/brand-kb'));
+  assert.ok(bossMenus.includes('/recharge'));
+  assert.match(source, /user\?\.accountType === 'tester'/);
+  assert.match(source, /nav\('\/tester'\)/);
+  assert.match(source, /<span>测试员后台<\/span>/);
+  assert.match(source, /!isTester && planSummary/);
+  assert.match(source, /!isTester && budgetSummary/);
+});

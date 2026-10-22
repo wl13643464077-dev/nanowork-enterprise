@@ -75,6 +75,87 @@ const CORE_WORKSPACES = [
   },
 ];
 
+// 测试员体验正式业务页面；内容生产不能被映射成手机端的已采纳素材列表。
+const TESTER_PRODUCT_WORKSPACES = [
+  ...CORE_WORKSPACES,
+  {
+    key: 'advisor',
+    mod: 'advisor',
+    title: '老板参谋',
+    description: '讨论经营问题与行动建议',
+    path: '/advisor',
+    icon: <TeamOutlined />,
+    tone: 1,
+  },
+  {
+    key: 'tasks',
+    mod: 'execution',
+    title: '任务中心',
+    description: '查看输入输出、进度与历史成果',
+    path: '/tasks',
+    icon: <InboxOutlined />,
+    tone: 4,
+  },
+  {
+    key: 'store-ops',
+    mod: 'dashboard',
+    title: '门店日常',
+    description: '查看日常经营与门店工作',
+    path: '/store-ops',
+    icon: <AppstoreOutlined />,
+    tone: 1,
+  },
+  {
+    key: 'reviews',
+    mod: 'dashboard',
+    title: '评价中心',
+    description: '处理门店评价与回复',
+    path: '/reviews',
+    icon: <TeamOutlined />,
+    tone: 2,
+  },
+  {
+    key: 'growth',
+    mod: 'growth',
+    title: '会员增长',
+    description: '客户经营与增长跟进',
+    path: '/growth',
+    icon: <RiseOutlined />,
+    tone: 2,
+  },
+  {
+    key: 'activities',
+    mod: 'activities',
+    title: '营销活动',
+    description: '策划与管理门店活动',
+    path: '/activities',
+    icon: <CalendarOutlined />,
+    tone: 3,
+  },
+  {
+    key: 'assets',
+    mod: 'assets',
+    title: '知识资产',
+    description: '管理自己的经营知识与资料',
+    path: '/assets',
+    icon: <AppstoreOutlined />,
+    tone: 8,
+  },
+  {
+    key: 'agents',
+    mod: 'marshals',
+    title: '我的智能体',
+    description: '查看已授权的智能体工作区',
+    path: '/agents',
+    icon: <ExperimentOutlined />,
+    tone: 8,
+  },
+];
+
+export function testerMobileWorkspaces(mods: string[]) {
+  return TESTER_PRODUCT_WORKSPACES.filter(item => mods.includes(item.mod));
+}
+
 export function hasMobileHomeAccess(mods: string[], role: string) {
   return (
     mods.includes('dashboard') || CORE_WORKSPACES.some(item => mods.includes(item.mod) && item.roles.includes(role))
@@ -120,16 +201,19 @@ export default function MobileHome({
   inboxCount: number;
 }) {
   const role = String(user.role || '');
+  const isTester = user.accountType === 'tester';
   const hasDashboard = mods.includes('dashboard');
   const canViewManagementBriefing = hasDashboard && ['boss', 'ops_director', 'manager', 'admin'].includes(role);
-  const workspaces = CORE_WORKSPACES.filter(item => mods.includes(item.mod) && item.roles.includes(role));
+  const workspaces = isTester
+    ? testerMobileWorkspaces(mods)
+    : CORE_WORKSPACES.filter(item => mods.includes(item.mod) && item.roles.includes(role));
   const summaryQ = useQuery<DashboardSummary>('/dashboard/summary', [], { enabled: hasDashboard });
   const briefQ = useQuery<DashboardBriefing>('/dashboard/briefing', [], {
     enabled: canViewManagementBriefing,
     isEmpty: d => !d?.briefing?.length,
   });
   const s = summaryQ.data;
-  if (hasDashboard && !s) return <QueryStatus q={summaryQ} height={200} />;
+  if (hasDashboard && !s && !isTester) return <QueryStatus q={summaryQ} height={200} />;
   const briefing = briefQ.data?.briefing || [];
   const secondary = [
     mods.includes('growth') && { key: 'customers', title: '客户', desc: '跟进记录、AI 话术', icon: <TeamOutlined /> },
@@ -181,7 +265,7 @@ export default function MobileHome({
         </div>
       )}
       {workspaces.length > 0 && (
-        <Card size="small" title="核心工作台" className="m-card-plain">
+        <Card size="small" title={isTester ? '产品工作台' : '核心工作台'} className="m-card-plain">
           <div className="m-workspace-grid">
             {workspaces.map(item => (
               <button
@@ -189,7 +273,7 @@ export default function MobileHome({
                 type="button"
                 className="m-workspace-item"
                 data-tone={item.tone}
-                onClick={() => nav(toMobilePath(item.path) || item.path)}
+                onClick={() => nav(isTester ? item.path : toMobilePath(item.path) || item.path)}
                 aria-label={`进入${item.title}`}
               >
                 <span className="m-workspace-item-head">

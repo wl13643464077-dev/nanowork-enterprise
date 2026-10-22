@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Input, Segmented, Tag, Tooltip, message } from 'antd';
 import {
   AimOutlined,
@@ -9,7 +9,8 @@ import {
   TeamOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { api, type ApiRequestError } from '../api/client';
+import { api, getUser, type ApiRequestError } from '../api/client';
+import { isPersonalApiUser, personalApiBillingLabel } from './personalApiBilling.js';
 import EmployeeAvatar from './EmployeeAvatar';
 import { refineVoiceIntent, useVoiceInput } from './useVoiceInput';
 import './EmployeeTeamMatch.css';
@@ -125,7 +126,13 @@ function teamPlanFailure(error: ApiRequestError): TeamPlanFailure {
   const billingState = String(billing.state || billing.status || '')
     .trim()
     .toLowerCase();
-  const billingUnsettled = ['TEAM_PLAN_BILLING_NOT_SETTLED', 'TEAM_PLAN_BILLING_UNSETTLED'].includes(code);
+  const billingUnsettled =
+    ['TEAM_PLAN_BILLING_NOT_SETTLED', 'TEAM_PLAN_BILLING_UNSETTLED'].includes(code) ||
+    code === 'TEAM_SUMMARY_BILLING_NOT_SETTLED';
+  const timeoutFailure =
+    ['AI_PROVIDER_TIMEOUT', 'REQUEST_TIMEOUT', 'provider_timeout'].includes(code) ||
+    status === 504 ||
+    /(?:超时|timeout)/iu.test(reason);
   const upstreamFailure =
     status >= 500 ||
     ['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(code) ||
@@ -150,13 +157,16 @@ function teamPlanFailure(error: ApiRequestError): TeamPlanFailure {
   } else if (billingState) {
     billingText = `本次未产生拆解产出；账务状态为 ${billingState}，请凭请求编号核对。`;
   }
+  if (isPersonalApiUser(getUser())) billingText = `${personalApiBillingLabel(billing)}；已发生的调用费用以供应商账单为准。`;
 
   return {
     title: billingUnsettled
       ? '账务待核对，本次拆解已停止派活'
-      : upstreamFailure
-        ? '真实上游暂时异常，队长拆解未完成'
-        : '队长拆解未完成',
+      : timeoutFailure
+        ? '等待AI生成超时，分工尚未完成'
+        : upstreamFailure
+          ? '真实上游暂时异常，队长拆解未完成'
+          : '队长拆解未完成',
     reason,
     outputText: billingUnsettled
       ? '真实拆解虽已返回，但系统未保存、未展示、未自动派活，也未用模板或降级底稿代替。'
@@ -334,16 +344,22 @@ export default function EmployeeTeamMatch({
     },
   );
   const [stored, setStored] = useState<StoredMatch | null>(() => readStoredMatch());
+  const activeBoardIdRef = useRef(stored?.matchedAt);
+  const matchingRef = useRef(false);
+  const summaryBoardIdRef = useRef<string | undefined>(undefined);
   const [focusIdx, setFocusIdx] = useState<number | null>(null);
   const [depth, setDepth] = useState<PlanDepth>('full');
   const [mode, setMode] = useState<DispatchMode>('semi');
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<TeamPlanFailure | null>(null);
-  // 正在派出的成员 idx 集合；auto 模式按顺序推进
-  const [dispatchingIdx, setDispatchingIdx] = useState<number | null>(null);
+  // 每名成员独立提交与更新进度；同步引用防止连点在下一次渲染前重复派活。
+  const dispatchingRef = useRef(new Set<number>());
+  const dispatchedRef = useRef<DispatchedRecord>(stored?.dispatched || {});
+  const bulkDispatchingRef = useRef(false);
+  const [dispatchingIdxs, setDispatchingIdxs] = useState<Set<number>>(() => new Set());
   const [bulkDispatching, setBulkDispatching] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
-  const [summaryError, setSummaryError] = useState('');
+  const [summaryError, setSummaryError] = useState<TeamPlanFailure | null>(null);
 
   const team = stored?.team || null;
   const plan = stored?.plan || null;
@@ -367,6 +383,12 @@ export default function EmployeeTeamMatch({
     [plan, dispatched],
   );
   const teamMemberIdxs = useMemo(() => (team ? team.members.map(member => member.idx) : []), [team]);
+  // 小队里有人没被队长拆到活（历史 5 人上限或上游漏拆）→ 明确提示并可一键重拆。
+  const unplannedMembers = useMemo(() => {
+    if (!team || !plan) return [] as MatchedTeamMember[];
+    const planned = new Set(plan.briefs.map(brief => brief.idx));
+    return team.members.filter(member => !planned.has(member.idx));
+  }, [team, plan]);
   const summaryStatements = useMemo(
     () => splitSummaryStatements(String(teamSummary?.summary || '')),
     [teamSummary?.summary],
@@ -383,12 +405,14 @@ export default function EmployeeTeamMatch({
   }, [stored]);
 
   const runMatch = async () => {
+    if (matchingRef.current || planning || dispatchingRef.current.size || bulkDispatchingRef.current) return;
     const query = text.trim();
     if (!query) {
       message.warning('先用一句话说说要办什么事');
       return;
     }
     // 在用户触发匹配时抽样，避免在渲染阶段调用不纯的随机函数。
+    matchingRef.current = true;
     setScanAvatarIdxs(randomScanAvatarIdxs());
     setMatching(true);
     setError('');
@@ -396,64 +420,99 @@ export default function EmployeeTeamMatch({
       const payload = await api.post('/employees/match-team', { text: query });
       const matched = payload?.team as MatchedTeam | undefined;
       if (!matched?.members?.length) throw new Error('没有匹配到合适的员工，换个说法再试试');
-      setStored({ query, team: matched, matchedAt: new Date().toISOString(), plan: null, dispatched: {} });
+      const matchedAt = new Date().toISOString();
+      activeBoardIdRef.current = matchedAt;
+      dispatchedRef.current = {};
+      summaryBoardIdRef.current = undefined;
+      setSummarizing(false);
+      setSummaryError(null);
+      setStored({ query, team: matched, matchedAt, plan: null, dispatched: {} });
       setPlanError(null);
       setFocusIdx(matched.members.find(member => member.roleInTeam === '队长')?.idx ?? matched.members[0].idx);
     } catch (err: any) {
       setError(err?.message || '匹配失败，请稍后再试');
     } finally {
+      matchingRef.current = false;
       setMatching(false);
     }
   };
 
   const dispatchBrief = async (brief: MemberBrief): Promise<boolean> => {
-    setDispatchingIdx(brief.idx);
+    if (matchingRef.current || !stored || activeBoardIdRef.current !== stored.matchedAt) return false;
+    if (dispatchedRef.current[String(brief.idx)]) return true;
+    if (dispatchingRef.current.has(brief.idx)) return false;
+    const boardId = stored?.matchedAt;
+    dispatchingRef.current.add(brief.idx);
+    setDispatchingIdxs(current => new Set(current).add(brief.idx));
     try {
-      const result = await api.post(`/employee-workbench/restaurant/${brief.idx}/dispatch`, {
-        question: brief.directive,
-        title: brief.title,
-      });
+      const result = await api.post(
+        `/employee-workbench/restaurant/${brief.idx}/dispatch`,
+        { question: brief.directive, title: brief.title },
+        { silent: true },
+      );
       const taskId = Number((result as Record<string, unknown>)?.runId ?? (result as Record<string, unknown>)?.taskId);
       if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('任务已提交但未返回任务编号');
+      if (activeBoardIdRef.current !== boardId) return true;
+      const record = { taskId, at: new Date().toISOString() };
+      dispatchedRef.current[String(brief.idx)] = record;
       setStored(current =>
-        current
+        current && current.matchedAt === boardId
           ? {
               ...current,
               dispatched: {
                 ...(current.dispatched || {}),
-                [String(brief.idx)]: { taskId, at: new Date().toISOString() },
+                [String(brief.idx)]: record,
               },
             }
           : current,
       );
       return true;
     } catch (err: any) {
-      message.error(`${brief.person}：${err?.message || '派出失败'}`);
+      if (activeBoardIdRef.current === boardId) message.error(`${brief.person}：${err?.message || '派出失败'}`);
       return false;
     } finally {
-      setDispatchingIdx(null);
+      dispatchingRef.current.delete(brief.idx);
+      setDispatchingIdxs(current => {
+        const next = new Set(current);
+        next.delete(brief.idx);
+        return next;
+      });
     }
   };
 
   const dispatchAll = async (briefs: MemberBrief[]) => {
+    if (matchingRef.current || bulkDispatchingRef.current || dispatchingRef.current.size) return;
+    const boardId = stored?.matchedAt;
+    // 队长拆出几单就派几单：人数上限由服务端 TEAM_MAX_MEMBERS 统一把关，
+    // 前端不再二次截断，否则会出现"8 人上阵、只派 5 人"的尴尬局面。
+    const pending = [...new Map(briefs.map(brief => [brief.idx, brief])).values()]
+      .filter(brief => !dispatchedRef.current[String(brief.idx)]);
+    if (!pending.length) return;
+    bulkDispatchingRef.current = true;
     setBulkDispatching(true);
     try {
-      let ok = 0;
-      for (const brief of briefs) {
-        // 顺序派出：不给后端瞬时并发压力，失败即停，老板可修完再继续
-        const success = await dispatchBrief(brief);
-        if (!success) break;
-        ok += 1;
-      }
-      if (ok === briefs.length && ok > 0) message.success(`已全部派出 ${ok} 名成员的任务`);
-      else if (ok > 0) message.warning(`已派出 ${ok}/${briefs.length}，其余可修正后继续`);
+      const results = await Promise.allSettled(pending.map(brief => dispatchBrief(brief)));
+      if (activeBoardIdRef.current !== boardId) return;
+      const ok = results.filter(result => result.status === 'fulfilled' && result.value).length;
+      if (ok === pending.length) message.success(`已同时派出 ${ok} 名成员的任务`);
+      else if (ok > 0) message.warning(`已派出 ${ok}/${pending.length}，其他任务继续执行，可单独重试未派出的成员`);
     } finally {
+      bulkDispatchingRef.current = false;
       setBulkDispatching(false);
     }
   };
 
   const runPlan = async () => {
-    if (!stored || !team) return;
+    if (
+      matchingRef.current ||
+      planning ||
+      !stored ||
+      !team ||
+      dispatchingRef.current.size ||
+      bulkDispatchingRef.current
+    )
+      return;
+    const boardId = stored.matchedAt;
     setPlanning(true);
     setPlanError(null);
     try {
@@ -491,47 +550,76 @@ export default function EmployeeTeamMatch({
           billing: payload?.billing,
         });
       }
-      setStored(current => (current ? { ...current, plan: nextPlan, dispatched: {} } : current));
+      if (activeBoardIdRef.current !== boardId) return;
+      dispatchedRef.current = {};
+      setStored(current => (current?.matchedAt === boardId ? { ...current, plan: nextPlan, dispatched: {} } : current));
+      setPlanning(false);
       if (mode === 'auto') {
-        message.info('队长拆解完成，自动派出中…');
+        message.info('队长拆解完成，全队同时开工…');
         await dispatchAll(nextPlan.briefs);
       }
     } catch (err: any) {
-      setPlanError(teamPlanFailure(err as ApiRequestError));
+      if (activeBoardIdRef.current === boardId) setPlanError(teamPlanFailure(err as ApiRequestError));
     } finally {
       setPlanning(false);
     }
   };
 
   const runSummary = async () => {
-    if (!stored) return;
+    if (matchingRef.current || !stored || activeBoardIdRef.current !== stored.matchedAt) return;
+    const boardId = stored.matchedAt;
+    if (summaryBoardIdRef.current === boardId) return;
     const dispatchedItems = Object.entries(dispatched).map(([idx, record]) => ({
       idx: Number(idx),
       taskId: record.taskId,
     }));
     if (!dispatchedItems.length) return;
+    summaryBoardIdRef.current = boardId;
     setSummarizing(true);
-    setSummaryError('');
+    setSummaryError(null);
     try {
-      const payload = await api.post('/employees/team-summary', {
-        text: stored.query,
-        items: dispatchedItems,
-      });
+      const payload = await api.post(
+        '/employees/team-summary',
+        { text: stored.query, items: dispatchedItems },
+        { silent: true },
+      );
       const summary = payload?.teamSummary as TeamSummary | undefined;
       if (!summary?.summary) throw new Error('队长没有给出有效汇总，请重试');
-      setStored(current => (current ? { ...current, teamSummary: summary } : current));
+      if (payload?.billing?.state !== 'settled') {
+        throw Object.assign(new Error('汇总结果已生成，费用尚未完成结算，请按请求编号核对'), {
+          code: 'TEAM_SUMMARY_BILLING_NOT_SETTLED',
+          retryable: false,
+          requestId: payload?.requestId,
+          billing: payload?.billing,
+        });
+      }
+      setStored(current => (current?.matchedAt === boardId ? { ...current, teamSummary: summary } : current));
     } catch (err: any) {
-      setSummaryError(err?.message || '队长汇总失败，请稍后再试');
+      if (activeBoardIdRef.current !== boardId) return;
+      const failure = teamPlanFailure(err as ApiRequestError);
+      setSummaryError({
+        ...failure,
+        title: failure.title.replace(/拆解|分工/g, '汇总'),
+        outputText: failure.outputText.replace(/拆解/g, '汇总'),
+        billingText: failure.billingText.replace(/拆解或自动派活/g, '汇总').replace(/拆解/g, '汇总'),
+      });
     } finally {
-      setSummarizing(false);
+      if (summaryBoardIdRef.current === boardId) {
+        summaryBoardIdRef.current = undefined;
+        setSummarizing(false);
+      }
     }
   };
 
   const closeBoard = () => {
+    activeBoardIdRef.current = undefined;
+    dispatchedRef.current = {};
+    summaryBoardIdRef.current = undefined;
+    setSummarizing(false);
     setStored(null);
     setFocusIdx(null);
     setPlanError(null);
-    setSummaryError('');
+    setSummaryError(null);
   };
 
   return (
@@ -576,7 +664,13 @@ export default function EmployeeTeamMatch({
                 {listening ? '聆听中·点击停止' : voiceRefining ? '整理意图中…' : '语音说需求'}
               </Button>
             </Tooltip>
-            <Button type="primary" icon={<AimOutlined />} loading={matching} onClick={() => void runMatch()}>
+            <Button
+              type="primary"
+              icon={<AimOutlined />}
+              loading={matching}
+              disabled={planning || dispatchingIdxs.size > 0 || bulkDispatching}
+              onClick={() => void runMatch()}
+            >
               {matching ? 'AI 读花名册挑人中…' : '帮我选'}
             </Button>
           </div>
@@ -588,7 +682,7 @@ export default function EmployeeTeamMatch({
               '理解你的需求与经营语境',
               '通读 61 位数字员工花名册',
               '逐个评估岗位匹配度',
-              '组建协同小队与任务接力关系',
+              '组建协同小队与分工衔接关系',
             ]}
             avatarIdxs={scanAvatarIdxs}
             deptColorOf={deptColorOf}
@@ -650,7 +744,7 @@ export default function EmployeeTeamMatch({
 
           {stages.length > 1 && (
             <>
-              <div className="team-match-dag-label">任务接力顺序</div>
+              <div className="team-match-dag-label">分工衔接关系 · 全队同时开工</div>
               <div className="team-match-dag">
                 {stages.map((column, columnIndex) => (
                   <div className="team-match-dag-step" key={columnIndex}>
@@ -715,7 +809,7 @@ export default function EmployeeTeamMatch({
               </strong>
               <small>
                 队长「{lead?.person || '—'}
-                」会把这单活拆成每人的任务指令和输出要求；派出后每人任务按其岗位现行标准计费执行。
+                」会把这单活拆成每人的任务指令和输出要求；全队同时开工，各自按岗位现行标准计费。
               </small>
             </div>
             <div className="team-plan-controls">
@@ -736,7 +830,7 @@ export default function EmployeeTeamMatch({
                   onChange={value => setMode(value as DispatchMode)}
                   options={[
                     { value: 'semi', label: '半自动 · 逐个确认' },
-                    { value: 'auto', label: '全自动 · 拆完就派' },
+                    { value: 'auto', label: '全自动 · 同时开工' },
                   ]}
                 />
               </div>
@@ -744,7 +838,7 @@ export default function EmployeeTeamMatch({
                 type="primary"
                 icon={<RocketOutlined />}
                 loading={planning}
-                disabled={bulkDispatching}
+                disabled={matching || summarizing || bulkDispatching || dispatchingIdxs.size > 0}
                 onClick={() => void runPlan()}
               >
                 {planning ? '队长拆解中…' : plan ? '重新拆解' : '让队长拆解分工'}
@@ -760,7 +854,7 @@ export default function EmployeeTeamMatch({
                   <div className="team-plan-error-details">
                     <div>{planError.reason}</div>
                     <div>{planError.outputText}</div>
-                    <div>费用处理：{planError.billingText}</div>
+                    <div>费用处理：{isPersonalApiUser(getUser()) ? personalApiBillingLabel() : planError.billingText}</div>
                     <div>
                       请求编号：<code>{planError.requestId}</code>
                       {planError.code ? ` · 错误码：${planError.code}` : ''}
@@ -770,7 +864,13 @@ export default function EmployeeTeamMatch({
                 }
                 action={
                   planError.retryable ? (
-                    <Button size="small" danger loading={planning} onClick={() => void runPlan()}>
+                    <Button
+                      size="small"
+                      danger
+                      loading={planning}
+                      disabled={matching || summarizing}
+                      onClick={() => void runPlan()}
+                    >
                       重新尝试拆解
                     </Button>
                   ) : undefined
@@ -791,22 +891,41 @@ export default function EmployeeTeamMatch({
               />
             )}
 
+            {plan && unplannedMembers.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                className="team-plan-unplanned"
+                message={`小队 ${team.members.length} 人，队长本轮只拆出 ${plan.briefs.length} 单：${unplannedMembers
+                  .map(member => `${member.person}（${member.name}）`)
+                  .join('、')} 还没有任务`}
+                description="这是历史拆解或上游漏拆造成的；点「重新拆解」让队长把全队每一个人都派上活，再全队开工。"
+                action={
+                  <Button size="small" type="primary" disabled={planning || bulkDispatching} onClick={() => void runPlan()}>
+                    重新拆解
+                  </Button>
+                }
+              />
+            )}
+
             {plan && (
               <div className="team-plan-briefs">
                 <div className="team-plan-briefs-head">
                   <span>
                     队长按「{plan.depthLabel}」档拆出 {plan.briefs.length} 单任务
+                    {team.members.length > plan.briefs.length ? `（小队共 ${team.members.length} 人）` : ''}
                     {Object.keys(dispatched).length > 0 && ` · 已派出 ${Object.keys(dispatched).length} 单`}
+                    {dispatchingIdxs.size > 0 && ` · 正在并行提交 ${dispatchingIdxs.size} 单`}
                   </span>
                   {pendingBriefs.length > 0 && (
                     <Button
                       size="small"
                       type="primary"
                       loading={bulkDispatching}
-                      disabled={dispatchingIdx !== null}
+                      disabled={matching || planning || dispatchingIdxs.size > 0}
                       onClick={() => void dispatchAll(pendingBriefs)}
                     >
-                      全部派出（{pendingBriefs.length}）
+                      全队同时开工（{pendingBriefs.length}）
                     </Button>
                   )}
                 </div>
@@ -845,12 +964,12 @@ export default function EmployeeTeamMatch({
                             看任务进度
                           </Button>
                         ) : (
-                          <Tooltip title={bulkDispatching ? '正在按顺序派出' : ''}>
+                          <Tooltip title={bulkDispatching ? '全队正在并行派出，各自更新进度' : ''}>
                             <Button
                               size="small"
                               type="primary"
-                              loading={dispatchingIdx === brief.idx}
-                              disabled={bulkDispatching && dispatchingIdx !== brief.idx}
+                              loading={dispatchingIdxs.has(brief.idx)}
+                              disabled={matching || planning || (bulkDispatching && !dispatchingIdxs.has(brief.idx))}
                               onClick={() => void dispatchBrief(brief)}
                             >
                               派出这单
@@ -872,6 +991,7 @@ export default function EmployeeTeamMatch({
                     type={teamSummary ? 'default' : 'primary'}
                     size="small"
                     loading={summarizing}
+                    disabled={matching || planning || bulkDispatching || dispatchingIdxs.size > 0}
                     onClick={() => void runSummary()}
                   >
                     {summarizing ? '队长汇总中…' : teamSummary ? '刷新汇总（拉最新进度）' : '让队长收尾汇总'}
@@ -880,7 +1000,24 @@ export default function EmployeeTeamMatch({
                 <p className="team-summary-hint">
                   队长会读取每名成员任务的真实产出，给出整体结论、各人要点和下一步行动计划；成员还没交付时如实标注，不编内容。
                 </p>
-                {summaryError && <Alert type="warning" showIcon message={summaryError} />}
+                {summaryError && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={summaryError.title}
+                    description={
+                      <div className="team-plan-error-details">
+                        <div>{summaryError.reason}</div>
+                        <div>费用处理：{isPersonalApiUser(getUser()) ? personalApiBillingLabel() : summaryError.billingText}</div>
+                        <div>
+                          请求编号：<code>{summaryError.requestId}</code>
+                          {summaryError.code ? ` · 错误码：${summaryError.code}` : ''}
+                        </div>
+                        <div>成员已经完成的任务和成果仍保留在任务中心。</div>
+                      </div>
+                    }
+                  />
+                )}
                 {summarizing && (
                   <AiWorkingSteps
                     phases={['读取每名成员任务的真实产出', '提炼关键结论与进度', '制定下一步行动计划', '核对风险提醒']}

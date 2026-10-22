@@ -1,3 +1,5 @@
+import { isTesterBusinessActor } from "./tester-access.js";
+
 export const CONTENT_HANDLER_APPROVAL_AUDIT_SCHEMA =
   'nanowork.content-handler-approval-audit/1';
 
@@ -247,7 +249,7 @@ export function evaluateContentHandlerApprovalBoundary({
   }
 
   const allowedRoles = approvalCode === 'force' ? FINAL_REVIEW_ROLES : HUMAN_REVIEW_ROLES;
-  if (!allowedRoles.has(actorInfo.actorRole)) {
+  if (!allowedRoles.has(actorInfo.actorRole) && !isTesterBusinessActor(actor)) {
     return deny(
       approvalCode === 'force'
         ? 'CONTENT_HANDLER_FORCE_FINAL_REVIEW_ROLE_REQUIRED'

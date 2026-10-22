@@ -10,6 +10,7 @@ initSchema();
 migrateV2();
 const { buildAliBailianVideoRequestBody, submitAliBailianVideoSegment } = await import('../src/engines/yunwu.js');
 const { wanNativeAudioPrompt, AI_SALES_NATIVE_NARRATION_STYLE } = await import('../src/engines/ai-sales-video-script.js');
+const { build360VideoBody } = await import('../src/engines/provider-360.js');
 const base = {
   model: 'wan2.6-i2v',
   prompt: '菜品特写',
@@ -73,22 +74,46 @@ test('Wan2.6原生中文独白不传audio_url，允许台词结束后环境音�
   });
   assert.equal(Object.hasOwn(body.input, 'audio_url'), false);
   assert.equal(Object.hasOwn(body.parameters, 'audio'), false);
-  assert.match(body.input.prompt, /普通话中文独白/u);
+  assert.match(body.input.prompt, /普通话女声/u);
   assert.ok(body.input.prompt.includes(voiceover));
-  assert.match(body.input.prompt, /不为填满15秒重复或新增台词/u);
+  assert.ok(body.input.prompt.includes(`「${voiceover}」`), '逐字台词仍作为独立引用传给上游');
+  assert.match(body.input.prompt, /只说给定台词，说完保留轻微环境音/u);
   assert.equal(body.parameters.duration, 15);
   assert.ok(body.input.prompt.includes(AI_SALES_NATIVE_NARRATION_STYLE));
-  assert.match(body.input.prompt, /14秒前说完整句/u);
-  assert.match(body.input.prompt, /不改造门头/u);
-  assert.match(body.input.prompt, /像与朋友聊天/u);
-  assert.match(body.input.prompt, /正常说话音高/u);
-  assert.match(body.input.prompt, /轻微换气/u);
-  assert.match(body.input.prompt, /无广告配乐、无混响/u);
-  assert.doesNotMatch(body.input.prompt, /每秒3\.5|中低音区|0\.3秒后开始/u);
+  assert.match(body.input.prompt, /不添加其他物体或画面文字/u);
+  assert.match(body.input.prompt, /轻松邀请朋友吃饭/u);
+  assert.match(body.input.prompt, /无背景音乐，无画面字幕/u);
+  assert.match(body.input.prompt, /生成单镜头/u);
+  assert.match(body.input.prompt, /使用画外音/u);
+  assert.doesNotMatch(body.input.prompt, /不朗读|换气|正常说话音高|门头|招牌|宣传页|海报|混响|每秒3\.5|0\.3秒|14秒/u);
+  assert.ok(body.input.prompt.length < 230, '简单画面不再携带冗长的制作说明');
   const maximum = wanNativeAudioPrompt({ visual: '画'.repeat(400), voiceover: '词'.repeat(399) + '。' });
   assert.ok(maximum.includes('词'.repeat(399) + '。'), '有效上限内的台词不能被风格提示挤掉');
   assert.ok(maximum.length <= 1500);
-  assert.match(maximum, /不为填满15秒重复或新增台词/u, '完整台词和结尾约束均不能被slice丢掉');
+  assert.match(maximum, /只说给定台词/u, '完整台词和结尾约束均不能被slice丢掉');
+});
+test('360最终视频请求只含画面和台词指令，不把模型与供应商名带进画面', () => {
+  const voiceover = '周末约朋友到小锅馆聚餐，欢迎到店看看。';
+  const prompt = wanNativeAudioPrompt({ visual: '原图菜品缓慢推进，保留盘子与自然光线。', voiceover });
+  const body = build360VideoBody({ model: 'alibaba/wan3.0-video', prompt, images: base.images, duration: 15 });
+  assert.equal(body.model, 'alibaba/wan3.0-video');
+  assert.equal(body.extra_body.input.prompt, prompt);
+  assert.ok(body.extra_body.input.prompt.includes(voiceover));
+  assert.doesNotMatch(body.extra_body.input.prompt, /wan|360|alibaba|智脑|供应商|模型|参考图确定.*品牌|保留标牌文字/iu);
+  assert.match(body.extra_body.input.prompt, /不添加其他物体或画面文字/u);
+  assert.equal(body.extra_body.input.prompt.split(voiceover).length, 2, '准确台词只传一次，不重复插入品牌');
+  assert.equal(body.extra_body.parameters.audio, true);
+  assert.equal(body.extra_body.parameters.watermark, false);
+  assert.equal(body.extra_body.parameters.prompt_extend, false);
+});
+test('人物参考和30秒分段保留其说话方式，不改变已确认脚本', () => {
+  const shot = { visual: '原图人物轻轻点头。', voiceover: '今天路过，来店里坐坐。', reference_hint: 'person' };
+  const before = structuredClone(shot);
+  const prompt = wanNativeAudioPrompt(shot, { durationSeconds: 30 });
+  assert.match(prompt, /由参考人物说话/u);
+  assert.match(prompt, /两段保持同一人声/u);
+  assert.ok(prompt.includes(`「${shot.voiceover}」`));
+  assert.deepEqual(shot, before);
 });
 test('Wan时长不能静默截断/四舍五入，2.5仅允许5或10秒', () => {
   for (const duration of [1, 16, 9.5, NaN, 'not-duration'])

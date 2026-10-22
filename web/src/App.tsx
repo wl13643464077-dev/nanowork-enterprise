@@ -28,6 +28,7 @@ const TaskCenter = lazy(() => import('./pages/TaskCenter'));
 const Analysis = lazy(() => import('./pages/Analysis'));
 const StoreData = lazy(() => import('./pages/StoreData'));
 const Assets = lazy(() => import('./pages/Assets'));
+const BrandKb = lazy(() => import('./pages/BrandKb'));
 const System = lazy(() => import('./pages/System'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Mobile = lazy(() => import('./pages/Mobile'));
@@ -40,7 +41,6 @@ function Protected({ children }: { children: JSX.Element }) {
 function EnterpriseOnly({ children }: { children: JSX.Element }) {
   const user = getUser();
   if (!user) return <Navigate to="/login" replace />;
-  if (user.accountType === 'tester') return <Navigate to="/tester" replace />;
   return user.role === 'platform_super' ? <Navigate to="/platform" replace /> : children;
 }
 function TesterOnly({ children }: { children: JSX.Element }) {
@@ -75,14 +75,17 @@ function ModuleOnly({ moduleKey, children }: { moduleKey: string; children: JSX.
   const user = getUser();
   if (!user) return <Navigate to="/login" replace />;
   const modules = Array.isArray(user.modules) ? user.modules : [];
-  if (modules.includes(moduleKey)) return children;
-  const fallback = Object.entries(MODULE_HOME).find(([key]) => modules.includes(key))?.[1] || '/login';
+  // 测试员的个人 Key、体验邀请与客户管理统一在 /tester，不能进入企业系统配置。
+  const canUse = (key: string) => modules.includes(key) && !(user.accountType === 'tester' && key === 'system');
+  if (canUse(moduleKey)) return children;
+  const fallback = Object.entries(MODULE_HOME).find(([key]) => canUse(key))?.[1] || '/login';
   return <Navigate to={fallback} replace />;
 }
 
 function RoleOnly({ roles, children }: { roles: string[]; children: JSX.Element }) {
   const user = getUser();
   if (!user) return <Navigate to="/login" replace />;
+  if (user.accountType === 'tester') return <Navigate to="/" replace />;
   return roles.includes(user.role) ? children : <Navigate to="/" replace />;
 }
 
@@ -91,7 +94,11 @@ function RoleOnly({ roles, children }: { roles: string[]; children: JSX.Element 
 const ONBOARDING_REDIRECT_KEY = 'nw-onboarding-redirected';
 function OnboardingEntry({ children }: { children: JSX.Element }) {
   const user = getUser();
-  const pending = user && ['boss', 'admin'].includes(user.role) && user.tenant?.onboardingStatus === 'pending';
+  const pending =
+    user &&
+    user.accountType !== 'tester' &&
+    ['boss', 'admin'].includes(user.role) &&
+    user.tenant?.onboardingStatus === 'pending';
   if (pending && !sessionStorage.getItem(ONBOARDING_REDIRECT_KEY)) {
     sessionStorage.setItem(ONBOARDING_REDIRECT_KEY, '1');
     return <Navigate to="/onboarding" replace />;
@@ -325,6 +332,14 @@ export default function App() {
                 element={
                   <ModuleOnly moduleKey="assets">
                     <Assets />
+                  </ModuleOnly>
+                }
+              />
+              <Route
+                path="/brand-kb"
+                element={
+                  <ModuleOnly moduleKey="system">
+                    <BrandKb />
                   </ModuleOnly>
                 }
               />

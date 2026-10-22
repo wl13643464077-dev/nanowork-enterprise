@@ -20,7 +20,7 @@ import { useInboxCount } from '../components/InboxDrawer';
 import StoreSwitcher from '../components/StoreSwitcher';
 import RoleOnboarding from '../components/RoleOnboarding';
 import FeatureGuideCenter from '../components/FeatureGuideCenter';
-import MobileHome, { hasMobileHomeAccess } from '../components/mobile/MobileHome';
+import MobileHome, { hasMobileHomeAccess, testerMobileWorkspaces } from '../components/mobile/MobileHome';
 import MobileCustomers from '../components/mobile/MobileCustomers';
 import MobileContent from '../components/mobile/MobileContent';
 import MobileMe from '../components/mobile/MobileMe';
@@ -55,6 +55,7 @@ export default function Mobile() {
 
   // 按企业开通的模块过滤 Tab：派活需 marshals；任务列表需 execution（只有 marshals 时仍可看刚派出的任务）
   const tabs = TABS.filter(tab => {
+    if (tab.key === 'home' && user.accountType === 'tester') return testerMobileWorkspaces(mods).length > 0;
     if (tab.key === 'home') return hasMobileHomeAccess(mods, role);
     if (tab.key === 'dispatch') return mods.includes('marshals');
     if (tab.key === 'tasks') return mods.includes('execution') || mods.includes('marshals');
@@ -81,7 +82,13 @@ export default function Mobile() {
           </div>
         )}
         <div className="mobile-header-actions">
-          <span className="mobile-header-user">{user.name}</span>
+          {user.accountType === 'tester' ? (
+            <button type="button" className="mobile-tester-backend" onClick={() => nav('/tester')}>
+              测试员后台
+            </button>
+          ) : (
+            <span className="mobile-header-user">{user.name}</span>
+          )}
           <button
             type="button"
             data-onboarding="help"

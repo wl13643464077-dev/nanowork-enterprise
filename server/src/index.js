@@ -201,7 +201,7 @@ const runSchedulerTick = () => {
 };
 startSchedulerIfEnabled({ runTick: runSchedulerTick });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`[server] 纳米Work行业版 后端已启动: http://${HOST}:${PORT}`);
   const channel = aiChannel();
   const label =
@@ -212,3 +212,5 @@ app.listen(PORT, HOST, () => {
         : "本地模板底稿模式（未配置真实 AI 通道）";
   console.log(`[server] AI模式: ${label}`);
 });
+server.requestTimeout = 16 * 60 * 1000;
+server.headersTimeout = 17 * 60 * 1000;

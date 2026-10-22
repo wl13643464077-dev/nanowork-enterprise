@@ -403,8 +403,50 @@ test("员工工作台默认展开完整报告，方法与审计可展开，下�
     /<details className="ewb-report-details is-operational">[\s\S]*?<strong>查看详情<\/strong>[\s\S]*?<EmployeeResearchPlan evidence=\{restaurantTask\.executionSnapshot\?\.webEvidence\} \/>[\s\S]*?<\/details>/u,
   );
   assert.match(workbench, /<strong>本次费用<\/strong>/u);
+  assert.match(workbench, /<CampaignMaterialsGallery items=\{restaurantReportView\.campaignMaterials\} \/>/u);
   assert.doesNotMatch(
     workbench,
     /<Markdown content=\{localizeOperationalStatus\(restaurantOutputBody\)\}/u,
   );
+});
+
+test("超级店长物料机读块进入图片画廊，不进入老板速览正文", () => {
+  const raw = `# 周末家庭套餐活动方案
+
+本周六到店核验。
+
+\`\`\`nanowork-campaign-materials
+{"record_type":"nanowork-campaign-materials","items":[{"id":"kv_poster","title":"主KV海报","status":"succeeded","url":"/uploads/poster-text/1/1-final.png"}]}
+\`\`\`
+`;
+  const view = restaurantOutputPresentation(raw);
+  assert.equal(view.structured, false);
+  assert.equal(view.campaignMaterials[0].id, "kv_poster");
+  assert.doesNotMatch(view.overviewMarkdown, /nanowork-campaign-materials/u);
+  assert.doesNotMatch(view.fullMarkdown, /nanowork-campaign-materials/u);
+});
+
+test("老板视图用画廊展示物料图，正文不再重复成图清单和叠字底稿", () => {
+  const raw = `# 周末家庭套餐活动方案
+
+## 五、活动执行表
+| 日期 | 动作 |
+| 周六 | 到店核验 |
+
+### 文字覆盖层内容（textOverlay）——必填
+- 主标题：周末套餐
+
+## 六、活动物料成图
+1. **宣传单 · 方案A** — 已生成，可下载使用
+
+\`\`\`nanowork-campaign-materials
+{"record_type":"nanowork-campaign-materials","items":[{"id":"flyer_a","title":"宣传单 · 方案A","status":"succeeded","url":"/uploads/poster-text/1/1-final.png"}]}
+\`\`\`
+`;
+  const view = restaurantOutputPresentation(raw);
+  assert.equal(view.campaignMaterials[0].id, "flyer_a");
+  assert.match(view.fullMarkdown, /活动执行表/u);
+  assert.doesNotMatch(view.fullMarkdown, /已生成，可下载使用/u);
+  assert.doesNotMatch(view.fullMarkdown, /textOverlay/u);
+  assert.doesNotMatch(view.fullMarkdown, /活动物料成图/u);
 });

@@ -168,3 +168,61 @@ export function compileEmployeePublicResearchPlan(
     apiClaims: [],
   };
 }
+
+// 地点类岗位的公开检索计划 = 岗位技能计划 + 固定六类客源公共查询。
+// 技能计划（高德扫街榜 / 大众点评 / 美团 / 窄门 / 商场品牌门店列表…）是该
+// 岗位的能力承诺，必须全部真实执行，不能被固定查询挤掉；六类客源查询只
+// 补足剩余预算。所有查询只带地点与品类，不把客户名单、预算或其它内部元
+// 数据发送给搜索服务。
+export const LOCATION_RESEARCH_QUERY_LIMIT = 14;
+
+export function compileLocationResearchQueries(center, category = "餐饮", skillQueries = []) {
+  const place = clean(center, 120);
+  if (!place) return [];
+  const skills = (Array.isArray(skillQueries) ? skillQueries : [])
+    .map(query => clean(query, 120))
+    .filter(Boolean);
+  // 平台商户页（点评/美团）最能直接给出菜单、价格、评价，排在技能计划最前。
+  const platformFirst = [
+    ...skills.filter(query => /site:(?:dianping|meituan)\.com/u.test(query)),
+    ...skills,
+  ];
+  const cat = clean(category, 30) || "餐饮";
+  const specific = cat !== "餐饮";
+  const hasDianping = skills.some((query) => /site:dianping\.com/u.test(query));
+  const hasMeituan = skills.some((query) => /site:meituan\.com/u.test(query));
+  const audience = [
+    `${place} ${cat} 餐厅 菜单 营业时间`,
+    ...(specific && !hasDianping ? [`${place} ${cat} site:dianping.com 菜单 人均 评价`] : []),
+    ...(specific && !hasMeituan ? [`${place} ${cat} site:meituan.com 餐厅 菜单`] : []),
+    `${place} 商场 官网 品牌 门店`,
+    `${place} 写字楼 产业园 企业 入驻 官方`,
+    `${place} 社区 住宅 人口 街道 官方`,
+    `${place} 学校 校区 地址 官网`,
+    `${place} 地铁 公交 站点 运营 官方`,
+  ];
+  // 硬上限保护搜索供应商限流：技能计划排前面，超预算时让位的是客源查询。
+  return [...new Set([...platformFirst, ...audience].filter(Boolean))]
+    .slice(0, LOCATION_RESEARCH_QUERY_LIMIT);
+}
+
+// 每个查询轮流取一条，避免一个主题占满整个网页证据预算。
+export function interleaveResearchSources(groups, limit = 18) {
+  const queues = groups.map(group => Array.isArray(group) ? [...group] : []);
+  const seen = new Set();
+  const results = [];
+  while (results.length < limit && queues.some(queue => queue.length)) {
+    for (const queue of queues) {
+      while (queue.length) {
+        const source = queue.shift();
+        const url = String(source?.url || "").trim();
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        results.push(source);
+        break;
+      }
+      if (results.length >= limit) break;
+    }
+  }
+  return results;
+}

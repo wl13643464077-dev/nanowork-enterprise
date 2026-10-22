@@ -7,7 +7,8 @@ import { q, curTenant, runWithTenant } from '../db.js';
 import { canAccessOwner, isManagerRole } from './access.js';
 import { settleHold, getSupplierExpense } from './credits.js';
 import { voicedSalesSettlement, refreshVoicedSalesReceipts } from './ai-sales-video-native.js';
-import { withTaskProvider } from './ai-provider-selection.js';
+import { withTaskProvider, taskProviderId } from './ai-provider-selection.js';
+import { testerExecutionIdentity } from './tester-access.js';
 import { PROVIDER_360_VIDEO_MODEL } from './provider-360.js';
 import { validateAiSalesVideoScript } from './ai-sales-video-script.js';
 import { buildAiSalesVideoSubtitleCues, measureAudioDuration } from './ai-sales-video-voice.js';
@@ -46,6 +47,17 @@ function originalHold(job, plan, { allowRefunded = false } = {}) {
   const refunded = !!expense?.refundedAt;
   const canReadRefunded =
     allowRefunded && refunded && expense.userId === job.user_id && hold.status === 'settled';
+  let price = {};
+  try { price = JSON.parse(hold?.pricing_snapshot_json || '{}'); } catch { /* malformed snapshots cannot authorize a zero hold */ }
+  const personal = price.billingMode === 'personal';
+  if (personal) {
+    const identity = testerExecutionIdentity({ userId: job.user_id, tenantId: job.tenant_id,
+      provider: price.provider, requireActive: false });
+    if (!identity || Number(price.ownerUserId) !== Number(job.user_id)
+      || Number(price.tenantId) !== Number(job.tenant_id) || price.provider !== taskProviderId(plan)
+      || hold.held_credits !== 0 || (hold.status === 'settled' && hold.settled_credits !== 0))
+      throw fail('个人调用任务的原账号、供应商或账目不匹配', 'AI_SALES_VIDEO_RECOVERY_HOLD_INVALID');
+  }
   if (
     !hold ||
     Number(hold.id) !== Number(plan.billing?.holdId) ||
@@ -54,10 +66,9 @@ function originalHold(job, plan, { allowRefunded = false } = {}) {
     hold.model !== plan.model ||
     !['held', 'settled'].includes(hold.status) ||
     !Number.isSafeInteger(hold.held_credits) ||
-    hold.held_credits <= 0 ||
-    hold.held_credits !== plan.priceQuote?.maxCredits ||
+    (!personal && (hold.held_credits <= 0 || hold.held_credits !== plan.priceQuote?.maxCredits)) ||
     (refunded && !canReadRefunded) ||
-    (hold.status === 'settled' && !(hold.settled_credits > 0) && !canReadRefunded)
+    (hold.status === 'settled' && !(hold.settled_credits > 0) && !personal && !canReadRefunded)
   )
     throw fail('原预授权不存在、已退回或不匹配；不会重新占扣', 'AI_SALES_VIDEO_RECOVERY_HOLD_INVALID');
   const log = q.get('SELECT * FROM credit_logs WHERE tenant_id=? AND id=?', job.tenant_id, hold.log_id);
@@ -72,7 +83,14 @@ function originalHold(job, plan, { allowRefunded = false } = {}) {
         log.credits !== hold.settled_credits))
   )
     throw fail('原任务账本证据不一致，需人工对账', 'AI_SALES_VIDEO_RECOVERY_HOLD_INVALID');
-  return { hold, log, expense };
+  return { hold, log, expense, personal };
+}
+
+function recoverySettlement(plan, original) {
+  const settlement = voicedSalesSettlement(plan);
+  // Supplier usage/cost evidence stays intact; a verified BYOK hold never debits
+  // the platform wallet, even when the shared customer quote is positive.
+  return original.personal ? { ...settlement, credits: 0 } : settlement;
 }
 
 function originalCostMatches(original, settlement) {
@@ -81,6 +99,30 @@ function originalCostMatches(original, settlement) {
   // A settled customer bill may still have a supplier expense awaiting its receipt.
   // Unknown cost must stay null; it is not the frozen 360 reference price.
   return original.log.cost_yuan == null && original.expense?.status !== 'known';
+}
+
+// Refunded failures may only finish from their own already-paid, hash-verified
+// local clips. They never query/resubmit a provider or reopen the customer bill.
+async function readRefundedLocalClips(job, plan) {
+  const root = await fsp.realpath(AI_SALES_VIDEO_UPLOAD_ROOT);
+  const tenantDir = path.join(root, String(job.tenant_id));
+  if (await fsp.realpath(tenantDir) !== tenantDir) throw fail('原片租户目录无法核验');
+  const clips = [];
+  for (const segment of plan.providerExecution.segments) {
+    const part = plan.partialResults?.find(item => item.index === segment.index);
+    if (!part || !/^[a-f0-9]{64}$/u.test(String(part.sha256 || ''))) throw fail('缺少已保存的原片');
+    const name = `partial-${job.id}-${segment.index}-${part.sha256.slice(0,24)}.mp4`;
+    if (part.url !== `/uploads/ai-sales-video/${job.tenant_id}/${name}`) throw fail('原片不属于本任务');
+    const file = await fsp.open(path.join(tenantDir,name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size < 1 || stat.size > 180*1024*1024 || stat.size !== part.bytes) throw fail('原片大小无法核验');
+      const bytes = await file.readFile();
+      if (hash(bytes) !== part.sha256) throw fail('原片哈希不匹配');
+      clips.push(bytes);
+    } finally { await file.close(); }
+  }
+  return clips;
 }
 
 async function verifyExistingResult(result, tenantId, binaries, runner, audioMode, durationSeconds = 30) {
@@ -232,13 +274,17 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
     }).ok
   )
     throw fail('原脚本校验或哈希不匹配，禁止重新生成代替');
-  const original = originalHold(job, plan);
+  const refundedRecovery = plan.billing?.state === 'released' && plan.audioMode === 'provider_native';
+  const original = originalHold(job, plan, { allowRefunded: refundedRecovery });
+  if (refundedRecovery && (!original.expense?.refundedAt || original.hold.settled_credits !== 0))
+    throw fail('免费恢复必须保留原任务已全额退款的账目');
+  const savedClips = refundedRecovery ? await readRefundedLocalClips(job, plan) : null;
   if (original.hold.status === 'held') await refreshVoicedSalesReceipts(plan, runtime.supplierRequestCost);
-  const settlement = voicedSalesSettlement(plan);
+  const settlement = recoverySettlement(plan, original);
   const walletPricing = JSON.parse(original.hold.pricing_snapshot_json || '{}').supplierCostPolicy?.basis === 'upstream_debit';
   if (settlement.credits > original.hold.held_credits && !walletPricing) throw fail('实际费用超过原预授权，需人工对账');
   if (
-    original.hold.status === 'settled' &&
+    original.hold.status === 'settled' && !refundedRecovery &&
     (original.hold.settled_credits !== settlement.credits ||
       !originalCostMatches(original, settlement) ||
       original.log.input_tokens !== settlement.usage.inputTokens ||
@@ -272,7 +318,7 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
     )
   )
     throw fail('该成片已导入素材库，禁止用新文件静默替换；需管理层核对原素材', 'AI_SALES_VIDEO_RECOVERY_IMPORTED');
-  if (!canReuseResult && !runtime.recoverQuery && !runtime.querySegment && !yunwuAvailable())
+  if (!canReuseResult && !savedClips && !runtime.recoverQuery && !runtime.querySegment && !yunwuAvailable())
     throw fail('原Wan任务查询通道未配置', 'AI_SALES_VIDEO_RECOVERY_QUERY_UNAVAILABLE', 503);
   let savedSnapshot = job.snapshot_json,
     currentStatus = job.status,
@@ -314,6 +360,7 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
     stage: 'queued',
     reusedResult: Boolean(canReuseResult),
     providerSubmissions: 0,
+    ...(refundedRecovery ? { refundedBillPreserved: true, source: 'verified_local_clips' } : {}),
   };
   plan.phase = 'recovery';
   persist('处理中', null, original.hold.status === 'settled' ? original.hold.settled_credits : null);
@@ -389,6 +436,12 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
           plan.recovery.stage = 'query';
           persist('处理中');
           for (const [i, segment] of plan.providerExecution.segments.entries()) {
+            if (savedClips) {
+              const file = path.join(workDir, `paid-original-${i+1}.mp4`);
+              await fsp.writeFile(file, savedClips[i], { flag: 'wx', mode: 0o600 });
+              clips.push(file);
+              continue;
+            }
             const ready = await waitForProviderVideo({
               taskId: segment.taskId,
               model: plan.model,
@@ -461,10 +514,12 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
         persist('成功');
         // Re-read price + hold after asynchronous I/O; neither snapshot state nor
         // a stale closure may authorize a second debit or overwrite a refund.
-        const currentSettlement = voicedSalesSettlement(plan),
-          latest = originalHold(job, plan);
+        const latest = originalHold(job, plan, { allowRefunded: refundedRecovery }),
+          currentSettlement = recoverySettlement(plan, latest);
         let settled;
-        if (latest.hold.status === 'held') {
+        if (refundedRecovery) {
+          if (!latest.expense?.refundedAt || latest.hold.settled_credits !== 0) throw fail('原退款账目已变化，未重新扣款');
+        } else if (latest.hold.status === 'held') {
           settled = settleHold({ holdId: Number(latest.hold.id) }, currentSettlement);
           if (!settled) throw fail('原预授权结算未完成');
         } else if (
@@ -476,10 +531,11 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
           throw fail('原实扣与恢复用量不一致');
         plan.billing = {
           ...plan.billing,
-          state: 'settled',
+          state: refundedRecovery ? 'released' : 'settled',
           chargedCredits: settled?.credits ?? latest.hold.settled_credits,
           pendingReconciliation: false,
           costYuan: settled?.costYuan ?? latest.log.cost_yuan,
+          ...(refundedRecovery ? { recoveredAfterRefund: true, platformAbsorbedCostYuan: currentSettlement.costYuanOverride ?? null, note: '已用保存原片完成本地恢复；原退款不变，用户扣款为0，原供应商成本由平台承担。' } : {}),
         };
         plan.phase = 'complete';
         plan.recovery.stage = 'complete';
@@ -500,11 +556,11 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
           code: plan.failureCode,
         });
         try {
-          const latest = originalHold(job, plan).hold,
+          const latest = originalHold(job, plan, { allowRefunded: refundedRecovery }).hold,
             settled = latest.status === 'settled';
           plan.billing = {
             ...plan.billing,
-            state: settled ? 'settled' : 'pending_reconciliation',
+            state: refundedRecovery ? 'released' : settled ? 'settled' : 'pending_reconciliation',
             pendingReconciliation: !settled,
             chargedCredits: settled ? latest.settled_credits : null,
           };
@@ -529,7 +585,7 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
       billing: plan.billing,
       salesVideo: publicVoicedSalesProgress(plan, tenantId),
       recovery: {
-        mode: canReuseResult ? 'verify_existing_result' : 'reuse_existing_provider_tasks',
+        mode: savedClips ? 'reuse_verified_local_clips_after_refund' : canReuseResult ? 'verify_existing_result' : 'reuse_existing_provider_tasks',
         providerSubmissions: 0,
         reusedTaskCount: canReuseResult ? 0 : plan.providerExecution.segments.length,
       },

@@ -27,4 +27,8 @@ test('AI带货员仅在面板打开时恢复历史任务，关闭后停止稳定
   assert.match(panel, /复用原任务恢复成片（不重复生成）/u);
   assert.match(panel, /confirmCharge: true/u);
   assert.match(panel, /确认恢复并预授权/u);
+  assert.match(panel, /口播发布前提醒/u);
+  assert.match(panel, /发布前建议调整口播/u);
+  assert.match(panel, /前3秒钩子/u);
+  assert.match(panel, /行动邀请/u);
 });

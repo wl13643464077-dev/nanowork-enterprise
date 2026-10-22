@@ -14,15 +14,21 @@ const c=await import('../src/engines/credits.js');
 initSchema();migrateV2();
 after(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});});
 const model='deepseek/deepseek-v4-flash';
+const imageModel='openai/gpt-image-2';
 let seq=0;
 function response(amount='0.001662') {return {id:`request-${++seq}|upstream-id`,model:`tencent/${model}`,usage:{prompt_tokens:107,completion_tokens:149,amount}};}
+function imageResponse({amount='0.2403765',created=1788800989,url='https://p0.qhimg.com/example-image-a.png',actualModel=`mm/${imageModel}`}={}) {
+  return {created,data:[{url,revised_prompt:''}],usage:{total_tokens:1786,input_tokens:30,output_tokens:1756,amount},model:actualModel};
+}
 const receipt=(amount='0.001662')=>read360Cost({response:response(amount),model});
+const changeLast=value=>`${value.slice(0,-1)}${value.endsWith('0')?'1':'0'}`;
 function actor() {
   const tid=Number(q.run("INSERT INTO tenants(name,status,credits) VALUES('360计费测试','已开通',2000)").lastInsertRowid);
   const uid=Number(q.run("INSERT INTO users(tenant_id,username,password_hash,name,role,status) VALUES(?,?,'x','老板','boss','启用')",tid,`a-${++seq}`).lastInsertRowid);
   return {tid,uid};
 }
 const hold=a=>c.holdCredits({userId:a.uid,kind:'text',model,feature:'360真实费用',credits:100});
+const imageHold=a=>c.holdCredits({userId:a.uid,kind:'image',model:imageModel,feature:'360 Image2真实费用',credits:400});
 const balance=a=>q.get('SELECT credits FROM tenants WHERE id=?',a.tid).credits;
 
 test('真实360 amount保留人民币与原始请求ID，供应商前缀模型不改变请求模型',()=>{
@@ -31,9 +37,75 @@ test('真实360 amount保留人民币与原始请求ID，供应商前缀模型�
   assert.equal(cost.costSource.requestId,normalize360ReceiptId(res.id));
   assert.equal(cost.costSource.actualModel,`tencent/${model}`);assert.ok(valid360Receipt(cost.costSource));
   assert.equal(cost.costSource.rawRequestId,res.id);
+  const legacy={...cost.costSource};delete legacy.identityType;
+  assert.ok(valid360Receipt(legacy),'升级前已落库的360请求ID回执继续有效');
   assert.equal(read360Cost({response:response('0'),model}).costYuanOverride,0);
   const video=read360Cost({response:{id:'task^^alibaba/qwen/wan3.0-video^^1',model:'alibaba/qwen/wan3.0-video',usage:{amount:'6'}},model:'alibaba/wan3.0-video'});
   assert.equal(video.costYuanOverride,6);assert.ok(valid360Receipt(video.costSource));
+});
+
+test('Image2成功响应没有上游ID时，以明确标注的响应指纹核验真实人民币金额',()=>{
+  const res=imageResponse(),cost=read360Cost({response:res,model:imageModel});
+  assert.equal(cost.status,'known');assert.equal(cost.costYuanOverride,0.2403765);
+  assert.match(cost.requestId,/^360-response-[a-f0-9]{64}$/);
+  assert.equal(cost.costSource.identityType,'response_fingerprint');
+  assert.equal(cost.costSource.rawRequestId,null);
+  assert.equal(cost.costSource.responseCreated,res.created);
+  assert.equal(cost.costSource.responseOutputCount,1);
+  assert.deepEqual(cost.costSource.responseOutputDigests.map(value=>value.replace(/[a-f0-9]{64}$/,'<sha256>')),
+    ['0:url-sha256:<sha256>']);
+  assert.ok(valid360Receipt(cost.costSource));
+
+  const repeated=read360Cost({response:structuredClone(res),model:imageModel});
+  assert.equal(repeated.requestId,cost.requestId);
+  assert.equal(repeated.costSource.responseFingerprint,cost.costSource.responseFingerprint);
+  const changed=read360Cost({response:imageResponse({created:res.created,url:'https://p0.qhimg.com/example-image-b.png'}),model:imageModel});
+  assert.notEqual(changed.requestId,cost.requestId);
+});
+
+test('Image2响应指纹不能被篡改，也不能替代错误模型、缺失金额或不完整响应',()=>{
+  const source=read360Cost({response:imageResponse(),model:imageModel}).costSource;
+  for(const patch of [
+    {requestId:changeLast(source.requestId)},
+    {responseFingerprint:changeLast(source.responseFingerprint)},
+    {responseCreated:source.responseCreated+1},
+    {responseOutputCount:2},
+    {responseOutputDigests:['0:url-sha256:'+''.padStart(64,'0')]},
+    {identityType:'upstream_request_id'},
+    {rawRequestId:'fabricated-upstream-id'},
+  ]) assert.equal(valid360Receipt({...source,...patch}),false,JSON.stringify(patch));
+
+  assert.equal(read360Cost({response:imageResponse({actualModel:'foreign/image-model'}),model:imageModel}).status,'pending');
+  const noAmount=imageResponse();delete noAmount.usage.amount;
+  assert.equal(read360Cost({response:noAmount,model:imageModel}).status,'pending');
+  const noCreated=imageResponse();delete noCreated.created;
+  assert.equal(read360Cost({response:noCreated,model:imageModel}).status,'pending');
+  const noReportedModel=imageResponse();delete noReportedModel.model;
+  assert.equal(read360Cost({response:noReportedModel,model:imageModel}).status,'pending');
+  const nonImage={created:1788800989,data:[{url:'https://p0.qhimg.com/not-a-chat-receipt.png'}],usage:{amount:'1'},model};
+  assert.equal(read360Cost({response:nonImage,model}).status,'pending');
+});
+
+test('Image2响应身份跨账单去重，新响应可独立按usage.amount结算且审计字段入库',()=>{
+  const a=actor(),first=imageResponse(),cost=read360Cost({response:first,model:imageModel});
+  const firstHold=imageHold(a);
+  const settled=c.settleHold(firstHold,{model:imageModel,usage:{images:1,supplierCosts:[cost]}});
+  assert.equal(settled.credits,49);
+  const expense=c.getSupplierExpense(firstHold.holdId,a.tid);
+  assert.equal(expense.costYuan,0.2403765);
+  assert.equal(expense.costSource.receipts[0].identityType,'response_fingerprint');
+  assert.equal(expense.costSource.receipts[0].rawRequestId,null);
+  assert.equal(expense.costSource.receipts[0].responseCreated,first.created);
+
+  const duplicate=imageHold(a);
+  assert.throws(()=>c.settleHold(duplicate,{model:imageModel,usage:{images:1,supplierCosts:[
+    read360Cost({response:structuredClone(first),model:imageModel}),
+  ]}}),{code:'BILLING_SUPPLIER_RECEIPT_REUSED'});
+  c.refundHold(duplicate);
+
+  const next=imageHold(a),nextCost=read360Cost({response:imageResponse({created:first.created+1}),model:imageModel});
+  assert.notEqual(nextCost.requestId,cost.requestId);
+  assert.equal(c.settleHold(next,{model:imageModel,usage:{images:1,supplierCosts:[nextCost]}}).credits,49);
 });
 
 test('缺失、非法金额、错误模型/币种/请求ID/来源不伪造回执',()=>{

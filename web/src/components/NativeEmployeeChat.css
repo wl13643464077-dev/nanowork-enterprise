@@ -197,8 +197,11 @@
   border-top: 1px solid var(--ui-border);
 }
 .native-employee-result video {
-  width: 100%;
-  max-height: min(52vh, 560px);
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(70vh, 640px);
+  justify-self: center;
   object-fit: contain;
   border-radius: 8px;
   background: var(--ui-surface-2);

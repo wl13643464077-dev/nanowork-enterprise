@@ -64,20 +64,18 @@ test('正式目录61个餐饮岗位+12个内容岗位，保留历史ID且每岗�
   const prompts = new Set();
   for (const employee of TESTER_EMPLOYEES) {
     assert.ok(employee.name && employee.group && employee.department && employee.description && employee.example, employee.id);
-    assert.equal(employee.experienceMode, 'text'); assert.ok(employee.capabilities.length);
+    assert.equal(employee.experienceMode, 'full'); assert.ok(employee.capabilities.length);
     const prompt = testerEmployeePrompt(employee.id); prompts.add(prompt);
     assert.ok(prompt.includes(employee.name)); assert.ok(prompt.includes('岗位职责')); assert.ok(prompt.includes('不能读取企业后台'));
+    assert.match(prompt, /正式岗位的完整能力体验/);
+    assert.doesNotMatch(prompt, /本体验只交付文字建议|也不能联网、调用工具/);
     assert.ok(!/\[object Object\]|undefined/.test(prompt + JSON.stringify(employee)), employee.id);
-    if (employee.domain === 'restaurant' && ![110, 160, 161].includes(employee.employeeIdx)) assert.ok(employee.example.includes(RESTAURANT_PRIMARY_TASKS[employee.employeeIdx]));
+    if (employee.domain === 'restaurant' && ![104, 110, 160, 161].includes(employee.employeeIdx)) assert.ok(employee.example.includes(RESTAURANT_PRIMARY_TASKS[employee.employeeIdx]));
   }
   assert.equal(prompts.size, 73); assert.equal(testerEmployeePrompt('content-999'), null);
-  for (const id of ['content-10', 'content-11', 'restaurant-160', 'restaurant-161']) {
-    const employee = TESTER_EMPLOYEES.find(item => item.id === id);
-    assert.ok(!/联网扒遍|上传|生成.{0,10}视频/.test(employee.description));
-  }
 });
 
-test('实际对话接入各自岗位提示，带货/小红书明确仅交付文字脚本，不读任何企业工作台', async () => {
+test('实际对话接入各自满血岗位提示，不降级成不能联网的文字问答', async () => {
   const owner = tester(); const seen = [];
   for (const employeeId of ['restaurant-140', 'content-10', 'content-11']) {
     await api.testerChat(owner, input(`prompt-${employeeId}`, employeeId), { chatFn: async options => {
@@ -86,22 +84,23 @@ test('实际对话接入各自岗位提示，带货/小红书明确仅交付文�
       assert.ok(options.system.includes('宣传文案使用商家本人口吻'));
       assert.ok(options.system.includes('不冒充探店客户'));
       assert.ok(options.system.includes('点一份鲜切牛肉，围桌聊聊这一周'));
-      assert.ok(options.system.includes('严格遵守条数、字数和格式'));
+      assert.ok(options.system.includes('严格遵守岗位要求的条数、字数和格式'));
+      assert.match(options.system, /正式岗位的完整能力体验/);
+      assert.doesNotMatch(options.system, /本体验只交付文字建议|也不能联网、调用工具/);
       assert.ok(!/现点现切|慢火熬制|不加浓汤宝|老人孩子都爱/.test(options.system));
-      assert.ok(options.system.length < 2000);
       assert.equal(options.model, 'deepseek/deepseek-v4-flash'); assert.equal(options.thinking, false);
-      assert.equal(options.maxTokens, 2400); return reply();
+      return reply();
     } });
   }
-  assert.equal(new Set(seen).size, 3); assert.ok(seen[1].includes('不能声称图片、视频、文件'));
+  assert.equal(new Set(seen).size, 3); assert.ok(seen[1].includes('明确说明文件尚未生成'));
 });
 
 test('主动选岗按客户+岗位去重且不占次数；token越权、旧同意版本和暂停被拒绝，旧用户仍可正常对话', async () => {
   const owner = tester(); const lead = customer(owner); const other = customer(tester());
   assert.ok(api.TRIAL_DISCLOSURE.includes('选择的数字员工/功能'));
   assert.equal(lead.lead.consentVersion, api.TRIAL_CONSENT_VERSION);
-  assert.equal(api.recordTrialInterest(lead.invitation.token, lead.accessToken, { employeeId: 'restaurant-140' }).created, true);
-  assert.equal(api.recordTrialInterest(lead.invitation.token, lead.accessToken, { employeeId: 'restaurant-140' }).created, false);
+  assert.equal(api.recordTrialInterest(lead.invitation.token, lead.accessToken, { employeeId: 'restaurant-104' }).created, true);
+  assert.equal(api.recordTrialInterest(lead.invitation.token, lead.accessToken, { employeeId: 'restaurant-104' }).created, false);
   assert.equal(api.recordTrialInterest(lead.invitation.token, lead.accessToken, { employeeId: 'content-11' }).created, true);
   assert.equal(q.get('SELECT used_turns FROM tester_leads WHERE id=?', lead.lead.id).used_turns, 0);
   assert.equal(q.get('SELECT COUNT(*) n FROM tester_interests WHERE lead_id=?', lead.lead.id).n, 2);

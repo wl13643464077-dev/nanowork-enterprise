@@ -1,7 +1,7 @@
 // 内容部真联网检索统一入口（趋势官 / 情报员 / 拆解师）。
 //
 // 复用餐饮岗位已验证的链路，不复制实现：
-//   agentic-web-research（TinyFish → Claude CLI WebSearch）
+//   agentic-web-research（TinyFish → Claude WebSearch）
 //   → websearch（博查 / Tavily / Serper 商业检索 API；CLI 不可用时的回落层）
 //   → controlled-web-evidence（受控 WebFetch，SSRF 钉住 DNS）
 //   → public-source-quality（来源质量门）
@@ -106,10 +106,12 @@ export function contentLiveResearchReadiness() {
     },
     {
       key: 'claude_websearch',
-      label: 'Claude CLI WebSearch（云雾网关）',
+      label: tiered.routes?.find(route => route.key === 'claude_websearch')?.label
+        || 'Claude WebSearch',
       ready: tiered.fallbackReady === true,
       cliReady: tiered.cliReady === true,
       credentialReady: tiered.credentialReady === true,
+      transport: tiered.transport || null,
       role: 'fallback',
     },
     {
@@ -129,7 +131,7 @@ export function contentLiveResearchReadiness() {
     cliAvailable: tiered.cliReady === true,
     summary: configured
       ? `联网检索已启用：${lanes.filter(lane => lane.ready).map(lane => lane.label).join(' → ')}`
-      : '联网检索未配置：TinyFish / Claude CLI / 博查 / Tavily / Serper 均未就绪',
+      : '联网检索未配置：TinyFish / Claude WebSearch / 博查 / Tavily / Serper 均未就绪',
   };
 }
 
@@ -182,7 +184,16 @@ function normalizedCandidates(rows, limit) {
   return output;
 }
 
-function unavailable({ kind, query, readiness, fetchedAt, note, status = 'unavailable', provenance = {} }) {
+function unavailable({
+  kind,
+  query,
+  readiness,
+  fetchedAt,
+  note,
+  status = 'unavailable',
+  provenance = {},
+  cost = null,
+}) {
   return {
     schemaVersion: CONTENT_LIVE_RESEARCH_SCHEMA,
     ok: false,
@@ -208,7 +219,7 @@ function unavailable({ kind, query, readiness, fetchedAt, note, status = 'unavai
       cliFallback: { triggered: false, reason: null },
       ...provenance,
     },
-    cost: { lane: null, usage: { inputTokens: 0, outputTokens: 0 }, costUsd: 0, credits: null },
+    cost: cost || { lane: null, usage: { inputTokens: 0, outputTokens: 0 }, costUsd: 0, credits: null },
   };
 }
 
@@ -270,7 +281,7 @@ export async function runContentLiveResearch({
       query,
       readiness,
       fetchedAt: startedAt,
-      note: '联网检索未配置：请在接口管理中配置 TinyFish、Claude CLI（云雾）或博查 / Tavily / Serper 任一通道；未配置前不会用模板或模型记忆冒充实时信息。',
+      note: '联网检索未配置：请在接口管理中配置 TinyFish、Claude WebSearch API 或博查 / Tavily / Serper 任一通道；未配置前不会用模板或模型记忆冒充实时信息。',
     });
   }
 
@@ -281,6 +292,8 @@ export async function runContentLiveResearch({
   let provider = null;
   let usage = { inputTokens: 0, outputTokens: 0 };
   let costUsd = 0;
+  let supplierCosts = [];
+  let costModel = null;
   let agenticEvidence = null;
 
   const tieredLaneReady = readiness.lanes.some(item => TIERED_LANES.has(item.key) && item.ready);
@@ -304,6 +317,12 @@ export async function runContentLiveResearch({
         outputTokens: Number(agenticUsage.outputTokens || agenticUsage.output_tokens || 0) || 0,
       };
       costUsd = Number(agentic?.evidence?.costUsd || agentic?.costUsd || 0) || 0;
+      supplierCosts = Array.isArray(agentic?.evidence?.supplierCosts)
+        ? agentic.evidence.supplierCosts
+        : Array.isArray(agenticUsage.supplierCosts)
+          ? agenticUsage.supplierCosts
+          : [];
+      costModel = safeText(agentic?.evidence?.model || '', 160) || null;
       if (agentic?.ok === true && agentic?.candidateReady === true && raw.length) {
         candidates = normalizedCandidates(raw, maxItems * 2);
         lane = laneForProvider(agentic.provider) || 'tinyfish';
@@ -388,6 +407,14 @@ export async function runContentLiveResearch({
       status: 'no_results',
       note: `联网检索已执行但未取得可核验来源：${failures.map(item => item.note).filter(Boolean).join('；') || '所有通道均未命中'}`,
       provenance: baseProvenance,
+      cost: {
+        lane,
+        model: costModel,
+        usage: { ...usage, ...(supplierCosts.length ? { supplierCosts } : {}) },
+        supplierCosts,
+        costUsd,
+        credits: null,
+      },
     });
   }
 
@@ -474,7 +501,9 @@ export async function runContentLiveResearch({
     },
     cost: {
       lane,
-      usage,
+      model: costModel,
+      usage: { ...usage, ...(supplierCosts.length ? { supplierCosts } : {}) },
+      supplierCosts,
       costUsd,
       credits: null,
     },

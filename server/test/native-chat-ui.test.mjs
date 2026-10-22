@@ -1,3 +1,4 @@
+import * as personalBillingCopy from "../../web/src/components/personalApiBilling.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -110,6 +111,7 @@ function mount(file, initialProps, handlers = {}) {
   ).outputText;
   new Function("require", "module", "exports", code)(
     (name) => {
+      if (name === "./personalApiBilling.js") return personalBillingCopy;
       if (name === "react") return hooks;
       if (name === "react/jsx-runtime")
         return { jsx, jsxs: jsx, Fragment: "Fragment" };
@@ -1274,4 +1276,19 @@ test("发布包下载只认受控路径，携带cookie和门店上下文，ZIP�
     URL.createObjectURL = create;
     URL.revokeObjectURL = revoke;
   }
+});
+
+test("测试员原生聊天对话与配图方案不展示企业积分报价", async () => {
+  const session = { id: 77, employeeIdx: 11, status: "ready", files: [], options: { imageCount: 6 },
+    messages: [{ id: 1, role: "assistant", content: "已保存方案", billing: { state: "settled", chargedCredits: 0, costYuan: 0.031 } }],
+    currentPlan: { version: 1, ready: true, summary: "图文方案", options: { imageCount: 6 } } };
+  const ui = mount("components/NativeEmployeeChat.tsx", baseProps, { get: url => url.includes("?") ? { sessions: [session] } : { session } });
+  ui.setUser({ id: 8, tenant: { id: 3 }, role: "boss", accountType: "tester" });
+  const tree = await ui.mount();
+  const hints = nodes(tree, node => node.props?.className === "native-employee-chat__hint").map(node => JSON.stringify(node.props.children)).join(" ");
+  assert.match(hints, /个人API计费.*0\.0310/);
+  assert.match(hints, /本方案 6 张图.*API Key/);
+  assert.doesNotMatch(hints, /积分|预授权|未扣费|免费/);
+  assert.equal(ui.calls.some(call => call.method === "POST"), false);
+  ui.cleanup();
 });

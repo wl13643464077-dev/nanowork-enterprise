@@ -50,7 +50,7 @@ test('360目录连接成功不能冒充Image2真实生图验证，空模型ID不
   assert.equal(listed.generationVerified, false);
 });
 
-test('360目录图片可用性诊断：同Key目录含视频却无任何图片模型时判定供应商未开通，不归因参数', () => {
+test('360目录缺少图片模型不能推断无权限，仍需按官方模型名真实生成验证', () => {
   const { describe360ImageAvailability, is360ImageModelId } = provider360;
   // 2026-09-07 真实目录节选：90个模型里有可用的万相3.0视频、视觉模型，但没有任何图片生成模型。
   const realDirectory = ['deepseek/deepseek-v4-flash-vision-exp', 'qwen/qwen3.8-flash', 'alibaba/wan3.0-video',
@@ -60,9 +60,9 @@ test('360目录图片可用性诊断：同Key目录含视频却无任何图片�
   assert.equal(none.verdict, 'no_image_models');
   assert.deepEqual(none.imageModels, []);
   assert.equal(none.videoListed, true);
-  assert.match(none.message, /未向本组织开放任何图片生成模型/u);
-  assert.match(none.message, /不是参数或代码问题/u);
-  assert.match(none.message, /不收取图片费用/u);
+  assert.match(none.message, /目录中未列出图片模型/u);
+  assert.match(none.message, /不能据此判断图片权限/u);
+  assert.match(none.message, /openai\/gpt-image-2/u);
   assert.equal(is360ImageModelId('deepseek/deepseek-v4-flash-vision-exp'), false, '视觉理解模型不是图片生成模型');
   assert.equal(is360ImageModelId('alibaba/wan3.0-video'), false);
   for (const id of ['openai/gpt-image-2', 'google/gemini-3-pro-image-preview', 'alibaba/wan2.7-image', 'volcengine/doubao-seedream-5.0-lite'])
@@ -70,7 +70,7 @@ test('360目录图片可用性诊断：同Key目录含视频却无任何图片�
   const others = describe360ImageAvailability([...realDirectory, { id: 'alibaba/wan2.7-image' }]);
   assert.equal(others.verdict, 'other_image_models_only');
   assert.deepEqual(others.imageModels, ['alibaba/wan2.7-image']);
-  assert.match(others.message, /不能把其他模型的成功当作Image2验收/u);
+  assert.match(others.message, /目录不代表完整权限/u);
   const listed = describe360ImageAvailability([...realDirectory, { id: 'openai/gpt-image-2' }]);
   assert.equal(listed.verdict, 'configured_listed');
   assert.match(listed.message, /仍以生成接口返回为准/u);
@@ -191,6 +191,10 @@ test('Wan3.0按原厂input/parameters传时长分辨率，正确区分首帧与�
   const first = 'https://images.example.com/first.png', second = 'https://images.example.com/second.png';
   const body = build360VideoBody({ prompt: '保持菜品与门头', duration: 15, resolution: '720P', images: [first] });
   assert.deepEqual(body.extra_body.input, { prompt: '保持菜品与门头', media: [{ type: 'first_frame', url: first }] });
+  assert.equal(body.extra_body.parameters.ratio, 'adaptive', '首帧模式保留实际输入画幅');
+  const references = build360VideoBody({ images: [first, first], duration: 15 });
+  assert.equal(references.extra_body.parameters.ratio, '9:16');
+  assert.deepEqual(references.extra_body.input.media.map(item => item.type), ['reference_image', 'reference_image']);
   assert.equal(body.extra_body.parameters.duration, 15);
   assert.equal(body.extra_body.parameters.resolution, '720P');
   assert.equal(Object.hasOwn(body, 'content'), false, '不要由通用content适配器重新覆盖原厂input');

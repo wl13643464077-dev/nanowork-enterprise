@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { cleanReportBody } from "../../../shared/report-body.mjs";
 import { loadRestaurantCatalog } from "../catalog/restaurant.js";
 import { renderRestaurantOutputForExport } from "./restaurant-output-export.js";
 import { outputQualityReview } from "./output-quality-advice.js";
@@ -2850,7 +2851,36 @@ function positiveDeliveryTokenCount(value) {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
-function isNegatedExternalActionClaim(text, index) {
+function automaticExternalActionHasApprovalGate(text, index, matchedText) {
+  if (!String(matchedText || "").startsWith("自动")) return false;
+  const source = String(text || "");
+  const start = Number(index || 0);
+  const end = start + String(matchedText || "").length;
+  const before = source.slice(Math.max(0, start - 160), start);
+  const after = source.slice(end, end + 160);
+  const unsafeQualification =
+    /(?:无需|不需|免于|跳过|绕过)[^。！？!?;；\n]{0,28}(?:审批|审核|授权|许可|批准|同意|核验)/u;
+  if (unsafeQualification.test(before) || unsafeQualification.test(after))
+    return false;
+
+  // “经负责人批准后，系统才可自动发送”把批准放在动作前面。
+  // 允许少量 JSON 字段标点，但不跨句号/分号，避免把相邻章节里的泛化
+  // “需审批”误当成本动作已经取得执行授权。
+  const approvalBefore =
+    /(?:经|取得|获得|通过)[^。！？!?;；\n]{0,72}(?:审批|审核|授权|许可|批准|同意)[^。！？!?;；\n]{0,20}(?:后|之后)[^。！？!?;；\n]{0,28}(?:才|方|仅)?(?:可|能|允许|执行|触发|启用)?[^。！？!?;；\n]{0,8}$/u;
+  if (approvalBefore.test(before)) return true;
+
+  // “自动发送前必须核验同意并取得负责人审批”及
+  // “自动发送须经负责人审批后才执行”把门禁写在动作后面。这里只接受
+  // 明确的先审批/授权语义；“自动发送后再审核”仍会被拦截。
+  const approvalAfter =
+    /^(?:前|之前)[，,:：\s]*(?=[^。！？!?;；\n]{0,112}(?:须|必须|需|需要|应|应当|一律|先|仅可|只能))(?=[^。！？!?;；\n]{0,112}(?:审批|审核|授权|许可|批准|同意|核验))[^。！？!?;；\n]{0,112}/u;
+  const requiredAfter =
+    /^[，,:：\s]*(?:须|必须|需|需要|应|应当|仅可|只能)[^。！？!?;；\n]{0,24}(?:经|取得|获得|通过)[^。！？!?;；\n]{0,40}(?:审批|审核|授权|许可|批准|同意)(?:后|之后|方可|才可)[^。！？!?;；\n]{0,24}(?:执行|触发|启用|发送|发布|投放|付款|支付|采购|调价|删除|写入生产)/u;
+  return approvalAfter.test(after) || requiredAfter.test(after);
+}
+
+function isNegatedExternalActionClaim(text, index, matchedText = "") {
   const before = String(text || "").slice(
     Math.max(0, Number(index || 0) - 48),
     Number(index || 0),
@@ -2862,24 +2892,59 @@ function isNegatedExternalActionClaim(text, index) {
   return (
     /(?:不因|不把|尚未|当前不|绝不|并未|从未|不得|禁止|不能|不会|不可|不应|不允许|未经|未获)[^，,。！？!?;；\n]{0,32}$/u.test(
       clause,
-    ) || /(?:不|不要|不再|不直接|不主动|不实际)$/u.test(clause)
+    ) || /(?:不|不要|不再|不直接|不主动|不实际)$/u.test(clause) ||
+    automaticExternalActionHasApprovalGate(text, index, matchedText)
   );
 }
 
-function hasUnauthorizedExternalActionClaim(value) {
+function safetySignalSnippet(text, index, matchedText) {
+  const source = String(text || "");
+  const start = Math.max(0, Number(index || 0) - 72);
+  const end = Math.min(
+    source.length,
+    Number(index || 0) + String(matchedText || "").length + 88,
+  );
+  return source
+    .slice(start, end)
+    .replace(/https?:\/\/[^\s"'<>，。；！？]+/giu, "[URL]")
+    .replace(/(?<!\d)1\d{10}(?!\d)/gu, "[手机号]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[邮箱]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/giu, "Bearer [凭据已隐藏]")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function unauthorizedExternalActionSignals(value) {
   const text = String(value || "");
+  const signals = [];
   UNAUTHORIZED_EXTERNAL_ACTION_CLAIM_PATTERN.lastIndex = 0;
   for (const match of text.matchAll(UNAUTHORIZED_EXTERNAL_ACTION_CLAIM_PATTERN)) {
-    if (isNegatedExternalActionClaim(text, match.index)) {
+    if (isNegatedExternalActionClaim(text, match.index, match[0])) {
       continue;
     }
-    return true;
+    signals.push({
+      ruleId: "unauthorized_external_action_claim",
+      match: match[0],
+      snippet: safetySignalSnippet(text, match.index, match[0]),
+    });
+    if (signals.length >= 3) return signals;
   }
   UNAUTHORIZED_RESERVATION_ACTION_PATTERN.lastIndex = 0;
   for (const match of text.matchAll(UNAUTHORIZED_RESERVATION_ACTION_PATTERN)) {
-    if (!isNegatedExternalActionClaim(text, match.index)) return true;
+    if (isNegatedExternalActionClaim(text, match.index, match[0])) continue;
+    signals.push({
+      ruleId: "unauthorized_reservation_action_claim",
+      match: match[0],
+      snippet: safetySignalSnippet(text, match.index, match[0]),
+    });
+    if (signals.length >= 3) return signals;
   }
-  return false;
+  return signals;
+}
+
+function hasUnauthorizedExternalActionClaim(value) {
+  return unauthorizedExternalActionSignals(value).length > 0;
 }
 
 function platformActionIsProhibitedOrAuthorized(text, index, matchedText = "") {
@@ -3055,15 +3120,18 @@ export function restaurantEmployeeHardDeliveryDecision({
   allowedSources = [],
 } = {}) {
   const normalizedText = String(text || "").trim();
+  // 系统机读块（巡店归档、活动物料成图）可能带供应商错误 URL；硬门只审老板可读正文。
+  const deliveryText = cleanReportBody(normalizedText) || normalizedText;
   const normalizedMode = String(mode || "").trim().toLowerCase();
   const normalizedModel = String(model || "").trim();
   const inputTokens = positiveDeliveryTokenCount(usage?.inputTokens);
   const outputTokens = positiveDeliveryTokenCount(usage?.outputTokens);
   const errors = [];
+  const safetySignals = [];
 
   if (!normalizedText) errors.push("餐饮数字员工没有返回可保存的报告正文。");
-  if (/^(?:(?:好的|收到|明白|了解|没问题)[，,。！!\s]*)+(?:(?:我(?:会|将)|马上|正在|即将)[^。！!\n]*[。！!]?\s*)*$/u.test(normalizedText)
-    || /^(?:太短[，,]?\s*)?(?:不构成岗位报告|暂无(?:报告|业务正文|结果)|没有(?:报告|业务正文|结果))[。！!\s]*$/u.test(normalizedText)) {
+  if (/^(?:(?:好的|收到|明白|了解|没问题)[，,。！!\s]*)+(?:(?:我(?:会|将)|马上|正在|即将)[^。！!\n]*[。！!]?\s*)*$/u.test(deliveryText)
+    || /^(?:太短[，,]?\s*)?(?:不构成岗位报告|暂无(?:报告|业务正文|结果)|没有(?:报告|业务正文|结果))[。！!\s]*$/u.test(deliveryText)) {
     errors.push("餐饮数字员工只确认了任务，尚未返回业务正文。");
   }
   if (normalizedMode !== "api") {
@@ -3083,12 +3151,15 @@ export function restaurantEmployeeHardDeliveryDecision({
   }
 
   if (normalizedText) {
-    if (hasUnauthorizedExternalActionClaim(normalizedText)) {
+    const externalActionSignals =
+      unauthorizedExternalActionSignals(deliveryText);
+    if (externalActionSignals.length) {
+      safetySignals.push(...externalActionSignals);
       errors.push(
         "餐饮数字员工不得声称已外发、付款或执行不可逆动作，也不得绕过授权。",
       );
     }
-    if (hasUnsafePlatformActionRecommendation(normalizedText)) {
+    if (hasUnsafePlatformActionRecommendation(deliveryText)) {
       errors.push(
         "餐饮数字员工不得建议伪造或冒用平台身份、规避平台规则，亦不得建议未经平台许可与老板执行授权进行真实上架。",
       );
@@ -3101,7 +3172,7 @@ export function restaurantEmployeeHardDeliveryDecision({
       .join("\n");
     for (const url of extractRuntimeSourceUrls(taskText)) allowedUrls.add(url);
 
-    const rawUrls = [...normalizedText.matchAll(OUTPUT_HTTP_URL_PATTERN)].map(
+    const rawUrls = [...deliveryText.matchAll(OUTPUT_HTTP_URL_PATTERN)].map(
       (match) => String(match[0] || ""),
     );
     const malformedUrls = rawUrls.filter(
@@ -3113,7 +3184,7 @@ export function restaurantEmployeeHardDeliveryDecision({
       );
     }
     const unverifiedUrls = extractRuntimeSourceUrls(
-      normalizedText,
+      deliveryText,
       normalizedAllowed,
     ).filter((url) => !allowedUrls.has(url));
     if (unverifiedUrls.length) {
@@ -3127,7 +3198,7 @@ export function restaurantEmployeeHardDeliveryDecision({
     }
     if (
       allowedUrls.size === 0 &&
-      PUBLIC_SOURCE_ASSERTION_PATTERN.test(normalizedText)
+      PUBLIC_SOURCE_ASSERTION_PATTERN.test(deliveryText)
     ) {
       errors.push(
         "餐饮数字员工在没有已验证来源快照时声称公开、官方或平台事实，禁止补造来源。",
@@ -3144,6 +3215,7 @@ export function restaurantEmployeeHardDeliveryDecision({
       model: normalizedModel || null,
       usage: { inputTokens, outputTokens },
     },
+    ...(safetySignals.length ? { safetySignals } : {}),
   };
 }
 
