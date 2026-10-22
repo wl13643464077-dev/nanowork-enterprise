@@ -485,6 +485,23 @@ export default function Platform() {
                 />
               </Col>
             </Row>
+            {(ana.lossAlerts || []).length > 0 && (
+              <Alert
+                type="error"
+                showIcon
+                message="亏损预警：以下模型的客户实付低于上游已核实成本，请调高参考价或停用"
+                description={
+                  <ul className="platform-loss-alerts">
+                    {ana.lossAlerts.map((item: any) => (
+                      <li key={item.model}>
+                        <strong>{item.model}</strong>：{item.calls} 笔中 {item.lossCalls} 笔亏损，实收 ¥
+                        {item.revenueYuan} / 成本 ¥{item.costYuan}（差额 ¥{item.marginYuan}）
+                      </li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
             <Row gutter={[12, 12]}>
               <Col xs={24} lg={10}>
                 <Panel

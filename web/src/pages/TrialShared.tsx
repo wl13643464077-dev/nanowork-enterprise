@@ -81,6 +81,8 @@ export type TrialLead = {
   salesPhone?: string;
   createdAt?: string;
   lastUsedAt?: string;
+  recipientNote?: string;
+  autoApproved?: boolean;
 };
 
 // 旧版本响应没有个人额度时兼容 2 次；登录客户以个人额度优先。

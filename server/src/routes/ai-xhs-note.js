@@ -16,7 +16,7 @@ import { brandMatchExcerpts, campaignBrandIdentity, isPlatformBrandStamp } from 
 import { activeContentEvolutionNotes } from '../engines/employee-evolution.js';
 import { evolutionNotesPromptLines, sanitizeEvolutionNotesForPrompt } from '../engines/employee-evolution-prompt.js';
 import { approvedNativeChatPlan } from '../engines/native-creative-chat-store.js';
-import { XHS_STYLES, XHS_COVER_LAYOUTS, xhsImageCount, xhsImageRoles, buildXhsImagePlan, XHS_NOTE_SOURCE, XHS_NOTE_SYSTEM, xhsImageModel, XHS_IMAGE_TIMEOUT_MS, XHS_IMAGE_ROLES, normalizeXhsNoteInput, xhsNotePrompt, parseXhsNoteOutput, xhsNoteMarkdown, xhsNoteFailure, xhsImagePrompt, renderXhsImage } from '../engines/ai-xhs-note.js';
+import { XHS_STYLES, XHS_COVER_LAYOUTS, xhsImageCount, xhsImageRoles, buildXhsImagePlan, XHS_NOTE_SOURCE, XHS_NOTE_SYSTEM, xhsImageModel, XHS_IMAGE_TIMEOUT_MS, XHS_IMAGE_ROLES, normalizeXhsNoteInput, XHS_IMAGE_MODELS, xhsNotePrompt, parseXhsNoteOutput, xhsNoteMarkdown, xhsNoteFailure, xhsImagePrompt, renderXhsImage } from '../engines/ai-xhs-note.js';
 
 const router = Router();
 const instanceId = randomUUID();
@@ -161,9 +161,10 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
   const storedSnapshot = json(stored?.snapshot_json);
   const parent = readRow(Number(content?.id));
   if (!stored || !parent || !['ai_xhs_note_image', 'ai_xhs_note_image_acceptance'].includes(storedSnapshot.source) || storedSnapshot.contentId !== parent.id
-    || stored.user_id !== parent.creator_id || stored.kind !== 'image' || stored.model !== xhsImageModel())
+    || stored.user_id !== parent.creator_id || stored.kind !== 'image' || !XHS_IMAGE_MODELS.includes(stored.model))
     throw fail('配图任务与当前企业上下文不匹配', 403);
   row = stored; content = parent; snapshot = json(parent.snapshot_json);
+  const jobModel = stored.model;
   if (!snapshot.output || imageInput(snapshot).generateImages !== true || !textBillingSettled(content, snapshot))
     throw fail('原文案尚未交付或费用待核对', 409);
   const existingHold = q.get("SELECT name FROM sqlite_master WHERE type='table' AND name='credit_holds'") && q.get(`SELECT id,status,settled_credits FROM credit_holds
@@ -192,8 +193,8 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
     status, url, state.error || null, JSON.stringify(state), curTenant(), row.id);
   const persistProviderReceipt = async out => {
     if (state.providerReceipt?.kind === 'image2_result') return;
-    if (out?.model !== xhsImageModel() || (!out.url && !out.b64)) throw fail('图片服务未返回有效产物', 502);
-    const receipt = { kind: 'image2_result', model: xhsImageModel(), status: Number(out.providerStatus) || state.providerResponse?.status || null,
+    if (out?.model !== jobModel || (!out.url && !out.b64)) throw fail('图片服务未返回有效产物', 502);
+    const receipt = { kind: 'image2_result', model: jobModel, status: Number(out.providerStatus) || state.providerResponse?.status || null,
       tenantId: curTenant(), userId: content.creator_id, contentId: content.id, mediaJobId: row.id, holdId: hold.holdId,
       requestKey: state.idempotencyKey, promptHash: state.promptHash, receivedAt: new Date().toISOString(),
       url: out.url || null, ...(out.b64 && !out.url && out.b64.length <= 28 * 1024 * 1024 ? { b64: out.b64 } : {}),
@@ -218,7 +219,7 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
       return `data:${mime};base64,${loaded.bytes.toString('base64')}`;
     });
     hold = holdCredits({ userId: content.creator_id, tenantId: curTenant(), feature: `AI小红书配图·${state.role}`,
-      kind: 'image', model: xhsImageModel(), credits: state.creditsPerImage, refType: 'media_job', refId: row.id });
+      kind: 'image', model: jobModel, credits: state.creditsPerImage, refType: 'media_job', refId: row.id });
     state.billing = twoPhaseBillingSummary({ state: 'held', hold, note: '本张配图单独预授权；成功保存后按张结算。' });
     state.idempotencyKey = `xhs-image:${curTenant()}:${row.id}:attempt:${state.attempts}`;
     state.referenceHashes = references.map(value => createHash('sha256').update(value).digest('hex'));
@@ -233,7 +234,7 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
         let out;
         try {
           out = await (runtime.editImage || editImage)({ prompt: row.prompt, images: references,
-            size: '1024x1536', model: xhsImageModel(), timeoutMs: XHS_IMAGE_TIMEOUT_MS, idempotencyKey: state.idempotencyKey,
+            size: '1024x1536', model: jobModel, timeoutMs: XHS_IMAGE_TIMEOUT_MS, idempotencyKey: state.idempotencyKey,
             onResponse: metadata => { state.providerResponse = metadata; persistState(); },
             onBodyProgress: metadata => { state.providerResponse = { ...state.providerResponse, ...metadata }; persistState(); }, onReceipt: persistProviderReceipt });
         } catch (error) {
@@ -242,7 +243,7 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
           if ([400, 401, 403, 404, 409, 422, 429].includes(error?.providerStatus)) invoked = false;
           throw error;
         }
-        if (out?.model !== xhsImageModel() || (!out.url && !out.b64)) throw fail('图片服务未返回有效产物', 502);
+        if (out?.model !== jobModel || (!out.url && !out.b64)) throw fail('图片服务未返回有效产物', 502);
         await persistProviderReceipt(out);
         state.providerFinishedAt = new Date().toISOString();
         state.providerElapsedMs = Date.now() - Date.parse(state.providerStartedAt);
@@ -284,7 +285,7 @@ async function executeXhsImageJobSelected(row, content, snapshot, runtime = {}) 
       settle: runtime.settleImage || settleHold, release: releaseHold,
       refund: refundHold,
       hasDeliverable: () => !!q.get('SELECT url FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), row.id)?.url,
-      settlement: () => ({ model: xhsImageModel(), credits: hold.credits, usage: state.usage || {}, aiMode: 'api' }),
+      settlement: () => ({ model: jobModel, credits: hold.credits, usage: state.usage || {}, aiMode: 'api' }),
       onBillingFinalized: ({ billing, delivery }) => {
         state.billing = billing;
         q.run('UPDATE media_jobs SET credits=? WHERE tenant_id=? AND id=?', billing.chargedCredits, curTenant(), row.id);
@@ -357,6 +358,7 @@ async function recoverImageReceipt(row, content, runtime = {}) {
 async function recoverImageReceiptSelected(row, content, runtime = {}) {
   row = q.get('SELECT * FROM media_jobs WHERE tenant_id=? AND id=?', curTenant(), row.id);
   const state = json(row?.snapshot_json), verified = row && imageReceiptFor(row, state);
+  const jobModel = row?.model;
   if (!verified || state.contentId !== content.id || row.user_id !== content.creator_id || !publicImage(row).canRecover) return;
   const key = `${curTenant()}:${row.id}`, snapshot = json(readRow(content.id)?.snapshot_json);
   if (activeImages.has(key)) return;
@@ -399,7 +401,7 @@ async function recoverImageReceiptSelected(row, content, runtime = {}) {
     const expense = getSupplierExpense(hold.id, curTenant());
     if (hold.status === 'held' && !expense?.refundedAt) {
       const held = { holdId: hold.id, tenantId: hold.tenant_id, userId: hold.user_id, credits: hold.held_credits, kind: hold.kind, model: hold.model };
-      const settled = (runtime.settleImage || settleHold)(held, { model: xhsImageModel(), credits: hold.held_credits, usage: verified.receipt.usage || {}, aiMode: 'api' });
+      const settled = (runtime.settleImage || settleHold)(held, { model: jobModel, credits: hold.held_credits, usage: verified.receipt.usage || {}, aiMode: 'api' });
       if (!settled) throw fail('已有预授权结算尚待核对', 409);
       state.billing = twoPhaseBillingSummary({ state: 'settled', hold: held, settled, note: '仅取回同一次Image2结果，沿用原预授权结算，没有重新生成或新增预授权。' });
     } else state.billing = imageBilling(row, state);

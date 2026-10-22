@@ -204,20 +204,24 @@ function publicOrigin(origin) {
 function invitationView(row, origin) {
   const token = decryptTesterSecret(row.token_cipher);
   return { id: row.id, ownerUserId: row.owner_user_id, token, title: row.title, salesPhone: row.sales_phone, provider: row.provider || '360',
-    status: row.status, turnLimit: row.turn_limit, createdAt: row.created_at, url: `${publicOrigin(origin)}/try/${token}` };
+    status: row.status, turnLimit: row.turn_limit, createdAt: row.created_at, url: `${publicOrigin(origin)}/try/${token}`,
+    recipientNote: row.recipient_note || '', autoApprove: Number(row.auto_approve) === 1 };
 }
 export function createTesterInvitation(actor, input = {}, origin) {
   const account = requireActiveTester(actor.id); const credentials = ownerCredentials(actor.id, account.active_provider);
   const salesPhone = input.salesPhone ? phoneValue(input.salesPhone) : account.phone;
   const title = input.title ? textValue(input.title, '体验页标题', 60) : '纳米Work · 餐饮数字员工体验';
   const turnLimit = input.turnLimit === undefined ? 2 : input.turnLimit;
+  const recipientNote = input.recipientNote ? textValue(input.recipientNote, '发给谁', 40) : '';
+  if (input.autoApprove !== undefined && typeof input.autoApprove !== 'boolean') throw testerError('开通方式无效', 400);
+  const autoApprove = input.autoApprove !== false;
   if (typeof turnLimit !== 'number' || !Number.isSafeInteger(turnLimit) || turnLimit < 1 || turnLimit > 100) {
     throw testerError('每位客户体验次数须为1至100的整数', 400, 'TRIAL_TURN_LIMIT_INVALID');
   }
   const token = crypto.randomBytes(32).toString('base64url');
   if (q.get('SELECT COUNT(*) n FROM tester_invitations WHERE owner_user_id=? AND status=?', actor.id, 'active').n >= 50) throw testerError('启用中的体验邀请已达50个，请停用旧邀请后再创建', 409);
-  const id = Number(q.run('INSERT INTO tester_invitations(owner_user_id,token_hash,token_cipher,title,sales_phone,provider,turn_limit) VALUES(?,?,?,?,?,?,?)',
-    actor.id, tokenHash(token), encryptTesterSecret(token), title, salesPhone, credentials.provider, turnLimit).lastInsertRowid);
+  const id = Number(q.run('INSERT INTO tester_invitations(owner_user_id,token_hash,token_cipher,title,sales_phone,provider,turn_limit,recipient_note,auto_approve) VALUES(?,?,?,?,?,?,?,?,?)',
+    actor.id, tokenHash(token), encryptTesterSecret(token), title, salesPhone, credentials.provider, turnLimit, recipientNote, autoApprove ? 1 : 0).lastInsertRowid);
   audit(actor.id, 'invitation', id, 'created');
   return invitationView(q.get('SELECT * FROM tester_invitations WHERE id=?', id), origin);
 }
@@ -250,10 +254,11 @@ export function publicTrial(token) {
     disclosure: TRIAL_DISCLOSURE, turnLimit: invitation.turn_limit, keyConfigured: Boolean(testerProviderKey(invitation.owner_user_id, provider.id)?.api_key_cipher) };
 }
 function leadView(row) {
-  const invitation = q.get('SELECT title,sales_phone,provider FROM tester_invitations WHERE id=?', row.invitation_id);
+  const invitation = q.get('SELECT title,sales_phone,provider,recipient_note FROM tester_invitations WHERE id=?', row.invitation_id);
   return { id: row.id, ownerUserId: row.owner_user_id, invitationId: row.invitation_id, name: row.name,
     ownerName: q.get('SELECT name FROM users WHERE id=?', row.owner_user_id)?.name || '',
     salesPhone: invitation?.sales_phone || '', invitationTitle: invitation?.title || '', provider: invitation?.provider || '360',
+    recipientNote: invitation?.recipient_note || '', autoApproved: row.reviewed_by != null && row.reviewed_by === row.owner_user_id && row.reviewed_at === row.consent_at,
     phone: row.phone, storeName: row.store_name, status: row.status, usedTurns: row.used_turns, turnLimit: row.turn_limit,
     remainingTurns: Math.max(0, row.turn_limit - row.used_turns), createdAt: row.created_at, lastUsedAt: row.last_used_at,
     consentAt: row.consent_at, consentVersion: row.consent_version };
@@ -268,9 +273,14 @@ export function applyTrial(token, input = {}) {
     // cannot reset the customer's quota or take over their existing session.
     if (q.get('SELECT id FROM tester_leads WHERE phone=?', phone)) throw testerError('该手机号已申请体验，请回到原体验链接和原设备继续使用，或联系邀请人', 409, 'TRIAL_ALREADY_APPLIED');
     const accessToken = crypto.randomBytes(32).toString('base64url');
-    const id = Number(q.run('INSERT INTO tester_leads(owner_user_id,invitation_id,phone,name,store_name,access_hash,consent_at,consent_version,turn_limit) VALUES(?,?,?,?,?,?,?,?,?)',
-      invitation.owner_user_id, invitation.id, phone, name, storeName, tokenHash(accessToken), now(), TRIAL_CONSENT_VERSION, invitation.turn_limit).lastInsertRowid);
-    audit(null, 'lead', id, 'applied');
+    // 扫码即开通：客户仍留下姓名、手机号、来源二维码和邀请人，记录与人工审核一致可追溯。
+    const auto = Number(invitation.auto_approve) === 1;
+    const at = now();
+    const id = Number(q.run(`INSERT INTO tester_leads(owner_user_id,invitation_id,phone,name,store_name,access_hash,consent_at,consent_version,turn_limit,status,reviewed_by,reviewed_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      invitation.owner_user_id, invitation.id, phone, name, storeName, tokenHash(accessToken), at, TRIAL_CONSENT_VERSION, invitation.turn_limit,
+      auto ? 'approved' : 'pending', auto ? invitation.owner_user_id : null, auto ? at : null).lastInsertRowid);
+    audit(null, 'lead', id, auto ? 'auto_approved' : 'applied');
     return { lead: leadView(q.get('SELECT * FROM tester_leads WHERE id=?', id)), accessToken };
   });
 }

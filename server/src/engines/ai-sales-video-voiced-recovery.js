@@ -21,7 +21,8 @@ import {
 } from './video-composer.js';
 import { assertAudibleTrack } from './video-voice-composition.js';
 import { downloadProviderVideoClip, waitForProviderVideo } from './video-provider-download.js';
-import { queryAliBailianVideoSegment, yunwuAvailable } from './yunwu.js';
+import { yunwuAvailable } from './yunwu.js';
+import { SALES_SEEDANCE_MODEL, salesFallbackModel, querySalesVideoSegment } from './sales-video-premium.js';
 import {
   publicVoicedSalesProgress,
   voicedSalesDeliveryVerified,
@@ -199,12 +200,12 @@ async function recoverVoicedSalesVideoClipsSelected({ actor, jobId, runtime = {}
   const plan = JSON.parse(job.snapshot_json || '{}');
   const duration = resolveAiSalesVideoDuration(plan.durationSeconds, 30);
   if (plan.workflow !== 'ai_sales_video' || plan.audioMode !== 'provider_native'
-    || !['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(job.model) || job.model !== plan.model || !['失败', '阻塞'].includes(job.status)
+    || !['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL, SALES_SEEDANCE_MODEL].includes(job.model) || job.model !== plan.model || !['失败', '阻塞'].includes(job.status)
     || plan.voiceScriptSha256 !== jsonHash(plan.script)) throw fail('仅可取回已停止原生有声任务的原始片段');
   originalHold(job, plan, { allowRefunded: true });
   const segments = (plan.providerExecution?.segments || []).filter((segment, i) =>
     segment.index === i + 1 && segment.index <= duration / 15 && /^[\p{L}\p{N}_.+^:/-]{1,500}$/u.test(String(segment.taskId || ''))
-    && plan.paidExecution?.some(event => event.kind === 'video' && event.model === plan.model
+    && plan.paidExecution?.some(event => event.kind === 'video' && [plan.model, salesFallbackModel(plan.model)].includes(event.model)
       && event.index === segment.index && event.status === 'returned' && event.taskId === segment.taskId));
   if (!segments.length || new Set(segments.map(item => item.taskId)).size !== segments.length) throw fail('缺少可核验的原任务号');
   const runner = runtime.runner || runAiSalesMediaCommand;
@@ -227,8 +228,8 @@ async function recoverVoicedSalesVideoClipsSelected({ actor, jobId, runtime = {}
           try { if (hash(await file.readFile()) === existing.sha256) continue; } finally { await file.close(); }
         } catch { /* Re-query the original task if its saved artifact is missing. */ }
       }
-      const ready = await waitForProviderVideo({ taskId: segment.taskId, model: plan.model,
-        query: runtime.querySegment || queryAliBailianVideoSegment, timeoutMs: runtime.timeoutMs || 12 * 60 * 1000,
+      const ready = await waitForProviderVideo({ taskId: segment.taskId, model: segment.model || plan.model,
+        query: params => (runtime.querySegment || querySalesVideoSegment)({ ...params, model: segment.model || plan.model }), timeoutMs: runtime.timeoutMs || 12 * 60 * 1000,
         intervalMs: runtime.intervalMs || 5000, sleep: runtime.sleep });
       const clip = await (runtime.downloadSegment || downloadProviderVideoClip)({ url: ready.url, outputDir: workDir,
         index: segment.index, fetchImpl: runtime.fetchImpl });
@@ -444,9 +445,9 @@ async function createVoicedSalesVideoRecoverySelected({ actor, jobId, runtime = 
             }
             const ready = await waitForProviderVideo({
               taskId: segment.taskId,
-              model: plan.model,
+              model: segment.model || plan.model,
               query: async params => {
-                const out = await (runtime.recoverQuery || runtime.querySegment || queryAliBailianVideoSegment)(params);
+                const out = await (runtime.recoverQuery || runtime.querySegment || querySalesVideoSegment)({ ...params, model: segment.model || plan.model });
                 const event = plan.paidExecution?.find(item => item.kind === 'video' && item.taskId === segment.taskId);
                 if (event && out?.supplierCosts?.some(cost => cost.status === 'known')) event.supplierCosts = out.supplierCosts;
                 persist('处理中');

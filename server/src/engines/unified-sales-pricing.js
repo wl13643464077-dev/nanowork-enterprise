@@ -23,6 +23,10 @@ export function unifiedSalesPricing(creditYuan) {
   for (const [model, reference] of Object.entries(tiers)) text[model] = { ...text[reference] };
   const video = structuredClone(PROVIDER_360_RESERVATION_RATES.video);
   video['wan2.6-i2v'] = video['alibaba/wan3.0-video'];
+  // OpenLux 高阶带货视频：参考价不低于实测上游成本（见 credits.js 注释），统一售价同样 × 2，
+  // 保证“上游每秒扣多少、客户至少付两倍”，不会出现按 360 万相参考价卖 Seedance 的亏本情况。
+  video['doubao-seedance-2-5-260628'] = 23;
+  video['kling-video'] = 16.5;
   // Every offered clip uses the same 15-second reference tier. Composite jobs
   // multiply by their frozen segment count/duration before authorizing the task.
   return {

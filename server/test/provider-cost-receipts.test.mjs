@@ -221,3 +221,19 @@ test('历史非新模式仍拒混合币种、不同汇率及重复，不覆盖�
   assert.equal(aggregateSupplierCosts([a,{ ...b, costSource: { ...b.costSource, currency: 'CNY' } }]).status, 'pending');
   assert.equal(aggregateSupplierCosts([a,{ ...b, costYuanOverride: 3, costSource: { ...b.costSource, exchangeRate: 9.6 } }]).status, 'pending');
 });
+
+test('异步视频“预扣+多退少补”按净额核销，未标注的重复行仍待核', () => {
+  const rid = 'seedance-req-1', model = 'doubao-seedance-2-5-260628';
+  const base = { model_name: model, other: JSON.stringify({ request_id: rid }) };
+  const opts = { requestId: rid, model, quotaPerUnit: 500000 };
+  const pre = { ...base, type: 2, quota: 3866616, content: '模型 doubao-seedance-2-5-260628，输出15s' };
+  const refund = { ...base, type: 6, quota: -16169, content: '任务 task_x 多退少补：预扣 3866616，实际 3850447，退回 16169' };
+  const extra = { ...base, type: 2, quota: 11642, content: '任务 task_y 多退少补：预扣 1560060，实际 1571702，补扣 11642' };
+  assert.equal(matchingQuotaReceipt([pre, refund], opts).quota, 3850447);
+  assert.equal(matchingQuotaReceipt([{ ...pre, quota: 1560060 }, extra], opts).quota, 1571702);
+  assert.equal(matchingQuotaReceipt([pre], opts).quota, 3866616, '调整行未到时先按预扣');
+  assert.equal(matchingQuotaReceipt([pre, { ...refund, content: '退款' }], opts), null, '未标注多退少补的退款不认');
+  assert.equal(matchingQuotaReceipt([pre, pre, refund], opts), null, '两条主扣费仍待核');
+  assert.equal(matchingQuotaReceipt([refund], opts), null, '只有调整行没有主扣费不认');
+  assert.equal(matchingQuotaReceipt([{ ...pre, quota: 10 }, { ...refund, quota: -100 }], opts), null, '净额不能为负');
+});

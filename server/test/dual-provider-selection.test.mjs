@@ -68,7 +68,8 @@ test('模型路由分家并过滤旧全局/企业跨供应商模型，动态XHS�
   assert.equal(api.routing(b).videoDefault, 'wan2.6-i2v');
   assert.equal(api.routing(a).videoDefault, 'alibaba/wan3.0-video');
   selection.withPlatformProvider('360', () => { assert.equal(xhsImageModel(), 'openai/gpt-image-2'); assert.equal(api.routing(b).text.sales, 'qwen/qwen3.8-flash'); });
-  selection.withPlatformProvider('openlux', () => assert.equal(xhsImageModel(), 'gpt-image-2'));
+  // 2026-10-22 起 OpenLux 通道的小红书配图升级为 GPT-Image-2.5（实测约 ¥0.10/张，支持参考图编辑）。
+  selection.withPlatformProvider('openlux', () => assert.equal(xhsImageModel(), 'gpt-image-2.5-flare-c'));
 });
 
 test('个人Key上下文优先平台冻结/企业/全局，未配置同家平台Key也只用个人Key', async () => {

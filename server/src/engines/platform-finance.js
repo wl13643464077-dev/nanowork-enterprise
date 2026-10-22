@@ -84,9 +84,29 @@ export function summarizePlatformFinance(rows) {
     marginStatus:totals.pendingCostCount ? 'pending' : totals.estimatedCostYuan > 0 || totals.estimatedPriceCount > 0 ? 'estimated' : 'known'};
 }
 
+// 亏损预警：按模型汇总“客户实付积分面值”与“上游已核实成本”，列出售价低于成本的模型。
+// 只看平台付费（非测试员个人 Key）、且上游成本已核实的消费记录；估算/待核成本不当作亏损证据。
+export function modelLossAlerts(rows) {
+  const byModel = new Map();
+  for (const row of rows) {
+    if (row.billing_mode === 'personal' || row.ledger_effect !== 'consumption' || row.supplier_cost_status !== 'known') continue;
+    const model = String(row.model || '未标注模型');
+    const item = byModel.get(model) || { model, calls: 0, lossCalls: 0, revenueYuan: 0, costYuan: 0 };
+    const revenue = Number(row.spend_yuan) || 0, cost = Number(row.supplier_cost_yuan) || 0;
+    item.calls++; item.revenueYuan += revenue; item.costYuan += cost;
+    if (cost > revenue + 1e-9) item.lossCalls++;
+    byModel.set(model, item);
+  }
+  return [...byModel.values()].map(item => ({ ...item, revenueYuan: round(item.revenueYuan), costYuan: round(item.costYuan),
+    marginYuan: round(item.revenueYuan - item.costYuan),
+    marginRate: item.revenueYuan > 0 ? Math.round((item.revenueYuan - item.costYuan) / item.revenueYuan * 1000) / 10 : null }))
+    .filter(item => item.lossCalls > 0 || item.marginYuan < 0)
+    .sort((a, b) => a.marginYuan - b.marginYuan);
+}
+
 export function platformFinancialSummary() {
   const rows=platformFinancialLedger();
   const groups=new Map();
   for(const row of rows) { if(!groups.has(row.tenant_id))groups.set(row.tenant_id,[]);groups.get(row.tenant_id).push(row); }
-  return {summary:summarizePlatformFinance(rows),byTenant:new Map([...groups].map(([id,items])=>[id,summarizePlatformFinance(items)]))};
+  return {summary:summarizePlatformFinance(rows),lossAlerts:modelLossAlerts(rows),byTenant:new Map([...groups].map(([id,items])=>[id,summarizePlatformFinance(items)]))};
 }

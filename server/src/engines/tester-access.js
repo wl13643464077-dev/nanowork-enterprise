@@ -179,6 +179,13 @@ export function ensureTesterSchema() {
   // Legacy rows and new applications start on 360; saved provider choices remain unchanged.
   if (!db.prepare('PRAGMA table_info(tester_accounts)').all().some(column => column.name === 'department'))
     db.exec("ALTER TABLE tester_accounts ADD COLUMN department TEXT NOT NULL DEFAULT ''");
+  // 体验码：记录“发给谁”，并支持扫码即开通。旧二维码保持原来的人工审核（0），
+  // 新建二维码默认扫码即开通（创建时显式写入 1）。
+  const invitationColumns = db.prepare('PRAGMA table_info(tester_invitations)').all().map(column => column.name);
+  if (!invitationColumns.includes('recipient_note'))
+    db.exec("ALTER TABLE tester_invitations ADD COLUMN recipient_note TEXT NOT NULL DEFAULT ''");
+  if (!invitationColumns.includes('auto_approve'))
+    db.exec('ALTER TABLE tester_invitations ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1))');
   for (const [table, column] of [['tester_accounts', 'active_provider'], ['tester_invitations', 'provider'],
     ['tester_conversations', 'provider'], ['tester_call_attempts', 'provider']]) {
     if (!db.prepare(`PRAGMA table_info(${table})`).all().some(item => item.name === column)) {

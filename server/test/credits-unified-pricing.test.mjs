@@ -63,9 +63,10 @@ test('同一文本任务在 OpenLux 与 360 售价相同；实际成本只改平
   const snapshot = JSON.parse(q.get('SELECT pricing_snapshot_json FROM credit_holds WHERE id=?', openluxHold.holdId).pricing_snapshot_json);
   assert.equal(snapshot.salePolicy.basis, 'reference_360'); assert.equal(snapshot.supplierCostPolicy.basis, 'reference_360');
 
-  // OpenLux 实扣 0.7 元（高于参考价 0.12），用户仍付 24 积分。
+  // OpenLux 实扣 0.7 元（高于参考价 0.12）：成本保底，按 0.7 × 2 ÷ 0.01 = 140 积分收费，平台不亏本。
   const expensive = c.settleHold(openluxHold, { model: 'deepseek-v4-flash', aiMode: 'api', usage: { ...usage, supplierCosts: [openluxReceipt(0.1)] } });
-  assert.equal(expensive.credits, 24); assert.equal(expensive.supplierCostStatus, 'known'); assert.equal(expensive.costYuan, 0.7);
+  assert.equal(expensive.credits, 140); assert.equal(expensive.supplierCostStatus, 'known'); assert.equal(expensive.costYuan, 0.7);
+  assert.match(q.get('SELECT note FROM credit_logs WHERE id=(SELECT log_id FROM credit_holds WHERE id=?)', openluxHold.holdId).note, /成本保底/);
   assert.equal(c.getSupplierExpense(openluxHold.holdId, a.tid).costSource.provider, 'openlux');
 
   // 360 实扣 0.03 元（低于参考价），用户仍付 24 积分。
@@ -79,11 +80,11 @@ test('同一文本任务在 OpenLux 与 360 售价相同；实际成本只改平
   assert.equal(pending.credits, 24); assert.equal(pending.supplierCostStatus, 'pending'); assert.equal(pending.costYuan, null);
   assert.equal(q.get('SELECT status FROM credit_holds WHERE id=?', missing.holdId).status, 'settled');
   assert.equal(c.getSupplierExpense(missing.holdId, a.tid).costSource.type, 'supplier_cost_pending');
-  assert.equal(balance(a), before - 24 * 3, '三笔任务各付 24 积分，预占差额已退回');
+  assert.equal(balance(a), before - 140 - 24 * 2, 'OpenLux 保底 140，另两笔各 24 积分，预占差额已退回');
 
   // 回执迟到只补平台成本，不再动用户余额；重复结算返回 null。
   assert.equal(c.settleHold(missing, { model: 'deepseek-v4-flash', aiMode: 'api', usage: { ...usage, supplierCosts: [openluxReceipt(0.05)] } }), null);
-  assert.equal(balance(a), before - 72);
+  assert.equal(balance(a), before - 188);
   invariant(a);
 
   // 文本仍必须有真实 token，参考价不能替代用量证据。
@@ -118,4 +119,44 @@ test('图片按核实后的统一基准价收费；无成果全退、供应商�
   assert.equal(c.refundHold(failed).duplicate, true);
   invariant(a);
   disable();
+});
+
+test('成本保底：上游实扣×倍数超过参考价按真实成本收费；超出预授权按上限收并标注亏损', () => {
+  enable();
+  const a = actor();
+  assert.equal(c.costFloorCredits(0.7, c.billing()), 140);
+  assert.equal(c.costFloorCredits(0, c.billing()), 0);
+  // 视频：参考价按固定积分 1800 传入，上游真实 ¥21.112（约 Seedance 720p 15秒）→ 保底 4223。
+  const video = c.holdCredits({ userId: a.uid, kind: 'video', model: 'wan2.6-i2v', feature: '保底·视频', credits: 6000 });
+  const v = c.settleHold(video, { model: 'wan2.6-i2v', aiMode: 'api', credits: 1800, usage: { supplierCosts: [openluxReceipt(3.016)] } });
+  assert.equal(v.credits, 4223);
+  // 预授权只有 3000：按上限收 3000，并在流水备注亏损提示。
+  const small = c.holdCredits({ userId: a.uid, kind: 'video', model: 'wan2.6-i2v', feature: '保底·超上限', credits: 3000 });
+  const s2 = c.settleHold(small, { model: 'wan2.6-i2v', aiMode: 'api', credits: 1800, usage: { supplierCosts: [openluxReceipt(3.016)] } });
+  assert.equal(s2.credits, 3000);
+  assert.match(q.get('SELECT note FROM credit_logs WHERE id=(SELECT log_id FROM credit_holds WHERE id=?)', small.holdId).note, /差额由平台承担/);
+  // 成本低于参考价：仍按参考价收，不打折。
+  const cheap = c.holdCredits({ userId: a.uid, kind: 'video', model: 'wan2.6-i2v', feature: '保底·低成本', credits: 3000 });
+  assert.equal(c.settleHold(cheap, { model: 'wan2.6-i2v', aiMode: 'api', credits: 1800, usage: { supplierCosts: [openluxReceipt(1)] } }).credits, 1800);
+  // 失败退款不受影响：无成果全退。
+  const failed = c.holdCredits({ userId: a.uid, kind: 'video', model: 'wan2.6-i2v', feature: '保底·失败', credits: 3000 });
+  assert.equal(c.releaseHold(failed, '失败').credits, 0);
+  invariant(a);
+  disable();
+});
+
+test('亏损预警：按模型列出客户实付低于上游已核实成本的记录', async () => {
+  const { modelLossAlerts } = await import('../src/engines/platform-finance.js');
+  const rows = [
+    { billing_mode: 'platform', ledger_effect: 'consumption', supplier_cost_status: 'known', model: 'doubao-seedance-2-5-260628', spend_yuan: 18, supplier_cost_yuan: 21.12 },
+    { billing_mode: 'platform', ledger_effect: 'consumption', supplier_cost_status: 'known', model: 'doubao-seedance-2-5-260628', spend_yuan: 46, supplier_cost_yuan: 21.12 },
+    { billing_mode: 'platform', ledger_effect: 'consumption', supplier_cost_status: 'known', model: 'gpt-image-2.5-flare-c', spend_yuan: 4, supplier_cost_yuan: 0.1 },
+    { billing_mode: 'personal', ledger_effect: 'consumption', supplier_cost_status: 'known', model: 'tester-model', spend_yuan: 0, supplier_cost_yuan: 5 },
+    { billing_mode: 'platform', ledger_effect: 'consumption', supplier_cost_status: 'pending', model: 'pending-model', spend_yuan: 1, supplier_cost_yuan: null },
+  ];
+  const alerts = modelLossAlerts(rows);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].model, 'doubao-seedance-2-5-260628');
+  assert.equal(alerts[0].lossCalls, 1); assert.equal(alerts[0].calls, 2);
+  assert.equal(alerts[0].marginYuan, 21.76);
 });

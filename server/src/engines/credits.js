@@ -127,7 +127,12 @@ const DEFAULT_BILLING = {
     'avatar-auto-15': 16,
     'avatar-auto-30': 16,
     'avatar-auto-60': 32,
-    'kling-video': 14,
+    // 2026-10-22 OpenLux 扣费日志实测（净额，已含“多退少补”）：可灵 v3 pro 有声 15 秒 ¥15.12（$0.176/秒×0.85 分组）。
+    // 参考价取 ¥16.5 / 条（覆盖 15 秒 + 约 9% 汇率与调价余量），售价 = 参考价 × 2。旧值 14 低于 15 秒实扣。
+    'kling-video': 16.5,
+    // 豆包 Seedance 2.5 图生视频 720p 有声 15 秒：实测 ¥21.12（$10.70/百万 token，32.4 万 token）；
+    // 1080p 为 ¥51.73，AI带货员固定用 720p（最终统一输出 1080×1920）。参考价取 ¥23 / 条。
+    'doubao-seedance-2-5-260628': 23,
     'kling-omni-video': 20,
     'kling-avatar-image2video': 16,
     'kling-video-extend': 8,
@@ -1316,6 +1321,14 @@ export function getSupplierExpense(holdId, tenantId = curTenant()) {
     refundLogId:row.refund_log_id,refundedAt:row.refunded_at,updatedAt:row.updated_at };
 }
 
+const round4 = value => Math.round(Number(value) * 10000) / 10000;
+// 上游真实成本对应的最低售价（积分）：成本 × 销售倍数 ÷ 每积分元数，向上取整。
+export function costFloorCredits(costYuan, b) {
+  const amount = Number(costYuan);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.ceil((amount * b.marginMultiplier) / b.creditYuan - 1e-9);
+}
+
 export function settleHold(hold, {
   usage = {},
   model,
@@ -1410,9 +1423,23 @@ export function settleHold(hold, {
       if (row.kind==='text' && actual>0 && !fixedServiceSettlement(row,fixedCredits) && actual!==referenceCredits)
         throw Object.assign(new Error('文本固定积分与统一参考价不一致'),{status:409,code:'BILLING_FIXED_PRICE_MISMATCH'});
       if (actual - Number(row.held_credits) > 0) throw holdExceeded();
-      if (verifiedCost) { yuan = costYuanOverride; expenseStatus = 'known'; expenseSource = verifiedCost; }
+      let floorNote = '';
+      if (verifiedCost) {
+        yuan = costYuanOverride; expenseStatus = 'known'; expenseSource = verifiedCost;
+        // 成本保底：参考价低于“上游真实扣费 × 销售倍数”时，按真实成本计费，平台不亏本。
+        // 只在有交付（actual>0）时生效，且不超过本次预授权；超出部分记亏损提示，提醒调价。
+        const floor = costFloorCredits(costYuanOverride, b);
+        if (actual > 0 && floor > actual) {
+          const cap = Math.min(Number(row.held_credits), authorizedCap ?? Number(row.held_credits));
+          floorNote = floor > cap
+            ? `成本保底：上游实扣¥${round4(costYuanOverride)}超出预授权，按上限${cap}分计费，差额由平台承担，请调高该模型参考价`
+            : `成本保底：参考价${actual}分低于上游实扣¥${round4(costYuanOverride)}×${b.marginMultiplier}，按${floor}分计费`;
+          actual = Math.min(floor, cap);
+        }
+      }
       if (actual === 0 && !verifiedCost) { yuan = 0; expenseStatus = 'not_incurred'; expenseSource = {type:aiMode === 'template' ? 'template' : 'explicit_release'}; }
-      return finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, finalModel, usage, aiMode, note });
+      return finalizeSettlement(row, { actual, yuan, expenseStatus, expenseSource, finalModel, usage, aiMode,
+        note: [note, floorNote].filter(Boolean).join('；') });
     }
     if (costYuanOverride !== undefined) {
       // Internal composite-video settlement only. Keep the ledger's CNY cost

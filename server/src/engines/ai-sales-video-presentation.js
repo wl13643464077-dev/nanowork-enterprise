@@ -44,6 +44,8 @@ export function publicVoicedSalesProgress(plan, tenantId) {
     audioMode,
     audioSource: audioMode === 'provider_native' ? 'provider_native' : 'reviewed_tts',
     model: plan.model || 'wan2.6-i2v',
+    segmentModels: (plan.providerExecution?.segments || []).map(segment => String(segment.model || plan.model || '')),
+    ...(plan.fallbackNotice ? { fallbackNotice: text(plan.fallbackNotice) } : {}),
     voiceId: text(plan.voiceId),
     durationSeconds,
     segmentDurationSeconds: durationSeconds / segmentCount,
@@ -114,7 +116,7 @@ export function voicedSalesRecoveryAvailable(job, plan, billing) {
     plan?.voiceMode !== 'voiced' ||
     ![15, 30].includes(duration) ||
     plan?.workflow !== 'ai_sales_video' ||
-    !['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(job?.model) || job?.model !== plan?.model ||
+    !['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL, 'doubao-seedance-2-5-260628'].includes(job?.model) || job?.model !== plan?.model ||
     !['失败', '阻塞', '成功'].includes(job?.status) ||
     (!['held', 'pending_reconciliation', 'settled'].includes(billing?.state) && !refundedWithSavedClips)
   )

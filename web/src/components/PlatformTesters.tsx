@@ -311,7 +311,16 @@ export default function PlatformTesters() {
                       </>
                     ),
                   },
-                  { title: '体验入口', dataIndex: 'invitationTitle' },
+                  {
+                    title: '体验入口 / 发给谁',
+                    render: (_, row) => (
+                      <>
+                        {row.invitationTitle}
+                        {row.recipientNote && <div className="trial-muted">发给 {row.recipientNote}</div>}
+                        {row.autoApproved && <Tag color="green">扫码自动开通</Tag>}
+                      </>
+                    ),
+                  },
                   { title: '归属部门', render: (_, row) => ownerDepartment(row.ownerUserId) },
                   { title: '供应商', dataIndex: 'provider', render: value => trialProviderLabel(value || '360') },
                   {
@@ -381,7 +390,14 @@ export default function PlatformTesters() {
                 scroll={{ x: 700 }}
                 columns={[
                   { title: '邀请名称', dataIndex: 'title' },
+                  { title: '发给谁', dataIndex: 'recipientNote', render: value => value || '—' },
                   { title: '测试员', dataIndex: 'ownerName' },
+                  { title: '扫码客户', dataIndex: 'leadCount', render: value => `${value ?? 0} 位` },
+                  {
+                    title: '开通方式',
+                    dataIndex: 'autoApprove',
+                    render: value => <Tag color={value ? 'green' : 'orange'}>{value ? '扫码即开通' : '人工同意'}</Tag>,
+                  },
                   { title: '归属部门', render: (_, row) => ownerDepartment(row.ownerUserId) },
                   { title: '销售手机号', dataIndex: 'salesPhone' },
                   { title: '供应商', dataIndex: 'provider', render: value => trialProviderLabel(value || '360') },

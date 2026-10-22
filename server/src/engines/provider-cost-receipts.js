@@ -68,14 +68,27 @@ function locateQuotaReceipt(rows, { requestId, model, quotaPerUnit }) {
     return [{ row, invalid }];
   });
   if (!matches.length) return { state: 'missing' };
-  // Consume/refund duplicates or conflicting identifiers must stay pending;
-  // a later, shorter log window must not be used to hide the conflict.
-  if (matches.length !== 1 || matches[0].invalid) return { state: 'invalid' };
-  const row = matches[0].row;
-  if (!Number.isSafeInteger(row.quota) || row.quota < 0 || row.type !== 2) return { state: 'invalid' };
-  const usd = row.quota / quotaPerUnit;
+  if (matches.some(match => match.invalid)) return { state: 'invalid' };
+  // 异步视频任务（如 Seedance）先按预估“预扣”，完成后再记一条“多退少补”：
+  // 补扣为 type 2 正数，退回为 type 6 负数。只认恰好一条主扣费，外加明确标注
+  // 多退少补的调整行，净额才是真实成本；其他重复/退款仍保持待核。
+  const adjustment = row => /多退少补/u.test(String(row.content || ''));
+  const primary = matches.filter(({ row }) => row.type === 2 && !adjustment(row));
+  const adjustments = matches.filter(({ row }) => adjustment(row));
+  if (primary.length !== 1 || primary.length + adjustments.length !== matches.length) return { state: 'invalid' };
+  const main = primary[0].row;
+  if (!Number.isSafeInteger(main.quota) || main.quota < 0) return { state: 'invalid' };
+  let quota = main.quota;
+  for (const { row } of adjustments) {
+    if (!Number.isSafeInteger(row.quota)) return { state: 'invalid' };
+    if (row.type === 2 && row.quota >= 0) quota += row.quota;
+    else if (row.type === 6) quota -= Math.abs(row.quota);
+    else return { state: 'invalid' };
+  }
+  if (!Number.isSafeInteger(quota) || quota < 0) return { state: 'invalid' };
+  const usd = quota / quotaPerUnit;
   if (!Number.isFinite(usd) || usd > 1e8) return { state: 'invalid' };
-  return { state: 'known', receipt: { requestId, model, quota: row.quota, usd } };
+  return { state: 'known', receipt: { requestId, model, quota, usd, ...(adjustments.length ? { adjustedRows: adjustments.length } : {}) } };
 }
 
 export function matchingQuotaReceipt(rows, options) {

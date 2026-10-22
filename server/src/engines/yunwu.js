@@ -1610,6 +1610,9 @@ export async function editImage({
 
 // —— MiniMax 海螺视频：专属异步任务接口（提交→轮询查询→取片，最终为可直链访问的 OSS mp4）——
 const ywRoot = () => BASE().replace(/\/v1\/?$/, ""); // https://yunwu.ai
+// 供带货高阶视频适配器复用：同一套密钥、超时与请求号（X-Api-Request-Id）处理。
+export const providerVideoRoot = () => ywRoot();
+export const providerVideoJson = (...args) => ywJson(...args);
 async function ywJson(
   url,
   opts = {},

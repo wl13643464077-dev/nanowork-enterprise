@@ -89,7 +89,8 @@ const provider360Models = new Set(['openai/gpt-image-2', 'alibaba/wan3.0-video',
 const openluxModels = new Set(['gpt-image-2', 'gpt-5.5', 'deepseek-v4-flash', 'gemini-3.1-flash-lite',
   'wan2.6-i2v', 'wan2.5-i2v-preview', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-2.3',
   'minimax-h3', 'happyhorse-1.0-t2v:floor', 'happyhorse-1.0-t2v:nitro', 'happyhorse-1.0-t2v:stable',
-  'happyhorse-1.0-i2v', 'happyhorse-1.0-r2v', 'happyhorse-1.0-video-edit', 'veo-3.1-generate-preview', 'veo-3.1-fast-generate-preview']);
+  'happyhorse-1.0-i2v', 'happyhorse-1.0-r2v', 'happyhorse-1.0-video-edit', 'veo-3.1-generate-preview', 'veo-3.1-fast-generate-preview',
+  'gpt-image-2.5-flare-c', 'doubao-seedance-2-5-260628', 'kling-video']);
 export function providerForModel(model) {
   if (provider360Models.has(model)) return '360';
   if (openluxModels.has(model)) return 'openlux';

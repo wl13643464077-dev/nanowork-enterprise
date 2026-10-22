@@ -157,7 +157,8 @@ function harness(overrides = {}) {
       assert.match(params.prompt, /自然普通话女声/u);
       assert.match(params.prompt, /请完整说出/u);
       assert.equal(params.promptExtend, false);
-      assert.equal(params.model, 'wan2.6-i2v');
+      // 其他通道为万相 2.6；OpenLux 通道升级为 Seedance 2.5（回执汇总等用例走 OpenLux）。
+      assert.ok(['wan2.6-i2v', 'doubao-seedance-2-5-260628'].includes(params.model), params.model);
       return { taskId: `voiced-task-${calls.length}` };
     },
     querySegment: async () => ({
@@ -1110,6 +1111,64 @@ test('组合视频缺一条回执不按剩余部分扣费，免费补查后复�
     assert.equal(before-balance(),500);assert.equal(snapshot(id).billing.costYuan,2.5);
     assert.deepEqual(h.calls,['text','video','video'],'补查不能重新收费生成');
   } finally {setConfig('supplier_cost_openlux',old);if(oldBase===undefined)delete process.env.YUNWU_BASE_URL;else process.env.YUNWU_BASE_URL=oldBase;}
+});
+
+test('OpenLux 通道：带货员用 Seedance 2.5；参考图疑似真人时同一分段自动改走可灵，被拒尝试不计价', async () => {
+  const oldBase = process.env.YUNWU_BASE_URL;
+  try {
+    process.env.YUNWU_BASE_URL = 'https://api.openlux.ai/v1';
+    const quote = runWithTenant(1, () => salesVideoPriceQuote('gpt-5.5', { durationSeconds: 30 }));
+    assert.equal(quote.fallbackModel, 'kling-video');
+    assert.ok(quote.fallbackVideo > 0 && quote.video > 0);
+    const b = billing();
+    assert.ok(quote.maxCredits >= Math.ceil(Math.max(quote.video, quote.fallbackVideo) * 2 * b.marginMultiplier / b.creditYuan),
+      '预授权覆盖两段最贵模型');
+    const h = harness();
+    const submitted = [];
+    h.runtime.submitSegment = async params => { h.calls.push('video'); submitted.push(params.model);
+      return { taskId: `premium-${submitted.length}`, providerRequestId: `premium-req-${submitted.length}` }; };
+    h.runtime.querySegment = async ({ taskId, model }) => {
+      if (taskId === 'premium-1') throw Object.assign(new Error('参考图疑似真人'), { code: 'SALES_VIDEO_REAL_PERSON' });
+      return { status: 'success', url: `https://cdn.example.com/${model}-${taskId}.mp4` };
+    };
+    const before = balance(), created = await create(h.runtime), id = created.response.jobId;
+    assert.equal(created.response.plan?.model ?? snapshot(id).model, 'doubao-seedance-2-5-260628');
+    await created.run();
+    const state = snapshot(id);
+    assert.equal(job(id).status, '成功', job(id).error || '');
+    assert.deepEqual(submitted, ['doubao-seedance-2-5-260628', 'doubao-seedance-2-5-260628', 'kling-video'],
+      '两段先各提交一次 Seedance；第 1 段被拒后只补一次可灵，不重复提交 Seedance');
+    const videos = state.paidExecution.filter(event => event.kind === 'video');
+    assert.deepEqual(videos.map(event => [event.index, event.model, event.status]), [
+      [1, 'doubao-seedance-2-5-260628', 'provider_rejected'], [2, 'doubao-seedance-2-5-260628', 'returned'], [1, 'kling-video', 'returned']]);
+    assert.equal(state.providerExecution.segments[0].model, 'kling-video');
+    assert.equal(state.providerExecution.segments[0].taskId, 'premium-3');
+    assert.match(state.fallbackNotice, /可灵/);
+    assert.equal(state.billing.state, 'settled', JSON.stringify(state.billing));
+    // 售价 = 文字 + 可灵一段 + Seedance 一段的参考价 × 倍数，不含被拒的那次。
+    const textCost = state.paidExecution.filter(event => event.kind === 'text')
+      .reduce((sum, event) => sum + (event.inputTokens * quote.text.in + event.outputTokens * quote.text.out) / 1e6, 0);
+    const expected = Math.ceil((textCost + quote.video + quote.fallbackVideo) * b.marginMultiplier / b.creditYuan);
+    assert.equal(before - balance(), expected);
+    assert.ok(before - balance() < quote.maxCredits);
+  } finally { if (oldBase === undefined) delete process.env.YUNWU_BASE_URL; else process.env.YUNWU_BASE_URL = oldBase; }
+});
+
+test('Seedance/可灵请求体：720p 竖屏有声、首帧图，失败时识别真人拒绝', async () => {
+  const premium = await import('../src/engines/sales-video-premium.js');
+  const uri = `data:image/jpeg;base64,${Buffer.from('jpeg').toString('base64')}`;
+  const seed = premium.buildSeedanceRequest({ prompt: '说台词', images: [uri], duration: 15 });
+  assert.equal(seed.model, 'doubao-seedance-2-5-260628'); assert.equal(seed.resolution, '720p');
+  assert.equal(seed.generate_audio, true); assert.equal(seed.duration, 15);
+  assert.deepEqual(seed.content[1], { type: 'image_url', role: 'first_frame', image_url: { url: uri } });
+  const kling = premium.buildKlingRequest({ prompt: '说台词', images: [uri], duration: 15 });
+  assert.equal(kling.model_name, 'kling-v3'); assert.equal(kling.sound, 'on'); assert.equal(kling.mode, 'pro');
+  assert.equal(kling.duration, '15'); assert.equal(kling.image, Buffer.from('jpeg').toString('base64'));
+  assert.throws(() => premium.buildSeedanceRequest({ prompt: 'x', images: ['https://x/y.jpg'] }), /参考图格式/);
+  assert.equal(premium.salesFallbackModel('doubao-seedance-2-5-260628'), 'kling-video');
+  assert.equal(premium.salesFallbackModel('wan2.6-i2v'), null);
+  assert.equal(premium.realPersonRejection({ code: 'SALES_VIDEO_REAL_PERSON' }), true);
+  assert.equal(premium.realPersonRejection(new Error('network')), false);
 });
 
 after(() => {

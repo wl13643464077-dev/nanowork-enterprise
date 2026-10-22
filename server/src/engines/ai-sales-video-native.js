@@ -19,7 +19,7 @@ import {
 } from './ai-sales-video-voice.js';
 import { assertAiSalesVoicedComposerReady, composeAiSalesVideo, runAiSalesMediaCommand } from './video-composer.js';
 import { downloadProviderVideoClip, waitForProviderVideo } from './video-provider-download.js';
-import { yunwuAvailable, textModelFor, submitAliBailianVideoSegment, queryAliBailianVideoSegment, supplierRequestCost, provider360Active } from './yunwu.js';
+import { yunwuAvailable, textModelFor, supplierRequestCost, provider360Active } from './yunwu.js';
 import { selectedProviderId, withTaskProvider } from './ai-provider-selection.js';
 import { PROVIDER_360_VIDEO_MODEL } from './provider-360.js';
 import { listBenchmarkCards } from './content-benchmark-cards.js';
@@ -30,12 +30,15 @@ import { preserveSalesVideoClip } from './ai-sales-video-partials.js';
 import { resolveAiSalesVideoDuration } from './ai-sales-video-duration.js';
 import { aggregateSupplierCosts } from './provider-cost-receipts.js';
 import { prepareAiSalesVideoReferenceFrames } from './ai-sales-video-reference-frames.js';
+import { SALES_SEEDANCE_MODEL, salesFallbackModel, realPersonRejection, submitSalesVideoSegment, querySalesVideoSegment } from './sales-video-premium.js';
 
 export const AI_SALES_VOICED_MODEL = 'wan2.6-i2v';
-const videoModel = () => provider360Active() ? PROVIDER_360_VIDEO_MODEL : AI_SALES_VOICED_MODEL;
+// 360 通道走万相 3.0；OpenLux 通道升级为 Seedance 2.5（含人物素材自动改走可灵 v3）；其他通道保留万相 2.6。
+const videoModel = () => provider360Active() ? PROVIDER_360_VIDEO_MODEL
+  : selectedProviderId() === 'openlux' ? SALES_SEEDANCE_MODEL : AI_SALES_VOICED_MODEL;
 export const aiSalesVoicedModel = videoModel;
 const nativeSegmentCount = (duration, model = videoModel()) => model === PROVIDER_360_VIDEO_MODEL ? 1 : duration / 15;
-const supportedSalesModel = model => ['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL].includes(model);
+const supportedSalesModel = model => ['wan2.6-i2v', PROVIDER_360_VIDEO_MODEL, SALES_SEEDANCE_MODEL].includes(model);
 const fail = (message, code = 'AI_SALES_VOICED_BLOCKED', status = 409) =>
   Object.assign(new Error(message), { code, status });
 // Script/contract errors are produced by our own validators (never raw provider
@@ -128,7 +131,10 @@ function buildSalesVideoPriceQuote(textModel, { audioMode = 'provider_native', c
   const b = priceBilling || billing(),
     textPrice = b.text[textModel],
     video = Number(b.video[model]) * (model === PROVIDER_360_VIDEO_MODEL ? duration / 15 : 1),
+    fallbackModel = salesFallbackModel(model),
+    fallbackVideo = fallbackModel ? Number(b.video[fallbackModel]) : 0,
     tts = externalTts ? Number(b.tts[AI_SALES_VIDEO_TTS_MODEL]) : 0;
+  if (fallbackModel && !(fallbackVideo > 0)) throw fail('可灵兜底视频模型尚未配置有效价格');
   if (
     !textPrice ||
     ![Number(textPrice.in), Number(textPrice.out), video, tts, b.marginMultiplier, b.creditYuan].every(
@@ -149,6 +155,7 @@ function buildSalesVideoPriceQuote(textModel, { audioMode = 'provider_native', c
     textModel,
     text: { in: Number(textPrice.in), out: Number(textPrice.out) },
     video,
+    ...(fallbackModel ? { fallbackModel, fallbackVideo } : {}),
     tts,
     margin: b.marginMultiplier,
     creditYuan: b.creditYuan,
@@ -164,7 +171,7 @@ function buildSalesVideoPriceQuote(textModel, { audioMode = 'provider_native', c
     ...prices,
     fingerprint: digest(prices),
     maxCredits:
-      textMax * (confirmedChat ? 0 : externalTts ? 3 : 2) + Math.ceil(((video * segmentCount + tts * 3) * b.marginMultiplier) / b.creditYuan),
+      textMax * (confirmedChat ? 0 : externalTts ? 3 : 2) + Math.ceil(((Math.max(video, fallbackVideo) * segmentCount + tts * 3) * b.marginMultiplier) / b.creditYuan),
   };
 }
 
@@ -201,7 +208,7 @@ export function voicedSalesSettlement(plan) {
   )
     throw fail('原任务报价不完整或价目已变化，需人工对账', 'AI_SALES_VIDEO_RECOVERY_PRICE_CHANGED');
   if (
-    ['durationSeconds', 'segmentCount', 'audioMode', 'textModel', 'video', 'tts', 'margin', 'creditYuan', 'maxCredits'].some(
+    ['durationSeconds', 'segmentCount', 'audioMode', 'textModel', 'video', 'fallbackModel', 'fallbackVideo', 'tts', 'margin', 'creditYuan', 'maxCredits'].some(
       key => price[key] !== currentQuote[key],
     ) ||
     price.text?.in !== currentQuote.text.in ||
@@ -211,15 +218,24 @@ export function voicedSalesSettlement(plan) {
   const byKind = kind => events.filter(event => event?.kind === kind);
   const textEvents = byKind('text'),
     ttsEvents = byKind('tts'),
-    videoEvents = byKind('video');
+    allVideoEvents = byKind('video');
+  // Seedance 拒绝“疑似真人”参考图的那次尝试没有产物、不计售价，同一分段必须由可灵补齐。
+  const rejectedVideo = allVideoEvents.filter(event => event?.status === 'provider_rejected');
+  // 兜底分段的可灵调用排在其后提交，核对时按分段序号排列。
+  const videoEvents = allVideoEvents.filter(event => event?.status !== 'provider_rejected').sort((a, b) => a.index - b.index);
+  const rejectionValid = rejectedVideo.every(event => price?.fallbackModel && event.model === plan.model
+    && event.rejection?.code === 'SALES_VIDEO_REAL_PERSON' && Number.isSafeInteger(event.index))
+    && new Set(rejectedVideo.map(event => event.index)).size === rejectedVideo.length;
+  const allowedVideoModels = new Set([plan.model, price?.fallbackModel].filter(Boolean));
   if (
     (confirmedChat ? textEvents.length !== 0 : textEvents.length < 1) ||
     textEvents.length > (externalTts ? 3 : 2) ||
     (externalTts ? ttsEvents.length < 2 || ttsEvents.length > 3 : ttsEvents.length !== 0) ||
     videoEvents.length !== segmentCount ||
+    !rejectionValid ||
     plan.providerExecution?.segments?.length !== segmentCount ||
-    events.length !== textEvents.length + ttsEvents.length + videoEvents.length ||
-    events.some((event, i) => event.id !== i + 1 || event.status !== 'returned') ||
+    events.length !== textEvents.length + ttsEvents.length + allVideoEvents.length ||
+    events.some((event, i) => event.id !== i + 1 || (event.status !== 'returned' && !(event.kind === 'video' && event.status === 'provider_rejected'))) ||
     textEvents.some(
       event =>
         event.model !== price.textModel ||
@@ -231,7 +247,8 @@ export function voicedSalesSettlement(plan) {
     ttsEvents.some(event => event.model !== AI_SALES_VIDEO_TTS_MODEL) ||
     videoEvents.some(
       (event, i) =>
-        event.model !== plan.model ||
+        !allowedVideoModels.has(event.model) ||
+        (event.model !== plan.model && !rejectedVideo.some(rejected => rejected.index === event.index)) ||
         event.index !== i + 1 ||
         !taskId(event.taskId) ||
         event.taskId !== plan.providerExecution?.segments?.[i]?.taskId,
@@ -242,8 +259,10 @@ export function voicedSalesSettlement(plan) {
   const personalBilling = priceBilling?.billingMode === 'personal';
   const requiresReceipts = personalBilling || priceBilling?.supplierCostPolicy?.enabled === true
     || events.some(event => event.supplierCosts?.length);
-  const supplierCosts = requiresReceipts ? events.flatMap(event => event.supplierCosts?.length
-    ? event.supplierCosts : [{ status: 'pending', requestId: event.providerRequestId || null, model: event.model }]) : [];
+  // 被拒的 Seedance 尝试只有在上游确实回了扣费单时才计入平台成本，否则不阻塞对账。
+  const supplierCosts = requiresReceipts ? events.filter(event => event.status !== 'provider_rejected' || event.supplierCosts?.length)
+    .flatMap(event => event.supplierCosts?.length
+      ? event.supplierCosts : [{ status: 'pending', requestId: event.providerRequestId || null, model: event.model }]) : [];
   const actual = aggregateSupplierCosts(supplierCosts);
   const referencePricing = priceBilling?.salePolicy?.basis === 'reference_360';
   const referenceYuan = actualCost(events, price);
@@ -289,10 +308,12 @@ export async function refreshVoicedSalesReceipts(plan, readCost = supplierReques
 
 function actualCost(events, price) {
   return events.reduce((sum, event) => {
+    if (event.kind === 'video' && event.status === 'provider_rejected') return sum; // 无产物，不计售价
     if (event.status !== 'returned') throw fail('调用缺少返回证据，保留待对账');
     if (event.kind === 'text')
       return sum + (event.inputTokens * price.text.in + event.outputTokens * price.text.out) / 1e6;
-    return sum + (event.kind === 'tts' ? price.tts : price.video);
+    if (event.kind === 'tts') return sum + price.tts;
+    return sum + (price.fallbackModel && event.model === price.fallbackModel ? price.fallbackVideo : price.video);
   }, 0);
 }
 
@@ -510,7 +531,7 @@ export async function createVoicedSalesVideoJob({
           persist('处理中');
           const begin = (kind, model, index) => {
             if (!['text', 'video'].includes(kind)) throw fail('原生音画同生不调用独立TTS');
-            const limit = kind === 'video' ? segmentCount : 2;
+            const limit = kind === 'video' ? segmentCount * (salesFallbackModel(plan.model) ? 2 : 1) : 2;
             if (plan.paidExecution.filter(e => e.kind === kind).length >= limit) throw fail('供应商调用超过授权次数');
             const event = {
               id: plan.paidExecution.length + 1,
@@ -584,22 +605,24 @@ export async function createVoicedSalesVideoJob({
             visual: plan.script.shots.map(shot => `${shot.start}–${shot.end}秒：${shot.visual}`).join('\n'),
             voiceover: plan.script.shots.map(shot => shot.voiceover).join(''),
           }] : plan.script.shots;
-          for (const [i, shot] of providerShots.entries()) {
+          const fallbackModel = salesFallbackModel(plan.model);
+          // 提交一个分段（主模型或可灵兜底）。只发一次 POST，结果与意图都先落库。
+          const submitSegment = async (i, shot, model) => {
             const segment = plan.providerExecution.segments[i];
             segment.status = 'submitting';
-            const event = begin('video', plan.model, i + 1);
-            try {
-            const submitted = await (runtime.submitSegment || submitAliBailianVideoSegment)({
-              model: plan.model,
+            segment.model = model;
+            const event = begin('video', model, i + 1);
+            const submitted = await (runtime.submitSegment || submitSalesVideoSegment)({
+              model,
               duration: segmentDuration,
               resolution: '720P',
               promptExtend: false,
               images: plan.model === PROVIDER_360_VIDEO_MODEL ? images : [images[i % images.length]],
-              // Omit audio_url: Wan generates its own speech and sound with the video.
+              // Omit audio_url: the video model generates its own speech and sound.
               prompt: wanNativeAudioPrompt(shot, { durationSeconds: duration, segmentDurationSeconds: segmentDuration, singleGeneration: plan.model === PROVIDER_360_VIDEO_MODEL }),
-            });
+            }).catch(error => { error.salesEvent = event; throw error; });
             segment.taskId = taskId(submitted.taskId);
-            if (!segment.taskId) throw fail('Wan未返回可持久化任务ID');
+            if (!segment.taskId) throw fail('视频模型未返回可持久化任务ID');
             event.taskId = segment.taskId;
             event.providerRequestId = submitted.providerRequestId || null;
             event.durationSeconds = segmentDuration;
@@ -608,9 +631,31 @@ export async function createVoicedSalesVideoJob({
             segment.status = 'provider_submitted';
             plan.providerExecution.invocationCount += 1;
             persist('处理中');
+            return submitted;
+          };
+          // Seedance 拒绝疑似真人参考图：记录被拒尝试（无产物不计价），同一分段改走可灵。
+          const switchToFallback = async (i, shot, rejectedEvent) => {
+            const segment = plan.providerExecution.segments[i];
+            Object.assign(rejectedEvent, { status: 'provider_rejected', rejection: { code: 'SALES_VIDEO_REAL_PERSON', at: new Date().toISOString() } });
+            segment.rejected = [...(segment.rejected || []), { model: rejectedEvent.model, taskId: rejectedEvent.taskId || null }];
+            segment.fallbackUsed = true;
+            plan.fallbackNotice = '参考图含人物，已自动改用可灵生成对应分段';
+            persist('处理中');
+            return submitSegment(i, shot, fallbackModel);
+          };
+          for (const [i, shot] of providerShots.entries()) {
+            try {
+            let submitted;
+            try {
+              submitted = await submitSegment(i, shot, plan.model);
+            } catch (error) {
+              if (!fallbackModel || !realPersonRejection(error) || !error.salesEvent) throw error;
+              submitted = await switchToFallback(i, shot, error.salesEvent);
+            }
             submittedSegments.push(submitted);
             } catch (error) {
-              event.failure = { code: String(error?.code || 'PROVIDER_SUBMISSION_UNKNOWN'),
+              const event = error.salesEvent;
+              if (event) event.failure = { code: String(error?.code || 'PROVIDER_SUBMISSION_UNKNOWN'),
                 phase: error?.providerResponsePhase || 'request', responseStatus: error?.responseStatus || null,
                 requestId: error?.providerRequestId || null };
               providerError = error;
@@ -618,25 +663,35 @@ export async function createVoicedSalesVideoJob({
               break; // Never repeat an uncertain paid POST. Retrieve known tasks below.
             }
           }
+          const waitSegment = segment => waitForProviderVideo({
+            taskId: segment.taskId,
+            model: segment.model || plan.model,
+            query: async params => {
+              const result = await (runtime.querySegment || querySalesVideoSegment)({ ...params, model: segment.model || plan.model });
+              persist('处理中'); // heartbeat; polling must not look like an abandoned paid job
+              return result;
+            },
+            timeoutMs: runtime.timeoutMs || 12 * 60 * 1000,
+            intervalMs: runtime.intervalMs || 5000,
+            sleep: runtime.sleep,
+          });
+          const acceptedEvent = index => plan.paidExecution.filter(event => event.kind === 'video' && event.index === index
+            && event.status !== 'provider_rejected').at(-1);
           for (const [i, segment] of plan.providerExecution.segments.entries()) {
-            const submitted = submittedSegments[i];
+            let submitted = submittedSegments[i];
             if (!segment.taskId || !submitted) continue;
             try {
-            const ready = submitted.url
-              ? submitted
-              : await waitForProviderVideo({
-                  taskId: segment.taskId,
-                  model: plan.model,
-                  query: async params => {
-                    const result = await (runtime.querySegment || queryAliBailianVideoSegment)(params);
-                    persist('处理中'); // heartbeat; polling must not look like an abandoned paid job
-                    return result;
-                  },
-                  timeoutMs: runtime.timeoutMs || 12 * 60 * 1000,
-                  intervalMs: runtime.intervalMs || 5000,
-                  sleep: runtime.sleep,
-                });
-            const paidEvent = plan.paidExecution.find(event => event.kind === 'video' && event.index === i + 1);
+            let ready;
+            try {
+              ready = submitted.url ? submitted : await waitSegment(segment);
+            } catch (error) {
+              // 生成阶段才发现参考图含人物：同一分段只切换一次可灵，绝不重复提交 Seedance。
+              const rejected = acceptedEvent(i + 1);
+              if (!fallbackModel || segment.fallbackUsed || !realPersonRejection(error) || rejected?.model !== plan.model) throw error;
+              submitted = await switchToFallback(i, providerShots[i], rejected);
+              ready = submitted.url ? submitted : await waitSegment(segment);
+            }
+            const paidEvent = acceptedEvent(i + 1);
             if (paidEvent && ready.supplierCosts?.some(cost => cost.status === 'known')) {
               paidEvent.supplierCosts = ready.supplierCosts;
               persist('处理中');
@@ -650,7 +705,7 @@ export async function createVoicedSalesVideoJob({
             clips.push(clip.path || clip.absolutePath);
             const supplierCost = ready.supplierCosts?.find(cost => cost.status === 'known')
               || paidEvent?.supplierCosts?.find(cost => cost.status === 'known')
-              || await (runtime.supplierRequestCost || supplierRequestCost)({ requestId: paidEvent?.providerRequestId, model: plan.model });
+              || await (runtime.supplierRequestCost || supplierRequestCost)({ requestId: paidEvent?.providerRequestId, model: paidEvent?.model || plan.model });
             if (supplierCost && paidEvent) paidEvent.supplierCosts = [supplierCost];
             segment.status = 'downloaded';
             try {

@@ -11,6 +11,10 @@ export type ReferenceImage = { id: string; name: string; url: string; size: numb
 
 export function salesVideoNativeModelLabel(result: any) {
   const model = String(result?.model || result?.salesVideo?.model || result?.plan?.model || '').trim();
+  const segmentModels: string[] = result?.salesVideo?.segmentModels || [];
+  if (/seedance/i.test(model))
+    return segmentModels.some(item => /kling/i.test(item)) ? 'Seedance 2.5 与可灵 3.0' : 'Seedance 2.5';
+  if (/kling/i.test(model)) return '可灵 3.0';
   const wanVersion = model.match(/wan[-_ ]?(\d+(?:\.\d+)?)/i)?.[1];
   return wanVersion ? `万相 ${wanVersion}` : model || '万相原生有声模型';
 }
@@ -547,7 +551,12 @@ export default function AiSalesVideoPanel({
                 <summary>查看详情</summary>
                 <p>当前阶段：{stageLabels[voicedResult.stage] || '等待检查'}</p>
                 {nativeAudioResult ? (
-                  <p>声音由{salesVideoNativeModelLabel(result)}随画面生成；字幕按脚本时段排列，尚未做逐字语音对齐。</p>
+                  <>
+                    <p>
+                      声音由{salesVideoNativeModelLabel(result)}随画面生成；字幕按脚本时段排列，尚未做逐字语音对齐。
+                    </p>
+                    {voicedResult?.fallbackNotice && <p>{voicedResult.fallbackNotice}（按可灵实际价格计费）。</p>}
+                  </>
                 ) : (
                   <p>
                     历史任务音色：

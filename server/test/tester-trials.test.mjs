@@ -268,3 +268,33 @@ test('体验正文里模型自行添加的口味、人群、价格、工艺、�
 });
 
 after(() => { db.close(); removeTempDbSafely(databasePath); });
+
+test('体验码一键生成：默认扫码即开通且留痕，可记录发给谁；关闭自动开通或旧码仍需人工审核', () => {
+  const owner = tester();
+  const quick = api.createTesterInvitation(owner, { recipientNote: '张总·火锅店' }, 'https://example.test');
+  assert.equal(quick.autoApprove, true); assert.equal(quick.recipientNote, '张总·火锅店'); assert.equal(quick.turnLimit, 2);
+  const phone = `1391111${String(++sequence).padStart(4, '0')}`;
+  const applied = api.applyTrial(quick.token, { name: '张总', phone, consent: true });
+  assert.equal(applied.lead.status, 'approved', '扫码即开通，不用测试员逐个点同意');
+  assert.equal(applied.lead.autoApproved, true);
+  assert.equal(applied.lead.recipientNote, '张总·火锅店');
+  const row = q.get('SELECT * FROM tester_leads WHERE id=?', applied.lead.id);
+  assert.equal(row.reviewed_by, owner.id); assert.ok(row.reviewed_at);
+  assert.equal(q.get("SELECT action FROM tester_audit WHERE target_type='lead' AND target_id=? ORDER BY id DESC", applied.lead.id).action, 'auto_approved');
+  const own = api.listTesterInvitations(owner, 'https://example.test').find(item => item.id === quick.id);
+  assert.equal(own.recipientNote, '张总·火锅店'); assert.equal(own.leadCount, 1);
+  const adminView = api.listTesterInvitations(admin, 'https://example.test', true).find(item => item.id === quick.id);
+  assert.equal(adminView.recipientNote, '张总·火锅店'); assert.ok(adminView.ownerName);
+  assert.equal(api.listTesterLeads(admin, true).find(item => item.id === applied.lead.id).recipientNote, '张总·火锅店');
+
+  const manual = api.createTesterInvitation(owner, { autoApprove: false }, 'https://example.test');
+  assert.equal(manual.autoApprove, false);
+  const pending = api.applyTrial(manual.token, { name: '李总', phone: `1392222${String(++sequence).padStart(4, '0')}`, consent: true });
+  assert.equal(pending.lead.status, 'pending'); assert.equal(pending.lead.autoApproved, false);
+  assert.throws(() => api.createTesterInvitation(owner, { autoApprove: 'yes' }, 'https://example.test'), /开通方式无效/);
+
+  // 本次升级前生成的旧二维码（auto_approve=0）保持人工审核，不改变已分享码的含义。
+  const legacy = api.createTesterInvitation(owner, {}, 'https://example.test');
+  q.run('UPDATE tester_invitations SET auto_approve=0 WHERE id=?', legacy.id);
+  assert.equal(api.applyTrial(legacy.token, { name: '王总', phone: `1393333${String(++sequence).padStart(4, '0')}`, consent: true }).lead.status, 'pending');
+});

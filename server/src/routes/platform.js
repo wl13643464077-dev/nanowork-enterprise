@@ -126,6 +126,7 @@ r.get('/analytics', (req, res) => {
       totalRevenue, cashReceipts, paying, arpu: paying ? Math.round(totalRevenue / paying) : 0,
       ...financial.summary,
     },
+    lossAlerts: financial.lossAlerts,
     revByMonth: q.all(`SELECT substr(paid_at,1,7) m, SUM(price_yuan) yuan, COUNT(*) cnt
       FROM recharge_orders WHERE status='已支付' AND paid_at IS NOT NULL GROUP BY m ORDER BY m DESC LIMIT 6`),
     newByMonth: q.all(`SELECT substr(created_at,1,7) m, COUNT(*) n FROM tenants WHERE id > 0 GROUP BY m ORDER BY m DESC LIMIT 6`),

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Button,
+  Checkbox,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -70,6 +72,9 @@ type Invitation = {
   createdAt: string;
   provider?: string;
   turnLimit?: number;
+  recipientNote?: string;
+  autoApprove?: boolean;
+  leadCount?: number;
 };
 
 const PROVIDER_GUIDES: Record<TrialProviderId, { home: string; docs: string; account?: string }> = {
@@ -456,58 +461,87 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                       <p className="trial-muted">
                         新二维码固定使用当前选择的{activeProviderLabel}个人
                         Key。之后切换供应商不会改变已经分享的二维码。
-                        客户扫码填写资料，经你或平台审核通过后，可在以上五个场景中选择。这五位都按正式岗位完整能力执行。每位客户独立获得你设置的次数，五个员工共用总次数，切换员工不增加次数。
+                        客户扫码填写资料后即可在以上五个场景中选择（新码默认自动开通，可在「更多设置」改为人工同意）。这五位都按正式岗位完整能力执行。每位客户独立获得你设置的次数，五个员工共用总次数，切换员工不增加次数。
                       </p>
                       <p className="trial-muted trial-small">
                         扫码页这五个岗位与正式工作台同一套能力：选址含调研和竞品核验，店长和巡店出完整报告，小红书和带货按完整岗位方案交付。没有照片或素材时，先给完整文案与制作清单，不假装图片或视频已经生成。
                       </p>
                       <Form
                         form={invitationForm}
-                        initialValues={{ salesPhone: profile?.phone, turnLimit: 2 }}
-                        layout="inline"
+                        initialValues={{ salesPhone: profile?.phone, turnLimit: 2, autoApprove: true }}
+                        layout="vertical"
                         className="trial-invite-form"
                         onFinish={values =>
                           void run('invite', async () => {
                             await trialRequest('/tester/invitations', { method: 'POST', body: values });
-                            message.success('体验二维码已生成');
+                            message.success('体验二维码已生成，复制链接或下载二维码发给客户即可');
+                            invitationForm.resetFields(['recipientNote']);
                             await load();
                           })
                         }
                       >
-                        <Form.Item name="title" label="邀请名称">
-                          <Input placeholder="例如 张三·餐饮老板体验" maxLength={60} />
-                        </Form.Item>
-                        <Form.Item
-                          name="salesPhone"
-                          label="销售手机号"
-                          rules={[{ required: true }, { pattern: /^1\d{10}$/, message: '请输入 11 位手机号' }]}
-                        >
-                          <Input inputMode="tel" maxLength={11} />
-                        </Form.Item>
-                        <Form.Item
-                          name="turnLimit"
-                          label="每位客户体验次数"
-                          rules={[
-                            { required: true, message: '请设置每位客户的体验次数' },
-                            { type: 'number', min: 1, max: 100, message: '请输入 1 至 100 次' },
+                        <Space.Compact block className="trial-invite-quick">
+                          <Form.Item name="recipientNote" noStyle>
+                            <Input placeholder="发给谁？例如 张总·火锅店（选填，方便你和平台追踪）" maxLength={40} />
+                          </Form.Item>
+                          <Button
+                            htmlType="submit"
+                            type="primary"
+                            loading={busy === 'invite'}
+                            disabled={!active || !activeKeyConfigured || !activeProviderState.available}
+                          >
+                            一键生成体验码
+                          </Button>
+                        </Space.Compact>
+                        <Collapse
+                          ghost
+                          size="small"
+                          items={[
                             {
-                              validator: (_, value) =>
-                                value == null || Number.isInteger(value)
-                                  ? Promise.resolve()
-                                  : Promise.reject(new Error('请输入整数次数')),
+                              key: 'more',
+                              label: '更多设置（销售手机号、体验次数、开通方式）',
+                              forceRender: true,
+                              children: (
+                                <>
+                                  <Form.Item name="title" label="邀请名称">
+                                    <Input placeholder="默认：纳米Work · 餐饮数字员工体验" maxLength={60} />
+                                  </Form.Item>
+                                  <Form.Item
+                                    name="salesPhone"
+                                    label="销售手机号"
+                                    rules={[
+                                      { required: true },
+                                      { pattern: /^1\d{10}$/, message: '请输入 11 位手机号' },
+                                    ]}
+                                  >
+                                    <Input inputMode="tel" maxLength={11} />
+                                  </Form.Item>
+                                  <Form.Item
+                                    name="turnLimit"
+                                    label="每位客户体验次数"
+                                    rules={[
+                                      { required: true, message: '请设置每位客户的体验次数' },
+                                      { type: 'number', min: 1, max: 100, message: '请输入 1 至 100 次' },
+                                      {
+                                        validator: (_, value) =>
+                                          value == null || Number.isInteger(value)
+                                            ? Promise.resolve()
+                                            : Promise.reject(new Error('请输入整数次数')),
+                                      },
+                                    ]}
+                                  >
+                                    <InputNumber min={1} max={100} precision={0} addonAfter="次" />
+                                  </Form.Item>
+                                  <Form.Item name="autoApprove" valuePropName="checked">
+                                    <Checkbox>
+                                      客户扫码填写资料后自动开通（取消后需你在「客户与使用记录」逐个同意）
+                                    </Checkbox>
+                                  </Form.Item>
+                                </>
+                              ),
                             },
                           ]}
-                        >
-                          <InputNumber min={1} max={100} precision={0} addonAfter="次" style={{ width: 135 }} />
-                        </Form.Item>
-                        <Button
-                          htmlType="submit"
-                          type="primary"
-                          loading={busy === 'invite'}
-                          disabled={!active || !activeKeyConfigured || !activeProviderState.available}
-                        >
-                          生成体验二维码
-                        </Button>
+                        />
                       </Form>
                       <p className="trial-muted trial-small">
                         每次成功回复计 1 次，失败不计次。默认 2 次，可设 1 至 100
@@ -527,6 +561,13 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                               src={item.qrDataUrl}
                               alt={`${item.title || '数字员工体验'}邀请二维码`}
                             />
+                            {item.recipientNote && <p>发给：{item.recipientNote}</p>}
+                            <p>
+                              <Tag color={item.autoApprove ? 'green' : 'orange'}>
+                                {item.autoApprove ? '扫码即开通' : '需你逐个同意'}
+                              </Tag>
+                              已有 {item.leadCount ?? 0} 位客户
+                            </p>
                             <p>销售手机号：{item.salesPhone}</p>
                             <p>体验供应商：{trialProviderLabel(item.provider || '360')}</p>
                             <p>每位客户：{trialTurnLimit(item.turnLimit)} 次成功体验（五个员工共用）</p>
@@ -595,6 +636,10 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                               <strong>{row.name}</strong>
                               <div>{row.phone}</div>
                               <div className="trial-muted">{row.storeName}</div>
+                              {row.recipientNote && (
+                                <div className="trial-muted">来自：发给 {row.recipientNote} 的体验码</div>
+                              )}
+                              {row.autoApproved && <Tag color="green">扫码自动开通</Tag>}
                             </>
                           ),
                         },
@@ -707,16 +752,17 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                         H5 提供五个满血岗位。
                       </li>
                       <li>
-                        <strong>生成二维码。</strong>
-                        到「体验二维码」，填写销售手机号和邀请名称，设置「每位客户体验次数」（1 至 100 次，默认 2
-                        次），下载图片或复制链接发给客户。 客户扫码可选选址、超级店长、巡店、小红书种草、AI
-                        带货五个满血场景，调用使用此二维码绑定的个人 Key。
-                        创建后次数固定；需要不同额度时新建二维码，已有客户的额度不会重置。
+                        <strong>一键生成体验码。</strong>
+                        到「体验二维码」，填一下「发给谁」（选填），点「一键生成体验码」，复制链接或下载二维码发给客户。
+                        销售手机号、每位客户次数（默认 2 次）和开通方式都有默认值，需要时在「更多设置」里改。
+                        客户扫码可选选址、超级店长、巡店、小红书种草、AI 带货五个满血场景，调用使用此二维码绑定的个人
+                        Key。
                       </li>
                       <li>
-                        <strong>同意客户体验。</strong>
-                        客户扫码填写手机号等资料后，在「客户与使用记录」点「同意体验」。每位客户独立获得二维码设定的额度，五个场景共用总次数，每次成功回复计
-                        1 次，失败可重试且不计次。
+                        <strong>客户扫码即用。</strong>
+                        新生成的体验码默认扫码填写资料后自动开通，不用逐个点同意；每位客户的姓名、手机号、来自哪个体验码、发给谁都会记录在「客户与使用记录」。
+                        想人工把关时，在「更多设置」取消自动开通。每位客户独立获得设定的额度，五个场景共用总次数，每次成功回复计
+                        1 次，失败不计次。
                       </li>
                       <li>
                         <strong>查看使用与成本。</strong>

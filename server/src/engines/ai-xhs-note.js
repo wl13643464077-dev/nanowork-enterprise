@@ -2,6 +2,7 @@ import { UNTRUSTED_GUARD } from './risk.js';
 import { createHash } from 'node:crypto';
 import { detectImageFormat, renderSvgToPng } from './poster-text-overlay.js';
 import { provider360Active } from './yunwu.js';
+import { selectedProviderId } from './ai-provider-selection.js';
 import { commercialCompliancePromptLines, commercialComplianceWarnings, scanCommercialCompliance } from './content-commercial-compliance.js';
 
 export const XHS_NOTE_SOURCE = 'ai_xhs_note';
@@ -36,7 +37,11 @@ imagePlan仅引用用户给出的fileId，依照照片内容安排原图顺序�
 按style采用不同内容组织：seed种草突出一个具体选择；review测评比较可见差异与待确认点；guide点单攻略按选择顺序；visit聚餐探店描述已确认门头/菜品及适合的聚餐情境；new_product新品只在用户确认新品时这么称呼；story品牌故事只使用用户提供的真实故事。测评与探店没有真实体验资料时，不能冒称亲自吃过、代写真实顾客口吻、排名或优惠；缺事实时交付可用的观察稿和待体验点，不硬失败。不要返回多份完整正文稿、打分、工作流程或其他平台内容；备选只限 titleOptions 里的三个标题。`;
 
 export const XHS_IMAGE_MODEL = 'gpt-image-2';
-export const xhsImageModel = () => provider360Active() ? 'openai/gpt-image-2' : XHS_IMAGE_MODEL;
+// OpenLux 通道升级为 GPT-Image-2.5（实测每张约 ¥0.10，支持参考图编辑）；360 与其他通道保持原模型。
+export const XHS_OPENLUX_IMAGE_MODEL = 'gpt-image-2.5-flare-c';
+export const XHS_IMAGE_MODELS = Object.freeze(['gpt-image-2', 'openai/gpt-image-2', XHS_OPENLUX_IMAGE_MODEL]);
+export const xhsImageModel = () => provider360Active() ? 'openai/gpt-image-2'
+  : selectedProviderId() === 'openlux' ? XHS_OPENLUX_IMAGE_MODEL : XHS_IMAGE_MODEL;
 export const XHS_IMAGE_TIMEOUT_MS = 15 * 60_000;
 export const XHS_IMAGE_ROLES = Object.freeze([
   { id: 'cover', label: '食欲封面', purpose: '用一道明确主菜吸引读者', visualTask: '主菜占据画面大部分，温暖自然光、干净背景，突出可见色泽与完整锅型' },
