@@ -368,3 +368,18 @@ test('已确认结构卡和人工心得进入实际user消息，不能进入syst
     buildAiSalesVideoScriptPrompt({ brief: '其它任务' }).system,
   );
 });
+
+test('cta 接受“约上朋友过来，趁热吃吧”这类自然邀请，仍拒绝非行动句', async () => {
+  const { validateAiSalesVideoScript } = await import('../src/engines/ai-sales-video-script.js');
+  const build = cta => ({
+    hook_3s: '下班饿了，',
+    shots: [{ index: 1, start: 0, end: 15, visual: '菜品近景', voiceover: `下班饿了，看这碗水煮牛肉。${cta}`, subtitle: `下班饿了｜${cta}`, sfx: '无', reference_hint: 'dish' }],
+    cta, facts_used: [], total_chars: 20, estimated_seconds: 5, risk_flags: [],
+  });
+  for (const cta of ['约上朋友过来，趁热吃吧。', '趁热来尝一口。', '欢迎约上朋友到店看看。', '下班一起来吃。']) {
+    const result = validateAiSalesVideoScript(build(cta), { durationSeconds: 15 });
+    assert.ok(!result.errors.some(line => /cta 必须是自然行动邀请/.test(line)), `${cta} → ${result.errors.join('|')}`);
+  }
+  const bad = validateAiSalesVideoScript(build('这碗牛肉红油很亮。'), { durationSeconds: 15 });
+  assert.ok(bad.errors.some(line => /cta 必须是自然行动邀请/.test(line)));
+});

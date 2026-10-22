@@ -197,6 +197,7 @@ function evidenceLines(results) {
     .map(item => {
       const logos = (Array.isArray(item.images) ? item.images : [])
         .filter(image => image?.url && (image.isLogo || /logo/iu.test(image.url)))
+        .filter(image => !isThirdPartyBrandAsset(image.url) && !isThirdPartyBrandAsset(item.url))
         .map(image => image.url);
       const excerpt = textOf(item.body || item.snippet, 1800);
       return `- ${textOf(item.title, 80)}｜${String(item.url).slice(0, 240)}${excerpt ? `｜${excerpt}` : ''}${logos.length ? `｜Logo图片:${logos.slice(0, 3).join(' ')}` : ''}`;
@@ -308,6 +309,43 @@ export function isPlatformBrandStamp(value) {
   return PLATFORM_BRAND_STAMP.test(text);
 }
 
+// 第三方平台（企查查、百科、点评、搜索引擎、社媒）页面里的 logo 是平台自己的标志，
+// 不能当成品牌 Logo。只接受品牌自有站点的图片，并优先与官网同域、文件名带 logo 的。
+const THIRD_PARTY_ASSET_HOST = /(?:^|\.)(?:qcc\.com|qichacha\.com|tianyancha\.com|aiqicha\.baidu\.com|baidu\.com|bdstatic\.com|bdimg\.com|sogou\.com|so\.com|360\.cn|qhimg\.com|qhres\.com|dianping\.com|meituan\.com|meituan\.net|amap\.com|autonavi\.com|google\.com|gstatic\.com|bing\.com|bing\.net|xiaohongshu\.com|xhscdn\.com|douyin\.com|douyinpic\.com|weibo\.com|sinaimg\.cn|sina\.com\.cn|zhihu\.com|zhimg\.com|sohu\.com|163\.com|126\.net|qq\.com|gtimg\.cn|wikipedia\.org|wikimedia\.org|toutiao\.com|bytedance\.com|jd\.com|360buyimg\.com|taobao\.com|alicdn\.com)$/iu;
+
+function assetHost(url) {
+  try {
+    return new URL(String(url)).hostname.toLowerCase().replace(/^www\./u, '');
+  } catch {
+    return '';
+  }
+}
+
+export function isThirdPartyBrandAsset(url) {
+  const host = assetHost(url);
+  return !host || THIRD_PARTY_ASSET_HOST.test(host);
+}
+
+export function rankBrandLogoCandidates(pages = [], brand = '') {
+  const seen = new Set();
+  return (Array.isArray(pages) ? pages : [])
+    .flatMap(page => (Array.isArray(page?.images) ? page.images : []).map(image => ({
+      ...image,
+      pageTitle: page.title,
+      pageUrl: page.url,
+    })))
+    .filter(image => image?.url && (image.isLogo || /logo/iu.test(image.url)))
+    .filter(image => !isThirdPartyBrandAsset(image.url) && !isThirdPartyBrandAsset(image.pageUrl))
+    .filter(image => (seen.has(image.url) ? false : seen.add(image.url)))
+    .map(image => {
+      const sameSite = assetHost(image.url) && assetHost(image.url) === assetHost(image.pageUrl);
+      const named = /logo/iu.test(String(image.url).split('/').pop() || '');
+      const branded = textMentionsBrand(`${image.pageTitle || ''} ${image.alt || ''}`, brand);
+      return { ...image, score: (sameSite ? 4 : 0) + (named ? 2 : 0) + (branded ? 2 : 0) + (image.isLogo ? 1 : 0) };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
 export function extractBrandAssetUrl(body) {
   const text = String(body || '');
   const match = text.match(/https?:\/\/[^\s"'<>]+(?:logo[^/\s"'<>]*|\.(?:png|jpe?g|webp|svg))/iu)
@@ -349,10 +387,10 @@ export function campaignBrandIdentity(tenantId = curTenant()) {
     ...extractBrandAssetUrls(filled('logo')?.body),
     ...extractBrandAssetUrls(filled('style')?.body),
     ...extractBrandAssetUrls(filled('official')?.body),
-  ].filter((item, index, all) => all.indexOf(item) === index).slice(0, 4);
+  ].filter((item, index, all) => all.indexOf(item) === index && !isThirdPartyBrandAsset(item)).slice(0, 4);
   return {
     brandName,
-    logoUrl: logoUrls[0] || extractBrandAssetUrl(filled('logo')?.body),
+    logoUrl: logoUrls[0] || '',
     logoUrls,
     slogan: String(filled('slogan')?.body || '').replace(/\s+/gu, ' ').trim().slice(0, 40),
     dishes,
@@ -615,11 +653,7 @@ function seedDimensionsFromEvidence(brand, { pois = [], results = [] } = {}) {
     };
   };
 
-  const logos = pages.flatMap(page => (Array.isArray(page.images) ? page.images : []).map(image => ({
-    ...image,
-    pageTitle: page.title,
-    pageUrl: page.url,
-  }))).filter(image => image?.url && (image.isLogo || /logo/iu.test(image.url)));
+  const logos = rankBrandLogoCandidates(pages, brand);
   if (logos.length) {
     fill(
       'logo',

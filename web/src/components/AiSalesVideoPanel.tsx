@@ -4,6 +4,7 @@ import { Alert, Button, Modal, Space, Tag, message } from 'antd';
 import NativeEmployeeChat, { type NativeGeneration } from './NativeEmployeeChat';
 import NativeDeliverableDownloadButton from './NativeDeliverableDownloadButton';
 import SpecialistTaskHistory, { type SpecialistHistoryRow } from './SpecialistTaskHistory';
+import SalesVideoPublishKit from './SalesVideoPublishKit';
 import { notifyCredits, api, getUser } from '../api/client';
 
 export type ReferenceImage = { id: string; name: string; url: string; size: number };
@@ -727,6 +728,7 @@ export default function AiSalesVideoPanel({
                 onLoadedData={() => setPreviewErrorUrl('')}
               />
             )}
+            {previewUrl && voicedResult?.script && <SalesVideoPublishKit script={voicedResult.script} />}
             {previewUrl && previewErrorUrl === previewUrl && (
               <Alert type="warning" showIcon message="视频暂未加载，请刷新结果，或点击上方“下载视频”后播放。" />
             )}

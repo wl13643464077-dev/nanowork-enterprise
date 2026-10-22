@@ -499,3 +499,19 @@ test('公开检索完全落空时标记失败，不把空卡片当成已采集',
   });
 });
 });
+
+test('品牌Logo不采用企查查等第三方平台自己的标志，优先官网同域logo', async () => {
+  const { rankBrandLogoCandidates, isThirdPartyBrandAsset } = await import('../src/engines/brand-knowledge-pack.js');
+  const pages = [
+    { title: '北京大鸭梨餐饮有限公司 - 企查查', url: 'https://www.qcc.com/firm/abc.html',
+      images: [{ url: 'https://qcc-static.qcc.com/qcc/pc-web/images/logo-03617c0b.png', isLogo: true }] },
+    { title: '北京大鸭梨餐饮有限公司｜首页', url: 'http://www.dayalihome.com/',
+      images: [{ url: 'http://www.dayalihome.com/skin/images/logo.png' }, { url: 'http://cdn.example-brand.cn/banner-logo-strip.jpg' }] },
+  ];
+  const ranked = rankBrandLogoCandidates(pages, '北京大鸭梨');
+  assert.equal(ranked[0].url, 'http://www.dayalihome.com/skin/images/logo.png');
+  assert.ok(!ranked.some(item => /qcc/.test(item.url)));
+  assert.equal(isThirdPartyBrandAsset('https://qcc-static.qcc.com/x/logo.png'), true);
+  assert.equal(isThirdPartyBrandAsset('http://www.dayalihome.com/skin/images/logo.png'), false);
+  assert.deepEqual(rankBrandLogoCandidates([pages[0]], '北京大鸭梨'), []);
+});

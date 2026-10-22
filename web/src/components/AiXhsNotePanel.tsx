@@ -7,6 +7,7 @@ import type { UploadedFileRef } from './UnifiedFilePicker';
 import NativeEmployeeChat, { type NativeGeneration, type NativeImageOptions } from './NativeEmployeeChat';
 import NativeDeliverableDownloadButton from './NativeDeliverableDownloadButton';
 import SpecialistTaskHistory, { type SpecialistHistoryRow } from './SpecialistTaskHistory';
+import XhsPhonePreview from './XhsPhonePreview';
 import './AiXhsNotePanel.css';
 
 type NoteOutput = {
@@ -434,6 +435,16 @@ export default function AiXhsNotePanel({
                   </Button>
                 </Space>
               </header>
+              <XhsPhonePreview
+                draft={draft}
+                brandName={job?.brandName}
+                images={generatedImages
+                  .filter(image => image.status === 'success' && image.url?.startsWith('/uploads/'))
+                  .map(image => image.url as string)}
+                aiImageCount={
+                  generatedImages.filter(image => image.status === 'success' && image.aiGenerated !== false).length
+                }
+              />
               {!!generatedImages.length && (
                 <section aria-label="AI生成配图">
                   <p className="ai-xhs-note-billing">
@@ -538,7 +549,10 @@ export default function AiXhsNotePanel({
                     <ul className="ai-xhs-note-compliance">
                       {draft.compliance.hits.map(hit => (
                         <li key={hit.group}>
-                          <strong>{hit.severity === 'block' ? '必改' : '建议'} · {hit.label}</strong>：
+                          <strong>
+                            {hit.severity === 'block' ? '必改' : '建议'} · {hit.label}
+                          </strong>
+                          ：
                           {hit.words.map(word => (
                             <Tag key={word} color={hit.severity === 'block' ? 'red' : 'orange'}>
                               {word}
