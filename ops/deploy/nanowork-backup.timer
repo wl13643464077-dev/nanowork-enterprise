@@ -1,8 +1,10 @@
 [Unit]
-Description=NanoWork daily local backup at 03:00 Beijing time
+Description=NanoWork local backup every 4 days at 03:00 Beijing time
 
 [Timer]
-OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+# 2026-11：每日备份把 69G 磁盘占满导致停站，改为每 4 天一次（每月 1、5、9……29 日）。
+# 配合 backup.sh 14 天保留，平时约留 3–4 份完整备份。
+OnCalendar=*-*-01/4 03:00:00 Asia/Shanghai
 AccuracySec=1s
 # 停机错过的备份在恢复定时器后补做；service 的路径条件保护未部署的初装。
 Persistent=true
