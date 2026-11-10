@@ -11,7 +11,8 @@
 | `deploy/nanowork.service` | systemd：`User=nanowork`、`TZ=Asia/Shanghai`、`EnvironmentFile=/etc/nanowork/server.env`、`ProtectSystem=strict`、启动前跑 `preflight-production.mjs` |
 | `deploy/server.env.production.example` | 生产 env 模板，每项标注 必填 / 建议 / 可选 / 禁止 |
 | `deploy/deploy.sh` | `releases/<ts>` + `current` 符号链接发布；含备份、迁移、自检、健康等待、就绪矩阵摘要 |
-| `deploy/backup.sh` / `deploy/restore.sh` | SQLite `.backup` 一致快照 + uploads tar，14 天保留；恢复需输入 `RESTORE` |
+| `deploy/backup.sh` / `deploy/restore.sh` | SQLite `.backup` 一致快照 + uploads tar，14 天保留、每 4 天一次；恢复需输入 `RESTORE` |
+| `deploy/backup-alert.sh` / `deploy/nanowork-backup-alert.service` | 备份失败（systemd `OnFailure=`）或过期备份删不掉时推送飞书群机器人；配置 `OPS_ALERT_FEISHU_WEBHOOK`，用 `backup-alert.sh test` 验证 |
 | `deploy/rollback.sh` | 切回上一版，可 `--with-backup` 一并恢复 pre-deploy 备份 |
 | `deploy/demo-tenants.example.json` | `scripts/provision-demo-tenants.mjs` 的清单示例（6 家演示企业） |
 

@@ -194,7 +194,8 @@ else
 fi
 
 if [[ -f "${SCRIPT_DIR}/nanowork-backup.service" && -f "${SCRIPT_DIR}/nanowork-backup.timer" ]]; then
-  for unit in nanowork-backup.service nanowork-backup.timer; do
+  for unit in nanowork-backup.service nanowork-backup.timer nanowork-backup-alert.service; do
+    [[ -f "${SCRIPT_DIR}/${unit}" ]] || continue
     if ! cmp -s "${SCRIPT_DIR}/${unit}" "/etc/systemd/system/${unit}"; then
       install -m 0644 -o root -g root "${SCRIPT_DIR}/${unit}" "/etc/systemd/system/${unit}"
     fi
@@ -202,7 +203,7 @@ if [[ -f "${SCRIPT_DIR}/nanowork-backup.service" && -f "${SCRIPT_DIR}/nanowork-b
   systemctl daemon-reload
   # 只启动定时器，不直接 start 备份服务；service 的条件会跳过尚无 current 的初装。
   systemctl enable --now nanowork-backup.timer
-  ok "本机备份定时器已启用：每天北京时间 03:00（仅 DB + uploads；未配置异地备份）"
+  ok "本机备份定时器已启用：每 4 天北京时间 03:00（仅 DB + uploads；未配置异地备份）；失败告警需在 server.env 填 OPS_ALERT_FEISHU_WEBHOOK"
 else
   warn "缺少 nanowork-backup.service/timer，未启用定时备份"
 fi

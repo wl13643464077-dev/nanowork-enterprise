@@ -5,6 +5,8 @@ Description=NanoWork local database and uploads backup
 # 初装尚无 current 时跳过，不启动应用，也不执行备份脚本。
 ConditionPathExists=/opt/nanowork/current/ops/deploy/backup.sh
 ConditionPathExists=/etc/nanowork/server.env
+# 失败时推送飞书告警（见 nanowork-backup-alert.service / backup-alert.sh）
+OnFailure=nanowork-backup-alert.service
 
 [Service]
 Type=oneshot

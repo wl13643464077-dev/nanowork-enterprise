@@ -63,6 +63,15 @@ log() { if [[ "${PRINT_PATH}" == "1" ]]; then echo "[backup] $*" >&2; else echo 
 warn() { echo "[backup][warn] $*" >&2; }
 die() { echo "[backup][fail] $*" >&2; exit 1; }
 
+# 删不掉的目录名（两轮清理会重复遇到同一个，结束时去重后发一次告警）
+UNDELETABLE=()
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 备份本身成功但有隐患时推送飞书；告警失败不影响备份结果
+alert_warn() {
+  [[ -f "${SCRIPT_DIR}/backup-alert.sh" ]] || return 0
+  ENV_FILE="${ENV_FILE}" BACKUP_ROOT="${BACKUP_ROOT}" bash "${SCRIPT_DIR}/backup-alert.sh" warn "$1" >&2 || true
+}
+
 # 自动备份目录名：<14位时间>、<14位时间>-daily、-pre-deploy-<14位>、-pre-restore-<14位>
 AUTO_NAME_RE='^[0-9]{14}(-daily|-pre-deploy-[0-9]{14}|-pre-restore-[0-9]{14})?$'
 
@@ -85,7 +94,7 @@ prune_backups() {
   for name in "${incomplete[@]+"${incomplete[@]}"}"; do
     if (( $(backup_epoch "${name}") < now - 3600 )); then
       if rm -rf -- "${BACKUP_ROOT:?}/${name}" 2>/dev/null; then removed=$((removed + 1)); log "清理残缺备份 ${name}"
-      else failed=$((failed + 1)); warn "无法删除残缺备份 ${name}（属主或权限不对，请用 root 处理）"; fi
+      else failed=$((failed + 1)); UNDELETABLE+=("${name}"); warn "无法删除残缺备份 ${name}（属主或权限不对，请用 root 处理）"; fi
     fi
   done
 
@@ -98,7 +107,7 @@ prune_backups() {
     if rm -rf -- "${BACKUP_ROOT:?}/${name}" 2>/dev/null; then
       removed=$((removed + 1)); left=$((left - 1))
     else
-      failed=$((failed + 1)); warn "无法删除过期备份 ${name}（属主或权限不对，请用 root 处理）"
+      failed=$((failed + 1)); UNDELETABLE+=("${name}"); warn "无法删除过期备份 ${name}（属主或权限不对，请用 root 处理）"
     fi
   done
   log "清理完成：删除 ${removed} 个，跳过 ${failed} 个，保留完整自动备份 ${left} 份（≥${KEEP_MIN}，${RETENTION_DAYS} 天）"
@@ -113,8 +122,17 @@ backup_epoch() {
 free_bytes() { df -PB1 "${BACKUP_ROOT}" | awk 'NR==2 {print $4}'; }
 
 mkdir -p "${BACKUP_ROOT}"
+report_undeletable() {
+  (( ${#UNDELETABLE[@]} > 0 )) || return 0
+  local names
+  names="$(printf '%s\n' "${UNDELETABLE[@]}" | sort -u)"
+  alert_warn "以下 $(echo "${names}" | wc -l | tr -d ' ') 个过期备份删不掉（属主或权限不对），请 root 登录后手动删除：
+$(echo "${names}" | sed "s|^|  ${BACKUP_ROOT}/|")"
+}
+
 prune_backups ""
 if [[ "${PRUNE_ONLY}" == "1" ]]; then
+  report_undeletable
   log "仅清理模式，结束（剩余 $(( $(free_bytes) / 1024 / 1024 / 1024 )) GB）"
   exit 0
 fi
@@ -229,6 +247,7 @@ BACKUP_DONE=1
 
 # --- 保留策略（备份成功后再清一次，把刚过期的那份也清掉）---
 prune_backups ""
+report_undeletable
 
 log "完成：${DEST}（磁盘剩余 $(gb "$(free_bytes)") GB）"
 if [[ "${PRINT_PATH}" == "1" ]]; then

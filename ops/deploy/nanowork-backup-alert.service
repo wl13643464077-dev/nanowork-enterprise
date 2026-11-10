@@ -1,0 +1,25 @@
+# nanowork-backup.service 失败时由 OnFailure= 拉起，把最近日志推送到飞书群机器人。
+# 配置 OPS_ALERT_FEISHU_WEBHOOK（/etc/nanowork/server.env）；未配置时只写日志。
+[Unit]
+Description=NanoWork backup failure alert (Feishu)
+ConditionPathExists=/opt/nanowork/current/ops/deploy/backup-alert.sh
+
+[Service]
+Type=oneshot
+User=nanowork
+Group=nanowork
+# 读取 nanowork-backup.service 的日志
+SupplementaryGroups=systemd-journal
+Environment=TZ=Asia/Shanghai
+Environment=HOME=/var/lib/nanowork
+Environment=BACKUP_ROOT=/var/backups/nanowork
+Environment=ENV_FILE=/etc/nanowork/server.env
+ExecStart=/bin/bash /opt/nanowork/current/ops/deploy/backup-alert.sh fail
+TimeoutStartSec=2min
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal

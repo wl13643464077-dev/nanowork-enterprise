@@ -311,6 +311,14 @@ if [[ -f "${RELEASE_DIR}/ops/deploy/nanowork.service" ]] && ! cmp -s "${RELEASE_
   install -m 0644 "${RELEASE_DIR}/ops/deploy/nanowork.service" "/etc/systemd/system/${SERVICE}.service"
   ok "systemd 单元已更新"
 fi
+# 备份相关单元随代码同步（定时频率、失败告警），否则改了代码服务器上仍是旧配置
+for unit in nanowork-backup.service nanowork-backup.timer nanowork-backup-alert.service; do
+  src="${RELEASE_DIR}/ops/deploy/${unit}"
+  if [[ -f "${src}" ]] && ! cmp -s "${src}" "/etc/systemd/system/${unit}" 2>/dev/null; then
+    install -m 0644 -o root -g root "${src}" "/etc/systemd/system/${unit}"
+    ok "已更新 ${unit}"
+  fi
+done
 systemctl daemon-reload
 if [[ "${NO_RESTART}" == "1" ]]; then
   warn "--no-restart：未重启服务，新版本将在下次重启生效"
