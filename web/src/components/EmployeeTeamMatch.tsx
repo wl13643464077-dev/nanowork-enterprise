@@ -157,7 +157,8 @@ function teamPlanFailure(error: ApiRequestError): TeamPlanFailure {
   } else if (billingState) {
     billingText = `本次未产生拆解产出；账务状态为 ${billingState}，请凭请求编号核对。`;
   }
-  if (isPersonalApiUser(getUser())) billingText = `${personalApiBillingLabel(billing)}；已发生的调用费用以供应商账单为准。`;
+  if (isPersonalApiUser(getUser()))
+    billingText = `${personalApiBillingLabel(billing)}；已发生的调用费用以供应商账单为准。`;
 
   return {
     title: billingUnsettled
@@ -485,8 +486,9 @@ export default function EmployeeTeamMatch({
     const boardId = stored?.matchedAt;
     // 队长拆出几单就派几单：人数上限由服务端 TEAM_MAX_MEMBERS 统一把关，
     // 前端不再二次截断，否则会出现"8 人上阵、只派 5 人"的尴尬局面。
-    const pending = [...new Map(briefs.map(brief => [brief.idx, brief])).values()]
-      .filter(brief => !dispatchedRef.current[String(brief.idx)]);
+    const pending = [...new Map(briefs.map(brief => [brief.idx, brief])).values()].filter(
+      brief => !dispatchedRef.current[String(brief.idx)],
+    );
     if (!pending.length) return;
     bulkDispatchingRef.current = true;
     setBulkDispatching(true);
@@ -854,7 +856,9 @@ export default function EmployeeTeamMatch({
                   <div className="team-plan-error-details">
                     <div>{planError.reason}</div>
                     <div>{planError.outputText}</div>
-                    <div>费用处理：{isPersonalApiUser(getUser()) ? personalApiBillingLabel() : planError.billingText}</div>
+                    <div>
+                      费用处理：{isPersonalApiUser(getUser()) ? personalApiBillingLabel() : planError.billingText}
+                    </div>
                     <div>
                       请求编号：<code>{planError.requestId}</code>
                       {planError.code ? ` · 错误码：${planError.code}` : ''}
@@ -901,7 +905,12 @@ export default function EmployeeTeamMatch({
                   .join('、')} 还没有任务`}
                 description="这是历史拆解或上游漏拆造成的；点「重新拆解」让队长把全队每一个人都派上活，再全队开工。"
                 action={
-                  <Button size="small" type="primary" disabled={planning || bulkDispatching} onClick={() => void runPlan()}>
+                  <Button
+                    size="small"
+                    type="primary"
+                    disabled={planning || bulkDispatching}
+                    onClick={() => void runPlan()}
+                  >
                     重新拆解
                   </Button>
                 }
@@ -1008,7 +1017,10 @@ export default function EmployeeTeamMatch({
                     description={
                       <div className="team-plan-error-details">
                         <div>{summaryError.reason}</div>
-                        <div>费用处理：{isPersonalApiUser(getUser()) ? personalApiBillingLabel() : summaryError.billingText}</div>
+                        <div>
+                          费用处理：
+                          {isPersonalApiUser(getUser()) ? personalApiBillingLabel() : summaryError.billingText}
+                        </div>
                         <div>
                           请求编号：<code>{summaryError.requestId}</code>
                           {summaryError.code ? ` · 错误码：${summaryError.code}` : ''}

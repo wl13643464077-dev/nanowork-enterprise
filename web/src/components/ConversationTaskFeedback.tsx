@@ -41,6 +41,14 @@ export default function ConversationTaskFeedback({ kind, taskId, businessReview 
   const [businessSaved, setBusinessSaved] = useState<Decision | null>(null);
   const [candidateIndex, setCandidateIndex] = useState<number | null>(null);
   const [partialError, setPartialError] = useState('');
+  // PRD v2.2 FR-7.3：连续两次同类原因时，提示存为“我的版本”固定要求（老板确认才生效）
+  const [preferenceSuggestion, setPreferenceSuggestion] = useState<{
+    key: string;
+    label: string;
+    preference: string;
+    message: string;
+  } | null>(null);
+  const [savingPreference, setSavingPreference] = useState(false);
   const requestSerial = useRef(0);
   const pending = useRef(false);
   const requestKeys = useRef<Partial<Record<Decision, string>>>({});
@@ -59,6 +67,7 @@ export default function ConversationTaskFeedback({ kind, taskId, businessReview 
       setBusinessSaved(null);
       setCandidateIndex(null);
       setPartialError('');
+      setPreferenceSuggestion(null);
     });
     void api
       .get(`/task-center/${kind}/${taskId}`, { silent: true })
@@ -135,6 +144,9 @@ export default function ConversationTaskFeedback({ kind, taskId, businessReview 
       if (!response?.ok || !response?.task) throw new Error('经验回执不完整，请刷新后重试');
       setTask(response.task);
       setBusinessSaved(null);
+      if (kind === 'restaurant' && response.preferenceSuggestion?.preference) {
+        setPreferenceSuggestion(response.preferenceSuggestion);
+      }
       message.success(decision === 'adopt' ? '已采纳，并记住这次经验' : '已记录不采纳，原稿和改进意见已保留');
     } catch (error) {
       const reason = error instanceof Error ? error.message : '操作暂未完成，请重试';
@@ -173,6 +185,41 @@ export default function ConversationTaskFeedback({ kind, taskId, businessReview 
           {feedback.note && <p>{feedback.note}</p>}
           {feedback.learningLabel && <p>{feedback.learningLabel}</p>}
         </div>
+      )}
+      {preferenceSuggestion && (
+        <Alert
+          type="info"
+          showIcon
+          message={preferenceSuggestion.message}
+          action={
+            <Space direction="vertical" size={4}>
+              <Button
+                size="small"
+                type="primary"
+                loading={savingPreference}
+                onClick={async () => {
+                  setSavingPreference(true);
+                  try {
+                    await api.put('/employee-workbench/restaurant-preferences/slots', {
+                      addOutputPref: preferenceSuggestion.preference,
+                    });
+                    message.success('已存为默认设置，以后派活会自动带上');
+                    setPreferenceSuggestion(null);
+                  } catch (error) {
+                    message.error(error instanceof Error ? error.message : '保存失败');
+                  } finally {
+                    setSavingPreference(false);
+                  }
+                }}
+              >
+                存为默认设置
+              </Button>
+              <Button size="small" type="text" onClick={() => setPreferenceSuggestion(null)}>
+                不用了
+              </Button>
+            </Space>
+          }
+        />
       )}
       {partialError && (
         <Alert

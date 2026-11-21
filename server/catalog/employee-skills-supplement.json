@@ -1,0 +1,4043 @@
+{
+ "schemaVersion": "employee-skills-supplement/1",
+ "generatedAt": "2026-11-20",
+ "policy": {
+  "appendOnly": true,
+  "neverModifyOriginal": true,
+  "originalCatalog": "server/catalog/employee-skills.json",
+  "originalCatalogSha256": "74318ac3adef67c5f44ff92d353b429c72f131e6379fd3550bacc71e54b05c09",
+  "originalSkillCount": 409,
+  "ordering": "原岗位技能卡顺序不变，追加卡排在原卡之后；通用卡排在最后",
+  "activation": "老板/管理员逐张审核后状态改为 owner_verified_enabled 才参与派活提示词；未审核前只在技能页展示为'待确认补充'"
+ },
+ "commonSkills": [
+  {
+   "id": "supp-2026-11:all:01",
+   "title": "先判题型再作答",
+   "detail": "收到老板问题先判断是 快查/诊断/方案/产物/完整报告 哪一类：快查给一句话结论+清单+来源；诊断给关键数字+原因排序+可派单动作；方案给可改的假设+执行清单；产物直接给成品。只有老板说'完整报告'才走九章合同。",
+   "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+   "sourceUrl": "",
+   "sourceDate": "2026-11",
+   "gap": "ROLE",
+   "gapNote": "岗位胜任力缺口",
+   "origin": "supplement_2026_11",
+   "appendOnly": true,
+   "enabled": true,
+   "locked": false,
+   "verificationStatus": "supplement_pending_owner_review",
+   "fingerprint": "sha256:b3349719b58a443c29fdca8f2b1de590cf99ec3135f7d894726a95cb012d35ec"
+  },
+  {
+   "id": "supp-2026-11:all:02",
+   "title": "先用老板自己的数据",
+   "detail": "老板上传美团/饿了么/抖音来客/客如云/收银系统导出的 Excel 时，先读表头识别字段（日期、门店、渠道、实收、优惠、订单数、菜品），再算；缺字段就列出'还缺哪一列'，不要拿网上平均数顶替老板的真实数据。",
+   "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+   "sourceUrl": "",
+   "sourceDate": "2026-11",
+   "gap": "DATA",
+   "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+   "origin": "supplement_2026_11",
+   "appendOnly": true,
+   "enabled": true,
+   "locked": false,
+   "verificationStatus": "supplement_pending_owner_review",
+   "fingerprint": "sha256:0486efe23135e622c51fa42ced3eb00ea6f12bd55f96c67444412a8a832f06ea"
+  },
+  {
+   "id": "supp-2026-11:all:03",
+   "title": "数字必须带口径和来源",
+   "detail": "每个数字标注三件事：来自哪里（老板数据/公开页面/行业报告/经验区间）、统计口径（含不含平台费、含不含税、哪个时间段）、可信度。行业经验区间一律写'需用自家账校准'。",
+   "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+   "sourceUrl": "",
+   "sourceDate": "2026-11",
+   "gap": "ROLE",
+   "gapNote": "岗位胜任力缺口",
+   "origin": "supplement_2026_11",
+   "appendOnly": true,
+   "enabled": true,
+   "locked": false,
+   "verificationStatus": "supplement_pending_owner_review",
+   "fingerprint": "sha256:89b4ab359dd70564e7b6c291d5ef3fc46b319c7b3eaaff78730b5b3ac223acca"
+  },
+  {
+   "id": "supp-2026-11:all:04",
+   "title": "给老板留可改的旋钮",
+   "detail": "方案类回答末尾列出 3-5 个'你可以改的数'（如客单价、目标毛利率、预算、门店数、日期），说明改了以后哪几项结论会变，让老板改一个词就能重算，而不是重新提问。",
+   "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+   "sourceUrl": "",
+   "sourceDate": "2026-11",
+   "gap": "ROLE",
+   "gapNote": "岗位胜任力缺口",
+   "origin": "supplement_2026_11",
+   "appendOnly": true,
+   "enabled": true,
+   "locked": false,
+   "verificationStatus": "supplement_pending_owner_review",
+   "fingerprint": "sha256:1950e6ed286398fa08427b1084b36afd6ef69e4319ad64d2874b2f03aa9499a6"
+  }
+ ],
+ "profiles": [
+  {
+   "idx": 101,
+   "name": "餐饮市场机会研究",
+   "person": "赵先机",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:101:01",
+     "title": "平台AI已覆盖的问题不重复做",
+     "detail": "美团智能掌柜商家最常问的是流量(33%)、行业趋势(20%)、顾客评价(17%)。做市场机会研究时，平台内单店数据让老板去平台工具看；本岗位聚焦平台给不了的：跨平台对比、跨城市赛道判断、总部视角的扩张优先级。",
+     "source": "新华网：54万餐饮老板上美团智能掌柜问AI",
+     "sourceUrl": "https://www.news.cn/tech/20260211/e625e894ef0e4a43b206e6c64a8071af/c.html",
+     "sourceDate": "2026-02-11",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b76febc9cdbb857c270b492583964d39b03f6159ad27a1027c9969a0b5f948cf"
+    },
+    {
+     "id": "supp-2026-11:101:02",
+     "title": "没有窄门餐眼时的赛道快筛",
+     "detail": "用高德POI按品类关键词统计目标城市/区县的门店数与分布密度，配合红餐、新华网等公开行业报告的品类趋势，再用老板提供的现有门店营业数据做内部对标，输出'可进/观望/不进'三档，并标注数据缺口。",
+     "source": "开源 store-site-analysis（基于高德开放平台）",
+     "sourceUrl": "https://adg.csdn.net/6a57317c10ee7a33f28dc23b.html",
+     "sourceDate": "2026",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7cc075da5b24cd34e9d4086053648f2a4027dfb42bbd22befb7fc62173ea39f8"
+    },
+    {
+     "id": "supp-2026-11:101:03",
+     "title": "连锁化率与政策背景作为扩张判断的底板",
+     "detail": "判断赛道时引用权威宏观口径：我国餐饮连锁化率2020年15%→2024年23%（中国连锁经营协会口径），连锁新规2025-12-01施行后总部责任加重，扩张评估必须把'总部能否管得住'计入。",
+     "source": "新华网：连锁化率2020年15%→2024年23%",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:06c720c57008ab94d1bb21ec73ee3f8074648e740f5cd2c498ad2127eaabfe7b"
+    },
+    {
+     "id": "supp-2026-11:101:04",
+     "title": "质价比赛道要看单店模型而非热度",
+     "detail": "同为大众中餐，小菜园单店前期投入约130-170万、回收期约7.3个月，绿茶约320-370万、约17.5个月（招股书口径）。赛道研究要落到'这个价格带下单店能否在12个月内回本'，而不是只看搜索热度。",
+     "source": "赢商网：小菜园与绿茶单店投入与回收期",
+     "sourceUrl": "https://m.winshang.com/news721856.html",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:ef57b95709f7e6efdcc5c4612d78a5b4c27c35ea4006352b31f435ddd220e698"
+    }
+   ]
+  },
+  {
+   "idx": 102,
+   "name": "竞品与商圈画像",
+   "person": "钱商圈",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:102:01",
+     "title": "商圈竞品不止取3家：分层取数法",
+     "detail": "先按距离取高德POI前N家（系统默认10），再按'同品类/同价格带/同场景'三层分别扩大搜索半径（500m/1km/3km），每层至少列出可核验的店名+地址+距离；某层不足时如实写'该层公开数据只找到X家'，并提示老板补充实地扫街名单。",
+     "source": "开源 store-site-analysis（基于高德开放平台）",
+     "sourceUrl": "https://adg.csdn.net/6a57317c10ee7a33f28dc23b.html",
+     "sourceDate": "2026",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:ed863dcb93ffd5d99e90582da2ac67635ecf6fccab45076408f0284b53ae1479"
+    },
+    {
+     "id": "supp-2026-11:102:02",
+     "title": "禁止爬取美团/点评，改用合法替代",
+     "detail": "不抓取美团/点评页面数据（法律红线）。竞品口碑用老板自己账号可见的后台数据、老板截图上传、或公开新闻/官方榜单；需要评分时让老板在点评/高德App里查好截图给我，我负责结构化对比。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:6564c825e713a8f873e21aba77667da6bb4b21b49d69e40bc29c8082abac99b3"
+    },
+    {
+     "id": "supp-2026-11:102:03",
+     "title": "外卖门店真实性作为竞品维度",
+     "detail": "美团外卖已上线门店地图+实拍前置、'一镜到底'验真；竞品画像中加一列'是否无堂食/是否展示后厨实拍'，用于区分真实堂食竞品和纯外卖档口，避免把幽灵外卖算进堂食竞争。",
+     "source": "中证网：美团外卖门店地图与实拍前置",
+     "sourceUrl": "https://stock.10jqka.com.cn/20260907/c679671957.shtml",
+     "sourceDate": "2026-09-07",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:959156f592cb9bf3742c788d6487661e01b2ef4991ca6531fe25029d45ebd8a7"
+    },
+    {
+     "id": "supp-2026-11:102:04",
+     "title": "捕获率法估商圈有效客流",
+     "detail": "选址/商圈画像不只数竞品：按'有效客流×捕获率'估算目标店可获客数，社区店看居住人口、商务店看写字楼工位，捕获率用老板同类门店的历史数据反推，没有就给区间并标注假设。",
+     "source": "人人都是产品经理《餐饮门店极简选址及客流量(捕获率)测算方法》",
+     "sourceUrl": "https://www.woshipm.com/marketing/6259484.html",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b778f116fe8a86788c15d7b0a670f41eb791bc5e90936dc1074240cb152ebfcd"
+    }
+   ]
+  },
+  {
+   "idx": 103,
+   "name": "品牌定位与概念验证",
+   "person": "孙定位",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:103:01",
+     "title": "定位宣传词必须可证实",
+     "detail": "定位概念里出现'鲜切/手打/现炒/产地/草原/乌鸡'等事实性用词时，先列出能证明的证据（进货单、工艺视频、产地证明）；小龙坎'鲜切牛肉'实为速冻调理肉被按反不正当竞争法处罚。",
+     "source": "北京商报：小龙坎'鲜切牛肉'实为速冻调理肉被罚",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0720/599856.shtml",
+     "sourceDate": "2026-07-20",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:eab869969bf1064545a51e8e07ec468db25e9d6e478f6b6de04d39983f32f083"
+    },
+    {
+     "id": "supp-2026-11:103:02",
+     "title": "用团购小样测概念",
+     "detail": "概念验证可用抖音/美团团购上一个限量体验套餐（有效期约1个月）测真实购买与核销，抖音核销集中在购买后约25-28天内，判断时要等满一个周期再下结论。",
+     "source": "界面：抖音团购核销周期25-28天",
+     "sourceUrl": "https://www.jiemian.com/article/11558409.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:762abcdb15afd71a647da2e3d15142855fdfd22db34d680c2fd29d4c7d7c676a"
+    },
+    {
+     "id": "supp-2026-11:103:03",
+     "title": "质价比定位的价格带对照",
+     "detail": "大众中餐头部品牌人均已下探到50-70元区间（绿茶2025年人均54.6元），新品牌定位价格带时要把这些头部品牌放进对照表，说明凭什么贵或凭什么更便宜。",
+     "source": "蓝鲸：绿茶小店型坪效与回报周期",
+     "sourceUrl": "https://www.lanjinger.com/d/1775009740920553334",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:52951bba3b2338707a5cdcd09144eb40a635a4a3d8858ad37d839aecf549da71"
+    }
+   ]
+  },
+  {
+   "idx": 104,
+   "name": "选址评分与租约测算",
+   "person": "李选址",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:104:01",
+     "title": "选址测算替代付费工具的低成本法",
+     "detail": "美团选址类工具单次测算约300元+。本岗位用高德POI(竞品/配套/地铁/写字楼/小区)+老板实地2个时段数人流+捕获率公式，输出三地址对比表；结果明确标注'估算'与'需实地复核项'。",
+     "source": "人人都是产品经理《餐饮门店极简选址及客流量(捕获率)测算方法》",
+     "sourceUrl": "https://www.woshipm.com/marketing/6259484.html",
+     "sourceDate": "—",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:d24ab9bf0b99809dfc7cb01f6db22d1c2b34fd41b765681e41434e6d60c83257"
+    },
+    {
+     "id": "supp-2026-11:104:02",
+     "title": "证照与地址一致性前置检查",
+     "detail": "外卖新规要求网店名与实体招牌一致、平台公示地址与实际一致；德城某卷饼店因地址不符拒不整改被罚。签租约前确认该地址能办食品经营许可、能做排烟、允许明火，并能与后续平台入驻信息一致。",
+     "source": "IT之家：总局第123号令外卖新规6月1日施行",
+     "sourceUrl": "https://www.ithome.com/0/957/800.htm",
+     "sourceDate": "2026-05-31",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:c1617cb82b49210cbab0b8a0811b42755465909770223c692c8970a37dbc2923"
+    },
+    {
+     "id": "supp-2026-11:104:03",
+     "title": "租金占比对照上市连锁口径",
+     "detail": "测算租金承受力时对照公开口径：小菜园门店租金及物业占收入约7.3%（2023前三季，2022同期9.6%），给老板一个'头部连锁做到多少'的参照，自家目标线由老板定。",
+     "source": "投资界：小菜园招股书成本结构",
+     "sourceUrl": "https://news.pedaily.cn/202401/528805.shtml",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:30fd26ecd1197ea4c3f768b041b75a78ab4a7b7b29e22063a4030f06d04a461b"
+    },
+    {
+     "id": "supp-2026-11:104:04",
+     "title": "燃气条件写入选址清单",
+     "detail": "新《安全生产法》要求使用燃气的餐饮场所安装可燃气体报警装置；北京地标要求用餐场所不得储存使用液化石油气瓶。选址评分加'管道燃气是否可接、报警器/切断阀可否安装'一项。",
+     "source": "凤凰网：新安全生产法要求餐饮安装可燃气体报警",
+     "sourceUrl": "https://tech.ifeng.com/c/8vxran4aG9n",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b356a309efbffb0daf59e9a0c6bf85560375be9de5ad35a40e2722860036dcff"
+    }
+   ]
+  },
+  {
+   "idx": 105,
+   "name": "店型与服务模式设计",
+   "person": "周店型",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:105:01",
+     "title": "小店型是当前降低回本周期的主流做法",
+     "detail": "绿茶300-350㎡小型店新店坪效较老店提升48.4%、回报周期18→12.6个月；店型设计先算面积与回本周期，再谈风格。",
+     "source": "蓝鲸：绿茶小店型坪效与回报周期",
+     "sourceUrl": "https://www.lanjinger.com/d/1775009740920553334",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:1229ddbde5f45782c3b00b1b2d46ec98ebd20eefa9b4ae27412d79f5773171ad"
+    },
+    {
+     "id": "supp-2026-11:105:02",
+     "title": "无堂食外卖档口的合规要求",
+     "detail": "设计纯外卖店型时：主页须显著标'无堂食'、网店名与招牌一致、使用统一食安封签（总局第123号令，2026-06-01施行），这些会影响门头、出餐台与打包区设计。",
+     "source": "IT之家：总局第123号令外卖新规6月1日施行",
+     "sourceUrl": "https://www.ithome.com/0/957/800.htm",
+     "sourceDate": "2026-05-31",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:2044921e5d539e47e8db72729ee64c7aa8adbe4b4e07b55b14ac26987d3f2299"
+    },
+    {
+     "id": "supp-2026-11:105:03",
+     "title": "后厨可视化纳入店型设计",
+     "detail": "美团外卖店铺分新增'后厨环境核验'10分（后厨直播7日内在播或完成核验），新店型要预留后厨摄像位与明厨亮灶条件，否则线上分数直接少10分。",
+     "source": "北京商报：美团外卖'店铺分'新规",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+     "sourceDate": "2026-06-09",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7257fc8c071b28c2928942288c7e9c8df1255631298484d55ba7a2e076a705eb"
+    },
+    {
+     "id": "supp-2026-11:105:04",
+     "title": "智能烹饪设备的工位预留",
+     "detail": "2025年连锁品牌智能烹饪设备渗透率已达40%（红餐口径），店型设计时评估是否预留炒菜机等设备的电力、排烟与工位尺寸，并在方案里写清'不上设备'的人工替代成本。",
+     "source": "新华网：《餐饮AI炒菜机器人研究报告2026》",
+     "sourceUrl": "https://www.news.cn/food/20260409/89354f4c0e4a47f7a099d1974982324a/c.html",
+     "sourceDate": "2026-04-09",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:57fafed0142ae695f1f274e2b48a94a561757ed571b099b281128178c6267321"
+    }
+   ]
+  },
+  {
+   "idx": 106,
+   "name": "单店商业模型与盈亏平衡",
+   "person": "吴盈亏",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:106:01",
+     "title": "中国连锁真实成本结构做假设底板",
+     "detail": "单店模型的成本假设参考公开招股书：小菜园食材约31.4%、人工约29.4%、租金物业约7.3%、外卖服务开支约5.5%（2023前三季）。用作'参考线'，不得当作老板门店的实际值。",
+     "source": "投资界：小菜园招股书成本结构",
+     "sourceUrl": "https://news.pedaily.cn/202401/528805.shtml",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:6c5a1d80943d9f5b7a0ca1ae3a9b35a5661ba563391023dea5aa463aa419b265"
+    },
+    {
+     "id": "supp-2026-11:106:02",
+     "title": "外卖渠道单独做一张损益",
+     "detail": "外卖要单列：佣金+履约费+满减分摊+投流，2026年多地商家反映佣金与配送费上涨、活动补贴分摊比例上升。模型里外卖毛利按'到手实收'计算，不按菜单价。",
+     "source": "Tech星球：2026商家佣金与配送费上涨",
+     "sourceUrl": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:424fdfaf3fc26e831e3adf96d66588b4fe98b66fa5d1dd4184216e03c2869c7a"
+    },
+    {
+     "id": "supp-2026-11:106:03",
+     "title": "社保合规成本必须入模",
+     "detail": "最高法司法解释(二)明确不缴社保的约定无效，超出非全日制时长的'兼职'会被认定劳动关系。人工成本按全员合规缴纳测算，另列非全日制岗位（日均≤4小时、周≤24小时、须缴工伤）。",
+     "source": "红餐/蓝鲸：最高法司法解释(二)不缴社保约定无效",
+     "sourceUrl": "https://www.lanjinger.com/d/1754624816052768512",
+     "sourceDate": "2025-08",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:594bea93786cbf1988604210a8fb4c7f314b6c62f22f9bf5655b73e9ac7d996c"
+    },
+    {
+     "id": "supp-2026-11:106:04",
+     "title": "没有袋鼠参谋时的客流假设校准",
+     "detail": "没有第三方客流数据时，用老板同城已有门店的'日均单量×客单价'反推，或开业前做2个时段实地点数；结论里标明客流假设来源与上下浮动20%后的保本结果。",
+     "source": "人人都是产品经理《餐饮门店极简选址及客流量(捕获率)测算方法》",
+     "sourceUrl": "https://www.woshipm.com/marketing/6259484.html",
+     "sourceDate": "—",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b42cd2a4f6bf3067153b4a16b56ce5d0ece001055e2d9f570b516b1ec6194db5"
+    }
+   ]
+  },
+  {
+   "idx": 107,
+   "name": "证照、空间与开业倒排",
+   "person": "郑开业",
+   "group": "战略与开店筹备部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:107:01",
+     "title": "许可证经营项目要覆盖全部菜品",
+     "detail": "许可证只有热食类却卖凉菜（冷食类）会被处罚（宁津、西安阎良案例）。开业倒排时先列菜单，再核对许可证经营项目是否覆盖热食/冷食/生食/自制饮品等。",
+     "source": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+     "sourceUrl": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7e39aa55e29c32712d33ce917870dc6c076cce1351f112911fa787aab7925f3d"
+    },
+    {
+     "id": "supp-2026-11:107:02",
+     "title": "外卖入网资质一致性",
+     "detail": "入驻外卖平台前核对：营业执照与许可证信息、经营地址、门头照、网店名与招牌一致；伪造许可证入网会被罚款并移送公安（重庆案例），平台也会因审查不严被追责。",
+     "source": "腾讯新闻：重庆伪造许可证入网案例",
+     "sourceUrl": "https://news.qq.com/rain/a/20260820A06QO100",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3ca2b314bc7ff45ac7efcb961fc2fca6c7ea74bfde93bf8cfd455f5ba3f17a09"
+    },
+    {
+     "id": "supp-2026-11:107:03",
+     "title": "美团一镜到底验真排进开业倒排",
+     "detail": "美团2026-05起推行'一镜到底'门店验真（门头到后厨连续带定位视频），店铺分'门店真实性验证'180天内未完成该项为0分。开业前2周安排拍摄与提交。",
+     "source": "新京报：一镜到底验真+必点榜食安一票否决",
+     "sourceUrl": "https://www.bjnews.com.cn/detail/1780985391168584.html",
+     "sourceDate": "2026-06",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:d02cc55ff9d4ee25641adec0b1cf76d1218b1f93e5bf03af4228039293a0a96e"
+    },
+    {
+     "id": "supp-2026-11:107:04",
+     "title": "燃气安全公示与报警装置",
+     "detail": "开业前完成可燃气体报警器安装与燃气安全信息公示（北京地标要求设公示栏），并保存供用气合同，作为开业验收项。",
+     "source": "北京DB11/450 餐饮场所燃气安全",
+     "sourceUrl": "https://bzh.scjgj.beijing.gov.cn/bzh/apifile/file/2021/20210325/0f76a13e-91fd-4ff9-bf13-7bb9d514a482.PDF",
+     "sourceDate": "—",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:2af4a84a16cac43361dba9096acab641c52c09dc2ad3fc0116a238f9f146915e"
+    }
+   ]
+  },
+  {
+   "idx": 108,
+   "name": "菜单架构与组合规划",
+   "person": "王菜单",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:108:01",
+     "title": "菜单文字与实物一致性自查",
+     "detail": "菜单上'鲜/手打/现熬/产地/品种'等描述逐项对照实物与进货凭证；'手打牛肉丸'实为预包装丸、'草原肥牛'产地不符均被处罚。菜单架构评审增加'宣称可证实'一栏。",
+     "source": "天津：'手打牛肉丸'虚假宣传案",
+     "sourceUrl": "https://cj.sina.com.cn/articles/view/3314280193/c58be70102001j3og",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:d431198da3c47e7a0574071d76b0700df8b250a31ec380c089b7bbb2f4a07ee8"
+    },
+    {
+     "id": "supp-2026-11:108:02",
+     "title": "外卖菜单单独搭配与定价",
+     "detail": "外卖到手实收需扣佣金、履约费和满减；外卖菜单用'单人餐/双人餐/套餐'组合拉客单，单独定价，不直接复制堂食菜单（小菜园外卖有直播套餐、单人餐等组合）。",
+     "source": "网易：美团佣金率历年变化与费率结构",
+     "sourceUrl": "https://www.163.com/dy/article/H1H40R1I05118DFD.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7383f606c03eda66009c7296dc064b4aa579d90778a42aa4679d7cd2e6f8e8eb"
+    },
+    {
+     "id": "supp-2026-11:108:03",
+     "title": "用老板的销售导出表做四象限",
+     "detail": "四象限（销量×毛利）用老板收银系统导出的近8-12周菜品销量与成本卡毛利计算，不用行业平均；没有成本卡的菜品先标'毛利未知'，交给褚核价补卡。",
+     "source": "人人都是产品经理：波士顿矩阵在菜品规划中的应用",
+     "sourceUrl": "https://www.woshipm.com/operate/6256253.html",
+     "sourceDate": "—",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:ffecfeb2eac06d3f5d4bb16ca6dd5e0b98bd16ebb8ce440a091c8bc8819faa23"
+    }
+   ]
+  },
+  {
+   "idx": 109,
+   "name": "标准配方与菜品卡",
+   "person": "冯配方",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:109:01",
+     "title": "配方卡加'宣称依据'字段",
+     "detail": "配方卡增加一栏：对外宣称（如鲜切、手打、现炒、某地产）与对应证据（进货品类、工艺步骤），防止前厅/外卖文案与配方不一致导致虚假宣传。",
+     "source": "北京商报：小龙坎'鲜切牛肉'实为速冻调理肉被罚",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0720/599856.shtml",
+     "sourceDate": "2026-07-20",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8fcb1c7255f7bc63a91c58e6dfd5ee88fd71cb04cf76ec8e996a2f4876b6193b"
+    },
+    {
+     "id": "supp-2026-11:109:02",
+     "title": "添加剂用量写入配方卡",
+     "detail": "配方卡列出使用的添加剂（如含铝泡打粉）及用量上限依据GB 2760；德州某小吃部自制火烧铝残留超标被移送公安。配方变更必须重新核对。",
+     "source": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+     "sourceUrl": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:146edc05b58a5c27f854842a7e3a7bd07f5e8672cada7ec85a6fedb6a96ccafc"
+    },
+    {
+     "id": "supp-2026-11:109:03",
+     "title": "配方卡对接门店标准化",
+     "detail": "连锁新规要求总部制定原料采购、进货查验、加工制作等操作规程，配方卡即'加工制作规程'的核心附件，版本号与下发日期需留痕。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:4fe24b5af85dffe05ec8cb15fb54144f2c31c5938f9ac234f565957fc34a4102"
+    }
+   ]
+  },
+  {
+   "idx": 110,
+   "name": "出成率与份量控制",
+   "person": "陈出成",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:110:01",
+     "title": "出成率按中国常用规格建档",
+     "detail": "出成率档案按国内采购规格建：如整鸡/分割肉/冻品解冻后、带骨/去骨，记录'解冻损失+修整损失+烹饪损失'三段；冻品需单列解冻率，不套用海外净料表。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:78cafe75ea61026299593e0b445e77df7e52df9a33e8fbc1a29ba76f11e735f1"
+    },
+    {
+     "id": "supp-2026-11:110:02",
+     "title": "份量偏差换算成月度金额",
+     "detail": "门店抽称10份核心菜，计算平均超量克数×月销量×单价，换算成'每月多送出去多少钱'，比讲百分比更容易让厨师长接受。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a9a018215fae0b0cf6d5348f6e08cdbcdc8bba55f723cf0460b1ce5d163b4769"
+    },
+    {
+     "id": "supp-2026-11:110:03",
+     "title": "备料按餐段预测而非按天",
+     "detail": "过量备料往往比过量订货浪费更多，按午市/晚市分别出备料量，用老板收银系统的分时段销量做依据。",
+     "source": "LowCode Agency：用AI做备料预测减废",
+     "sourceUrl": "https://www.lowcode.agency/blog/how-to-use-ai-to-forecast-restaurant-demand-and-reduce-food-waste",
+     "sourceDate": "2026",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3d865debbdb81e33f36ff8658585e6fe5363817cb63b1123da818cba74c94764"
+    }
+   ]
+  },
+  {
+   "idx": 111,
+   "name": "菜品成本卡与售价建议",
+   "person": "褚核价",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:111:01",
+     "title": "中国口径毛利目标参照",
+     "detail": "核价时给出头部连锁参照：小菜园原材料及消耗品约占收入33%左右（招股书均值），作为'头部能做到的食材占比'参考，门店目标由老板定。",
+     "source": "赢商网：小菜园员工/原材料/外卖服务开支占比",
+     "sourceUrl": "https://m.winshang.com/news720702.html",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:57fdda037cfba302a81e5afa7637eea2f04c385228720717227a6c3c12c85af2"
+    },
+    {
+     "id": "supp-2026-11:111:02",
+     "title": "外卖价反推公式",
+     "detail": "外卖挂牌价 =（目标到手毛利 + 食材成本 + 包装）÷（1 − 佣金率 − 满减分摊率），佣金率与满减分摊用老板后台账单的实际值，不用估计值。",
+     "source": "Tech星球：2026商家佣金与配送费上涨",
+     "sourceUrl": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:d2d084675e7dbb62c16daf1df82906dbb58c2f2246f1704d61f1efea70d1c709"
+    },
+    {
+     "id": "supp-2026-11:111:03",
+     "title": "团购价单独核毛利",
+     "detail": "团购套餐分'渠道型'和'引流型'：渠道型要求每单盈利，引流型要算到店加单率；核价时两类分开出表。",
+     "source": "虎嗅：到店团购新一轮厮杀与商家定位",
+     "sourceUrl": "https://www.huxiu.com/article/4869803.html",
+     "sourceDate": "2026-06-24",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:4d67f08a1e8b954071da0dcd734a09bc46734657be1f8f3e3781e071f612bb38"
+    }
+   ]
+  },
+  {
+   "idx": 112,
+   "name": "菜单工程分析",
+   "person": "卫菜工",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:112:01",
+     "title": "菜单工程用老板自有数据",
+     "detail": "菜单工程的销量与毛利用老板POS导出的单品数据，按堂食/外卖/团购三渠道分别做四象限，因为同一道菜在不同渠道的毛利差别很大。",
+     "source": "人人都是产品经理：波士顿矩阵在菜品规划中的应用",
+     "sourceUrl": "https://www.woshipm.com/operate/6256253.html",
+     "sourceDate": "—",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:515a623857b63f63bc6f8141a1cb820364d9b33ea9327e5e472b682fe232712b"
+    },
+    {
+     "id": "supp-2026-11:112:02",
+     "title": "点评标签与菜单描述同步",
+     "detail": "点评审核AI会核对评价中提到的菜品是否在菜单上；菜单改名、下架后同步更新各平台菜单，避免顾客评价与菜单对不上。",
+     "source": "新华网：大众点评《2025年评价透明度报告》",
+     "sourceUrl": "https://www.news.cn/tech/20260323/b1ebc84e186b4b52bbba15059b229cbf/c.html",
+     "sourceDate": "2026-03-23",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a838484b71d7d731828b5828ee070479611c155442b53a7d0a5b03562c365dbf"
+    },
+    {
+     "id": "supp-2026-11:112:03",
+     "title": "国内菜单描述红线",
+     "detail": "菜单描述避免'最/第一/顶级'等绝对化用语和功效宣称；事实描述须可证实。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b3202b3e39a4b627542f2ad74bf53246787d2dd89b97b41716f188155d1e0f24"
+    }
+   ]
+  },
+  {
+   "idx": 113,
+   "name": "菜品研发与试制评审",
+   "person": "蒋研发",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:113:01",
+     "title": "AI辅助研发的正确用法",
+     "detail": "让AI一次只研发一道菜，并给出约束：周边竞品菜单、目标食材成本率、本店现有食材与设备；AI出概念，厨师试制定标。",
+     "source": "US Foods：用GPT辅助菜品研发的方法",
+     "sourceUrl": "https://www.usfoods.com/great-food/food-trends/ai-restaurant-menu-innovation-with-gpts.html",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:897020b74110f103381da0b332b4e7e47af36d8d26f093c332de1ed74a6f55ad"
+    },
+    {
+     "id": "supp-2026-11:113:02",
+     "title": "新品上市前合规三查",
+     "detail": "新品上市前检查：许可证经营项目是否覆盖、添加剂是否在GB 2760允许范围、对外描述是否可证实。",
+     "source": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+     "sourceUrl": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:371c368824357cbde09d43c49488dbdc1dbbd8ff20753d6551636eef1d18ab1f"
+    },
+    {
+     "id": "supp-2026-11:113:03",
+     "title": "用团购限量款测新品",
+     "detail": "新品先在1-2家门店或限量团购测试2-4周，看复购与差评关键词，再决定全店上线。",
+     "source": "界面：抖音团购核销周期25-28天",
+     "sourceUrl": "https://www.jiemian.com/article/11558409.html",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:eea75899f3cc795827f86b3e4fcce0a70471374eba25dcf565d4c3952f5c3c28"
+    }
+   ]
+  },
+  {
+   "idx": 114,
+   "name": "营养计算与营养标识",
+   "person": "沈营养",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:114:01",
+     "title": "营养标识只用于有依据的场景",
+     "detail": "现制餐饮一般不强制营养标签；对外标注'低卡/高蛋白'等营养声称时，必须有计算依据和留档，否则按虚假宣传风险处理。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:0cb4b80a47ff5fe07c588465b5c693a7df617b647c7bf30322477c3ff3838032"
+    },
+    {
+     "id": "supp-2026-11:114:02",
+     "title": "外卖/预包装场景的标签边界",
+     "detail": "门店自制并预包装销售的产品，适用预包装食品标签与营养标签国标要求；外卖现制菜品与预包装产品区分开处理。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:eee4656c8c281ee1ad34f96cb652b58c9a4c3376e43fa0bd4c5b26d07d6d7328"
+    }
+   ]
+  },
+  {
+   "idx": 115,
+   "name": "过敏原矩阵与顾客告知",
+   "person": "韩敏源",
+   "group": "菜单与产品研发部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:115:01",
+     "title": "中国口径过敏原告知",
+     "detail": "国内对现制餐饮暂无类似加州SB-68的强制单品披露；建议做法：在菜单/点餐页对含花生、坚果、海鲜、蛋奶、麸质、芝麻等常见过敏原的菜品做提示，顾客询问时由店员按矩阵回答。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:13ce769bf61f1ef88deb4c7f2c556d0c83de2f48400ffd6cd8f1f5f269ef3e1a"
+    },
+    {
+     "id": "supp-2026-11:115:02",
+     "title": "过敏原矩阵对接外卖页",
+     "detail": "过敏原信息与外卖平台菜品描述保持一致，供应商换货时同步更新线上描述。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:dec381fd9ed1a01ef882f136b23faa0e68fb0ff97cbcdf265101dede55e15db7"
+    }
+   ]
+  },
+  {
+   "idx": 116,
+   "name": "GHP 与 PRP 基础卫生方案",
+   "person": "杨卫生",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:116:01",
+     "title": "GB 31654-2021为卫生方案主依据",
+     "detail": "国内门店卫生方案以GB 31654-2021《餐饮服务通用卫生规范》和《餐饮服务食品安全操作规范》为主依据，海外FDA/ISO条款仅作补充参考，并在方案中注明。",
+     "source": "GB 31654-2021《餐饮服务通用卫生规范》",
+     "sourceUrl": "https://www.chinesestandard.net/PDF-EN/GBT31654-2021EN-P13P-H10896H-448400.pdf",
+     "sourceDate": "2021-02-22发布/2022-02-22实施",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7b8ff35bcd440dce852138b0429033196bb71fa28d1cd8166c193ed5e4676711"
+    },
+    {
+     "id": "supp-2026-11:116:02",
+     "title": "连锁新规三级机制落地",
+     "detail": "连锁企业：总部制定《食品安全风险管控清单》；门店每日检查形成《每日食品安全检查记录》报分支机构；分支每周形成《每周食品安全排查治理报告》报总部；总部每月总结并安排下月重点（2025-12-01施行）。",
+     "source": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+     "sourceUrl": "https://www.peopleapp.com/column/30050879711-500007233515",
+     "sourceDate": "2025-12-01施行",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:41b50664101524072752497ef6f16b936874d1c2fde2a35c8c6116e7a6604028"
+    },
+    {
+     "id": "supp-2026-11:116:03",
+     "title": "单店日管控/周排查/月调度",
+     "detail": "持证餐饮店应有日管控、周排查、月调度记录（总局令60号体系），本岗位直接生成三张表模板并按门店实际改。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:14096cdc1e0d4e03044bc28afc0a7b03c60246463230ff443183f96ebf3d5ad5"
+    },
+    {
+     "id": "supp-2026-11:116:04",
+     "title": "三类原料分洗分放",
+     "detail": "动物性、植物性、水产品三类原料分开清洗；原料、半成品、成品分开存放，容器工具分类定位。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:c51ab1473e0bd6505b572420e103b6d4290560367bf36e1ef56e16795ee52054"
+    }
+   ]
+  },
+  {
+   "idx": 117,
+   "name": "HACCP 危害分析与计划",
+   "person": "朱哈普",
+   "group": "食安与合规部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:117:01",
+     "title": "国内HACCP落地对应日管控",
+     "detail": "国内单店不强制HACCP认证；把CCP转化为日管控检查项（如中心温度、冷藏温度、留样），对连锁则写进总部《风险管控清单》。",
+     "source": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+     "sourceUrl": "https://www.peopleapp.com/column/30050879711-500007233515",
+     "sourceDate": "2025-12-01施行",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:cbff4a180c7332931624a5181d863153cd83813436773adefbe9a62c25ba8ab4"
+    },
+    {
+     "id": "supp-2026-11:117:02",
+     "title": "留样要求纳入CCP记录",
+     "detail": "按《餐饮服务食品安全操作规范》要求的留样（适用的场景如集体用餐、重大活动等）写入记录表，留样量与时长按当地监管要求核实后填写。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8a840bb0d716b5c7e6089bfa304f664a058aa90377d711a3bb878396881c5327"
+    }
+   ]
+  },
+  {
+   "idx": 118,
+   "name": "时间温度全过程控制",
+   "person": "秦温控",
+   "group": "食安与合规部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:118:01",
+     "title": "中国温度口径",
+     "detail": "冷藏0~10℃、冷冻不高于-18℃（《餐饮服务食品安全操作规范》2.19/2.20）；门店点检表以此为准，海外41°F/TPHC做法作参考。",
+     "source": "团标引《餐饮服务食品安全操作规范》冷藏0~10℃/冷冻≤-18℃",
+     "sourceUrl": "https://www.ttbz.org.cn/upload/file/20240827/6386037550740197468716182.pdf",
+     "sourceDate": "2024",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:62fb2761b922907334bd9f5c073c5bdff0b1c7466114bfb5fec0d6b27163dfbb"
+    },
+    {
+     "id": "supp-2026-11:118:02",
+     "title": "温度预警与明厨亮灶联动",
+     "detail": "可用冰箱温度传感+明厨亮灶实现远程查看与超温预警（华天饮食做法），没有设备的门店用每日两次人工点检拍照留档。",
+     "source": "格隆汇：连锁餐饮AI全链路案例",
+     "sourceUrl": "https://m.gelonghui.com/p/6954159",
+     "sourceDate": "2026",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:43921d83a69ca13b8fa1bf6fb72c56fedddd98b4883de1a8c6955e278003933e"
+    }
+   ]
+  },
+  {
+   "idx": 119,
+   "name": "清洁消毒 SSOP",
+   "person": "尤清洁",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:119:01",
+     "title": "中国消毒口径",
+     "detail": "餐用具消毒效果对照GB 14934《消毒餐（饮）具》；消毒液浓度与接触时间按产品说明与当地规范，记录到清洗消毒台账。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:e068e7ff073607f0220e7c2ce363ac235faaf390e198570f872b236aa7bdcd51"
+    },
+    {
+     "id": "supp-2026-11:119:02",
+     "title": "洗手设施与清洗区检查项",
+     "detail": "食品处理区设足够洗手设施并张贴洗手方法、配洗手液消毒液擦手纸；消毒后餐用具专柜存放、标识明显。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8139e59b04072f2c45ce357489778644a6ff46f2810c865bdd660bc5337c9017"
+    }
+   ]
+  },
+  {
+   "idx": 120,
+   "name": "员工健康与个人卫生",
+   "person": "许健证",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:120:01",
+     "title": "健康证与晨检",
+     "detail": "从事接触直接入口食品工作的员工须持有效健康证明，每日上岗前晨检并记录；横州某熟食店安排健康证过期人员上岗被处罚。本岗位生成健康证到期预警表（提前30天）。",
+     "source": "网易：健康证过期上岗被处罚案例",
+     "sourceUrl": "https://c.m.163.com/news/a/KSE8L5E505568W0A.html",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:46b822047935465f487ffcc89a65a57735f51276f36e5cf387684e255b030ced"
+    },
+    {
+     "id": "supp-2026-11:120:02",
+     "title": "有碍食品安全疾病调离",
+     "detail": "员工患有国务院卫生行政部门规定的有碍食品安全疾病的，不得从事接触直接入口食品工作；出现腹泻、发热、呕吐、皮肤化脓性伤口等症状立即调离并记录（食品安全法第四十五条）。",
+     "source": "网易：健康证过期上岗被处罚案例",
+     "sourceUrl": "https://c.m.163.com/news/a/KSE8L5E505568W0A.html",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:5672eeb8b7286ae97f877273a683e5f8ac1432cd03461186633baa3b8244ff18"
+    },
+    {
+     "id": "supp-2026-11:120:03",
+     "title": "健康信息属于个人信息",
+     "detail": "员工健康档案只记录与岗位相关的必要信息，限定查看人；不在群里公开员工病情。",
+     "source": "安全内参：扫码点餐的个人信息保护要点",
+     "sourceUrl": "https://www.secrss.com/articles/59305",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:304d1169398376b50c098fc32d5af10bc0fc726289f134ed77e6c94c2441a332"
+    }
+   ]
+  },
+  {
+   "idx": 121,
+   "name": "交叉污染与过敏原控制",
+   "person": "何防污",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:121:01",
+     "title": "国内交叉污染检查口径",
+     "detail": "生熟分开：不同类型原料（蔬菜/肉/水产）与不同形态（原料/半成品/成品）分开存放，容器工具分类定位使用（监督检查要点）。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:25fa09b88f44567eb6d45585dfd7f3a271b86a55c7332380ea1afbdcb076b247"
+    },
+    {
+     "id": "supp-2026-11:121:02",
+     "title": "外卖封签",
+     "detail": "外卖必须使用统一食安封签，不得用胶带、订书钉替代，顾客发现无封签可拒收（总局第123号令）。",
+     "source": "IT之家：总局第123号令外卖新规6月1日施行",
+     "sourceUrl": "https://www.ithome.com/0/957/800.htm",
+     "sourceDate": "2026-05-31",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:bd288f66e82a7935e2e29903acd22ae850e030ac701700018cfb2311e5456169"
+    }
+   ]
+  },
+  {
+   "idx": 122,
+   "name": "供应商与进货合规",
+   "person": "吕验收",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:122:01",
+     "title": "进货查验是连锁新规罚则重点",
+     "detail": "连锁新规对'进货时未查验许可证和食品合格证明文件'设专门罚则；验收清单固定：供应商许可证、合格证明/检验报告、冷链产品追溯码、到货温度。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:ee1c525a3de894e19967a58883c6ff1b85af4434a3cdf90698e7672900bcf146"
+    },
+    {
+     "id": "supp-2026-11:122:02",
+     "title": "过期原料零容忍",
+     "detail": "南京某鸡排店使用过期烤肠被查，且采购时未查验供货者许可证；验收和日管控都加'效期检查'，临期品单独标识。",
+     "source": "南京网络餐饮食品安全典型案例",
+     "sourceUrl": "https://finance.sina.com.cn/jjxw/2026-05-12/doc-inhxqeev1647093.shtml",
+     "sourceDate": "2026-05-12",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:bbcdbd2921b16cd70013f7aabc463094a41405b88898cfe0ec3df4e1e844be3d"
+    },
+    {
+     "id": "supp-2026-11:122:03",
+     "title": "高风险原料抽检意识",
+     "detail": "黄喉等水发产品有检出禁用兽药的案例，供应商准入时要求提供检测报告并定期抽检。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:f07e6bdfc0791a474726ba9a779cb1f843e8758aee7605cb6127c94e31aa4170"
+    }
+   ]
+  },
+  {
+   "idx": 123,
+   "name": "追溯、撤回与召回",
+   "person": "施追溯",
+   "group": "食安与合规部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:123:01",
+     "title": "国内召回与问题食品处置",
+     "detail": "发现不符合标准的食品立即停止使用、封存、记录去向并报告；外卖渠道单独查订单号追踪顾客。连锁总部按新规负责统筹。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:85d7a57bb2d376156057f557d185d223c6f4affa03e7c56b329c41fcd15ae5d7"
+    }
+   ]
+  },
+  {
+   "idx": 124,
+   "name": "内审、迎检与纠正预防",
+   "person": "张审计",
+   "group": "食安与合规部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:124:01",
+     "title": "迎检清单按国内检查要点表",
+     "detail": "迎检前按当地《餐饮服务食品安全监督检查要点表》自查：证照公示、两个责任公示牌、风险分级公示、日管控周排查月调度记录、人员考核、健康证、三类原料分开等。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:0c6c257f5cbc97170af1123c39d6797e14df0d1d51175fd87f28a749bb4a76cf"
+    },
+    {
+     "id": "supp-2026-11:124:02",
+     "title": "风险分级与笑脸公示",
+     "detail": "餐饮风险分级A/B/C/D（A级风险最低，可获笑脸公示牌），迎检目标写成'保持/升到A级'，并列出影响分级的扣分项。",
+     "source": "DB1408/T 052—2024 餐饮食品经营分级评定",
+     "sourceUrl": "https://www.yuncheng.gov.cn/uploadfiles/202410/21/2024102110464788323180.pdf",
+     "sourceDate": "2024",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:f73f54db4b94b3dd24f658c2e61977adffbaa582267b81b8f7e3be98ba1f56d5"
+    },
+    {
+     "id": "supp-2026-11:124:03",
+     "title": "外卖平台店铺分食安项",
+     "detail": "美团外卖店铺分新增门店真实性验证、后厨环境核验各10分，未完成即0分；内审清单加入这两项。",
+     "source": "北京商报：美团外卖'店铺分'新规",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+     "sourceDate": "2026-06-09",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:2ad460beaf9ce451f40c9010dfde1f2775900968534ffa9122781b3a2bec9364"
+    },
+    {
+     "id": "supp-2026-11:124:04",
+     "title": "2026年执法高频问题清单",
+     "detail": "近一年高频处罚点：许可项目不符卖凉菜、地址与平台公示不符、健康证过期、过期原料、添加剂超标、虚假宣传。内审按这个清单优先排查。",
+     "source": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+     "sourceUrl": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7d8215901b539893c4ff1249e4f64e3edf383b9fce2a32e8b24f680b2fb4d4cc"
+    }
+   ]
+  },
+  {
+   "idx": 125,
+   "name": "供应商寻源与准入",
+   "person": "孔选商",
+   "group": "供应链与库存部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:125:01",
+     "title": "小连锁的供应商准入简化版",
+     "detail": "3-15店规模不做PPAP/CPK全套，用'证照齐全+样品试用+小批量试供2周+到货合格率'四步准入，大企业方法作为备选。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:37927ee5c764104c8b5255e377c6d6fbd0ebc8233ff606f0642dde99315fa861"
+    },
+    {
+     "id": "supp-2026-11:125:02",
+     "title": "准入必查证照",
+     "detail": "供应商须查营业执照、食品生产/经营许可证、产品合格证明；连锁新规对未查验设罚则。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3fb83d4b32216d08893fc5eeeb2fcc60eafb9b85b919d587ffda3a9e8b17de25"
+    }
+   ]
+  },
+  {
+   "idx": 126,
+   "name": "采购规格与比价评标",
+   "person": "曹比价",
+   "group": "供应链与库存部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:126:01",
+     "title": "比价按到手净料价",
+     "detail": "比价不比报价，比'净料单价=报价÷出成率'，并把配送频次、账期、退换货条件折算进来。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:97db9e1957fe7c6b40a3c30d7c3bb402d08dacd3e801f0b4abcee54472ce4a35"
+    },
+    {
+     "id": "supp-2026-11:126:02",
+     "title": "集中采购的议价效果参照",
+     "detail": "小菜园因议价能力提升，食材成本占比从33.6%降至31.4%（2022→2023前三季），集中采购方案可用此作'规模效应'参照。",
+     "source": "投资界：小菜园招股书成本结构",
+     "sourceUrl": "https://news.pedaily.cn/202401/528805.shtml",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a8d0a413f292bc318e7f9206c0c08706f507712cd1daea376fd6d1f89b6c286b"
+    }
+   ]
+  },
+  {
+   "idx": 127,
+   "name": "需求预测与补货建议",
+   "person": "严订货",
+   "group": "供应链与库存部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:127:01",
+     "title": "没有POS接口时的订货预测",
+     "detail": "让老板导出近8-12周'日期×菜品×销量'表，按星期几+天气+节假日做简单移动平均预测，给出订货建议和'人工可调'系数；有接口后再上复杂模型。",
+     "source": "Provectus：Blue Bottle 100+店AI需求预测案例",
+     "sourceUrl": "https://provectus.com/case-studies/blue-bottle-coffee-demand-forecasting/",
+     "sourceDate": "2026",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8374dc5a76d65713b48415ee0c3316b0490438165b67ecc0045f633e48f94d96"
+    },
+    {
+     "id": "supp-2026-11:127:02",
+     "title": "预测要分餐段",
+     "detail": "AI需求预测需要逐日逐餐段的单品数据；只有日总数时先做日级预测，并提示老板补齐分时段导出。",
+     "source": "LowCode Agency：用AI做备料预测减废",
+     "sourceUrl": "https://www.lowcode.agency/blog/how-to-use-ai-to-forecast-restaurant-demand-and-reduce-food-waste",
+     "sourceDate": "2026",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:ec51541d552395d854cc46753faebd32d39bae19d0db299eac8b4ddb3074ff2c"
+    }
+   ]
+  },
+  {
+   "idx": 128,
+   "name": "收货验收、储存与 FEFO",
+   "person": "华先出",
+   "group": "供应链与库存部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:128:01",
+     "title": "中国收货与效期口径",
+     "detail": "收货按效期先到先出(FEFO)，冷链品查到货温度与追溯码；国内暂不涉及FSMA 204，相关卡仅作出口/外资客户参考。",
+     "source": "团标引《餐饮服务食品安全操作规范》冷藏0~10℃/冷冻≤-18℃",
+     "sourceUrl": "https://www.ttbz.org.cn/upload/file/20240827/6386037550740197468716182.pdf",
+     "sourceDate": "2024",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7552c48ae2ed5fd25078f1365f76819abe4b32e4e9d300a10d2217f7caa700d8"
+    }
+   ]
+  },
+  {
+   "idx": 129,
+   "name": "库存差异与损耗分析",
+   "person": "金盘点",
+   "group": "供应链与库存部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:129:01",
+     "title": "盘点差异用老板导出数据",
+     "detail": "用'期初+进货-期末=实际用量'对比'销量×配方用量=理论用量'，数据来自老板的进货单与POS导出；没有AI秤时用每日报损登记表替代。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:584fbd2f19277c26b63dae7b204c52cab9da8f36dfe060eebe77aa002ec4efb4"
+    }
+   ]
+  },
+  {
+   "idx": 130,
+   "name": "备料计划与批次生产",
+   "person": "魏备料",
+   "group": "供应链与库存部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:130:01",
+     "title": "备料单按餐段倒排",
+     "detail": "备料按午/晚市预测量倒排，外卖高峰单独加量；过量备料是浪费大头。",
+     "source": "LowCode Agency：用AI做备料预测减废",
+     "sourceUrl": "https://www.lowcode.agency/blog/how-to-use-ai-to-forecast-restaurant-demand-and-reduce-food-waste",
+     "sourceDate": "2026",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9a9a62b99060f8e98dacc1eeb6d4856679f931abff719b909b5ae47fea098ac6"
+    }
+   ]
+  },
+  {
+   "idx": 131,
+   "name": "中央厨房与冷链配送",
+   "person": "陶冷链",
+   "group": "供应链与库存部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:131:01",
+     "title": "中央厨房对接门店的规程",
+     "detail": "连锁新规要求总部制定原料采购、进货查验、加工制作等操作规程；中央厨房配送单、交接温度、签收记录作为规程附件。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:14ddc493132b47429c870f22e2512aeb593c11d8cddcc7e200cdd446d8d4b512"
+    }
+   ]
+  },
+  {
+   "idx": 132,
+   "name": "开店、闭店与班次交接",
+   "person": "姜开闭",
+   "group": "门店运营部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:132:01",
+     "title": "开闭店检查即'每日食品安全检查记录'",
+     "detail": "连锁门店的开闭店检查表与总部要求的《每日食品安全检查记录》合并为一张，每天报分支机构/区域，避免门店填两遍。",
+     "source": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+     "sourceUrl": "https://www.peopleapp.com/column/30050879711-500007233515",
+     "sourceDate": "2025-12-01施行",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:eeb0e7cbf112550b134bf466ee7e14175a12efe487a7101cc495c222b56de67f"
+    },
+    {
+     "id": "supp-2026-11:132:02",
+     "title": "燃气与用电闭店检查",
+     "detail": "闭店检查加入：燃气阀关闭、报警器正常、卡式炉/液化气瓶不在用餐区存放（北京地标）。",
+     "source": "北京DB11/450 餐饮场所燃气安全",
+     "sourceUrl": "https://bzh.scjgj.beijing.gov.cn/bzh/apifile/file/2021/20210325/0f76a13e-91fd-4ff9-bf13-7bb9d514a482.PDF",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:cb4ff108e33710c40142685ceee2788c850b87a72b66c5f3da8b5c11b4065649"
+    }
+   ]
+  },
+  {
+   "idx": 133,
+   "name": "前厅服务 SOP",
+   "person": "戚前厅",
+   "group": "门店运营部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:133:01",
+     "title": "扫码点餐不强制授权",
+     "detail": "扫码点餐不得强制关注公众号、授权手机号/生日才能点餐；位置权限被拒后不影响下单；保留人工点餐方式。",
+     "source": "安全内参：扫码点餐的个人信息保护要点",
+     "sourceUrl": "https://www.secrss.com/articles/59305",
+     "sourceDate": "—",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:55a171cc93c962a4d4394840be5c20e7290faa6a08dfa621ab790265b5b25552"
+    },
+    {
+     "id": "supp-2026-11:133:02",
+     "title": "邀评合规话术",
+     "detail": "大众点评打击'赠品换好评'和高频店内邀评，高强度促评商户数下降42%；前厅只可提醒'欢迎真实评价'，不得以赠菜、折扣交换好评。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a0309e67cc0751a30e404dc41bef4fc097eef83dd0a21ddb414a6ae845ca68e0"
+    }
+   ]
+  },
+  {
+   "idx": 134,
+   "name": "后厨工位与出餐控制",
+   "person": "谢后厨",
+   "group": "门店运营部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:134:01",
+     "title": "国内后厨出餐管理口径",
+     "detail": "国内门店常用厨打/叫号屏/外卖打单机，出餐管理以'外卖出餐时长+堂食上菜时长'两指标为核心；美式expo岗位与bump bar作参考。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9dd4753e446a25cd773745b424b3bee878fb9be9ca21504b18a26709fc40f42b"
+    },
+    {
+     "id": "supp-2026-11:134:02",
+     "title": "外卖出餐与骑手节奏",
+     "detail": "高峰期外卖按骑手到店时间排单，避免餐等骑手太久影响口感（肯德基'D睿'系统思路）；无系统时用打单时间+平台预计送达时间人工排序。",
+     "source": "证券日报《后厨有算法 经营有数据 服务有温度》",
+     "sourceUrl": "https://news.10jqka.com.cn/20261029/c681211142.shtml",
+     "sourceDate": "2026-10-29",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:20d204c5e656b999a43e2a2f9d02091f28bb26526ad644b99cfb4291c92056bf"
+    }
+   ]
+  },
+  {
+   "idx": 135,
+   "name": "订座、等位与桌台收益",
+   "person": "邹翻台",
+   "group": "门店运营部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:135:01",
+     "title": "国内订座与排队工具口径",
+     "detail": "国内以美团/点评排队取号、小程序订座、电话订座为主；防黄牛恶意取号（胡大饭馆AI风控思路）可用'取号需到店定位/限次'。",
+     "source": "证券日报《后厨有算法 经营有数据 服务有温度》",
+     "sourceUrl": "https://news.10jqka.com.cn/20261029/c681211142.shtml",
+     "sourceDate": "2026-10-29",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a46035a2fdc40c29bcf241582ff8b679732abbbf713a29e49f36dfd75d0bad35"
+    },
+    {
+     "id": "supp-2026-11:135:02",
+     "title": "定金与预订金合规",
+     "detail": "收取订座定金或年夜饭订金要写清退改规则；小南国闭店时部分年夜饭订金退款困难引发投诉。",
+     "source": "北京商报：小南国预付卡退费方案",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0401/589421.shtml",
+     "sourceDate": "2026-04-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a7faadbff183144c473e51dbf7582a4d36f87b0a8b5e2ff9ba92bfff06b75cec"
+    }
+   ]
+  },
+  {
+   "idx": 136,
+   "name": "需求驱动排班",
+   "person": "喻排班",
+   "group": "门店运营部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:136:01",
+     "title": "中国用工合规硬约束",
+     "detail": "排班硬约束：非全日制员工日均≤4小时、周≤24小时、不得约定试用期、工资结算周期≤15天、须缴工伤保险；超时即可能被认定全日制劳动关系。",
+     "source": "《劳动合同法》第68-72条（非全日制）",
+     "sourceUrl": "https://www.fadada.com/article/Basics-005157",
+     "sourceDate": "现行",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:cef3b98c4edfc834617fd49c341802d54307ad0cf4ae6080a552dcb7b331d489"
+    },
+    {
+     "id": "supp-2026-11:136:02",
+     "title": "社保成本进排班测算",
+     "detail": "最高法司法解释(二)明确不缴社保约定无效；排班方案同时输出'全职+小时工'两种组合的合规用工成本。",
+     "source": "红餐/蓝鲸：最高法司法解释(二)不缴社保约定无效",
+     "sourceUrl": "https://www.lanjinger.com/d/1754624816052768512",
+     "sourceDate": "2025-08",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3cb2c8fb61defe6a64087a01a98cb7a9fb115e37ada3ad719b09b1aba5be31f8"
+    },
+    {
+     "id": "supp-2026-11:136:03",
+     "title": "排班依据用老板分时段销售",
+     "detail": "AI排班依据历史客流+天气+节假日；没有接口时用POS导出的分时段订单量计算每小时需要人数。",
+     "source": "蓝鲸：AI巡检/排班/预测替代人工经验",
+     "sourceUrl": "https://www.lanjinger.com/d/1786083434515024087",
+     "sourceDate": "2026",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:fb8d9f524c8aaa9150b092b5f43ca99f3a7cc87c0f3bd16b22ef652a4aed9f4f"
+    }
+   ]
+  },
+  {
+   "idx": 137,
+   "name": "员工培训与资格管理",
+   "person": "柏带训",
+   "group": "门店运营部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:137:01",
+     "title": "食品安全员/总监考核要求",
+     "detail": "按总局令60号体系，企业配备食品安全总监/安全员；检查要点表要求利用食品安全考核APP每月至少组织一次考核，负责人与安全员抽查合格。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:491c675c2eedc78676e59cf29bb04d0fa698c89fad70def153edbf801021e607"
+    },
+    {
+     "id": "supp-2026-11:137:02",
+     "title": "健康证到期纳入资格管理",
+     "detail": "资格台账加健康证有效期，到期前30天提醒，过期即停岗。",
+     "source": "网易：健康证过期上岗被处罚案例",
+     "sourceUrl": "https://c.m.163.com/news/a/KSE8L5E505568W0A.html",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9a5207436ccfca0db1cf332a18aa65a959833fb21142af0cad5811e5cdab1881"
+    },
+    {
+     "id": "supp-2026-11:137:03",
+     "title": "SOP映射找复训重点",
+     "detail": "按岗位/门店/频次列出任务，优先把高流失岗位和食安证照到期的培训数字化。",
+     "source": "Restaurant365：SOP映射降低复训成本",
+     "sourceUrl": "https://www.restaurant365.com/blog/how-to-cut-retraining-costs-by-using-scalable-restaurant-lms/",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9ff165a4d630e6dda7fc9ac8f0b7cdd0e1d2380e65a613c11a0a75c967dd642c"
+    }
+   ]
+  },
+  {
+   "idx": 138,
+   "name": "客诉与服务补救",
+   "person": "水客诉",
+   "group": "门店运营部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:138:01",
+     "title": "点评异常评价拦截与申诉",
+     "detail": "大众点评面向到餐商户开放'异常评价拦截'，经营宝自助投诉90%以上24小时内出结果；恶意差评先走平台申诉，保留证据。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:f677fa2d0818df5fc1c31b65f89fb36851d107eb40670797d335f9981ff48d88"
+    },
+    {
+     "id": "supp-2026-11:138:02",
+     "title": "不传播'刷好评抵差评'谣言",
+     "detail": "'80条好评抵1条差评''高等级用户权重更高'等是代运营流传的不实说法，不据此给老板建议。",
+     "source": "南方财经：点评评分坊间说法辟谣",
+     "sourceUrl": "https://m.sfccn.com/2026/9-9/2OMDE0NzNfMjIzNTk2OA.html",
+     "sourceDate": "2026-09-09",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7d9f4a31ee35cca77ebfbf028ab39b8c3c8380ec589cd45d75f17628cb2bbdc4"
+    },
+    {
+     "id": "supp-2026-11:138:03",
+     "title": "食安类投诉按严重程度升级",
+     "detail": "涉及异物、腹泻等食安投诉，同时启动食安部的问题食品处置流程；美团必点榜对严重食安问题一票否决。",
+     "source": "新京报：一镜到底验真+必点榜食安一票否决",
+     "sourceUrl": "https://www.bjnews.com.cn/detail/1780985391168584.html",
+     "sourceDate": "2026-06",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:c6909661e2b43b98f642a965dbe49a1b67843d709e9188d0abb9c6e93197ae1a"
+    }
+   ]
+  },
+  {
+   "idx": 139,
+   "name": "餐厅安全与设备维护",
+   "person": "窦安稳",
+   "group": "门店运营部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:139:01",
+     "title": "国内燃气安全为设备安全第一项",
+     "detail": "新《安全生产法》要求使用燃气的餐饮单位安装可燃气体报警装置；报警器主机、探头、电磁阀需配套，定期检测。海外NFPA条款仅作参考。",
+     "source": "凤凰网：新安全生产法要求餐饮安装可燃气体报警",
+     "sourceUrl": "https://tech.ifeng.com/c/8vxran4aG9n",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:134f24a71cbe832e247f718e7c4201e4ce25cfe9285269a18f617ce4df7090cd"
+    },
+    {
+     "id": "supp-2026-11:139:02",
+     "title": "排烟管道清洗与油烟排放",
+     "detail": "排烟管道定期清洗并留记录；油烟排放符合GB 18483，作为设备维护排期的一项。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:14d893babdda3cab72213f04c2c059b39a7da3af7890f497b8916e01891b6049"
+    }
+   ]
+  },
+  {
+   "idx": 140,
+   "name": "餐饮品牌语调与菜单文案",
+   "person": "章文案",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:140:01",
+     "title": "餐饮宣传词红线清单",
+     "detail": "文案避免绝对化用语（最、第一、顶级），事实性用词（鲜切、手打、现熬、产地）要有证据；SAMR 2026年4月起开展6个月网络食品虚假宣传专项整治。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:0d7a3fa2344f30fed1f7ff10a748c0f2f5517485e1bc990e78d54f4f0eb77195"
+    },
+    {
+     "id": "supp-2026-11:140:02",
+     "title": "菜品描述与实物一致",
+     "detail": "小龙坎'鲜切牛肉'、天津'手打牛肉丸'均因描述与实物不符被罚；文案交付前附'宣称-证据'对照表给老板确认。",
+     "source": "北京商报：小龙坎'鲜切牛肉'实为速冻调理肉被罚",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0720/599856.shtml",
+     "sourceDate": "2026-07-20",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:057bc0b11611f1df5ccd7ec8f680d160eaa69108cd6f4f5e0cc32fc903358937"
+    }
+   ]
+  },
+  {
+   "idx": 141,
+   "name": "本地门店营销日历",
+   "person": "云营销",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:141:01",
+     "title": "国内本地营销日历用国内平台",
+     "detail": "营销日历以美团/点评、抖音来客、小红书、视频号、企业微信为渠道；原卡中的Google商家资料/Instagram Reels仅适用于海外门店。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9c542264cc0b0a12138552665ca4b790a2c8cfd6ce874c895dd391d5888b30f8"
+    },
+    {
+     "id": "supp-2026-11:141:02",
+     "title": "团购活动节奏",
+     "detail": "抖音团购建议每月至少一次直播大场稳住核销与GMV（平台方法论），日历中预留直播日与核销高峰接待。",
+     "source": "界面：抖音团购核销周期25-28天",
+     "sourceUrl": "https://www.jiemian.com/article/11558409.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:45ec1f4bce0ddc753112e95c9f5cf839179d96f896e32897e1da330e711c298d"
+    },
+    {
+     "id": "supp-2026-11:141:03",
+     "title": "储值活动先查当地预付卡规定",
+     "detail": "储值/充值送活动先核对所在城市预付卡规定：北京预收余额达20万须备案与资金存管；上海新规2026-01-01施行。",
+     "source": "新华网：北京单用途预付卡备案及预收资金管理办法",
+     "sourceUrl": "https://www.news.cn/20260528/929d95d62bec4ee785d54b9fb7fb6ba1/c.html",
+     "sourceDate": "2026-05-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:80373536b6cc59f2d53d22146e232264fcd15eee8e5f3cf2998b92a2027b9be5"
+    }
+   ]
+  },
+  {
+   "idx": 142,
+   "name": "餐厅社媒与 UGC 运营",
+   "person": "苏种草",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:142:01",
+     "title": "小红书商业合作走报备",
+     "detail": "与达人合作发探店笔记应通过蒲公英报备，私信拉素人铺量会被禁言或封号；AI生成内容需勾选AI辅助创作标识。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:134b7aa9a186387838e65352b3b526e8613221400541277f392b51d3325f0945"
+    },
+    {
+     "id": "supp-2026-11:142:02",
+     "title": "UGC与视频版权",
+     "detail": "使用顾客或同行的照片/视频需取得授权；盗用同行视频的火锅店被判侵权和不正当竞争。",
+     "source": "CBNData：刷单罚款与盗用同行视频侵权案",
+     "sourceUrl": "https://www.cbndata.com/information/251421",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:5963291092467a351a0dc91bd9950038e17fcf7ad372442c1db261e120c34a11"
+    },
+    {
+     "id": "supp-2026-11:142:03",
+     "title": "探店营销效果下降的应对",
+     "detail": "探店内容同质化、部分达人数据造假，合作前看历史笔记的真实评论和到店核销，不只看粉丝数。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:c7d7ad6671d0b924bacb4742a8835dac765395e2eb9b3ae3334d696fd0987cf6"
+    }
+   ]
+  },
+  {
+   "idx": 143,
+   "name": "评价与口碑运营",
+   "person": "潘口碑",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:143:01",
+     "title": "国内点评规则为准",
+     "detail": "大众点评2025年处置AIGC评价1161万条，升级星级规则打击'赠品换好评'；回复差评要具体、真诚，不用模板化AI腔；原卡中Google/FTC规则仅适用海外。",
+     "source": "新华网：大众点评《2025年评价透明度报告》",
+     "sourceUrl": "https://www.news.cn/tech/20260323/b1ebc84e186b4b52bbba15059b229cbf/c.html",
+     "sourceDate": "2026-03-23",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:f9ebf21bcdb3a7532ea63218f9669ebf7e860395078e2ecd393210fe87b4539d"
+    },
+    {
+     "id": "supp-2026-11:143:02",
+     "title": "差评申诉与拦截工具",
+     "detail": "恶意或异常差评先用点评'异常评价拦截'和经营宝自助投诉，90%以上24小时出结果。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:bfc4573b01553b819b394c6f5cbbdb40ae75c8f703b61c39f0b5cab86c60eddc"
+    },
+    {
+     "id": "supp-2026-11:143:03",
+     "title": "口碑数据进店长考核",
+     "detail": "把口碑数据（评分变化、差评关键词、回复率）按门店汇总，可纳入店长绩效（小菜园做法）。",
+     "source": "证券日报《后厨有算法 经营有数据 服务有温度》",
+     "sourceUrl": "https://news.10jqka.com.cn/20261029/c681211142.shtml",
+     "sourceDate": "2026-10-29",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9eb5298043d515da9749d34bf502ffd2dec59b5e95a97b0488e0490d5abe4153"
+    }
+   ]
+  },
+  {
+   "idx": 144,
+   "name": "CRM、忠诚度与生命周期",
+   "person": "葛会员",
+   "group": "品牌与增长部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 5,
+   "skills": [
+    {
+     "id": "supp-2026-11:144:01",
+     "title": "国内会员载体",
+     "detail": "国内会员以微信小程序会员+企业微信为主，原卡中的Apple Wallet钱包卡适用海外。免费注册会员+储值会员两层设计（云海肴做法），钩子用招牌小吃而非泛用券。",
+     "source": "人人都是产品经理：云海肴会员+社群",
+     "sourceUrl": "https://www.woshipm.com/operate/5119284.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:aa875a76f145d429fb549a25e1d586d0de2050d84c50f4e06b78c0cf46ed70c5"
+    },
+    {
+     "id": "supp-2026-11:144:02",
+     "title": "沉默会员才是金矿",
+     "detail": "某品牌8600万会员数据：当年有消费的老会员仅15%，新注册会员仅7%有第二次消费；会员运营重点放在二次到店与唤醒沉默会员。",
+     "source": "人人都是产品经理：8600万会员数据节点",
+     "sourceUrl": "https://www.woshipm.com/operate/6021243.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8a8e5ae69491f058a7447051806596ba5ec4a934006fc6b9f423afc300f3e992"
+    },
+    {
+     "id": "supp-2026-11:144:03",
+     "title": "会员信息最小必要",
+     "detail": "注册会员只收集必要信息，不强制关注/授权才能点餐；生日、手机号用于营销须明确告知并取得同意。",
+     "source": "安全内参：扫码点餐的个人信息保护要点",
+     "sourceUrl": "https://www.secrss.com/articles/59305",
+     "sourceDate": "—",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:94a896cdd147a5059e3c261980b38e7fdc8775dc0c84a87a73ba45a60523a8a2"
+    },
+    {
+     "id": "supp-2026-11:144:04",
+     "title": "储值卡合规",
+     "detail": "储值余额是对顾客的负债；按当地预付卡规定备案与存管（北京20万门槛），闭店需有退费方案（小南国委托协会退费）。",
+     "source": "新华网：北京单用途预付卡备案及预收资金管理办法",
+     "sourceUrl": "https://www.news.cn/20260528/929d95d62bec4ee785d54b9fb7fb6ba1/c.html",
+     "sourceDate": "2026-05-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:476388d1f43f19519efbc5b75a3166dc3f62d8b094653e22217e344b9298ca6c"
+    },
+    {
+     "id": "supp-2026-11:144:05",
+     "title": "超级用户社群优先",
+     "detail": "社群先运营前10%超级用户+20%潜在超级用户，微信会折叠不活跃社群，靠内容与人情维系而不是只发券。",
+     "source": "人人都是产品经理：社群'去运营化'与超级用户",
+     "sourceUrl": "https://www.woshipm.com/operate/6030368.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9b1a464e17a593c38e2aa20d02529b6570b814893cab5221ada04c0f75917c9b"
+    }
+   ]
+  },
+  {
+   "idx": 145,
+   "name": "促销经济性与实验",
+   "person": "奚促销",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:145:01",
+     "title": "国内平台促销的真实成本",
+     "detail": "美团/饿了么活动补贴分摊比例近年上升，部分活动由区域经理代报名；促销核算前先导出账单，拆清平台补贴与商家承担部分。",
+     "source": "Tech星球：2026商家佣金与配送费上涨",
+     "sourceUrl": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:8fbd1e5a3f96f24f8179023016de18018a63b6d0aabc48dac8d33bbb7428b44c"
+    },
+    {
+     "id": "supp-2026-11:145:02",
+     "title": "团购定位决定促销算法",
+     "detail": "团购作渠道要算每单盈亏，作引流要算到店加单与复购；2025年新规禁止平台低于成本倾销和强制商家降价。",
+     "source": "虎嗅：到店团购新一轮厮杀与商家定位",
+     "sourceUrl": "https://www.huxiu.com/article/4869803.html",
+     "sourceDate": "2026-06-24",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:826f7144b47e70c8d25a32a79b5c02998f5a8b077d67f5f2ab927127fe44c0e1"
+    },
+    {
+     "id": "supp-2026-11:145:03",
+     "title": "促销后口碑维护不得利诱",
+     "detail": "促销后维护自然流量只能靠服务与真实评价，不得以赠品换好评。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:fb4a11460721452737d8379a7a50c89ce6c6632574b241b63f34d9204c047dca"
+    }
+   ]
+  },
+  {
+   "idx": 146,
+   "name": "外卖、配送与团餐渠道运营",
+   "person": "范外卖",
+   "group": "品牌与增长部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:146:01",
+     "title": "国内外卖平台规则为准",
+     "detail": "以美团/淘宝闪购(饿了么)/京东外卖为主；原卡DoorDash/UberEats/Grubhub仅适用海外。外卖新规（总局第123号令）：无堂食标识、网店名与招牌一致、统一食安封签。",
+     "source": "IT之家：总局第123号令外卖新规6月1日施行",
+     "sourceUrl": "https://www.ithome.com/0/957/800.htm",
+     "sourceDate": "2026-05-31",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:4365bf9889a160a3243cfd250117aefb62404614d7545b35f09f5a1ce1ad58a1"
+    },
+    {
+     "id": "supp-2026-11:146:02",
+     "title": "美团店铺分新口径",
+     "detail": "店铺分满分100，资质/营业/信息/服务4维9指标；新增门店真实性验证与后厨环境核验各10分，差评回复、在线联系回复、不接单等指标下线。",
+     "source": "北京商报：美团外卖'店铺分'新规",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+     "sourceDate": "2026-06-09",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:962c5906bfc4b3c3b47117325a26dbd33d04e76b9cae35a7a308b9e8987dc3d8"
+    },
+    {
+     "id": "supp-2026-11:146:03",
+     "title": "外卖费用按账单拆",
+     "detail": "美团费用为技术服务费+履约服务费（按距离/价格/时段阶梯），2026年多地反映上涨；用账单逐项拆出每单到手。",
+     "source": "网易：美团佣金率历年变化与费率结构",
+     "sourceUrl": "https://www.163.com/dy/article/H1H40R1I05118DFD.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:07287cec4da1e99883f47d2da26e1ec8aee19bf3791e918b393bab6b737846b2"
+    },
+    {
+     "id": "supp-2026-11:146:04",
+     "title": "平台AI店长与本岗位分工",
+     "detail": "美团已向商家免费提供'妙手外卖版'AI店长（经营诊断、巡检、商品运营、新店运营）；本岗位聚焦跨平台对比与总部视角，不重复平台内单店诊断。",
+     "source": "证券市场周刊：妙手外卖版·袋鼠管家",
+     "sourceUrl": "https://static.weeklyonstock.com/26/1023/wd144038.html",
+     "sourceDate": "2026-10-23",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9da98fe7e623650ec7fabf585352b6699d5f6ef478e7deca65b05dd59d846d85"
+    }
+   ]
+  },
+  {
+   "idx": 147,
+   "name": "每日销售与资金核对",
+   "person": "彭对账",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:147:01",
+     "title": "对账必须分平台分费项",
+     "detail": "美团费用拆技术服务费、履约服务费、活动补贴；抖音团购按核销与提现时间核对；储值卡充值与消费分开记，不把储值当收入。",
+     "source": "网易：美团佣金率历年变化与费率结构",
+     "sourceUrl": "https://www.163.com/dy/article/H1H40R1I05118DFD.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:47c003bf0702eee2c084bf8adfde8137a0fd07e4bafbf5e9b8ff1259857048d3"
+    }
+   ]
+  },
+  {
+   "idx": 148,
+   "name": "理论与实际食材成本",
+   "person": "鲁食本",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:148:01",
+     "title": "中国食材成本参照",
+     "detail": "大众中餐头部连锁食材/原材料约占收入31-33%（小菜园招股书），作为参照线；行业经验区间仅供参考，需用自家账校准。",
+     "source": "投资界：小菜园招股书成本结构",
+     "sourceUrl": "https://news.pedaily.cn/202401/528805.shtml",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b77e6d5bb57e0a679fbf4ace9ba17229a549930bfc01da0d04562539594b892e"
+    },
+    {
+     "id": "supp-2026-11:148:02",
+     "title": "没有AI秤时的报损记录",
+     "detail": "无视觉秤门店用每日报损登记表（品名、重量、原因、经手人、照片），月底与盘点差异对照。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:abfafc750fcfda2a2890351ded8498dc9f96280a1e4f35b43be69b4860ff14c6"
+    }
+   ]
+  },
+  {
+   "idx": 149,
+   "name": "人工成本与生产率",
+   "person": "韦人效",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:149:01",
+     "title": "中国人效口径",
+     "detail": "国内常用人效指标：人工成本率（人工/营收）、人均月产值（营收/在岗人数）、每小时营收（营收/总工时）；小菜园员工成本约占收入30%（招股书均值）可作参照，红餐口径人力成本约占营收22%。",
+     "source": "赢商网：小菜园员工/原材料/外卖服务开支占比",
+     "sourceUrl": "https://m.winshang.com/news720702.html",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:5fc0cdd90b984cb870612c536b020a07fce2b16458c0598f653ce59a0886ed57"
+    },
+    {
+     "id": "supp-2026-11:149:02",
+     "title": "社保合规后的人工成本",
+     "detail": "按全员合规缴社保测算人工成本，非全日制岗位单独列（只缴工伤），超时风险提示。",
+     "source": "红餐/蓝鲸：最高法司法解释(二)不缴社保约定无效",
+     "sourceUrl": "https://www.lanjinger.com/d/1754624816052768512",
+     "sourceDate": "2025-08",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:309462fc95900ab722e652506e322389b8eb028d05994cc451a38de6a189b364"
+    },
+    {
+     "id": "supp-2026-11:149:03",
+     "title": "用老板考勤和工资表算",
+     "detail": "人效分析用老板的考勤导出与工资表，不套美国SPLH美元基准。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "DATA",
+     "gapNote": "原卡依赖系统拿不到的数据，补替代取数法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:1b55844550eb5311944c558fdb3a104d491902d7701391bd83edeae8de737a6c"
+    }
+   ]
+  },
+  {
+   "idx": 150,
+   "name": "Prime Cost 与单店损益",
+   "person": "昌本利",
+   "group": "财务与数据部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:150:01",
+     "title": "单店损益用中国科目",
+     "detail": "单店损益按：营业收入（堂食/外卖/团购分列）− 食材 − 人工（含社保）− 租金物业 − 水电燃气 − 平台费用 − 其他，计算门店经营利润；小菜园门店经营净利率约20.9%可作头部参照。",
+     "source": "投资界：小菜园招股书成本结构",
+     "sourceUrl": "https://news.pedaily.cn/202401/528805.shtml",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:22ebc660bc4f342fd0831f2d50dffd2fb5ad28028556d80761f8379a4a25c75e"
+    },
+    {
+     "id": "supp-2026-11:150:02",
+     "title": "外卖平台费用单列",
+     "detail": "平台佣金与配送费单独一行，不混入营销费，便于判断外卖是否赚钱。",
+     "source": "Tech星球：2026商家佣金与配送费上涨",
+     "sourceUrl": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:39688f9b5dfc15c469f26b57b6eac329f180e483fbe0421882fead75799608e1"
+    }
+   ]
+  },
+  {
+   "idx": 151,
+   "name": "现金流与营运资金",
+   "person": "马现金",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:151:01",
+     "title": "储值资金是负债",
+     "detail": "储值余额计入负债，不能当经营现金随意使用；北京预收余额达20万元须备案与资金存管，上海2427家企业采用银行存管。",
+     "source": "上海市市场监管局 沪市监提〔2026〕287号答复（预付卡新规）",
+     "sourceUrl": "https://www.shanghai.gov.cn/cmsres/ba/baeb50235d59486eb3cbb3a019d45f52/f95d9c44a696d772336ce15d9cc6b9c0.doc",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:061579f7313ee4252ec670a0c7059d240635a5ea0bde7f9e9054aafadd86887d"
+    },
+    {
+     "id": "supp-2026-11:151:02",
+     "title": "平台回款周期进现金预测",
+     "detail": "现金预测按各平台实际结算周期入账（以老板后台显示为准），团购按核销后结算，不按售出日。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a943af1cafc9e6f808d50895e9257c771baed1cdbef96b79ece969caa37d55c0"
+    }
+   ]
+  },
+  {
+   "idx": 152,
+   "name": "盈亏平衡、情景与价格弹性",
+   "person": "苗保本",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:152:01",
+     "title": "外卖弹性测算带平台费",
+     "detail": "外卖调价测算必须叠加佣金、履约费和满减分摊，用老板账单实际费率。",
+     "source": "Tech星球：2026商家佣金与配送费上涨",
+     "sourceUrl": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:878a92de75c2718ee5fa9f43a7f87baa8f6240083a89001037fe9d198abc10e8"
+    },
+    {
+     "id": "supp-2026-11:152:02",
+     "title": "质价比环境下的提价风险",
+     "detail": "头部大众中餐主动降价换复购（小菜园、绿茶人均下探），提价方案需对照同商圈头部品牌价格。",
+     "source": "蓝鲸：绿茶小店型坪效与回报周期",
+     "sourceUrl": "https://www.lanjinger.com/d/1775009740920553334",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:c7d34aa96c7c02c87264b8e72789a89f941acaf888e5c3723e65c08e4a2514bd"
+    }
+   ]
+  },
+  {
+   "idx": 153,
+   "name": "渠道、餐段、菜品与顾客分析",
+   "person": "凤分群",
+   "group": "财务与数据部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:153:01",
+     "title": "渠道分析加'平台规则变化'维度",
+     "detail": "分析外卖渠道波动时先排查平台规则变化（店铺分口径调整、活动报名变化），再归因到门店经营。",
+     "source": "北京商报：美团外卖'店铺分'新规",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+     "sourceDate": "2026-06-09",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:cfd83edb4b943e9999336cc38ae91f90d57598af71ebf297f1d906f5ae08671f"
+    }
+   ]
+  },
+  {
+   "idx": 154,
+   "name": "餐厅 KPI 与经营复盘",
+   "person": "花经营",
+   "group": "财务与数据部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:154:01",
+     "title": "中国经营周会口径",
+     "detail": "周会看：营收（分渠道）、客流与客单、食材成本率、人工成本率、外卖到手率、差评数与关键词、食安检查问题数；美式Flash Report作参考。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:214787bea1aa2ed9b06a75aabef647e9b096eaa8c77aacdfc77c56d1b18780d8"
+    },
+    {
+     "id": "supp-2026-11:154:02",
+     "title": "食安指标进经营复盘",
+     "detail": "连锁新规要求总部每月总结食安问题并安排下月重点，月度经营复盘加食安一页。",
+     "source": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+     "sourceUrl": "https://www.peopleapp.com/column/30050879711-500007233515",
+     "sourceDate": "2025-12-01施行",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:0a01421bca5b7c3cadd3f2f1a6a7d9a3dca00c15f89b454ef925e7ef0f7705fd"
+    }
+   ]
+  },
+  {
+   "idx": 155,
+   "name": "多店 SOP 对标与复制",
+   "person": "方连锁",
+   "group": "连锁与可持续部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 4,
+   "skills": [
+    {
+     "id": "supp-2026-11:155:01",
+     "title": "连锁新规下的总部责任清单",
+     "detail": "总部须：制定风险管控清单、建立三级机制、每年投入一定营收于食安、制定采购/查验/加工规程、推行明厨亮灶与信息化平台；不得把责任转嫁门店。",
+     "source": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+     "sourceUrl": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+     "sourceDate": "2025-09-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:43bf4e790fc6b968e1c47d159d07fe38716236ba6a2c0f9bc4fb0835104736cd"
+    },
+    {
+     "id": "supp-2026-11:155:02",
+     "title": "加盟扩张合规：两店一年",
+     "detail": "开放加盟前须满足'两店一年'并备案；茉上茶田未满足即招商被罚41万并没收192万违法所得；招商不得虚构背书。",
+     "source": "中伦：特许经营'两店一年'与虚假招商处罚案例",
+     "sourceUrl": "https://www.zhonglun.com/research/articles/55690.html",
+     "sourceDate": "2025",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:60d77a5560e11a42f3801084294b5ddb055de365e15eea101d6229a3d01719e5"
+    },
+    {
+     "id": "supp-2026-11:155:03",
+     "title": "加盟冷静期与格式条款",
+     "detail": "最高法典型案例：被特许人享有冷静期单方解除权，'领资料不退费'格式条款无效；加盟合同模板需按此修订。",
+     "source": "最高法：7件商业特许经营典型案例",
+     "sourceUrl": "https://www.court.gov.cn/zixun/xiangqing/508551.html",
+     "sourceDate": "2026-08-13",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:2b30068aad1957b992cdff3d13e410c59bb0a97df25247c31b6c9910b48d9293"
+    },
+    {
+     "id": "supp-2026-11:155:04",
+     "title": "监管层级随门店数变化",
+     "detail": "门店≥10000/1000-9999/≤999家分别由省/市/县级监管部门负责，扩张规划中注明监管对接层级变化。",
+     "source": "锦天城：连锁新规分级监管（门店数分级）",
+     "sourceUrl": "https://www.allbrightlaw.com/CN/10531/CD29384AF2A59A5A.aspx",
+     "sourceDate": "2025-10-11",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:e816ebce7667d35aa74fbb18fe1b8c34919ecdf8be5b5c7d837830d82e8dbe1f"
+    }
+   ]
+  },
+  {
+   "idx": 156,
+   "name": "新店爬坡运营手册",
+   "person": "俞爬坡",
+   "group": "连锁与可持续部",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:156:01",
+     "title": "中国新店上线清单",
+     "detail": "新店开业前：美团/点评/抖音门店认领、一镜到底验真、后厨实拍、团购开业券、证照公示；原卡中的Certificate of Occupancy/Sysco适用海外。",
+     "source": "新京报：一镜到底验真+必点榜食安一票否决",
+     "sourceUrl": "https://www.bjnews.com.cn/detail/1780985391168584.html",
+     "sourceDate": "2026-06",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:37f1794746811585e670af20e675b3a5cd71c877454cd2383d4de5a6d47aa374"
+    },
+    {
+     "id": "supp-2026-11:156:02",
+     "title": "新店评价起步",
+     "detail": "点评对新店有流量倾斜与新店榜，开业期专注真实评价积累，不做利诱促评。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3a2aa778a58ed844bb454263a3a37021d8024089a6cae4b9ac6a2fa5e97af884"
+    },
+    {
+     "id": "supp-2026-11:156:03",
+     "title": "新店回本跟踪",
+     "detail": "参照小菜园新店89.2%已收支平衡、回收期7.3个月等公开口径，给新店设阶段目标，由老板确认。",
+     "source": "赢商网：小菜园员工/原材料/外卖服务开支占比",
+     "sourceUrl": "https://m.winshang.com/news720702.html",
+     "sourceDate": "2024-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:741237bb655e75d252c16b3ed68dfee3172aa1ca903192af0d38c2ab14a78aad"
+    }
+   ]
+  },
+  {
+   "idx": 157,
+   "name": "食物浪费审计与减量",
+   "person": "任减废",
+   "group": "连锁与可持续部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:157:01",
+     "title": "备料预测减废",
+     "detail": "过量备料比过量订货浪费更多，减废先从分餐段备料预测入手。",
+     "source": "LowCode Agency：用AI做备料预测减废",
+     "sourceUrl": "https://www.lowcode.agency/blog/how-to-use-ai-to-forecast-restaurant-demand-and-reduce-food-waste",
+     "sourceDate": "2026",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9e97646f4bfcd15c0f1310a453468c1cce549db105567f773f740ac3142ba13f"
+    }
+   ]
+  },
+  {
+   "idx": 158,
+   "name": "能源、用水与包装效率",
+   "person": "袁节能",
+   "group": "连锁与可持续部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:158:01",
+     "title": "中国节能口径",
+     "detail": "国内节能优先看空调与厨房设备：红餐报告显示百家以上连锁的AI空调节能年收益可达百万级；电价按当地工商业分时电价核算。原卡中的美国EPAct/PFAS仅作参考。",
+     "source": "新华网：《餐饮降本增效创新策略研究报告2026》AI空调节能",
+     "sourceUrl": "https://www.news.cn/food/20260312/0f0a3bd2026c40d288dce22d76a8e7fa/c.html",
+     "sourceDate": "2026-03-12",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:280ea8e915cf919fc98f982a0e7fe3ce3ad5b66c388092e2aa57a7dce519d914"
+    },
+    {
+     "id": "supp-2026-11:158:02",
+     "title": "燃气安全优先于燃气节能",
+     "detail": "燃气改造先满足报警装置与切断阀要求，再谈节能。",
+     "source": "凤凰网：新安全生产法要求餐饮安装可燃气体报警",
+     "sourceUrl": "https://tech.ifeng.com/c/8vxran4aG9n",
+     "sourceDate": "2026",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:89ae7ced5c3642094af066306ed6e9dea00c9a29b146c6e1216f8d1d8c518075"
+    }
+   ]
+  },
+  {
+   "idx": 159,
+   "name": "业务连续性与数据治理",
+   "person": "柳韧性",
+   "group": "连锁与可持续部",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:159:01",
+     "title": "会员与顾客数据合规",
+     "detail": "顾客手机号、生日等按个人信息保护法最小必要处理，限定访问权限，离职员工及时回收权限。",
+     "source": "安全内参：扫码点餐的个人信息保护要点",
+     "sourceUrl": "https://www.secrss.com/articles/59305",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:dfdaf37f977cb61dcc18f4f2dc7b9d97b0475cb33ab981b234528a3dd1c364b7"
+    },
+    {
+     "id": "supp-2026-11:159:02",
+     "title": "断网/系统故障时的核销应急",
+     "detail": "收银或网络故障时：团购券记录券码与手机号后补核销、外卖用平台商家App接单、储值消费手工登记，恢复后补录。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:1ed839c57eaa677ea221ab06589ace73362f8cd7ec3ab5b6ad608bc1a36d8b33"
+    },
+    {
+     "id": "supp-2026-11:159:03",
+     "title": "闭店/停业预案含储值退费",
+     "detail": "门店停业预案须包含储值卡退费方案与公告（小南国委托预付卡协会登记退费）。",
+     "source": "北京商报：小南国预付卡退费方案",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0401/589421.shtml",
+     "sourceDate": "2026-04-01",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:2bb74af4986cef8c84811b889ba9009b42f7c704de0c6de7b91e8ff56eb07a0f"
+    }
+   ]
+  },
+  {
+   "idx": 160,
+   "name": "超级店长·活动策划",
+   "person": "店小满",
+   "group": "门店运营部",
+   "originalSkillCount": 9,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:160:01",
+     "title": "活动合规先过三关",
+     "detail": "活动策划先检查：宣传用语可证实（不用最/第一）、价格与原价真实、预付/储值活动符合当地预付卡规定（北京预收余额达20万须备案存管）。",
+     "source": "新华网：北京单用途预付卡备案及预收资金管理办法",
+     "sourceUrl": "https://www.news.cn/20260528/929d95d62bec4ee785d54b9fb7fb6ba1/c.html",
+     "sourceDate": "2026-05-28",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:19d39090f76488a6e509e9e7da8c82245e12d0fd1d7a359d644f070777653518"
+    },
+    {
+     "id": "supp-2026-11:160:02",
+     "title": "团购活动周期按核销规律排",
+     "detail": "抖音团购核销集中在购买后25-28天，活动结束后至少留1个月的核销接待与复盘期。",
+     "source": "界面：抖音团购核销周期25-28天",
+     "sourceUrl": "https://www.jiemian.com/article/11558409.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:be1b1f1b7ffac845a8ce949668b075c42490bbf8b2109ef2d33931f4e2779bdd"
+    },
+    {
+     "id": "supp-2026-11:160:03",
+     "title": "活动邀评不得以利换评",
+     "detail": "活动中不设置'好评返现/赠菜换好评'环节，点评已重点打击。",
+     "source": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+     "sourceUrl": "https://m.thepaper.cn/newsDetail_forward_32309777",
+     "sourceDate": "2026-01-04",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:1246819fdb9021e242a031dc0d2e00399978e76ef9f21e1509c07ba90bf40f6d"
+    }
+   ]
+  },
+  {
+   "idx": 161,
+   "name": "巡店督导",
+   "person": "查巡巡",
+   "group": "门店运营部",
+   "originalSkillCount": 0,
+   "supplementSkillCount": 8,
+   "skills": [
+    {
+     "id": "supp-2026-11:161:01",
+     "title": "巡店表按国内检查要点生成",
+     "detail": "巡店检查表以当地《餐饮服务食品安全监督检查要点表》为底，叠加品牌SOP：证照公示、健康证、三类原料分开、生熟分开、洗手设施、消毒保洁、废弃物、虫害防治。",
+     "source": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+     "sourceUrl": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:97b6b24c0c5eb05f4a30e92814da92d704dd55c4bc0b5489a0056c40f11c31d8"
+    },
+    {
+     "id": "supp-2026-11:161:02",
+     "title": "连锁三级巡查节奏",
+     "detail": "门店每日自查→区域/分支每周排查形成报告→总部每月调度，巡店结果按此三级归档（连锁新规）。",
+     "source": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+     "sourceUrl": "https://www.peopleapp.com/column/30050879711-500007233515",
+     "sourceDate": "2025-12-01施行",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:22626701d88b4c88ae040b5fd51b3983863aac6fba7d71c7247631d45add8727"
+    },
+    {
+     "id": "supp-2026-11:161:03",
+     "title": "照片巡店的取证规范",
+     "detail": "门店上传照片需带时间、门店名水印，固定拍摄点位（冷藏柜温度、后厨地面、消毒柜、垃圾桶、健康证墙）；AI先比对再人工复核。",
+     "source": "实在智能：AI店长巡检40余巡查点闭环",
+     "sourceUrl": "https://www.ai-indeed.com/encyclopedia/23857.html",
+     "sourceDate": "2026-06-23",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:fce45de96adcae64ef9ed164764d6f8bf0328d478356147fe83f884331693a05"
+    },
+    {
+     "id": "supp-2026-11:161:04",
+     "title": "问题分级与整改闭环",
+     "detail": "问题分三级：红（食安/燃气/证照，24小时整改并复查）、黄（卫生/陈列，3天）、蓝（服务细节，下次巡店复查）；每条问题有责任人、期限、复查照片。",
+     "source": "福州：明厨亮灶AI巡查触发式监管",
+     "sourceUrl": "https://finance.sina.cn/2023-03-27/detail-imynhkpi8696966.d.html",
+     "sourceDate": "2023-03-27",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:bc19d08a6092744e3f9288b7dc985667227f030c8c219c014b47628739fcafbb"
+    },
+    {
+     "id": "supp-2026-11:161:05",
+     "title": "神秘顾客与巡店互补",
+     "detail": "巡店看后厨和流程，神秘顾客看顾客视角的服务；暗访需防止身份被门店识别（巴奴反例），由第三方或总部随机派单。",
+     "source": "新浪：神秘顾客平台盘点（规模/派单/整改闭环）",
+     "sourceUrl": "https://news.sina.cn/sx/2026-05-31/detail-inhzuvrq4746771.d.html",
+     "sourceDate": "2026-05-31",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:33403dc167f0d07058de1c33ca4e62a8022e7ba87c33a9d47838f0893175619f"
+    },
+    {
+     "id": "supp-2026-11:161:06",
+     "title": "外卖线上门店也要巡",
+     "detail": "线上巡查：网店名与招牌一致、无堂食标识、证照公示更新、后厨实拍是否在播、店铺分食安项是否完成。",
+     "source": "北京商报：美团外卖'店铺分'新规",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+     "sourceDate": "2026-06-09",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:15ee694be1441cad12d575bd122d2bd41b3d5ad1a64c320ba5b2349dcf24a29f"
+    },
+    {
+     "id": "supp-2026-11:161:07",
+     "title": "巡店结果进店长考核",
+     "detail": "小菜园把AI分析的口碑数据纳入店长绩效；巡店分与线上口碑分可组合成店长月度评分，权重由老板定。",
+     "source": "证券日报《后厨有算法 经营有数据 服务有温度》",
+     "sourceUrl": "https://news.10jqka.com.cn/20261029/c681211142.shtml",
+     "sourceDate": "2026-10-29",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:fbda122379bf92df12efaf70e32c5faa9bf6529a87ee9422c4e9d93d48dbee2c"
+    },
+    {
+     "id": "supp-2026-11:161:08",
+     "title": "高频违法点优先查",
+     "detail": "巡店优先排查近一年执法高频问题：许可项目不符、健康证过期、过期原料、添加剂、虚假宣传、地址不符。",
+     "source": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+     "sourceUrl": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:99af254c39c4b266be1b7bba2cc0fd379c875528ec33ff1c1b01f7b06623e382"
+    }
+   ]
+  },
+  {
+   "idx": 0,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 12,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c0:01",
+     "title": "餐饮节点选题加平台规则提醒",
+     "detail": "做餐饮选题时同时提示当期平台规则（小红书AI标注、商业报备），避免选题可做但发布违规。",
+     "source": "搜狐：小红书2026年7月规则整理（AI标注/导流/报备）",
+     "sourceUrl": "https://sohu.com/a/1045179482_121124358",
+     "sourceDate": "2026-07",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:a024ef25c9062d5e10228b40ee1dcc6d2fdbf96cfa1a14cfd5c8d54396e90ef4"
+    }
+   ]
+  },
+  {
+   "idx": 1,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c1:01",
+     "title": "餐饮舆情重点盯食安关键词",
+     "detail": "监测品牌与竞品时，'拉肚子/异物/过期/后厨'等食安关键词优先预警，并提示老板走食安处置流程。",
+     "source": "新京报：一镜到底验真+必点榜食安一票否决",
+     "sourceUrl": "https://www.bjnews.com.cn/detail/1780985391168584.html",
+     "sourceDate": "2026-06",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:77fb4ef7bdd273ea94f1d8751907568be95281c1fec34e15bad9711fba434c85"
+    }
+   ]
+  },
+  {
+   "idx": 2,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c2:01",
+     "title": "拆解探店内容先辨真伪",
+     "detail": "拆解爆款探店时注意部分达人看图说话、数据造假，标注'可能非真实到店'的样本，不作为学习对象。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:0c013eb590802d8a73c72c9b505ecf7fddb8c8afc51b6e8d0e036a8d631906a7"
+    }
+   ]
+  },
+  {
+   "idx": 3,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 5,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c3:01",
+     "title": "餐饮文案红线",
+     "detail": "不用最/第一/顶级；鲜切/手打/产地等事实描述需老板确认有证据；功效宣称一律不写。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:273158d0784379387f3198b0d942348897f3c6d667ac8b4c33e13dc3d2379659"
+    }
+   ]
+  },
+  {
+   "idx": 4,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c4:01",
+     "title": "门店真实感优先",
+     "detail": "餐饮内容避免过度修饰，小红书曾公开倡议探店领域避免过度修饰。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:b4f2eed5afd4ecdfd59594fc793f54f35bc77ccc2b909e3fe2b87a11cabed170"
+    }
+   ]
+  },
+  {
+   "idx": 5,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c5:01",
+     "title": "菜品图与实物一致",
+     "detail": "AI配图不得把菜品份量、食材画得超出实物；配图需标AI辅助。",
+     "source": "搜狐：小红书2026年7月规则整理（AI标注/导流/报备）",
+     "sourceUrl": "https://sohu.com/a/1045179482_121124358",
+     "sourceDate": "2026-07",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:f89151df112aceefc23a1b8d1817ce93ba0f87c0f4d27843f724f92e044432d2"
+    }
+   ]
+  },
+  {
+   "idx": 6,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c6:01",
+     "title": "封面不夸大份量",
+     "detail": "封面菜品图保持真实份量与配料，避免被投诉图文不符。",
+     "source": "天津：'手打牛肉丸'虚假宣传案",
+     "sourceUrl": "https://cj.sina.com.cn/articles/view/3314280193/c58be70102001j3og",
+     "sourceDate": "2026",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:48324a275033c48da02723c46398027b164d7f61a374ce7d7e978f138395a14f"
+    }
+   ]
+  },
+  {
+   "idx": 7,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c7:01",
+     "title": "剧情内容不涉及食安玩笑",
+     "detail": "剧情类内容不拿后厨卫生、过期食材等开玩笑，防止被截图误传。",
+     "source": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+     "sourceUrl": "",
+     "sourceDate": "2026-11",
+     "gap": "ROLE",
+     "gapNote": "岗位胜任力缺口",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:82d49b850cfb75245a08cb672ec5b7d3561b0964dbd7fa26c1fa09a37fe41fbf"
+    }
+   ]
+  },
+  {
+   "idx": 8,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c8:01",
+     "title": "商业笔记走报备",
+     "detail": "代发探店/种草笔记时提示走蒲公英报备，避免私信合作被处罚。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:980255de01eb5bfd239a8239d8e5e140fd873d8229a4c581cd223f52961541c8"
+    }
+   ]
+  },
+  {
+   "idx": 9,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 6,
+   "supplementSkillCount": 1,
+   "skills": [
+    {
+     "id": "supp-2026-11:c9:01",
+     "title": "复盘加团购核销口径",
+     "detail": "复盘餐饮内容时，若挂团购链接，按25-28天核销周期统计转化，不在发布后几天就下结论。",
+     "source": "界面：抖音团购核销周期25-28天",
+     "sourceUrl": "https://www.jiemian.com/article/11558409.html",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:3119aacf05093ffb99de6e42dfb3dcdea2dcb42e7073ed7601f5cb24d52574aa"
+    }
+   ]
+  },
+  {
+   "idx": 10,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 0,
+   "supplementSkillCount": 2,
+   "skills": [
+    {
+     "id": "supp-2026-11:c10:01",
+     "title": "带货视频价格一致性",
+     "detail": "视频中出现的团购价/套餐内容必须与老板确认的线上实际价格一致，否则不出现价格。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:fc8fb7ea71dca428ee1fb7b9364a5da2993f09dcd71b051b15c52f807320fa6a"
+    },
+    {
+     "id": "supp-2026-11:c10:02",
+     "title": "餐饮带货词自查",
+     "detail": "口播中不出现最好吃、第一、祖传秘方、治病养生等表述。",
+     "source": "SAMR网络食品虚假宣传6个月专项整治",
+     "sourceUrl": "https://www.lexiscn.com/latest_message.php?id=510015",
+     "sourceDate": "2026-04-30",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9b8cf96d97ae9f038451e89f61c7820750790914c4f2cf9f96549654055cd783"
+    }
+   ]
+  },
+  {
+   "idx": 11,
+   "name": null,
+   "group": "内容生产部",
+   "catalog": "content",
+   "originalSkillCount": 0,
+   "supplementSkillCount": 3,
+   "skills": [
+    {
+     "id": "supp-2026-11:c11:01",
+     "title": "种草笔记商业报备提醒",
+     "detail": "生成的种草笔记若为商家投放，交付时提醒老板通过蒲公英报备或以企业号发布。",
+     "source": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+     "sourceUrl": "https://www.cbndata.com/information/235910",
+     "sourceDate": "—",
+     "gap": "CN",
+     "gapNote": "原卡偏海外口径，补中国本土做法",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7a2232d51d37de907b768902c490d9108b19577d53efa1d05912739a2a94b6f5"
+    },
+    {
+     "id": "supp-2026-11:c11:02",
+     "title": "AI配图标注提醒",
+     "detail": "AI生成配图发布时须勾选AI辅助创作标识。",
+     "source": "搜狐：小红书2026年7月规则整理（AI标注/导流/报备）",
+     "sourceUrl": "https://sohu.com/a/1045179482_121124358",
+     "sourceDate": "2026-07",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:9dd9b14c192f38b3c4090e16e74487a6fffd18cc390c09c1ed2fd67d1a42e65a"
+    },
+    {
+     "id": "supp-2026-11:c11:03",
+     "title": "事实性卖点需老板确认",
+     "detail": "鲜切/现熬/产地等卖点只有老板在'卖点补充'里确认后才写入正文。",
+     "source": "北京商报：小龙坎'鲜切牛肉'实为速冻调理肉被罚",
+     "sourceUrl": "https://www.bbtnews.com.cn/2026/0720/599856.shtml",
+     "sourceDate": "2026-07-20",
+     "gap": "NEW",
+     "gapNote": "2025-2026新规/平台新规则",
+     "origin": "supplement_2026_11",
+     "appendOnly": true,
+     "enabled": true,
+     "locked": false,
+     "verificationStatus": "supplement_pending_owner_review",
+     "fingerprint": "sha256:7bdb73c23e0af6ac7ce892ba20e893541c140c49a4dc34bfb9fb3176a60f9c0d"
+    }
+   ]
+  }
+ ],
+ "stats": {
+  "restaurantEmployees": 61,
+  "restaurantSupplementCards": 163,
+  "contentSupplementCards": 15,
+  "commonCards": 4,
+  "employeesWithoutSupplement": []
+ },
+ "sources": {
+  "hongcan_ai2026": {
+   "title": "红餐《中国餐饮AI应用研究报告2026》",
+   "url": "https://m.thepaper.cn/newsDetail_forward_32862632",
+   "date": "2026-03-31"
+  },
+  "zqrb_ai": {
+   "title": "证券日报《后厨有算法 经营有数据 服务有温度》",
+   "url": "https://news.10jqka.com.cn/20261029/c681211142.shtml",
+   "date": "2026-10-29"
+  },
+  "glh_ai": {
+   "title": "格隆汇：连锁餐饮AI全链路案例",
+   "url": "https://m.gelonghui.com/p/6954159",
+   "date": "2026"
+  },
+  "mt_zg": {
+   "title": "新华网：54万餐饮老板上美团智能掌柜问AI",
+   "url": "https://www.news.cn/tech/20260211/e625e894ef0e4a43b206e6c64a8071af/c.html",
+   "date": "2026-02-11"
+  },
+  "mt_brand": {
+   "title": "新华网：智能掌柜·品牌顾问面向连锁发布",
+   "url": "https://www.news.cn/tech/20260327/ff315e3e1e4d4e97a20f87db6f04e342/c.html",
+   "date": "2026-03-27"
+  },
+  "mt_catpaw": {
+   "title": "新华网：美团CatPaw经营工作台亮相服贸会",
+   "url": "https://www.news.cn/tech/20260909/79161147f2414bc79664a28d32802f8e/c.html",
+   "date": "2026-09-09"
+  },
+  "mt_miaoshou": {
+   "title": "证券市场周刊：妙手外卖版·袋鼠管家",
+   "url": "https://static.weeklyonstock.com/26/1023/wd144038.html",
+   "date": "2026-10-23"
+  },
+  "site_woshipm": {
+   "title": "人人都是产品经理《餐饮门店极简选址及客流量(捕获率)测算方法》",
+   "url": "https://www.woshipm.com/marketing/6259484.html",
+   "date": "—"
+  },
+  "site_amap_os": {
+   "title": "开源 store-site-analysis（基于高德开放平台）",
+   "url": "https://adg.csdn.net/6a57317c10ee7a33f28dc23b.html",
+   "date": "2026"
+  },
+  "lanjinger_ai": {
+   "title": "蓝鲸：AI巡检/排班/预测替代人工经验",
+   "url": "https://www.lanjinger.com/d/1786083434515024087",
+   "date": "2026"
+  },
+  "prov_forecast": {
+   "title": "Provectus：Blue Bottle 100+店AI需求预测案例",
+   "url": "https://provectus.com/case-studies/blue-bottle-coffee-demand-forecasting/",
+   "date": "2026"
+  },
+  "prep_forecast": {
+   "title": "LowCode Agency：用AI做备料预测减废",
+   "url": "https://www.lowcode.agency/blog/how-to-use-ai-to-forecast-restaurant-demand-and-reduce-food-waste",
+   "date": "2026"
+  },
+  "gb31654_temp": {
+   "title": "团标引《餐饮服务食品安全操作规范》冷藏0~10℃/冷冻≤-18℃",
+   "url": "https://www.ttbz.org.cn/upload/file/20240827/6386037550740197468716182.pdf",
+   "date": "2024"
+  },
+  "gb31654": {
+   "title": "GB 31654-2021《餐饮服务通用卫生规范》",
+   "url": "https://www.chinesestandard.net/PDF-EN/GBT31654-2021EN-P13P-H10896H-448400.pdf",
+   "date": "2021-02-22发布/2022-02-22实施"
+  },
+  "order60": {
+   "title": "《企业落实食品安全主体责任监督管理规定》总局令60号（97号修正）",
+   "url": "https://www.ttbz.org.cn/Home/PdfFileStreamGet/c3QsMTYxODgz",
+   "date": "2025-04-15实施"
+  },
+  "chain_reg": {
+   "title": "《餐饮服务连锁企业落实食品安全主体责任监督管理规定》解读",
+   "url": "https://www.peopleapp.com/column/30050879711-500007233515",
+   "date": "2025-12-01施行"
+  },
+  "chain_reg2": {
+   "title": "新华网：总局食品安全专题发布会（连锁新规五方面）",
+   "url": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+   "date": "2025-09-28"
+  },
+  "chain_reg3": {
+   "title": "锦天城：连锁新规分级监管（门店数分级）",
+   "url": "https://www.allbrightlaw.com/CN/10531/CD29384AF2A59A5A.aspx",
+   "date": "2025-10-11"
+  },
+  "small_check": {
+   "title": "灵宝市：餐饮服务监督检查要点表（日管控/周排查/月调度）",
+   "url": "https://www.lingbao.gov.cn/group1/M00/06/61/CqDI22mBqOuAQIXqAAR9LO63EmA46.docx",
+   "date": "—"
+  },
+  "risk_grade": {
+   "title": "DB1408/T 052—2024 餐饮食品经营分级评定",
+   "url": "https://www.yuncheng.gov.cn/uploadfiles/202410/21/2024102110464788323180.pdf",
+   "date": "2024"
+  },
+  "cases_163a": {
+   "title": "网易：入网餐饮典型案例（冷食许可/地址不符/铝超标）",
+   "url": "https://c.m.163.com/news/a/KSQ9P56U0530WJIN.html",
+   "date": "2026"
+  },
+  "cases_163b": {
+   "title": "网易：健康证过期上岗被处罚案例",
+   "url": "https://c.m.163.com/news/a/KSE8L5E505568W0A.html",
+   "date": "2026"
+  },
+  "cases_cq": {
+   "title": "腾讯新闻：重庆伪造许可证入网案例",
+   "url": "https://news.qq.com/rain/a/20260820A06QO100",
+   "date": "2026"
+  },
+  "cases_nj": {
+   "title": "南京网络餐饮食品安全典型案例",
+   "url": "https://finance.sina.com.cn/jjxw/2026-05-12/doc-inhxqeev1647093.shtml",
+   "date": "2026-05-12"
+  },
+  "xlk_fake": {
+   "title": "北京商报：小龙坎'鲜切牛肉'实为速冻调理肉被罚",
+   "url": "https://www.bbtnews.com.cn/2026/0720/599856.shtml",
+   "date": "2026-07-20"
+  },
+  "beef_ball": {
+   "title": "天津：'手打牛肉丸'虚假宣传案",
+   "url": "https://cj.sina.com.cn/articles/view/3314280193/c58be70102001j3og",
+   "date": "2026"
+  },
+  "ad_3600": {
+   "title": "网易：广告成分与实际不符罚3600元",
+   "url": "https://c.m.163.com/news/a/L688K4AT0519F4DP.html",
+   "date": "2026"
+  },
+  "samr_campaign": {
+   "title": "SAMR网络食品虚假宣传6个月专项整治",
+   "url": "https://www.lexiscn.com/latest_message.php?id=510015",
+   "date": "2026-04-30"
+  },
+  "bj_prepaid": {
+   "title": "新华网：北京单用途预付卡备案及预收资金管理办法",
+   "url": "https://www.news.cn/20260528/929d95d62bec4ee785d54b9fb7fb6ba1/c.html",
+   "date": "2026-05-28"
+  },
+  "sh_prepaid": {
+   "title": "上海市市场监管局 沪市监提〔2026〕287号答复（预付卡新规）",
+   "url": "https://www.shanghai.gov.cn/cmsres/ba/baeb50235d59486eb3cbb3a019d45f52/f95d9c44a696d772336ce15d9cc6b9c0.doc",
+   "date": "2026"
+  },
+  "xnn_refund": {
+   "title": "北京商报：小南国预付卡退费方案",
+   "url": "https://www.bbtnews.com.cn/2026/0401/589421.shtml",
+   "date": "2026-04-01"
+  },
+  "parttime": {
+   "title": "法大大：劳动合同法第68-72条 非全日制用工",
+   "url": "https://www.fadada.com/article/Basics-005157",
+   "date": "—"
+  },
+  "parttime_inj": {
+   "title": "头条：非全日制须缴工伤保险",
+   "url": "https://www.toutiao.com/zixun/7537166278004508707/",
+   "date": "—"
+  },
+  "sb_rule": {
+   "title": "红餐/蓝鲸：最高法司法解释(二)不缴社保约定无效",
+   "url": "https://www.lanjinger.com/d/1754624816052768512",
+   "date": "2025-08"
+  },
+  "waimai_123": {
+   "title": "IT之家：总局第123号令外卖新规6月1日施行",
+   "url": "https://www.ithome.com/0/957/800.htm",
+   "date": "2026-05-31"
+  },
+  "mt_storescore": {
+   "title": "北京商报：美团外卖'店铺分'新规",
+   "url": "https://www.bbtnews.com.cn/2026/0609/595693.shtml",
+   "date": "2026-06-09"
+  },
+  "mt_onetake": {
+   "title": "新京报：一镜到底验真+必点榜食安一票否决",
+   "url": "https://www.bjnews.com.cn/detail/1780985391168584.html",
+   "date": "2026-06"
+  },
+  "mt_report": {
+   "title": "投资者网：美团5月食安治理报告",
+   "url": "https://cj.sina.com.cn/articles/view/1393100891/5309085b02001gqfw",
+   "date": "2026-06-11"
+  },
+  "dp_report": {
+   "title": "新华网：大众点评《2025年评价透明度报告》",
+   "url": "https://www.news.cn/tech/20260323/b1ebc84e186b4b52bbba15059b229cbf/c.html",
+   "date": "2026-03-23"
+  },
+  "dp_star": {
+   "title": "红餐/澎湃：'赠菜换评价'被叫停与星级规则",
+   "url": "https://m.thepaper.cn/newsDetail_forward_32309777",
+   "date": "2026-01-04"
+  },
+  "dp_rumor": {
+   "title": "南方财经：点评评分坊间说法辟谣",
+   "url": "https://m.sfccn.com/2026/9-9/2OMDE0NzNfMjIzNTk2OA.html",
+   "date": "2026-09-09"
+  },
+  "dy_cycle": {
+   "title": "界面：抖音团购核销周期25-28天",
+   "url": "https://www.jiemian.com/article/11558409.html",
+   "date": "—"
+  },
+  "tg_huxiu": {
+   "title": "虎嗅：到店团购新一轮厮杀与商家定位",
+   "url": "https://www.huxiu.com/article/4869803.html",
+   "date": "2026-06-24"
+  },
+  "member_data": {
+   "title": "人人都是产品经理：8600万会员数据节点",
+   "url": "https://www.woshipm.com/operate/6021243.html",
+   "date": "—"
+  },
+  "yhy_member": {
+   "title": "人人都是产品经理：云海肴会员+社群",
+   "url": "https://www.woshipm.com/operate/5119284.html",
+   "date": "—"
+  },
+  "super_user": {
+   "title": "人人都是产品经理：社群'去运营化'与超级用户",
+   "url": "https://www.woshipm.com/operate/6030368.html",
+   "date": "—"
+  },
+  "xcy_cost": {
+   "title": "投资界：小菜园招股书成本结构",
+   "url": "https://news.pedaily.cn/202401/528805.shtml",
+   "date": "2024-01"
+  },
+  "xcy_cost2": {
+   "title": "赢商网：小菜园员工/原材料/外卖服务开支占比",
+   "url": "https://m.winshang.com/news720702.html",
+   "date": "2024-01"
+  },
+  "xcy_payback": {
+   "title": "赢商网：小菜园与绿茶单店投入与回收期",
+   "url": "https://m.winshang.com/news721856.html",
+   "date": "2024-01"
+  },
+  "lvcha": {
+   "title": "蓝鲸：绿茶小店型坪效与回报周期",
+   "url": "https://www.lanjinger.com/d/1775009740920553334",
+   "date": "2026"
+  },
+  "robot_rpt": {
+   "title": "新华网：《餐饮AI炒菜机器人研究报告2026》",
+   "url": "https://www.news.cn/food/20260409/89354f4c0e4a47f7a099d1974982324a/c.html",
+   "date": "2026-04-09"
+  },
+  "cost_band": {
+   "title": "搜狐：餐饮业平均成本率区间（经验值）",
+   "url": "https://m.sohu.com/a/972340838_469630",
+   "date": "—"
+  },
+  "wm_fee_hist": {
+   "title": "网易：美团佣金率历年变化与费率结构",
+   "url": "https://www.163.com/dy/article/H1H40R1I05118DFD.html",
+   "date": "—"
+  },
+  "wm_fee_2026": {
+   "title": "Tech星球：2026商家佣金与配送费上涨",
+   "url": "https://c.m.163.com/news/a/KUGIROH005319LDA.html",
+   "date": "2026-06"
+  },
+  "xhs_pgy": {
+   "title": "CBNData：小红书收紧素人笔记、走蒲公英报备",
+   "url": "https://www.cbndata.com/information/235910",
+   "date": "—"
+  },
+  "xhs_2026": {
+   "title": "搜狐：小红书2026年7月规则整理（AI标注/导流/报备）",
+   "url": "https://sohu.com/a/1045179482_121124358",
+   "date": "2026-07"
+  },
+  "shuadan": {
+   "title": "CBNData：刷单罚款与盗用同行视频侵权案",
+   "url": "https://www.cbndata.com/information/251421",
+   "date": "—"
+  },
+  "mystery": {
+   "title": "新浪：神秘顾客平台盘点（规模/派单/整改闭环）",
+   "url": "https://news.sina.cn/sx/2026-05-31/detail-inhzuvrq4746771.d.html",
+   "date": "2026-05-31"
+  },
+  "banu_mystery": {
+   "title": "北京商报：巴奴'神秘顾客'变味",
+   "url": "https://www.bbtnews.com.cn/2024/0319/507497.shtml",
+   "date": "2024-03-19"
+  },
+  "r365_train": {
+   "title": "Restaurant365：SOP映射降低复训成本",
+   "url": "https://www.restaurant365.com/blog/how-to-cut-retraining-costs-by-using-scalable-restaurant-lms/",
+   "date": "—"
+  },
+  "usfoods_ai": {
+   "title": "US Foods：用GPT辅助菜品研发的方法",
+   "url": "https://www.usfoods.com/great-food/food-trends/ai-restaurant-menu-innovation-with-gpts.html",
+   "date": "—"
+  },
+  "franchise_fine": {
+   "title": "中伦：特许经营'两店一年'与虚假招商处罚案例",
+   "url": "https://www.zhonglun.com/research/articles/55690.html",
+   "date": "2025"
+  },
+  "spc_franchise": {
+   "title": "最高法：7件商业特许经营典型案例",
+   "url": "https://www.court.gov.cn/zixun/xiangqing/508551.html",
+   "date": "2026-08-13"
+  },
+  "gas_alarm": {
+   "title": "凤凰网：新安全生产法要求餐饮安装可燃气体报警",
+   "url": "https://tech.ifeng.com/c/8vxran4aG9n",
+   "date": "2026"
+  },
+  "bj_gas": {
+   "title": "北京DB11/450 餐饮场所燃气安全",
+   "url": "https://bzh.scjgj.beijing.gov.cn/bzh/apifile/file/2021/20210325/0f76a13e-91fd-4ff9-bf13-7bb9d514a482.PDF",
+   "date": "—"
+  },
+  "pipl_scan": {
+   "title": "安全内参：扫码点餐的个人信息保护要点",
+   "url": "https://www.secrss.com/articles/59305",
+   "date": "—"
+  },
+  "cca_scan": {
+   "title": "中国日报：中烹协扫码点餐倡议",
+   "url": "https://cn.chinadaily.com.cn/a/202105/24/WS60ab17e6a3101e7ce9751314.html",
+   "date": "2021-05"
+  },
+  "bcg_menu": {
+   "title": "人人都是产品经理：波士顿矩阵在菜品规划中的应用",
+   "url": "https://www.woshipm.com/operate/6256253.html",
+   "date": "—"
+  },
+  "energy_rpt": {
+   "title": "新华网：《餐饮降本增效创新策略研究报告2026》AI空调节能",
+   "url": "https://www.news.cn/food/20260312/0f0a3bd2026c40d288dce22d76a8e7fa/c.html",
+   "date": "2026-03-12"
+  },
+  "fz_aicam": {
+   "title": "福州：明厨亮灶AI巡查触发式监管",
+   "url": "https://finance.sina.cn/2023-03-27/detail-imynhkpi8696966.d.html",
+   "date": "2023-03-27"
+  },
+  "aiinspect": {
+   "title": "实在智能：AI店长巡检40余巡查点闭环",
+   "url": "https://www.ai-indeed.com/encyclopedia/23857.html",
+   "date": "2026-06-23"
+  },
+  "mt_map": {
+   "title": "中证网：美团外卖门店地图与实拍前置",
+   "url": "https://stock.10jqka.com.cn/20260907/c679671957.shtml",
+   "date": "2026-09-07"
+  },
+  "chain_rate": {
+   "title": "新华网：连锁化率2020年15%→2024年23%",
+   "url": "https://www.news.cn/fortune/20250928/a0b5e9506b0d48bc815e5bb190d31dec/c.html",
+   "date": "2025-09-28"
+  },
+  "law_labor": {
+   "title": "《劳动合同法》第68-72条（非全日制）",
+   "url": "https://www.fadada.com/article/Basics-005157",
+   "date": "现行"
+  },
+  "internal": {
+   "title": "纳米work产品内部约束（PRD v2.2 / 会议纪要）",
+   "url": "",
+   "date": "2026-11"
+  }
+ }
+}

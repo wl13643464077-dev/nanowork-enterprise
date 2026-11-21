@@ -960,3 +960,92 @@ after(async () => {
   else process.env.AMAP_WEB_KEY = originalAmapKey;
   await removeTempDbSafely(DB_PATH);
 });
+
+// ===== PRD v2.2 FR-4.1 / 4.4 / 4.5：行情快查多角度扇出 + 二轮补检 + 来源档位 =====
+test("marshalWork：行情快查扇出多角度短查询，店铺不足时补检一轮，证据带可信档位与覆盖度规则", async () => {
+  process.env.AMAP_WEB_KEY = TEST_KEY;
+  const { classifyEmployeeIntent } = await import("../src/engines/employee-intent-router.js");
+  const { fetchImpl, calls: amapCalls } = amapFixture({ withCost: true });
+  const amapClient = createAmapClient({ fetchImpl, cache: createMemoryGeoPoiCache(), now: NOW });
+  const task = {
+    title: "太原吾悦广场毛血旺商圈的客单价是什么范围，有哪些代表的店",
+    type: "商圈画像",
+    requirement: "太原吾悦广场毛血旺商圈的客单价是什么范围，有哪些代表的店",
+  };
+  const intent = classifyEmployeeIntent({ employeeIdx: 102, title: task.title, requirement: task.requirement });
+  const employeeExecution = buildEmployeeExecutionProfile(102, {
+    tenantId: 1,
+    user: { id: 1, role: "boss", tenant_id: 1 },
+    intent,
+    outputMode: "paihuo_markdown",
+  });
+  const queries = [];
+  const generationCalls = [];
+  const output = await runWithTenant(1, () =>
+    marshalWork(testMarshal, task, "boss", {
+      employeeExecution,
+      amapClient,
+      webSearchFn: async (query) => {
+        queries.push(String(query));
+        return {
+          attempted: true,
+          ok: true,
+          provider: "mock-search",
+          results: [
+            {
+              title: `吾悦广场毛血旺必吃榜 ${queries.length}`,
+              url: `https://search.test/rank-${queries.length}`,
+              snippet: "太原吾悦广场毛血旺餐厅推荐榜：老街毛血旺（吾悦店）人均68，渝味毛血旺人均45。",
+            },
+          ],
+          note: null,
+        };
+      },
+      controlledWebFetchFn: async (sources) => ({
+        attempted: true,
+        ok: true,
+        provider: "mock-controlled-web-evidence",
+        results: controlledSourceResults(sources),
+        evidence: {
+          schemaVersion: "nanowork.controlled-web-evidence/1",
+          requested: sources.length,
+          fetched: sources.length + 1,
+          failures: [],
+          externalCall: true,
+          ssrfProtected: true,
+          redirectsRevalidated: true,
+          responseBytesStored: false,
+        },
+      }),
+      locationIntelligenceFn: async (value, options = {}) =>
+        collectLocationIntelligence(value, {
+          ...options,
+          isochroneProvider: deterministicIsochroneProvider,
+          fetchImpl: mapFetchFixture([]),
+          timeoutMs: 100,
+        }),
+      generateFn: async (args) => {
+        generationCalls.push(args);
+        return { text: "## 结论\n本次只找到 3 家。", mode: "api", model: "test-model", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    }),
+  ).catch((error) => ({ error }));
+
+  // 多角度短查询：含“必吃 榜”“人均 餐厅”等短词，不把整句长指令当查询。
+  assert.ok(queries.some((query) => /必吃 榜/u.test(query)), `queries: ${queries.join(" / ")}`);
+  assert.ok(queries.some((query) => /人均 餐厅/u.test(query)));
+  assert.ok(!queries.some((query) => query.includes("客单价是什么范围")), "不得把整句当查询");
+  // 店铺远不足 15 家 → 第二轮换角度补检（同义词/团购/口碑等）。
+  assert.ok(queries.some((query) => /团购 人均|口碑 老店|美食 地图/u.test(query)), "应触发二轮补检");
+  assert.equal(output.error, undefined, output.error?.message);
+  const generation = generationCalls.at(-1);
+  assert.ok(generation, "应调用模型");
+  assert.match(generation.system, /覆盖度未达标/u);
+  assert.match(generation.system, /本次只找到 N 家/u);
+  assert.match(generation.userMsg, /【可信档位】B·参考（榜单\/聚合\/团购线索）/u);
+  assert.match(generation.userMsg, /【来源档位】/u);
+  assert.ok(output.marketScanCoverage, "返回覆盖度");
+  assert.equal(output.marketScanCoverage.thresholds.stores, 15);
+  assert.ok(output.marketScanCoverage.webStores >= 2, "从公开网页抽到店铺实体");
+  assert.equal(output.marketScanCoverage.passed, false);
+});

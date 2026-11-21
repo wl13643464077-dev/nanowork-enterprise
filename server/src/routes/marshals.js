@@ -1,3 +1,15 @@
+import { buildAnswerShapeAudit } from "../engines/employee-answer-shapes.js";
+import {
+  classifyEmployeeIntent,
+  intentRequiresPublicResearch,
+  normalizeIntentType,
+} from "../engines/employee-intent-router.js";
+import {
+  appendFollowupAnswers,
+  buildFollowupQuestions,
+  extractHandoffSuggestions,
+  getSlotPreferences,
+} from "../engines/employee-dispatch-followups.js";
 import { hasStoredAiDelivery } from '../engines/stored-ai-delivery.js';
 import { isTesterBusinessActor } from '../engines/tester-access.js';
 import { Router } from "express";
@@ -53,6 +65,7 @@ import crypto from "node:crypto";
 import {
   buildEmployeeExecutionProfile,
   EMPLOYEE_TASK_TYPES,
+  handoffsFromSnapshot,
   resolveMinimalEmployeeDispatchInput,
 } from "../employee-workbench.js";
 import { validateCanonicalEmployeeProfile } from "../engines/canonical-employee-profile.js";
@@ -1461,7 +1474,7 @@ export async function dispatchMarshalTask(req, res) {
       imageName,
     } = dispatchPayload;
     const taskTitle = typeof title === "string" ? title.trim() : "";
-    const taskRequirement =
+    let taskRequirement =
       requirement == null
         ? ""
         : typeof requirement === "string"
@@ -1507,11 +1520,63 @@ export async function dispatchMarshalTask(req, res) {
         .status(400)
         .json({ error: "指定数字员工不属于当前分部或未启用" });
     }
+    // PRD v2.2 FR-1：先判题（快查/诊断/方案/产物/完整报告），再按题型组装
+    // 答题形态与联网策略。老板可在前端手动改题型（intentType，如“升级为完整报告”）。
+    const requestedIntentType =
+      req.body?.intentType == null || req.body.intentType === ""
+        ? null
+        : String(req.body.intentType).slice(0, 20);
+    if (requestedIntentType && !normalizeIntentType(requestedIntentType)) {
+      return res.status(400).json({ error: "题型不正确" });
+    }
+    let taskIntent = selectedSpecialist
+      ? classifyEmployeeIntent({
+          employeeIdx: selectedSpecialist.employee_idx,
+          title: taskTitle,
+          requirement: taskRequirement,
+          attachmentCount: files.length + (taskImage ? 1 : 0),
+          requestedType: requestedIntentType,
+        })
+      : null;
+    // PRD v2.2 FR-2：老板在派活前回答了追问（或点了“用默认”），把答案拼进任务书。
+    // 只接受本题实际会追问的 key；题型保持不变，只刷新缺失参数。
+    const followupAnswers =
+      req.body?.followupAnswers && typeof req.body.followupAnswers === "object" && !Array.isArray(req.body.followupAnswers)
+        ? req.body.followupAnswers
+        : null;
+    let followupApplied = [];
+    if (taskIntent && followupAnswers) {
+      const followupQuestions = buildFollowupQuestions(taskIntent, {
+        preferences: getSlotPreferences(),
+      });
+      const appended = appendFollowupAnswers(taskRequirement, followupAnswers, followupQuestions);
+      if (appended !== taskRequirement && appended.length <= 32000) {
+        followupApplied = followupQuestions
+          .filter((question) => Object.prototype.hasOwnProperty.call(followupAnswers, question.key))
+          .map((question) => question.key);
+        taskRequirement = appended;
+        const refreshed = classifyEmployeeIntent({
+          employeeIdx: selectedSpecialist.employee_idx,
+          title: taskTitle,
+          requirement: taskRequirement,
+          attachmentCount: files.length + (taskImage ? 1 : 0),
+          requestedType: taskIntent.type,
+        });
+        taskIntent = {
+          ...refreshed,
+          confidence: taskIntent.confidence,
+          source: taskIntent.source,
+          reason: taskIntent.reason,
+          followup_applied: followupApplied,
+        };
+      }
+    }
     // 派活默认走本地派活AI的执行逻辑：紧凑岗位提示词 + 直接输出老板可读
     // Markdown 报告。设 NANOWORK_EMPLOYEE_OUTPUT_STYLE=contract_json 可退回
     // 旧的JSON机器契约链路。
     const employeeExecution = selectedSpecialist
       ? buildEmployeeExecutionProfile(selectedSpecialist.employee_idx, {
+          intent: taskIntent,
           outputMode:
             String(
               process.env.NANOWORK_EMPLOYEE_OUTPUT_STYLE || "",
@@ -1661,8 +1726,8 @@ export async function dispatchMarshalTask(req, res) {
       `INSERT INTO agent_tasks(
       marshal_id,specialist_id,title,type,requirement,status,is_collab,collab_marshals,due_at,created_by,
       employee_profile_version,employee_prompt_hash,employee_capabilities_snapshot,employee_config_snapshot,employee_skills_snapshot,
-      employee_canonical_snapshot,employee_input_snapshot,approval_routing_policy_snapshot
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      employee_canonical_snapshot,employee_input_snapshot,approval_routing_policy_snapshot,intent_json
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       m.id,
       specialist,
       taskTitle,
@@ -1694,6 +1759,7 @@ export async function dispatchMarshalTask(req, res) {
           })
         : null,
       JSON.stringify(lockedApprovalRoutingPolicy),
+      taskIntent ? JSON.stringify(taskIntent) : null,
     );
     taskId = Number(taskResult.lastInsertRowid);
     try {
@@ -1726,6 +1792,20 @@ export async function dispatchMarshalTask(req, res) {
       status: "生成中",
       async: true,
       msg: "任务已派发，数字员工正在生成；可在统一任务中心查看执行步骤、进度、结果和费用",
+      ...(taskIntent
+        ? {
+            intent: {
+              type: taskIntent.type,
+              label: taskIntent.label,
+              answerShape: taskIntent.answer_shape,
+              confidence: taskIntent.confidence,
+              etaSeconds: taskIntent.eta_seconds,
+              reason: taskIntent.reason,
+              outOfScope: taskIntent.out_of_scope,
+              ...(followupApplied.length ? { followupApplied } : {}),
+            },
+          }
+        : {}),
       snapshot: employeeExecution
         ? {
             ...(INTERNAL_PROFILE_ROLES.has(req.user?.role)
@@ -1876,7 +1956,14 @@ export async function dispatchMarshalTask(req, res) {
                       dataMode,
                       // HTTP 员工派活必须走完整公开调研链；测试或内部纯函数调用
                       // 若不经过此入口，不能冒充已经通过这道生产门。
-                      requireAgenticResearch: Boolean(employeeExecution),
+                      // FR-4：按题型放宽——快查/完整报告/无自有数据的诊断仍要求可核验公开来源；
+                      // 方案、产物等以老板输入和岗位方法为主，联网尽力而为，失败不再整单失败。
+                      requireAgenticResearch: Boolean(employeeExecution) &&
+                        (taskIntent
+                          ? intentRequiresPublicResearch(taskIntent, {
+                              attachmentCount: files.length + (taskImage ? 1 : 0),
+                            })
+                          : true),
                       generateFn: employeeGenerate,
                       generateImageFn: req.app?.locals?.generateImageFn || generateImage,
                       editImageFn: req.app?.locals?.editImageFn || editImage,
@@ -2278,6 +2365,23 @@ export async function dispatchMarshalTask(req, res) {
                         },
                         internalProfileLeakage:
                           out.internalProfileLeakage || null,
+                        // PRD v2.2 FR-3：答题形态与反公式化审计（只记录，不阻断交付）。
+                        ...(taskIntent && typeof out.text === "string"
+                          ? {
+                              answerShapeAudit: buildAnswerShapeAudit(out.text, taskIntent, {
+                                ownFacts: employeeExecution.storeDataOwnFacts || [],
+                              }),
+                              // FR-4.4：行情快查覆盖度（店铺/价格档/来源数与是否补检）。
+                              ...(out.marketScanCoverage
+                                ? { marketScanCoverage: out.marketScanCoverage }
+                                : {}),
+                              // FR-8：交付里点名建议接手的同事，前端可一键派单。
+                              handoffs: extractHandoffSuggestions(out.text, {
+                                selfIdx: selectedSpecialist?.employee_idx,
+                                intent: taskIntent,
+                              }),
+                            }
+                          : {}),
                       }
                     : out.web || null;
                   q.run(
@@ -3164,8 +3268,29 @@ r.get("/tasks/:taskId/status", (req, res) => {
           : t.status === "失败"
             ? "execution_failed"
             : "generating";
+  // PRD v2.2 FR-8：交付里建议接手的同事（只在有可用交付时给出）。
+  const handoffs =
+    !supersededBy && ["待审阅", "已完成"].includes(String(t.status || ""))
+      ? handoffsFromSnapshot(t.employee_web_snapshot)
+      : [];
+  // PRD v2.2 FR-1：时间线显示“判题：快查/诊断/方案…”。
+  let taskIntentSummary = null;
+  try {
+    const parsedIntent = t.intent_json ? JSON.parse(t.intent_json) : null;
+    if (parsedIntent?.type && parsedIntent?.label) {
+      taskIntentSummary = {
+        type: String(parsedIntent.type).slice(0, 20),
+        label: String(parsedIntent.label).slice(0, 20),
+        answerShape: parsedIntent.answer_shape ? String(parsedIntent.answer_shape).slice(0, 40) : null,
+      };
+    }
+  } catch {
+    taskIntentSummary = null;
+  }
   res.json({
     ...publicTask,
+    ...(handoffs.length ? { handoffs } : {}),
+    ...(taskIntentSummary ? { intent: taskIntentSummary } : {}),
     deliveryState: supersededBy
       ? "DELIVERY_SUPERSEDED"
       : publicTask.deliveryState || null,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Button, Col, Tag } from 'antd';
 import { api } from '../api/client';
 import { Panel } from './Kit';
@@ -43,9 +43,57 @@ export function amapTestHint(result: AmapTestResult | null): string {
   return '';
 }
 
+type AmapSelfCheckStep = {
+  name: string;
+  ok: boolean;
+  ms: number;
+  returned: number;
+  withCost: number | null;
+  infocode: string | null;
+  explanation: string | null;
+};
+type AmapUsage = { date: string; count: number; quota: number; ratio: number; nearQuota: boolean; qps: number };
+type AmapRecentError = {
+  at: string;
+  endpoint: string | null;
+  infocode: string | null;
+  explanation?: string | null;
+  message: string;
+};
+
 export function AdminAmapPanel({ readiness, onRefresh }: { readiness: any; onRefresh: () => Promise<unknown> }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<AmapTestResult | null>(null);
+  // PRD v2.2 FR-4.3：今日用量、最近错误、三步自检。
+  const [usage, setUsage] = useState<AmapUsage | null>(null);
+  const [recentErrors, setRecentErrors] = useState<AmapRecentError[]>([]);
+  const [selfChecking, setSelfChecking] = useState(false);
+  const [selfCheck, setSelfCheck] = useState<{ ok: boolean; steps: AmapSelfCheckStep[]; error?: string } | null>(null);
+  const loadUsage = () =>
+    api
+      .get('/admin/api-config/amap/usage', { silent: true })
+      .then((payload: any) => {
+        setUsage(payload?.usage || null);
+        setRecentErrors(Array.isArray(payload?.recentErrors) ? payload.recentErrors : []);
+      })
+      .catch(() => {});
+  useEffect(() => {
+    void loadUsage();
+  }, []);
+  const runSelfCheck = () => {
+    setSelfChecking(true);
+    setSelfCheck(null);
+    api
+      .post('/admin/api-config/amap/selfcheck', {})
+      .then((payload: any) => setSelfCheck(payload))
+      .catch((error: unknown) =>
+        setSelfCheck({ ok: false, steps: [], error: error instanceof Error ? error.message : '自检失败' }),
+      )
+      .finally(() => {
+        setSelfChecking(false);
+        void loadUsage();
+      });
+  };
   const state = readinessMeta(readiness);
   const configured = readiness?.configuration === 'ready';
   const baseUrl = readiness?.details?.baseUrl || '';
@@ -99,7 +147,45 @@ export function AdminAmapPanel({ readiness, onRefresh }: { readiness: any; onRef
               {amapTestSummary(testResult)}
             </Tag>
           )}
+          <Button size="small" loading={selfChecking} disabled={!configured} onClick={runSelfCheck}>
+            立即自检（3 步）
+          </Button>
         </div>
+        {usage ? (
+          <div className="admin-search-route-list admin-amap-facts">
+            <Tag color={usage.nearQuota ? 'red' : 'default'}>
+              今日调用 {usage.count}/{usage.quota}
+              {usage.nearQuota ? ' · 接近配额，快查优先走缓存和公开检索' : ''}
+            </Tag>
+            <Tag>限速 {usage.qps} QPS</Tag>
+          </div>
+        ) : null}
+        {selfCheck ? (
+          <div className="admin-amap-hint">
+            {selfCheck.error ? <div>✗ {selfCheck.error}</div> : null}
+            {selfCheck.steps.map(step => (
+              <div key={step.name}>
+                {step.ok ? '✓' : '✗'} {step.name} · {step.ms}ms · 返回{step.returned}条
+                {step.withCost == null ? '' : ` · 带人均${step.withCost}条`}
+                {step.infocode ? ` · infocode ${step.infocode}` : ''}
+                {step.explanation ? ` · ${step.explanation}` : ''}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {recentErrors.length ? (
+          <details className="admin-amap-hint">
+            <summary>最近 {recentErrors.length} 次高德错误</summary>
+            {recentErrors.map((item, index) => (
+              <div key={`${item.at}-${index}`}>
+                {String(item.at).replace('T', ' ').slice(0, 19)} · {item.endpoint || '-'} ·{' '}
+                {item.infocode
+                  ? `infocode ${item.infocode}${item.explanation ? `（${item.explanation}）` : ''}`
+                  : item.message}
+              </div>
+            ))}
+          </details>
+        ) : null}
         {hint ? <div className="admin-amap-hint">{hint}</div> : null}
         {!testResult && readiness?.nextAction ? <div className="admin-amap-hint">{readiness.nextAction}</div> : null}
         <div className="admin-search-security-note">

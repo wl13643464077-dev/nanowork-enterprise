@@ -87,14 +87,14 @@
   object-fit: contain;
   background: #111;
 }
-.campaign-material-card[data-kind="social_square"] img,
-.campaign-material-card[data-kind="social_square"] .campaign-material-empty,
-.campaign-material-card[data-kind="takeout_cover"] img,
-.campaign-material-card[data-kind="takeout_cover"] .campaign-material-empty {
+.campaign-material-card[data-kind='social_square'] img,
+.campaign-material-card[data-kind='social_square'] .campaign-material-empty,
+.campaign-material-card[data-kind='takeout_cover'] img,
+.campaign-material-card[data-kind='takeout_cover'] .campaign-material-empty {
   aspect-ratio: 1 / 1;
 }
-.campaign-material-card[data-kind="banner"] img,
-.campaign-material-card[data-kind="banner"] .campaign-material-empty {
+.campaign-material-card[data-kind='banner'] img,
+.campaign-material-card[data-kind='banner'] .campaign-material-empty {
   aspect-ratio: 3 / 2;
 }
 .campaign-material-empty {

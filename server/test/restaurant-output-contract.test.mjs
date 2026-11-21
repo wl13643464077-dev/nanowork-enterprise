@@ -1239,7 +1239,7 @@ test('餐饮demo公开研究工具未通过覆盖门时记录warning并继续真
   const fixture = clone(contract.validFixture);
   fixture.decision_context.problem = `${task.title}：${fixture.decision_context.problem}`;
   fixture.decision_context.sources[0].source =
-    `${OFFLINE_RESTAURANT_SOURCE.title}｜${OFFLINE_RESTAURANT_SOURCE.url}`;
+    '任务输入：毛血旺 太原吾悦广场demo研究超时报告';
   pointExecutionEvidenceAtSource(fixture, fixture.decision_context.sources[0].source);
 
   const output = await marshalWork(testMarshal, task, 'boss', {
@@ -1257,8 +1257,8 @@ test('餐饮demo公开研究工具未通过覆盖门时记录warning并继续真
       evidence: { externalCall: false, timeout: true, toolCalls: 1 },
     }),
     webSearchFn: async () => offlineRestaurantSearch(),
-    controlledWebFetchFn: async sources => offlineRestaurantFetch(sources),
-    locationIntelligenceFn: async () => offlineLocationEvidence(),
+    controlledWebFetchFn: async () => ({ attempted: true, ok: false, results: [], note: '离线正文超时' }),
+    locationIntelligenceFn: async () => ({ attempted: true, ok: false, results: [], note: '离线地图没有锚点' }),
     generateFn: async () => ({
       text: JSON.stringify(fixture),
       mode: 'api',

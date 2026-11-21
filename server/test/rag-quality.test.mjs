@@ -179,7 +179,8 @@ test('kbSearch：有查询但 embedding 不可用时停止注入，不能拿热�
 });
 
 test('kbSearch：知识库未向量化时同样停止注入并标记 degraded', async () => {
-  await runWithTenant(1, async () => {
+  // 语义检索覆盖租户上传的所有分类；使用独立测试租户保证全部候选都没有向量。
+  await runWithTenant(91, async () => {
     q.run(`INSERT INTO kb_docs(category,title,body,enabled) VALUES(?,?,?,?)`,
       'RAG测试丙', '未向量化文档', '尚未生成向量的正文', 1);
     process.env.YUNWU_API_KEY = 'sk-test-rag';

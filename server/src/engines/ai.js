@@ -65,12 +65,25 @@ import {
   retainControlledSourceMatches,
   sanitizeAgenticFacts,
   sanitizePublicSources,
+  allowAggregationLeadsForTask,
 } from "./public-source-quality.js";
 import {
   importReviewDataset,
   REVIEW_DATASET_EMPLOYEE_IDX,
 } from "./review-dataset-import.js";
 import { compileEmployeePublicResearchPlan, compileLocationResearchQueries, interleaveResearchSources } from "./employee-public-research-plan.js";
+import {
+  assessMarketScanCoverage,
+  backfillCompetitorPricesFromWeb,
+  buildMarketScanQueries,
+  extractStoreEntities,
+  isMarketScanIntent,
+  marketScanCoveragePromptLines,
+  MARKET_SCAN_COVERAGE,
+  mergeMarketScanQueries,
+  sourceTierPrefix,
+  sourceTierPromptRule,
+} from "./market-scan-research.js";
 import {
   classifyEmployeeDraftDisposition,
   resolveContractTier,
@@ -283,15 +296,21 @@ export function publicResearchIncompleteBossMessage(
   ].join("");
 }
 
-async function locationBusinessWebSearch(search, task, signal, researchPlan) {
+async function locationBusinessWebSearch(search, task, signal, researchPlan, taskIntent = null) {
   const intent = normalizeLocationIntent(`${task?.title || ""} ${task?.requirement || ""}`);
-  const queries = compileLocationResearchQueries(
+  const baseQueries = compileLocationResearchQueries(
     intent.center || task?.title || task?.requirement || "餐饮门店",
     tradeAreaCategoryKeyword(`${task?.title || ""} ${task?.requirement || ""}`),
     researchPlan?.queries || [],
   );
-  const settled = await Promise.allSettled(
-    queries.map((query) =>
+  // PRD v2.2 FR-4.1：行情快查按判题实体扇出多角度短查询，排在岗位/客源查询前面。
+  const marketScan = isMarketScanIntent(taskIntent);
+  const marketQueries = marketScan
+    ? buildMarketScanQueries({ entities: taskIntent.entities || {}, center: intent.center || "" })
+    : [];
+  const queries = marketScan ? mergeMarketScanQueries(marketQueries, baseQueries) : baseQueries;
+  const runQueries = (list) => Promise.allSettled(
+    list.map((query) =>
       search(query, {
         max: 6,
         // 选址岗位需要逐条读取商户/商场正文；9 秒在跨境网络下经常
@@ -304,12 +323,13 @@ async function locationBusinessWebSearch(search, task, signal, researchPlan) {
       }),
     ),
   );
+  const settled = await runQueries(queries);
   const providers = new Set();
   const notes = [];
   const groups = [];
-  settled.forEach((entry, index) => {
+  const collect = (entries, offset = 0) => entries.forEach((entry, index) => {
     if (entry.status === "rejected") {
-      notes.push(`补充检索${index + 1}失败`);
+      notes.push(`补充检索${offset + index + 1}失败`);
       return;
     }
     const value = entry.value || {};
@@ -317,7 +337,31 @@ async function locationBusinessWebSearch(search, task, signal, researchPlan) {
     if (value.note) notes.push(value.note);
     groups.push(value.results || []);
   });
-  const results = interleaveResearchSources(groups);
+  collect(settled);
+  // 市场扫描需要更多候选来源（FR-4.1：合并后取 30–40 个）。
+  const resultLimit = marketScan ? 36 : 18;
+  let results = interleaveResearchSources(groups, resultLimit);
+  // FR-4.4：第一轮店铺/来源不够时换角度补检一轮（同义词、商场名、细分品类）。
+  let round2Queries = [];
+  let round2Settled = [];
+  let coverageAfterRound1 = null;
+  if (marketScan && !signal?.aborted) {
+    const storesFound = extractStoreEntities(results).length;
+    coverageAfterRound1 = { stores: storesFound, sources: results.length };
+    if (storesFound < MARKET_SCAN_COVERAGE.stores || results.length < MARKET_SCAN_COVERAGE.sources) {
+      round2Queries = buildMarketScanQueries({
+        entities: taskIntent.entities || {},
+        center: intent.center || "",
+        round: 2,
+      }).filter((query) => !queries.includes(query));
+      if (round2Queries.length) {
+        round2Settled = await runQueries(round2Queries);
+        collect(round2Settled, queries.length);
+        results = interleaveResearchSources(groups, resultLimit);
+      }
+    }
+  }
+  const allSettled = [...settled, ...round2Settled];
   return {
     attempted: true,
     ok: results.length > 0,
@@ -326,12 +370,21 @@ async function locationBusinessWebSearch(search, task, signal, researchPlan) {
     note: notes.length ? [...new Set(notes)].join("；") : null,
     evidence: {
       schemaVersion: "nanowork.location-business-web-search/1",
-      queries,
-      attemptedQueries: queries.length,
-      successfulQueries: settled.filter(
+      queries: [...queries, ...round2Queries],
+      attemptedQueries: queries.length + round2Queries.length,
+      successfulQueries: allSettled.filter(
         (entry) => entry.status === "fulfilled" && entry.value?.ok === true,
       ).length,
       externalCall: true,
+      ...(marketScan
+        ? {
+            marketScan: {
+              round1Queries: marketQueries.length,
+              round2Queries: round2Queries.length,
+              coverageAfterRound1,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -615,8 +668,9 @@ export async function kbSearch(
   }
   if (useHot) {
     // 只有调用方没有提出 query 时，分类热度本身才是明确的检索意图。
+    const preferred = new Set(categories);
     const ranked = [...docs].sort(
-      (a, b) => (b.ref_count || 0) - (a.ref_count || 0),
+      (a, b) => Number(preferred.has(b.category)) - Number(preferred.has(a.category)) || (b.ref_count || 0) - (a.ref_count || 0),
     );
     let excerpts = 0;
     for (const d of ranked) {
@@ -2758,11 +2812,25 @@ ${styleExtra ? `【全局风格指令（系统管理·提示词模板）】${sty
   };
 }
 
+// 题型路由结果 → 商圈取店范围（FR-1 + FR-4.2）。没有题型时保持旧行为（10 家、无相似品类）。
+function tradeAreaIntentOptions(intent) {
+  const shape = String(intent?.answer_shape || "");
+  const type = String(intent?.type || "");
+  if (shape !== "lookup.market_scan" && type !== "full_report") return {};
+  const related = Array.isArray(intent?.entities?.related_categories)
+    ? intent.entities.related_categories.slice(0, 3)
+    : [];
+  return { topN: 30, ...(related.length ? { relatedCategories: related } : {}) };
+}
+
 export async function marshalWork(marshal, task, role, options = {}) {
   if (options.employeeExecution && !options.employeeExecution.systemContext) {
     throw new Error("指定数字员工的完整执行档案缺失，拒绝静默降级为分部任务");
   }
   const workConfig = options.employeeExecution?.workbench?.workConfig || {};
+  // PRD v2.2 FR-4.1：行情快查任务里餐饮榜单/聚合/团购页降级为 B 档线索，不再一律剔除。
+  const marketScanTask = isMarketScanIntent(options.employeeExecution?.intent);
+  if (marketScanTask) allowAggregationLeadsForTask(task);
   const deliveryDataMode = options.dataMode === "demo" ? "demo" : "live";
   const demoDeliveryMode = deliveryDataMode === "demo";
   const employeeIdx = Number(
@@ -3002,6 +3070,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
     if (webRequested) {
       const rawAgenticPromise = research
         ? research(publicResearchQuery, {
+            controlledBodiesOnly: Boolean(options.employeeExecution),
             ...(focusedLocationSearch ? { searchQuery: focusedLocationSearch } : {}),
             ...(locationIntelligenceRequired && locationIntent.center
               ? {
@@ -3060,6 +3129,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
               task,
               options.signal,
               employeeResearchPlan,
+              options.employeeExecution?.intent || null,
             )
           : fallbackSearch(`${ragQuery} 餐饮门店`, {
               max: 6,
@@ -3146,6 +3216,8 @@ export async function marshalWork(marshal, task, role, options = {}) {
             ...(locationIntent.radiiMeters.length ? { radii: locationIntent.radiiMeters } : {}),
             categoryKeyword: tradeAreaCategoryKeyword(publicLocationQuery),
             requireIsochrones: locationIntent.explicitIsochroneRequested,
+            // PRD v2.2 FR-4.2：行情快查与完整报告扩到 30 家，并补相似品类。
+            ...(tradeAreaIntentOptions(options.employeeExecution?.intent)),
             signal: options.signal,
             ...(options.amapClient ? { amapClient: options.amapClient } : {}),
             osmFallback: locationCall
@@ -3343,6 +3415,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
         });
         try {
           const fetched = await controlledFetch(batch, {
+              allowRenderedFetch: !options.employeeExecution,
             limit: 8,
             timeoutMs: 15_000,
             signal: options.signal,
@@ -3593,6 +3666,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
           });
           try {
             const fetched = await controlledFetch(batch, {
+              allowRenderedFetch: !options.employeeExecution,
               limit: 8,
               timeoutMs: 15_000,
               signal: options.signal,
@@ -3970,6 +4044,11 @@ export async function marshalWork(marshal, task, role, options = {}) {
   // 输出直接是老板可读 Markdown；来源约束按 Markdown 口径下发。
   const paihuoMarkdownMode =
     options.employeeExecution?.outputMode === "paihuo_markdown";
+  // PRD v2.2 FR-4.2：行情快查里高德缺人均的店，用公开网页同名店人均回填（标 B 档“参考”）。
+  if (marketScanTask && tradeAreaFacts && Array.isArray(web.results) && web.results.length) {
+    const backfill = backfillCompetitorPricesFromWeb(tradeAreaFacts, web.results);
+    if (backfill.filled) tradeAreaFacts = backfill.facts;
+  }
   const webContext =
     !options.employeeExecution || !web.attempted
       ? ""
@@ -3977,11 +4056,11 @@ export async function marshalWork(marshal, task, role, options = {}) {
         ? `${refsBlock(
             web.results.map((result) => ({
               ...result,
-              snippet: `${result?.fetchedAt || result?.fetched_at ? `【权威采集时间】${String(result.fetchedAt || result.fetched_at).slice(0, 10)}；公开来源period必须填写该日期。\n` : ""}${result?.body ? `${result.snippet || ""}\n【受控网页正文】${String(result.body).slice(0, 3000)}` : result?.snippet || ""}`,
+              snippet: `${options.employeeExecution?.intent ? `${sourceTierPrefix(result)}\n` : ""}${result?.fetchedAt || result?.fetched_at ? `【权威采集时间】${String(result.fetchedAt || result.fetched_at).slice(0, 10)}；公开来源period必须填写该日期。\n` : ""}${result?.body ? `${result.snippet || ""}\n【受控网页正文】${String(result.body).slice(0, 3000)}` : result?.snippet || ""}`,
             })),
           )}\n${
             paihuoMarkdownMode
-              ? "【来源引用规则】报告中引用公开事实时，写明对应的“原始标题｜完整URL”或[来源N]编号，从上方逐字复制；禁止改写、概括或补造来源。带【权威采集时间】的来源引用时注明该日期；证据不足的结论显著标注「待核验」。"
+              ? `【来源引用规则】报告中引用公开事实时，写明对应的“原始标题｜完整URL”或[来源N]编号，从上方逐字复制；禁止改写、概括或补造来源。带【权威采集时间】的来源引用时注明该日期；${options.employeeExecution?.intent ? `证据不足的结论按可信档位标注。\n${sourceTierPromptRule()}` : "证据不足的结论显著标注「待核验」。"}`
               : "【来源填写硬约束】岗位JSON中的每条公开来源必须写成“搜索结果原始标题｜完整URL”，并从上方[来源N]逐字复制；禁止改写、概括或补造来源。若来源带【权威采集时间】，decision_context.sources和deliverable.evidence的period必须等于该YYYY-MM-DD，或明确写“采集于YYYY-MM-DD”；禁止模型自填旧日期。"
           }`
         : `\n【联网核验状态】${web.note || "本次未取得可引用的联网结果"}。禁止凭模型记忆冒充实时检索；所有需要当前官方信息的结论必须列入“待核验项”，并说明需要补查的来源。`;
@@ -4070,6 +4149,14 @@ export async function marshalWork(marshal, task, role, options = {}) {
         "不要把‘没有查到’说成‘当地没有’，不要写已确认市场空白、学校或地铁能带来多少流量、某店经营成功等无证据判断。可给条件式经营建议与验证方法，但不得让建议携带未核实的事实前提。用已取得的具体信息帮助老板，不复述大篇框架或重复来源报告。",
       ].join("\n")
     : "";
+  // PRD v2.2 FR-4.4：行情快查覆盖度（高德 + 公开网页合并去重）；不达标时正文顶部如实说明。
+  const marketScanCoverage =
+    marketScanTask && locationIntelligenceRequired
+      ? assessMarketScanCoverage({ webSources: web.results || [], tradeAreaFacts })
+      : null;
+  const marketScanCoverageRule = marketScanCoverage
+    ? marketScanCoveragePromptLines(marketScanCoverage).join("\n")
+    : "";
   const locationEvidenceBoundaryRule = locationIntelligenceRequired
     ? [
         "【商圈事实边界·地图成功时同样适用】本规则始终有效，优先于岗位手册、完整性要求、示例和篇幅要求，也适用于老板摘要、表格、机会判断及下游交接。地图与网页检索通过只证明本次记录已取得，不代表所有经营结论已核验。未知信息照样交付可读正文供老板采纳，不要为了填满表格编造事实。",
@@ -4100,6 +4187,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
       : "",
     limitedLocationEvidenceRule,
     locationEvidenceBoundaryRule,
+    marketScanCoverageRule,
     attachments.length || tradeAreaFacts ? UNTRUSTED_GUARD : "",
   ]
     .filter(Boolean)
@@ -5462,6 +5550,7 @@ export async function marshalWork(marshal, task, role, options = {}) {
     kb: { refs: kb.refs, degraded: kb.degraded, mode: kb.mode },
     web,
     ...(reviewDatasetImport ? { reviewDatasetImport } : {}),
+    ...(marketScanCoverage ? { marketScanCoverage } : {}),
   };
 }
 

@@ -23,6 +23,7 @@ import { assertRealAiOutput } from "./ai-delivery-status.js";
 import { scanText } from "./risk.js";
 import { prepareRestaurantArtifactSource } from "./restaurant-output-export.js";
 import { cleanReportBody } from "../../../shared/report-body.mjs";
+import { buildAssumptionChangeInstruction, extractReportAssumptions } from "./report-assumptions.js";
 
 export const REPORT_REFINE_MAX_INSTRUCTION = 1200;
 export const REPORT_REFINE_MAX_VERSIONS = 30;
@@ -37,13 +38,17 @@ export const REPORT_REFINE_QUICK_INSTRUCTIONS = Object.freeze([
   { key: "actions", label: "加行动清单", instruction: "在报告末尾“下一步建议”里补一张行动清单表：事项｜负责人｜完成时限｜验收标准，每条都要能直接执行。" },
   { key: "compare", label: "改成对比表", instruction: "把正文中的竞品/方案对比部分改写成一张对比表，列出对比维度、各方数据与结论，数据只用报告里已有的。" },
   { key: "summary", label: "只要摘要", instruction: "只保留一段 5 句以内的老板摘要 + 3 条最重要的行动，其余全部删除。" },
+  // PRD v2.2 FR-7.1 新增的快捷形态切换
+  { key: "boss", label: "换成老板版", instruction: "改写成老板版：全文不超过 300 字，只写结论、关键数字和要老板拍板的 1–3 件事，不改任何数字与来源。" },
+  { key: "manager", label: "换成店长执行版", instruction: "改写成店长执行版：按“今天/本周/本月”分组列出具体动作，每条写负责人、完成时限和验收标准，去掉分析过程，不改任何数字与来源。" },
+  { key: "table", label: "换成表格", instruction: "把正文主要内容改写成 1–3 张表格（结论表、数据表、行动表），表外最多保留 3 行说明，数据只用报告里已有的。" },
 ]);
 
 function httpError(status, message, extra = {}) {
   return Object.assign(new Error(message), { status, ...extra });
 }
 
-function readableBody(rawBody, { title, requirement }) {
+export function readableBody(rawBody, { title, requirement }) {
   const original = String(rawBody || "");
   if (!original.trim()) return "";
   const prepared = prepareRestaurantArtifactSource(original, { title, requirement });
@@ -124,6 +129,8 @@ export function getReportRefineState(user, taskId) {
   });
   const revisions = listRevisionRows(task.id).map((row) => publicRevision(row));
   const availability = refineAvailability(task, baseMarkdown, revisions.length);
+  // FR-7.1：最新版本里的“可改的假设”表格 → 前端可编辑卡片。
+  const assumptions = extractReportAssumptions(revisions.length ? revisions.at(-1).markdown : baseMarkdown);
   return {
     task: {
       id: Number(task.id),
@@ -144,6 +151,7 @@ export function getReportRefineState(user, taskId) {
     latestVersion: revisions.length ? revisions.at(-1).version : 0,
     availability,
     quickInstructions: REPORT_REFINE_QUICK_INSTRUCTIONS,
+    assumptions,
     boundary: "每一轮优化都保留为独立版本；原稿与任务采纳状态不变，修订稿由你定稿后可单独导出 PDF/Word。",
   };
 }
@@ -199,8 +207,9 @@ export function parseRefinedReport(rawText) {
 }
 
 export async function refineReport(user, taskId, body = {}, { signal } = {}) {
-  const instruction = String(body?.instruction || "").trim();
-  if (!instruction) throw httpError(400, "先说说这份报告要怎么改");
+  let instruction = String(body?.instruction || "").trim();
+  const assumptionChanges = Array.isArray(body?.assumptionChanges) ? body.assumptionChanges.slice(0, 20) : null;
+  if (!instruction && !assumptionChanges?.length) throw httpError(400, "先说说这份报告要怎么改");
   if (instruction.length > REPORT_REFINE_MAX_INSTRUCTION) {
     throw httpError(400, `修改要求最长 ${REPORT_REFINE_MAX_INSTRUCTION} 字，请精简后再试`);
   }
@@ -220,6 +229,14 @@ export async function refineReport(user, taskId, body = {}, { signal } = {}) {
   if (requestedBase && !baseRow) throw httpError(404, "要修改的版本不存在");
   const baseMarkdown = baseRow ? String(baseRow.body || "") : originalMarkdown;
   const baseVersion = baseRow ? Number(baseRow.version) : 0;
+  // FR-7.1：老板在假设卡片上改了值 → 生成结构化重算指令（不重新检索）。
+  if (assumptionChanges?.length) {
+    const built = buildAssumptionChangeInstruction(extractReportAssumptions(baseMarkdown), assumptionChanges);
+    if (!built.applied.length) throw httpError(400, "没有识别到改动的假设，请修改卡片上的数值后再重算");
+    instruction = instruction
+      ? `${built.instruction}\n补充要求：${instruction}`.slice(0, REPORT_REFINE_MAX_INSTRUCTION)
+      : built.instruction;
+  }
   const history = revisionRows
     .filter((row) => !baseRow || Number(row.version) <= Number(baseRow.version))
     .slice(-6)

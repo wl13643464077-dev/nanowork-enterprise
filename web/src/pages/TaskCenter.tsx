@@ -20,7 +20,11 @@ import {
   WalletOutlined,
 } from '@ant-design/icons';
 import { api, getUser } from '../api/client';
-import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from '../components/personalApiBilling.js';
+import {
+  isPersonalApiUser,
+  personalApiBillingLabel,
+  PERSONAL_API_PRICING_NOTE,
+} from '../components/personalApiBilling.js';
 import { REALTIME_EVENTS, useRealtimeEvent, useRealtimeEvents } from '../hooks/useRealtimeEvents';
 import AvatarStudio from '../components/AvatarStudio';
 import EmployeeDraftCard from '../components/EmployeeDraftCard';
@@ -176,7 +180,8 @@ function EvidenceFacts({ data, rawLabel = '查看原始证据（审计用）' }:
   if (!data || typeof data !== 'object') return null;
   const personalApi = isPersonalApiUser(getUser());
   const scalarEntries = Object.entries(data).filter(
-    ([key, value]) => (!personalApi || !/credits/i.test(key)) &&
+    ([key, value]) =>
+      (!personalApi || !/credits/i.test(key)) &&
       (value === null || ['string', 'number', 'boolean'].includes(typeof value)),
   );
   return (
@@ -207,9 +212,10 @@ function restaurantResultView(detail: any) {
     return { campaignMaterials: [], markdown: cleanReportBody(detail?.report?.markdown || '') };
   }
   const view = restaurantOutputPresentation(detail.output || '');
-  const campaignMaterials = Array.isArray(detail.campaignMaterials) && detail.campaignMaterials.length
-    ? detail.campaignMaterials
-    : view.campaignMaterials;
+  const campaignMaterials =
+    Array.isArray(detail.campaignMaterials) && detail.campaignMaterials.length
+      ? detail.campaignMaterials
+      : view.campaignMaterials;
   return {
     campaignMaterials,
     markdown: view.fullMarkdown || cleanReportBody(detail.report?.markdown || ''),
@@ -663,7 +669,9 @@ export default function TaskCenter() {
       )}
       {personalApi ? (
         <Alert type="info" showIcon message="数字人摄影棚需单独配置服务，当前个人API暂不支持" />
-      ) : <AvatarStudio />}
+      ) : (
+        <AvatarStudio />
+      )}
 
       <Drawer
         className="task-center-drawer"
@@ -864,7 +872,9 @@ export default function TaskCenter() {
                       {media.error && <Alert type="warning" showIcon message={media.error} />}
                       {media.warning && <Alert type="warning" showIcon message={media.warning} />}
                       {!media.url && ['pending', 'running'].includes(media.status) && <p>正在生成，请稍候</p>}
-                      {media.billing?.label && <p>{personalApi ? personalApiBillingLabel(media.billing) : media.billing.label}</p>}
+                      {media.billing?.label && (
+                        <p>{personalApi ? personalApiBillingLabel(media.billing) : media.billing.label}</p>
+                      )}
                       {/^(https?:\/\/|\/uploads\/)/i.test(media.downloadUrl || media.url || '') && (
                         <Button icon={<DownloadOutlined />} href={media.downloadUrl || media.url} download>
                           下载

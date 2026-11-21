@@ -200,7 +200,8 @@ export default function TrialEmployeePicker({
           />
         </div>
         <p className="trial-muted trial-small">
-          找到 {visible.length} 位员工。体验与正式产品同一套满血数字员工；餐饮岗位含调研和报告，内容岗位按完整岗位能力交付。
+          找到 {visible.length}{' '}
+          位员工。体验与正式产品同一套满血数字员工；餐饮岗位含调研和报告，内容岗位按完整岗位能力交付。
         </p>
         <div className="trial-picker-results" role="group" aria-label="可选数字员工">
           {visible.length ? (
@@ -249,7 +250,8 @@ export function TrialEmployeeGuide({
       {mediaPlan && !compact && (
         <p className="trial-mode-note">
           <Tag>满血岗位</Tag>
-          {employee.experienceNote || '按正式岗位完整能力执行。没有照片或素材时，先交付完整文案与制作清单，不假装文件已经生成。'}
+          {employee.experienceNote ||
+            '按正式岗位完整能力执行。没有照片或素材时，先交付完整文案与制作清单，不假装文件已经生成。'}
         </p>
       )}
       <button type="button" className="trial-example" disabled={disabled} onClick={() => onExample(example)}>

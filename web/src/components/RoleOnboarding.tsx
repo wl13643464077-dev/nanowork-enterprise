@@ -190,7 +190,8 @@ function tasksFor(track: OnboardingTrack): OnboardingTask[] {
       {
         id: 'owner-brand-kb',
         title: '建立品牌知识包',
-        description: '输入品牌名联网采集近三个月公开资料，先在本页核对、修改或指出错误重抓，确认入库后数字员工才会按产品匹配。',
+        description:
+          '输入品牌名联网采集近三个月公开资料，先在本页核对、修改或指出错误重抓，确认入库后数字员工才会按产品匹配。',
         path: '/brand-kb',
         module: 'system',
         icon: <BookOutlined />,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useId, useRef, useState } from 'react';
 import { Alert, Button, Input, Segmented, Space, Tag, Tooltip, message } from 'antd';
 import { CopyOutlined, EditOutlined, HistoryOutlined, SendOutlined } from '@ant-design/icons';
 import { api, type ApiRequestError } from '../api/client';
@@ -29,7 +29,19 @@ type RefineState = {
   latestVersion: number;
   availability: { available: boolean; reason: string | null };
   quickInstructions: { key: string; label: string; instruction: string }[];
+  // PRD v2.2 FR-7.1：最新版本“可改的假设”表格解析出的可编辑参数
+  assumptions?: Assumption[];
   boundary: string;
+};
+
+type Assumption = {
+  key: string;
+  label: string;
+  value: string;
+  unit: string | null;
+  impact: string | null;
+  source_tier: string;
+  editable: boolean;
 };
 
 function errorText(error: unknown, fallback: string) {
@@ -45,12 +57,14 @@ export default function ReportRefinePanel({
   taskId: number;
   onRevisionCreated?: (revision: Revision) => void;
 }) {
+  const assumptionId = useId();
   const [state, setState] = useState<RefineState | null>(null);
   const [loadError, setLoadError] = useState('');
   const [instruction, setInstruction] = useState('');
   const [sending, setSending] = useState(false);
   const [activeVersion, setActiveVersion] = useState<number>(0);
   const [sendError, setSendError] = useState('');
+  const [assumptionDraft, setAssumptionDraft] = useState<Record<string, string>>({});
   const sendingRef = useRef(false);
   const mountedTaskRef = useRef(taskId);
 
@@ -81,7 +95,15 @@ export default function ReportRefinePanel({
   const versions = useMemo(() => {
     if (!state) return [];
     return [
-      { version: 0, label: '原稿', markdown: state.original.markdown, generateUrl: state.original.generateUrl, instruction: '', changeSummary: '', risk: null as Revision['risk'] | null },
+      {
+        version: 0,
+        label: '原稿',
+        markdown: state.original.markdown,
+        generateUrl: state.original.generateUrl,
+        instruction: '',
+        changeSummary: '',
+        risk: null as Revision['risk'] | null,
+      },
       ...state.revisions.map(revision => ({
         version: revision.version,
         label: `第${revision.version}版`,
@@ -95,9 +117,17 @@ export default function ReportRefinePanel({
   }, [state]);
   const active = versions.find(item => item.version === activeVersion) || versions[versions.length - 1] || null;
 
-  const send = async (text: string) => {
+  const assumptions = state?.assumptions || [];
+  const changedAssumptions = assumptions
+    .filter(item => {
+      const draft = assumptionDraft[item.key];
+      return draft != null && draft.trim() !== '' && draft.trim() !== item.value;
+    })
+    .map(item => ({ key: item.key, value: assumptionDraft[item.key].trim() }));
+
+  const send = async (text: string, extra: { assumptionChanges?: { key: string; value: string }[] } = {}) => {
     const trimmed = text.trim();
-    if (!trimmed || sendingRef.current || !state) return;
+    if ((!trimmed && !extra.assumptionChanges?.length) || sendingRef.current || !state) return;
     if (!state.availability.available) {
       message.warning(state.availability.reason || '当前不能优化这份报告');
       return;
@@ -108,7 +138,10 @@ export default function ReportRefinePanel({
     try {
       const payload = await api.post(
         `/task-center/restaurant/${taskId}/refine`,
-        { instruction: trimmed },
+        {
+          instruction: trimmed,
+          ...(extra.assumptionChanges?.length ? { assumptionChanges: extra.assumptionChanges } : {}),
+        },
         { silent: true },
       );
       const revision = payload?.revision as Revision | undefined;
@@ -121,6 +154,11 @@ export default function ReportRefinePanel({
       );
       setActiveVersion(revision.version);
       setInstruction('');
+      if (extra.assumptionChanges?.length) {
+        setAssumptionDraft({});
+        // 新版本的假设表已更新，重新拉取卡片。
+        void load();
+      }
       const billingState = String(payload?.billing?.state || '');
       message.success(
         `第${revision.version}版已生成${billingState === 'settled' && payload?.billing?.chargedCredits != null ? `（消耗 ${payload.billing.chargedCredits} 积分）` : ''}`,
@@ -217,6 +255,52 @@ export default function ReportRefinePanel({
         </div>
       )}
 
+      {state.availability.available && assumptions.length > 0 && (
+        <div className="report-refine__assumptions" aria-label="可改的假设">
+          <div className="report-refine__assumptions-head">
+            <strong>可改的假设</strong>
+            <small>改数字后点“按新假设重算”：不重新检索，只重算受影响的数字，生成新版本，原稿保留</small>
+          </div>
+          <div className="report-refine__assumption-cards">
+            {assumptions.map(item => (
+              <Tooltip key={item.key} title={item.impact ? `改了会影响：${item.impact}` : undefined}>
+                <div className="report-refine__assumption-card">
+                  <span id={assumptionId + item.key}>
+                    {item.label}
+                    {item.source_tier === 'B' ? <Tag className="report-refine__tier">参考</Tag> : null}
+                    {item.source_tier === 'C' ? <Tag className="report-refine__tier">推测</Tag> : null}
+                  </span>
+                  <Input
+                    aria-labelledby={assumptionId + item.key}
+                    size="small"
+                    maxLength={40}
+                    disabled={sending}
+                    value={assumptionDraft[item.key] ?? item.value}
+                    onChange={event => setAssumptionDraft(draft => ({ ...draft, [item.key]: event.target.value }))}
+                  />
+                </div>
+              </Tooltip>
+            ))}
+          </div>
+          <Space size={6}>
+            <Button
+              type="primary"
+              size="small"
+              loading={sending}
+              disabled={!changedAssumptions.length}
+              onClick={() => void send('', { assumptionChanges: changedAssumptions })}
+            >
+              按新假设重算{changedAssumptions.length ? `（改了 ${changedAssumptions.length} 项）` : ''}
+            </Button>
+            {changedAssumptions.length > 0 && (
+              <Button size="small" type="text" disabled={sending} onClick={() => setAssumptionDraft({})}>
+                还原
+              </Button>
+            )}
+          </Space>
+        </div>
+      )}
+
       {sendError && <Alert type="error" showIcon message="本轮优化未完成" description={sendError} />}
 
       {active && (
@@ -256,9 +340,7 @@ export default function ReportRefinePanel({
               </Button>
             </div>
           </header>
-          {active.changeSummary && (
-            <p className="report-refine__change-summary">本轮改动：{active.changeSummary}</p>
-          )}
+          {active.changeSummary && <p className="report-refine__change-summary">本轮改动：{active.changeSummary}</p>}
           {active.version === 0 ? (
             <details className="report-refine__original">
               <summary>展开原稿正文（与上方结果正文相同）</summary>

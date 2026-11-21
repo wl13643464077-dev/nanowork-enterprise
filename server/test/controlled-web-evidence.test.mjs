@@ -542,3 +542,17 @@ test('公开网页证据会抽出 Logo 图片和关于我们内页链接', () =>
   assert.ok(assets.images.every(image => !/nav_ico/.test(image.url)));
   assert.ok(assets.pageLinks.includes('http://www.dayalihome.com/About.aspx?CateId=64'));
 });
+
+test('受限餐饮域名在 DNS 与正文抓取之前拒绝，直接调用和批量入口一致', async () => {
+  for (const host of ['m.dianping.com', 'i.meituan.com.', 'p0.meituan.net', 'i.dpfile.com']) {
+    const url = 'https://' + host + '/test';
+    let calls = 0;
+    await assert.rejects(fetchPublicPageEvidence(url, { lookupFn() { calls++; } }), { code: 'CONTROLLED_WEB_URL_UNSAFE' });
+    const batch = await fetchControlledWebEvidence([{ url }], {
+      fetchPageFn() { calls++; }, tinyfishFetchFn() { calls++; },
+    });
+    assert.equal(batch.ok, false);
+    assert.equal(batch.evidence.failures[0].code, 'CONTROLLED_WEB_URL_UNSAFE');
+    assert.equal(calls, 0);
+  }
+});

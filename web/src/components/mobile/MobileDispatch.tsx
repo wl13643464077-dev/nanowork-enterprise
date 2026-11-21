@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd';
-import { AimOutlined, ArrowLeftOutlined, CloseOutlined, RightOutlined, RocketOutlined, SendOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import {
+  AimOutlined,
+  ArrowLeftOutlined,
+  CloseOutlined,
+  RightOutlined,
+  RocketOutlined,
+  SendOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons';
 import { api, getUser } from '../../api/client';
+import RestaurantDispatchAssist from '../RestaurantDispatchAssist';
 import type { EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
 import EmployeeAvatar from '../EmployeeAvatar';
 import type { MatchedTeam, MatchedTeamMember } from '../EmployeeTeamMatch';
@@ -209,9 +218,9 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
       const taskId = Number((result as Record<string, unknown>)?.runId ?? (result as Record<string, unknown>)?.taskId);
       if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('任务已提交但未返回任务编号');
       const record = { taskId, at: new Date().toISOString() };
-      setStored(current => current
-        ? { ...current, dispatched: { ...(current.dispatched || {}), [String(brief.idx)]: record } }
-        : current);
+      setStored(current =>
+        current ? { ...current, dispatched: { ...(current.dispatched || {}), [String(brief.idx)]: record } } : current,
+      );
       return true;
     } catch (err: any) {
       message.error(`${brief.person}：${err?.message || '派出失败'}`);
@@ -264,7 +273,7 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
       if (String(payload?.billing?.state || '').toLowerCase() !== 'settled') {
         throw new Error('拆解已返回，但账务尚未确认结算，本次不派活');
       }
-      setStored(current => current ? { ...current, plan: nextPlan, dispatched: {}, teamSummary: null } : current);
+      setStored(current => (current ? { ...current, plan: nextPlan, dispatched: {}, teamSummary: null } : current));
       if (mode === 'auto') {
         message.info('队长拆解完成，全队同时开工…');
         await dispatchAll(nextPlan.briefs, { reset: true });
@@ -293,7 +302,7 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
       const summary = payload?.teamSummary as TeamSummary | undefined;
       if (!summary?.summary) throw new Error('队长没有给出有效汇总');
       if (payload?.billing?.state !== 'settled') throw new Error('汇总已生成，费用尚未完成结算');
-      setStored(current => current ? { ...current, teamSummary: summary } : current);
+      setStored(current => (current ? { ...current, teamSummary: summary } : current));
     } catch (err: any) {
       setSummaryError(err?.message || '队长汇总失败');
     } finally {
@@ -434,7 +443,8 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
                       onClick={() => void dispatchAll(stored.plan!.briefs)}
                       block
                     >
-                      全队同时开工（{stored.plan.briefs.filter(brief => !stored.dispatched?.[String(brief.idx)]).length}）
+                      全队同时开工（{stored.plan.briefs.filter(brief => !stored.dispatched?.[String(brief.idx)]).length}
+                      ）
                     </Button>
                   )}
                   {stored.plan.briefs.map(brief => {
@@ -590,6 +600,9 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
   const [type, setType] = useState<string | undefined>(prefill?.type || undefined);
   const [files, setFiles] = useState<UploadedFileRef[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  // PRD v2.2：手机端与桌面同一套常用问法、题型预判与追问（FR-13 / FR-1 / FR-2）
+  const [intentType, setIntentType] = useState<string | null>(null);
+  const [followupAnswers, setFollowupAnswers] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let active = true;
@@ -642,6 +655,8 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
         ...(type ? { type } : {}),
         ...(requirement.trim() ? { requirement: requirement.trim() } : {}),
         ...(files.length ? { fileIds: files.map(file => file.id) } : {}),
+        ...(intentType ? { intentType } : {}),
+        ...(Object.keys(followupAnswers).length ? { followupAnswers } : {}),
       });
       const payload = (result && typeof result === 'object' ? result : {}) as Record<string, unknown>;
       const taskId = Number(payload.runId ?? payload.taskId);
@@ -716,6 +731,17 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
                 autoSize={{ minRows: 3, maxRows: 8 }}
                 maxLength={8000}
                 disabled={!canDispatch}
+              />
+              <RestaurantDispatchAssist
+                idx={idx}
+                question={question}
+                intentType={intentType}
+                disabled={!canDispatch}
+                onPickTemplate={text => setQuestion(text)}
+                onIntentTypeChange={setIntentType}
+                followupAnswers={followupAnswers}
+                onFollowupAnswersChange={setFollowupAnswers}
+                canEditPreferences={profile?.permissions?.canEditSkills === true}
               />
             </div>
             {types.length > 0 && (

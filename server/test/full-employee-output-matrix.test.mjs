@@ -1,3 +1,4 @@
+const testCampaignPng = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4AWP8DwQMQMDEAAUAPfgEADYYS7QAAAAASUVORK5CYII=";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -600,6 +601,8 @@ const app = createApp({
     maxConcurrent: 4,
   },
   appLocals: {
+    generateImageFn: async () => ({ b64: testCampaignPng }),
+    editImageFn: async () => ({ b64: testCampaignPng }),
     employeeGenerate: deterministicRestaurantGenerate,
     employeeWebSearch: deterministicWebSearch,
     employeeAgenticWebResearch: deterministicAgenticWebResearch,

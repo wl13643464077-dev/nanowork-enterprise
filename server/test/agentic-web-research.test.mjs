@@ -696,3 +696,19 @@ after(async () => {
   await removeTempDirSafely(testRoot, { dbPath });
   restoreEnv();
 });
+
+test('餐饮索引候选留待本地逐跳取证，供应商浏览器不会访问页面', async () => {
+  const rows = Array.from({ length: 6 }, (_, i) => ({
+    title: '公开门店 ' + i, url: i ? 'https://shop.example/' + i : 'https://www.dianping.com/example',
+  }));
+  const result = await agenticWebResearch('望京餐厅', {
+    controlledBodiesOnly: true, tinyfishEnabled: true,
+    tinyfishSearchFn: async () => rows,
+    tinyfishFetchFn: () => assert.fail('不应渲染候选网页'),
+    claudeResearchFn: () => assert.fail('候选充足'),
+  });
+  assert.equal(result.candidateReady, true);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.fetchCandidates.map(x => x.url), rows.slice(1).map(x => x.url));
+  assert.deepEqual(result.results, []);
+});

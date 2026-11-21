@@ -20,7 +20,9 @@ export default function TaskDocumentDownloads({
   const generateUrl = String(availability?.generateUrl || '');
   const canGenerate =
     availability?.canGenerate === true &&
-    /^\/api\/files\/artifacts\/source\/(agent_task|agent_task_revision|content_employee_run)\/[1-9]\d*$/u.test(generateUrl);
+    /^\/api\/files\/artifacts\/source\/(agent_task|agent_task_revision|content_employee_run)\/[1-9]\d*$/u.test(
+      generateUrl,
+    );
   if (!canGenerate && !deliverables.some(item => ['pdf', 'docx'].includes(item.format))) return null;
 
   const download = async (format: Format) => {

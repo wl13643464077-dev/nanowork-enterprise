@@ -8,6 +8,7 @@ import { AnimatedNumber } from '../components/Kit';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeTeamMatch, { type MatchedTeamMember } from '../components/EmployeeTeamMatch';
 import EmployeeWorkbench from '../components/EmployeeWorkbench';
+import RestaurantDemoPanel from '../components/RestaurantDemoPanel';
 import './Employees.css';
 
 type EmployeeBusiness = {
@@ -295,6 +296,8 @@ export default function Employees() {
 
   // 「带原话派给TA」的一次性预填：打开工作台时把老板那句话填进派活框。
   const [dispatchPrefill, setDispatchPrefill] = useState<string | null>(null);
+  // PRD v2.2 FR-9：演示模式抽屉
+  const [demoOpen, setDemoOpen] = useState(false);
 
   const openEmployee = (employee: Employee, taskId?: string | number | null) => {
     setDispatchPrefill(null);
@@ -309,6 +312,15 @@ export default function Employees() {
     setDispatchPrefill(query || null);
     const next = new URLSearchParams(params);
     next.set('employee', String(member.idx));
+    next.delete('task');
+    setParams(next, { replace: true });
+  };
+
+  // PRD v2.2 FR-8：从上一单交付里一键派给建议的同事（打开对方工作台并预填任务书）。
+  const handoffToEmployee = (targetIdx: number, directive: string) => {
+    setDispatchPrefill(directive || null);
+    const next = new URLSearchParams(params);
+    next.set('employee', String(targetIdx));
     next.delete('task');
     setParams(next, { replace: true });
   };
@@ -343,6 +355,9 @@ export default function Employees() {
           <Link to="/agents" style={{ fontSize: 13 }}>
             自定义员工 / 导入工作流
           </Link>
+          <Button size="small" type="link" style={{ fontSize: 13, paddingInline: 8 }} onClick={() => setDemoOpen(true)}>
+            演示模式
+          </Button>
         </div>
         <dl className="employee-summary" aria-label="数字员工概况">
           <div>
@@ -620,10 +635,16 @@ export default function Employees() {
                     )}
                     {employee.business && (
                       <Tooltip
-                        title={personalApi ? PERSONAL_API_PRICING_NOTE : `${employee.business.basis} 参考区间 ¥${fmtYuan(employee.business.value[0])}–${fmtYuan(employee.business.value[1])}${employee.business.unit.replace('元', '')}。${employee.business.cost.typicalBasis}；${employee.business.cost.note} ${employee.business.reference}`}
+                        title={
+                          personalApi
+                            ? PERSONAL_API_PRICING_NOTE
+                            : `${employee.business.basis} 参考区间 ¥${fmtYuan(employee.business.value[0])}–${fmtYuan(employee.business.value[1])}${employee.business.unit.replace('元', '')}。${employee.business.cost.typicalBasis}；${employee.business.cost.note} ${employee.business.reference}`
+                        }
                       >
                         <div className="employee-roi" aria-label="投入产出参考">
-                          <span className="employee-roi-cost">{personalApi ? '个人API计费' : `约 ${employee.business.cost.typicalCredits} 积分/次`}</span>
+                          <span className="employee-roi-cost">
+                            {personalApi ? '个人API计费' : `约 ${employee.business.cost.typicalCredits} 积分/次`}
+                          </span>
                           <span className="employee-roi-arrow" aria-hidden="true">
                             →
                           </span>
@@ -662,12 +683,22 @@ export default function Employees() {
         <p>员工定义来自派活餐饮产业部岗位手册；历史测试输出未作为经营事实或知识答案导入。</p>
       </details>
 
+      <RestaurantDemoPanel
+        open={demoOpen}
+        onClose={() => setDemoOpen(false)}
+        onRun={(employeeIdx, directive) => {
+          setDemoOpen(false);
+          handoffToEmployee(employeeIdx, directive);
+        }}
+      />
+
       <EmployeeWorkbench
         open={!!selected}
         domain="restaurant"
         idx={selected?.idx ?? null}
         initialTaskId={requestedTaskId}
         initialDirective={selected ? dispatchPrefill : null}
+        onHandoff={handoffToEmployee}
         identityHint={
           selected
             ? {

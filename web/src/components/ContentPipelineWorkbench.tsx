@@ -555,9 +555,11 @@ function phaseEventSummary(event: NonNullable<ContentPipelineStation['phaseEvent
     Number.isSafeInteger(Number(detail.verifiedBodyCount)) ? `正文 ${Number(detail.verifiedBodyCount)}` : '',
     Number.isSafeInteger(Number(detail.artifactCount)) ? `产物 ${Number(detail.artifactCount)}` : '',
     Number.isFinite(Number(usage.totalTokens)) ? `Tokens ${Number(usage.totalTokens)}` : '',
-    isPersonalApiUser(getUser()) ? personalApiBillingLabel(usage) : Number.isFinite(Number(usage.settledCredits ?? usage.chargedCredits))
-      ? `结算 ${Number(usage.settledCredits ?? usage.chargedCredits)} 积分`
-      : '',
+    isPersonalApiUser(getUser())
+      ? personalApiBillingLabel(usage)
+      : Number.isFinite(Number(usage.settledCredits ?? usage.chargedCredits))
+        ? `结算 ${Number(usage.settledCredits ?? usage.chargedCredits)} 积分`
+        : '',
     typeof detail.code === 'string' && detail.code ? detail.code : '',
   ].filter(Boolean);
   return fragments.join(' · ');
@@ -1311,7 +1313,9 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
   const confirmCancel = () => {
     Modal.confirm({
       title: '确认取消这条内容流水线？',
-      content: personalApi ? '取消后停止后续任务，已交付产物与调用记录保留；已发生费用以供应商账单为准。' : '未交付的预授权会先释放；已交付产物、已结算账务和审计历史保留。取消后不能继续。',
+      content: personalApi
+        ? '取消后停止后续任务，已交付产物与调用记录保留；已发生费用以供应商账单为准。'
+        : '未交付的预授权会先释放；已交付产物、已结算账务和审计历史保留。取消后不能继续。',
       okText: '确认取消',
       cancelText: '保留任务',
       okButtonProps: { danger: true },
@@ -1621,11 +1625,17 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                     <Alert
                       type="warning"
                       showIcon
-                      message={personalApi ? '配图与封面使用个人API计费' : `最大费用上限（配图+封面）${paidMediaEstimate.estimatedMaximumCredits} 积分`}
+                      message={
+                        personalApi
+                          ? '配图与封面使用个人API计费'
+                          : `最大费用上限（配图+封面）${paidMediaEstimate.estimatedMaximumCredits} 积分`
+                      }
                       description={
-                        personalApi ? `${PERSONAL_API_PRICING_NOTE} 本次最多 ${paidMediaEstimate.maximumImageCount} 张图片。` : selectedImageMode === 'real'
-                          ? `正文最多 ${paidMediaEstimate.maximumContentImageCount} 张已核验素材，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；授权 ${paidMediaEstimate.authorizationValidHours} 小时内有效。`
-                          : `正文配图最多 ${paidMediaEstimate.maximumContentImageCount} 张，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；当前单张预估 ${paidMediaEstimate.estimatedUnitCredits} 积分，按实际调用结算。`
+                        personalApi
+                          ? `${PERSONAL_API_PRICING_NOTE} 本次最多 ${paidMediaEstimate.maximumImageCount} 张图片。`
+                          : selectedImageMode === 'real'
+                            ? `正文最多 ${paidMediaEstimate.maximumContentImageCount} 张已核验素材，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；授权 ${paidMediaEstimate.authorizationValidHours} 小时内有效。`
+                            : `正文配图最多 ${paidMediaEstimate.maximumContentImageCount} 张，封面最多 ${paidMediaEstimate.maximumCoverImageCount} 张，总计不超过 ${paidMediaEstimate.maximumImageCount} 张；当前单张预估 ${paidMediaEstimate.estimatedUnitCredits} 积分，按实际调用结算。`
                       }
                     />
                   ) : (
@@ -1880,7 +1890,11 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           type="info"
           showIcon
           message="流水线已取消"
-          description={personalApi ? '后续调用已停止；已交付产物与调用记录保留，已发生费用以供应商账单为准。' : '未交付的占扣已按账本证据处理；已交付产物、已结算账务与phase审计历史原样保留。'}
+          description={
+            personalApi
+              ? '后续调用已停止；已交付产物与调用记录保留，已发生费用以供应商账单为准。'
+              : '未交付的占扣已按账本证据处理；已交付产物、已结算账务与phase审计历史原样保留。'
+          }
         />
       )}
       {!queuedForActive && activePipeline.status === 'awaiting_media_authorization' && (
@@ -1888,7 +1902,11 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
           type="warning"
           showIcon
           message="已完成工位0—4，等待老板授权付费配图"
-          description={personalApi ? `尚未调用配图服务；确认本次配图需求后继续。${PERSONAL_API_PRICING_NOTE}` : '当前没有调用工位5的文本、图片或素材服务，也没有新增该工位的积分预占。老板确认当前Brief和费用上限后，流水线才会继续。'}
+          description={
+            personalApi
+              ? `尚未调用配图服务；确认本次配图需求后继续。${PERSONAL_API_PRICING_NOTE}`
+              : '当前没有调用工位5的文本、图片或素材服务，也没有新增该工位的积分预占。老板确认当前Brief和费用上限后，流水线才会继续。'
+          }
         />
       )}
       {!queuedForActive && activePipeline.status === 'awaiting_metrics' && (
@@ -2266,11 +2284,15 @@ export default function ContentPipelineWorkbench({ open, crew, onClose, initialP
                                 </div>
                                 <div>
                                   <dt>{personalApi ? '计费方式' : 'heldCredits'}</dt>
-                                  <dd>{personalApi ? '个人API计费' : heldCredits ?? '未预授权'}</dd>
+                                  <dd>{personalApi ? '个人API计费' : (heldCredits ?? '未预授权')}</dd>
                                 </div>
                                 <div>
                                   <dt>{personalApi ? '费用记录' : 'settledCredits'}</dt>
-                                  <dd>{personalApi ? personalApiBillingLabel(billingEvidence) : settledCredits ?? '未结算'}</dd>
+                                  <dd>
+                                    {personalApi
+                                      ? personalApiBillingLabel(billingEvidence)
+                                      : (settledCredits ?? '未结算')}
+                                  </dd>
                                 </div>
                                 <div>
                                   <dt>costYuan</dt>

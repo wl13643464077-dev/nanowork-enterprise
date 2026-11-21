@@ -206,7 +206,9 @@ export function TrialHistory({
             <div className="trial-request">{item.input}</div>
             {item.output ? (
               <>
-                <Markdown content={item.output.replace(/```nanowork-campaign-materials[\s\S]*?```\s*/gu, '').trimEnd()} />
+                <Markdown
+                  content={item.output.replace(/```nanowork-campaign-materials[\s\S]*?```\s*/gu, '').trimEnd()}
+                />
                 <CampaignMaterialsGallery
                   items={item.campaignMaterials?.length ? item.campaignMaterials : parseCampaignMaterials(item.output)}
                   invitationToken={invitationToken}

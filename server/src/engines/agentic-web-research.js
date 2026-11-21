@@ -1,3 +1,4 @@
+import { excludedRestaurantSource } from './restaurant-source-host.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -962,6 +963,7 @@ export async function agenticWebResearch(query, {
   signal = null,
   onProgress = null,
   researchMode = 'location_business',
+  controlledBodiesOnly = false,
   tinyfishEnabled = tinyfishAvailable(),
   tinyfishSearchFn = tinyfishSearch,
   tinyfishFetchFn = tinyfishFetchPages,
@@ -1039,7 +1041,8 @@ export async function agenticWebResearch(query, {
         signal: tieredSignal,
         purpose: safeText(`纳米Work公开业务调研：${normalizedQuery}`, 500),
       });
-      const normalizedCandidates = normalizedTinyfishCandidates(searched, sourceLimit);
+      const normalizedCandidates = normalizedTinyfishCandidates(searched, sourceLimit)
+        .filter(row => !controlledBodiesOnly || !excludedRestaurantSource(row.url));
       candidates = await validatedTinyfishRows(normalizedCandidates, validateCandidates);
       rejectedCandidateCount = normalizedCandidates.length - candidates.length;
       if (!candidates.length) fallbackReasonCode = rejectedCandidateCount
@@ -1051,6 +1054,16 @@ export async function agenticWebResearch(query, {
           : 'TINYFISH_CANDIDATES_INSUFFICIENT';
       }
 
+      if (!fallbackReasonCode && controlledBodiesOnly) {
+        // 供应商浏览器不提供逐跳拦截。只交还搜索线索，正文由调用方受控 HTTP 校验。
+        return defineFetchCandidates({
+          attempted: true, ok: false, candidateReady: true, provider: 'TinyFish Search',
+          results: [], note: '已取得索引候选，网页正文待受控核验',
+          evidence: { schemaVersion: TIERED_RESEARCH_SCHEMA, executionMode: 'tinyfish_search_only',
+            providerRoute: ['tinyfish'], externalCall: true, candidateCount: candidates.length,
+            requiresControlledWebFetch: true },
+        }, candidates);
+      }
       if (!fallbackReasonCode) {
         onProgress?.({ kind: 'fetch', tool: 'TinyFish Fetch', count: candidates.length, at: new Date().toISOString() });
         const fetched = await tinyfishFetchFn(candidates.map(item => item.url), {

@@ -2,6 +2,7 @@ import {
   AMAP_FACILITY_TYPECODES,
   AMAP_RESTAURANT_TYPECODE,
   AMAP_UNCONFIGURED_REASON,
+  amapTaskRequestBudget,
   createAmapClient,
 } from "./amap.js";
 
@@ -1242,6 +1243,33 @@ export const TRADE_AREA_FACTS_SCHEMA_VERSION = "nanowork.trade-area-facts/1";
 export const DEFAULT_TRADE_AREA_RADII = Object.freeze([500, 1000, 1500]);
 const TRADE_AREA_FACILITY_RADIUS = 1000;
 const TRADE_AREA_TOP_N = 10;
+// PRD v2.2 FR-4.2：行情快查/完整报告最多取 30 家；最近 5 家无论如何保留，其余按
+// “品类匹配 × 评分 × 距离衰减”综合分排序。默认调用仍为 10 家（兼容既有岗位）。
+export const TRADE_AREA_TOP_N_MAX = 30;
+const TRADE_AREA_KEEP_NEAREST = 5;
+const RELATED_CATEGORY_LIMIT = 3;
+const RELATED_CATEGORY_ROWS = 6;
+
+function rankTradeAreaPois(pois, limit, radius) {
+  const byDistance = [...pois].sort(
+    (a, b) => (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY),
+  );
+  if (limit <= TRADE_AREA_TOP_N) return byDistance.slice(0, limit);
+  const nearest = byDistance.slice(0, TRADE_AREA_KEEP_NEAREST);
+  const span = Math.max(300, Number(radius) || 1500);
+  const score = (poi) => {
+    const rating = Number(poi?.biz_ext?.rating);
+    const ratingFactor = Number.isFinite(rating) && rating > 0 ? rating / 5 : 0.7;
+    const distance = Number(poi?.distance);
+    const decay = Number.isFinite(distance) ? Math.exp(-distance / span) : 0.3;
+    return ratingFactor * (0.4 + 0.6 * decay);
+  };
+  const rest = byDistance
+    .slice(TRADE_AREA_KEEP_NEAREST)
+    .sort((a, b) => score(b) - score(a))
+    .slice(0, Math.max(0, limit - nearest.length));
+  return [...nearest, ...rest];
+}
 const COST_BUCKETS = Object.freeze([
   ["≤30元", 0, 30],
   ["30-60元", 30, 60],
@@ -1596,9 +1624,15 @@ export async function resolveTradeAreaFacts({
   osmEvidence = null,
   osmFallback = null,
   requireIsochrones = false,
+  topN = TRADE_AREA_TOP_N,
+  relatedCategories = [],
   now = () => new Date(),
 } = {}) {
   const startedAt = now().toISOString();
+  const competitorLimit = Math.max(1, Math.min(TRADE_AREA_TOP_N_MAX, Math.floor(Number(topN)) || TRADE_AREA_TOP_N));
+  const relatedCategoryList = unique(
+    (Array.isArray(relatedCategories) ? relatedCategories : []).map((item) => safeText(item, 20)).filter(Boolean),
+  ).slice(0, RELATED_CATEGORY_LIMIT);
   const normalizedRadii = positiveUniqueNumbers(radii, DEFAULT_TRADE_AREA_RADII)
     .map((value) => Math.max(100, Math.min(5000, value)))
     .filter((value, index, all) => all.indexOf(value) === index)
@@ -1661,7 +1695,8 @@ export async function resolveTradeAreaFacts({
     if (source.cached === true) facts.amap.cacheHits += 1;
   };
 
-  const client = amapClient || createAmapClient({ fetchImpl, cache });
+  // PRD v2.2 FR-4.3：系统自建的高德客户端按任务分配请求预算（默认 25 次，接近日配额时收紧）。
+  const client = amapClient || createAmapClient({ fetchImpl, cache, requestBudget: amapTaskRequestBudget() });
   facts.amap.configured = client.configured === true;
   if (!normalizedAddressCandidates.length)
     missing("center", "任务中未识别到可地理编码的地址或场所");
@@ -1975,13 +2010,11 @@ export async function resolveTradeAreaFacts({
         matchesCategoryKeyword(poi, facts.input.categoryKeyword),
       );
       const referenceBatch = sameCategory.length ? topBatch : (widest || topBatch);
-      const ranked = [...(sameCategory.length ? sameCategory : referenceBatch.pois.filter(poi => !/宠物|宠粮|猫粮|狗粮|犬粮/iu.test(`${poi.name} ${poi.type}`)))]
-        .sort(
-          (a, b) =>
-            (a.distance ?? Number.POSITIVE_INFINITY) -
-            (b.distance ?? Number.POSITIVE_INFINITY),
-        )
-        .slice(0, TRADE_AREA_TOP_N)
+      const ranked = rankTradeAreaPois(
+        sameCategory.length ? sameCategory : referenceBatch.pois.filter(poi => !/宠物|宠粮|猫粮|狗粮|犬粮/iu.test(`${poi.name} ${poi.type}`)),
+        competitorLimit,
+        referenceBatch.radius,
+      )
         .map((poi) => ({
           id: poi.id,
           name: poi.name,
@@ -2018,6 +2051,59 @@ export async function resolveTradeAreaFacts({
       if (!ranked.length) missing("topCompetitors", `高德在${referenceBatch.radius}米内未返回餐饮POI`);
       else if (facts.input.categoryKeyword && !sameCategory.length)
         missing("topCompetitors.sameCategory", `本次返回明细中未匹配到“${facts.input.categoryKeyword}”，不能用其他餐饮凑足同品类竞品`);
+
+      // FR-4.2：相似品类（抢同一预算、同一场景的替代品类）各补一次周边关键词检索。
+      if (relatedCategoryList.length) {
+        const knownIds = new Set(ranked.map((poi) => String(poi.id || poi.name)));
+        const relatedResults = await Promise.allSettled(
+          relatedCategoryList.map((keywords) =>
+            client.searchAround({
+              lng: center.lng,
+              lat: center.lat,
+              radius: categoryRadius,
+              types: AMAP_RESTAURANT_TYPECODE,
+              keywords,
+              pages: 1,
+              signal,
+            }),
+          ),
+        );
+        const groups = [];
+        let relatedSource = null;
+        relatedResults.forEach((entry, index) => {
+          if (entry.status !== "fulfilled" || entry.value?.unavailable || !entry.value?.data) return;
+          relatedSource = relatedSource || entry.value.source;
+          const rows = (entry.value.data.pois || [])
+            .filter((poi) => !knownIds.has(String(poi.id || poi.name)))
+            .sort((a, b) => (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY))
+            .slice(0, RELATED_CATEGORY_ROWS)
+            .map((poi) => {
+              knownIds.add(String(poi.id || poi.name));
+              return {
+                id: poi.id,
+                name: poi.name,
+                coords: poi.coords,
+                distance: poi.distance,
+                address: poi.address,
+                type: poi.type,
+                cost: poi.biz_ext?.cost ?? null,
+                rating: poi.biz_ext?.rating ?? null,
+              };
+            });
+          if (rows.length) groups.push({ category: relatedCategoryList[index], value: rows });
+        });
+        facts.relatedCompetitors = relatedSource && groups.length
+          ? {
+              radius: categoryRadius,
+              categories: groups,
+              note: "相似品类按店名关键词检索，作为替代竞争参考，未逐家核验菜单",
+              provenance: provenanceOf("amap", relatedSource.endpoint, relatedSource.fetchedAt, {
+                cached: relatedSource.cached === true,
+                keywords: relatedCategoryList.join("、"),
+              }),
+            }
+          : null;
+      }
 
     }
     if (widest) {
@@ -2244,6 +2330,8 @@ export async function resolveTradeAreaFacts({
 
   facts.ok = Boolean(facts.center);
   facts.fetchedAt = now().toISOString();
+  const budgetState = typeof client.requestBudget === "function" ? client.requestBudget() : null;
+  if (budgetState?.limit != null) facts.amap.requestBudget = budgetState;
   const seenSources = new Set();
   facts.sources = facts.sources.filter((source) => {
     const key = `${source.provider}|${source.endpoint}|${source.label}`;
@@ -2436,6 +2524,25 @@ export function tradeAreaFactsLocationEvidence(facts, { previous = null, require
       });
     }
   }
+  if (validProvenance(facts.relatedCompetitors?.provenance, "/v3/place/around")) {
+    for (const group of facts.relatedCompetitors.categories || []) {
+      for (const poi of group.value || []) {
+        if (!safeText(poi.name, 120) || !validCoords(poi.coords)) continue;
+        const optionalFields = [
+          poi.cost != null && poi.cost !== "" ? `人均=${safeText(poi.cost, 20)}` : "",
+          poi.rating != null && poi.rating !== "" ? `评分=${safeText(poi.rating, 20)}` : "",
+        ].filter(Boolean);
+        results.push({
+          title: `高德相似品类·${safeText(group.category, 20)}·${safeText(poi.name, 120)}`,
+          url: markerUrl(poi.coords, poi.name, poi.id),
+          snippet: `地图中心=${centerTitle}；相似品类=${safeText(group.category, 20)}；餐饮门店=${safeText(poi.name, 120)}；类别=${safeText(poi.type, 120)}；地址=${safeText(poi.address, 200)}；距中心=${poi.distance != null ? `${Number(poi.distance)}米（直线）` : "接口未返回"}；替代竞争参考，未核验菜单${optionalFields.length ? `。${optionalFields.join("；")}` : ""}。`,
+          fetchedAt: facts.relatedCompetitors.provenance.fetchedAt,
+          evidenceKind: "structured_location_restaurant_poi",
+          provenance: facts.relatedCompetitors.provenance,
+        });
+      }
+    }
+  }
   const routeComplete = previous?.evidence?.isochroneComplete === true;
   return {
     kind: "location_intelligence",
@@ -2476,9 +2583,10 @@ export function tradeAreaFactsPromptSummary(facts, { maxChars = 6000 } = {}) {
     topCompetitors: facts.topCompetitors
       ? {
           ...facts.topCompetitors,
-          value: (facts.topCompetitors.value || []).slice(0, TRADE_AREA_TOP_N),
+          value: (facts.topCompetitors.value || []).slice(0, TRADE_AREA_TOP_N_MAX),
         }
       : null,
+    ...(facts.relatedCompetitors ? { relatedCompetitors: facts.relatedCompetitors } : {}),
     priceDistribution: facts.priceDistribution,
     ratingDistribution: facts.ratingDistribution,
     isochrones: facts.isochrones,
@@ -2503,7 +2611,7 @@ export function tradeAreaFactsPromptSummary(facts, { maxChars = 6000 } = {}) {
     if (compact.topCompetitors.value.length < rows.length)
       compact.summaryOmissions.push("部分竞品明细未放入摘要，不代表未获取；完整记录见任务证据");
   }
-  for (const field of ["sources", "isochrones", "competitors", "topCompetitors", "priceDistribution", "ratingDistribution"]) {
+  for (const field of ["sources", "relatedCompetitors", "isochrones", "competitors", "topCompetitors", "priceDistribution", "ratingDistribution"]) {
     if (JSON.stringify(compact).length <= budget) break;
     if (compact[field] != null) {
       delete compact[field];

@@ -39,6 +39,19 @@ const LOCATION_MARKETING_TEXT =
   /(?:geo.{0,8}(?:推广|营销|获客)|精准破局流量|线上获客|小红书推广|营销图鉴|推广服务|流量难题)/iu;
 const LOCATION_AGGREGATION_TEXT =
   /(?:(?:餐厅|饭店|美食).{0,12}(?:推荐榜|排行榜|top\s*\d|靠谱之选|专业测评)|包包回收|回收指南)/iu;
+// 与餐饮无关的“回收”类聚合页始终剔除；餐饮榜单在市场扫描任务里降级为 B 档线索（PRD v2.2 FR-4.1）。
+const UNRELATED_AGGREGATION_TEXT = /(?:包包回收|回收指南)/iu;
+const AGGREGATION_LEAD_TASKS = new WeakSet();
+
+/** 标记本任务为“行情快查/市场扫描”：餐饮榜单/聚合/团购页不剔除，作为 B 档线索保留。 */
+export function allowAggregationLeadsForTask(task) {
+  if (task && typeof task === "object") AGGREGATION_LEAD_TASKS.add(task);
+  return task;
+}
+
+export function aggregationLeadsAllowed(task) {
+  return Boolean(task && typeof task === "object" && AGGREGATION_LEAD_TASKS.has(task));
+}
 const RESTAURANT_EVIDENCE_TEXT =
   /(?:餐饮|餐厅|饭店|门店|商户|菜单|菜品|营业|价格|人均|评价|点评|外卖|堂食|午餐|晚餐|夜宵|火锅|毛血旺|中餐|竞品|烘焙|面包|蛋糕|甜品|糕点|咖啡|茶饮)/iu;
 const LOCATION_BUSINESS_CONTEXT_TEXT =
@@ -190,7 +203,10 @@ function rejectionReason(
   }
   if (LOCATION_MARKETING_TEXT.test(text))
     return "generic_marketing_or_lead_generation";
-  if (LOCATION_AGGREGATION_TEXT.test(text))
+  if (
+    LOCATION_AGGREGATION_TEXT.test(text) &&
+    (UNRELATED_AGGREGATION_TEXT.test(text) || !aggregationLeadsAllowed(task))
+  )
     return "seo_ranking_or_unrelated_aggregation";
   if (
     requireTaskRelevance &&

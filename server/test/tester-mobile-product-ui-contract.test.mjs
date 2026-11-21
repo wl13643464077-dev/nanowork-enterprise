@@ -38,6 +38,7 @@ function fixture(file, { user = {}, states = [], queryData = {}, extra = '' } = 
     '../../hooks/useQuery': { useQuery: () => ({ data: queryData }), QueryStatus: 'QueryStatus' },
     './mobileRoutes': routes.exports,
     './employeeCatalog': { employeeDisplayName: employee => employee?.name || '', deptToneIndex: () => 1 },
+    '../RestaurantDispatchAssist': { default: 'RestaurantDispatchAssist' },
     '../EmployeeAvatar': { default: 'EmployeeAvatar' },
     '../UnifiedFilePicker': { UnifiedFilePicker: 'UnifiedFilePicker' },
     './mobile.css': {},

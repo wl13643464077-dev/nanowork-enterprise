@@ -1,0 +1,83 @@
+/* 派活助手（常用问法/题型预判/追问/我的版本）：桌面工作台与手机派活页共用 */
+.ewb-dispatch-assist {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ewb-dispatch-assist-label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.ewb-dispatch-assist-chip {
+  margin-inline-end: 0;
+  user-select: none;
+}
+.ewb-dispatch-assist-intent {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.ewb-pref-trigger {
+  padding: 0 4px;
+  height: auto;
+}
+.ewb-pref-editor {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ewb-pref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ewb-pref-key {
+  flex: 0 0 64px;
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+}
+.ewb-followups {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.04);
+  border: 1px dashed rgba(22, 119, 255, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ewb-followups-title {
+  font-size: 12px;
+}
+.ewb-followup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ewb-followup-label {
+  flex: 0 0 64px;
+  font-size: 12px;
+}
+.ewb-pref-output {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ewb-pref-output > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+@media (max-width: 640px) {
+  .ewb-pref-editor {
+    width: 240px;
+  }
+  .ewb-followup-row .ant-select {
+    min-width: 140px !important;
+  }
+}

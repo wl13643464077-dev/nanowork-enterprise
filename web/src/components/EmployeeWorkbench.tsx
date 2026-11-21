@@ -97,6 +97,9 @@ import ContentBenchmarkLibrary from './ContentBenchmarkLibrary';
 import ContentXhsVersions from './ContentXhsVersions';
 import { ContentEvolutionNotes, ContentRetroChanges, ContentRetroSourceSelect } from './ContentRetrospectiveLearning';
 import ConversationTaskFeedback from './ConversationTaskFeedback';
+import RestaurantDispatchAssist from './RestaurantDispatchAssist';
+import { DemoSampleSaver } from './RestaurantDemoPanel';
+import EmployeeSkillSupplement from './EmployeeSkillSupplement';
 
 type Props = {
   open: boolean;
@@ -113,6 +116,8 @@ type Props = {
   // 「一句话找人」等入口带来的派活预填：打开工作台时填进派活输入框，老板可改可删。
   initialDirective?: string | null;
   identityHint?: EmployeeWorkbenchIdentityHint | null;
+  // PRD v2.2 FR-8：把交付里建议的动作一键派给另一位餐饮员工（打开对方工作台并预填任务书）。
+  onHandoff?: (targetIdx: number, directive: string) => void;
   onClose: () => void;
 };
 
@@ -937,7 +942,12 @@ const KNOWN_CONFIG_FIELDS: WorkConfigField[] = [
       { label: '关闭联网', value: 'off' },
     ],
   },
-  { key: 'knowledgeScopes', label: '知识范围', type: 'multiselect', options: ['品牌知识包', '餐饮产业知识库', '员工产出'] },
+  {
+    key: 'knowledgeScopes',
+    label: '知识范围',
+    type: 'multiselect',
+    options: ['品牌知识包', '餐饮产业知识库', '员工产出'],
+  },
   {
     key: 'outputLength',
     label: '交付篇幅',
@@ -1052,6 +1062,7 @@ function EmployeeWorkbenchInstance({
   onSkillsChanged,
   initialDirective,
   identityHint,
+  onHandoff,
   onClose,
 }: Props) {
   const [profile, setProfile] = useState<EmployeeWorkbenchProfile | null>(null);
@@ -1098,6 +1109,11 @@ function EmployeeWorkbenchInstance({
   const runRequestSerial = useRef(0);
   const sourceDeliverableRequestSerial = useRef(0);
   const [dispatchForm] = Form.useForm<DispatchFormValues>();
+  // PRD v2.2 FR-1：老板手动选择的回答方式（null=自动判断）。
+  const [dispatchIntentType, setDispatchIntentType] = useState<string | null>(null);
+  // PRD v2.2 FR-2：派活前追问的答案（key → 值；"__default__" 表示用默认）
+  const [dispatchFollowupAnswers, setDispatchFollowupAnswers] = useState<Record<string, string>>({});
+  const watchedDispatchQuestion = Form.useWatch('question', dispatchForm);
   // 派活输入语音化（全部数字员工共用）：识别在本机浏览器完成，不扣积分；
   // 说完后由 AI 按经营语境整理意图（轻量真实调用），纠正同音错字。
   const [dispatchVoiceRefining, setDispatchVoiceRefining] = useState(false);
@@ -1366,7 +1382,10 @@ function EmployeeWorkbenchInstance({
           void onSkillsChanged?.();
           message.success(`全网进修完成，新增${data.run.skillsAdded}条技能`);
         } else {
-          message.error(data.run.error?.message || (personalApi ? '全网进修失败，已发生的调用费用以供应商账单为准' : '全网进修失败，预授权已按记录处理'));
+          message.error(
+            data.run.error?.message ||
+              (personalApi ? '全网进修失败，已发生的调用费用以供应商账单为准' : '全网进修失败，预授权已按记录处理'),
+          );
         }
       } catch {
         if (!cancelled) timer = window.setTimeout(poll, 3500);
@@ -1377,7 +1396,16 @@ function EmployeeWorkbenchInstance({
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [domain, idx, open, personalApi, refreshProfileQuietly, skillLearningRunId, skillLearningRunStatus, onSkillsChanged]);
+  }, [
+    domain,
+    idx,
+    open,
+    personalApi,
+    refreshProfileQuietly,
+    skillLearningRunId,
+    skillLearningRunStatus,
+    onSkillsChanged,
+  ]);
 
   const loadRestaurantTask = useCallback(
     async (rawTaskId: string | number, options: { scrollToResult?: boolean } = {}) => {
@@ -1808,7 +1836,14 @@ function EmployeeWorkbenchInstance({
                 question: values.question || values.goal,
               } as ContentEmployeeDispatchFormValues),
             }
-          : { ...values, question: values.question || values.goal || values.title };
+          : {
+              ...values,
+              question: values.question || values.goal || values.title,
+              ...(domain === 'restaurant' && dispatchIntentType ? { intentType: dispatchIntentType } : {}),
+              ...(domain === 'restaurant' && Object.keys(dispatchFollowupAnswers).length
+                ? { followupAnswers: dispatchFollowupAnswers }
+                : {}),
+            };
     } catch (error: any) {
       message.error(error?.message || '内容 Brief 格式无效');
       return;
@@ -1864,6 +1899,8 @@ function EmployeeWorkbenchInstance({
           ? text(payload.msg) || text(payload.message) || '任务已派发，完整能力快照已锁定'
           : '任务已派发，可在任务列表查看进度',
       );
+      setDispatchIntentType(null);
+      setDispatchFollowupAnswers({});
       dispatchForm.setFieldsValue({
         question: '',
         title: '',
@@ -2161,7 +2198,11 @@ function EmployeeWorkbenchInstance({
                     <strong>本次费用</strong>
                     <span>
                       {billingStateLabel(selectedRun.billing, selectedRun.status) || '账务状态未记录'}
-                      {personalApi ? `；${PERSONAL_API_PRICING_NOTE}` : selectedRun.billing.note ? `；${localizeOperationalStatus(selectedRun.billing.note)}` : ''}
+                      {personalApi
+                        ? `；${PERSONAL_API_PRICING_NOTE}`
+                        : selectedRun.billing.note
+                          ? `；${localizeOperationalStatus(selectedRun.billing.note)}`
+                          : ''}
                     </span>
                     {!personalApi && selectedRun.billing.chargedCredits != null && (
                       <small>实扣 {selectedRun.billing.chargedCredits} 积分</small>
@@ -2422,7 +2463,11 @@ function EmployeeWorkbenchInstance({
                         <p className="ewb-run-supplement-note">
                           计费状态：
                           {billingStateLabel(selectedRun.billing, selectedRun.status) || '未记录'}
-                          {personalApi ? `；${PERSONAL_API_PRICING_NOTE}` : selectedRun.billing.note ? `；${localizeOperationalStatus(selectedRun.billing.note)}` : ''}
+                          {personalApi
+                            ? `；${PERSONAL_API_PRICING_NOTE}`
+                            : selectedRun.billing.note
+                              ? `；${localizeOperationalStatus(selectedRun.billing.note)}`
+                              : ''}
                         </p>
                       )}
                       {!!selectedRun.contract?.errors.length && (
@@ -2529,7 +2574,9 @@ function EmployeeWorkbenchInstance({
                   ? '此结果未通过岗位契约，不能采纳'
                   : restaurantDraftPending
                     ? `任务 #${restaurantTask.id} · 质量门未通过，已保留草稿待你处理`
-                    : `任务 #${restaurantTask.id} · ${restaurantPublicStatus}`
+                    : `任务 #${restaurantTask.id} · ${restaurantPublicStatus}${
+                        restaurantTask.intent?.label ? ` · 判题：${restaurantTask.intent.label}` : ''
+                      }`
               }
               description={
                 <div className="ewb-task-progress">
@@ -2587,7 +2634,11 @@ function EmployeeWorkbenchInstance({
                       </span>
                     ) : restaurantPublicStatus === '业务暂不可采用（待账务对账）' ? (
                       <>
-                        <span>{personalApi ? '生成已结束，供应商费用记录待核对。' : '当前只完成技术生成，积分账务尚未终结，因此不会形成业务可用结果。'}</span>
+                        <span>
+                          {personalApi
+                            ? '生成已结束，供应商费用记录待核对。'
+                            : '当前只完成技术生成，积分账务尚未终结，因此不会形成业务可用结果。'}
+                        </span>
                         <span>{restaurantTask.nextAction || '请等待完成账务对账。'}</span>
                       </>
                     ) : restaurantPublicStatus === '待人工审阅' ? (
@@ -2721,7 +2772,11 @@ function EmployeeWorkbenchInstance({
                   {restaurantTask.billing && (
                     <div className={`ewb-billing-result state-${restaurantTask.billing.state || 'unknown'}`}>
                       <strong>本次费用</strong>
-                      <span>{personalApi ? personalApiBillingLabel(restaurantTask.billing) : restaurantTask.billing.label || '账务状态未记录'}</span>
+                      <span>
+                        {personalApi
+                          ? personalApiBillingLabel(restaurantTask.billing)
+                          : restaurantTask.billing.label || '账务状态未记录'}
+                      </span>
                       {canViewDiagnostics && restaurantTask.billing.costYuan != null && (
                         <small>供应商成本 ¥{Number(restaurantTask.billing.costYuan).toFixed(4)}</small>
                       )}
@@ -2869,6 +2924,37 @@ function EmployeeWorkbenchInstance({
                       </div>
                     </details>
                   )}
+                  {domain === 'restaurant' &&
+                    idx !== null &&
+                    profile.permissions?.canEditSkills === true &&
+                    ['已完成', '待审阅'].includes(String(restaurantTask.status || '')) && (
+                      <DemoSampleSaver employeeIdx={idx} taskId={Number(restaurantTask.id)} />
+                    )}
+                  {onHandoff && Array.isArray(restaurantTask.handoffs) && restaurantTask.handoffs.length > 0 && (
+                    <div className="ewb-handoffs">
+                      <span className="ewb-handoffs-label">建议接手的同事：</span>
+                      {restaurantTask.handoffs.map(handoff => (
+                        <Button
+                          key={`handoff-${handoff.idx}`}
+                          size="small"
+                          title={handoff.reason || undefined}
+                          onClick={() =>
+                            onHandoff(
+                              handoff.idx,
+                              [
+                                `${profile.identity.person || profile.identity.name || '同事'}在《${restaurantTask.title || '上一单'}》里建议由你接手：`,
+                                handoff.reason || '请按上一单结论跟进执行。',
+                                '请给出可直接执行的做法。',
+                              ].join('\n'),
+                            )
+                          }
+                        >
+                          派给{handoff.person}
+                          {handoff.duty ? `（${handoff.duty}）` : ''}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
                   <ConversationTaskFeedback
                     key={`restaurant-feedback-${restaurantTask.id}`}
                     kind="restaurant"
@@ -2966,6 +3052,22 @@ function EmployeeWorkbenchInstance({
                 />
                 <span className="ewb-chat-shortcut">Enter 发送 · Shift + Enter 换行</span>
               </div>
+              {domain === 'restaurant' && idx !== null && (
+                <RestaurantDispatchAssist
+                  idx={idx}
+                  question={String(watchedDispatchQuestion || '')}
+                  intentType={dispatchIntentType}
+                  disabled={!dispatchAvailable}
+                  onPickTemplate={template => {
+                    dispatchForm.setFieldValue('question', template);
+                    document.getElementById(dispatchFormId)?.querySelector('textarea')?.focus();
+                  }}
+                  onIntentTypeChange={setDispatchIntentType}
+                  followupAnswers={dispatchFollowupAnswers}
+                  onFollowupAnswersChange={setDispatchFollowupAnswers}
+                  canEditPreferences={profile.permissions?.canEditSkills === true}
+                />
+              )}
               <Form.Item name="requirement" hidden>
                 <Input />
               </Form.Item>
@@ -3084,16 +3186,20 @@ function EmployeeWorkbenchInstance({
                   ? `完成，新增${skillLearningRun.skillsAdded}条技能`
                   : skillLearningRun.status === 'pending_reconciliation'
                     ? '失败，账务待对账'
-                    : personalApi ? '任务未完成，供应商费用记录保留' : '失败，预授权已退回'
+                    : personalApi
+                      ? '任务未完成，供应商费用记录保留'
+                      : '失败，预授权已退回'
           }`}
           description={[
             skillLearningRun.progress?.[skillLearningRun.progress.length - 1]?.message,
             skillLearningRun.billing?.webCostUsd != null
               ? `联网调研成本 $${Number(skillLearningRun.billing.webCostUsd).toFixed(4)}`
               : '',
-            personalApi ? personalApiBillingLabel(skillLearningRun.billing) : skillLearningRun.billing?.chargedCredits != null
-              ? `最终模型实扣 ${skillLearningRun.billing.chargedCredits} 积分`
-              : '',
+            personalApi
+              ? personalApiBillingLabel(skillLearningRun.billing)
+              : skillLearningRun.billing?.chargedCredits != null
+                ? `最终模型实扣 ${skillLearningRun.billing.chargedCredits} 积分`
+                : '',
             skillLearningRun.error?.message,
           ]
             .filter(Boolean)
@@ -3158,6 +3264,11 @@ function EmployeeWorkbenchInstance({
           <HonestEmpty description="尚未配置企业自定义技能" />
         )}
       </div>
+      {domain === 'restaurant' && idx !== null && profile.permissions.canViewSkills && (
+        <div className="ewb-skill-group">
+          <EmployeeSkillSupplement idx={idx} />
+        </div>
+      )}
     </div>
   );
 

@@ -372,7 +372,8 @@ test("输入照片、完整正文、部分图片与费用保留，未完成图�
   assert.match(task, /detail\.imageGeneration\?\.status/);
   assert.match(task, /<TaskFeedback/);
   assert.match(task, /<summary>任务输入<\/summary>/);
-  assert.match(task, /<Markdown content=\{cleanReportBody\(detail\.report\.markdown\)\}/);
+  assert.match(task, /view\.fullMarkdown\s*\|\|\s*cleanReportBody\(detail\.report\?\.markdown/);
+  assert.match(task, /<Markdown\s+content=\{resultView\.markdown\}/);
   const xhsPanel = read("components/AiXhsNotePanel.tsx");
   assert.match(xhsPanel, /<SpecialistTaskHistory/);
   assert.match(

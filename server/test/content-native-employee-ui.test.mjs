@@ -164,6 +164,8 @@ function harness(file, initialProps, responses = {}) {
         return { default: component("NativeEmployeeChat") };
       if (name === "./NativeDeliverableDownloadButton")
         return { default: component("NativeDeliverableDownloadButton") };
+      if (name === "./SalesVideoPublishKit" || name === "./XhsPhonePreview")
+        return { default: component(name.slice(2)) };
       if (name === "./Markdown") return { Markdown: component("Markdown") };
       if (name === "./TaskFeedback")
         return { default: component("TaskFeedback") };

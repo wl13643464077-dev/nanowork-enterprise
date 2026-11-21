@@ -842,3 +842,37 @@
   font-style: normal;
   font-weight: 400;
 }
+/* PRD v2.2 FR-9 演示模式 */
+.demo-panel-list {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.demo-panel-group h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.demo-panel-group h4 small {
+  margin-left: 6px;
+  color: rgba(0, 0, 0, 0.45);
+  font-weight: normal;
+}
+.demo-panel-script {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.demo-panel-script-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.demo-panel-youget {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}

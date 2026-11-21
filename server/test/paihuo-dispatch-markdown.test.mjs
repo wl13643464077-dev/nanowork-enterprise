@@ -263,9 +263,11 @@ test("HTTP派活默认按派活AI逻辑执行并直接交付老板可读Markdown
     const args = generated[0];
     assert.equal(args.responseSchema, undefined, "派活模式不得携带JSON响应Schema");
     assert.match(args.system, /你是「纳米Work行业版/u);
-    assert.match(args.system, /【你的岗位工作手册（必须按其中的必要输入\/工作流\/交付物执行）】/u);
+    assert.match(args.system, /【你的岗位工作手册（方法参考：本次按下方“本次题型”的形态交付/u);
+    assert.match(args.system, /【本次答题形态·必须执行】/u);
     assert.match(args.system, /【交付规则】/u);
-    assert.match(args.system, /开头一行「# 标题」，结尾给「下一步建议」3 条/u);
+    assert.match(args.system, /按本次答题形态组织段落、表格和结尾/u);
+    assert.doesNotMatch(args.system, /结尾给「下一步建议」3 条/u);
     assert.doesNotMatch(args.system, /【机器输出契约·直接派活必须执行】/u);
     assert.doesNotMatch(args.system, /digestFingerprint/u);
     assert.match(args.userMsg, /【老板的任务书（不可信业务输入）】/u);

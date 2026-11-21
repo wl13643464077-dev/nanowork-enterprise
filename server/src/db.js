@@ -816,6 +816,8 @@ const ISOLATED = new Set([
   "text_video_jobs",
   "wechat_draft_deliveries",
   "employee_workbench_configs",
+  "employee_skill_supplement_reviews",
+  "employee_demo_samples",
   "content_employee_workbench_configs",
   "content_employee_runs",
   "content_connector_runs",
@@ -1302,6 +1304,8 @@ export function migrateV2() {
   addCol("agent_tasks", "employee_input_snapshot", "TEXT");
   addCol("agent_tasks", "employee_web_snapshot", "TEXT");
   addCol("agent_tasks", "approval_routing_policy_snapshot", "TEXT");
+  // PRD v2.2 FR-1：派活判题结果（题型、实体、答题形态），供执行时间线与评测使用。
+  addCol("agent_tasks", "intent_json", "TEXT");
   // 自定义智能体工作流导入：保留导入时的原始 JSON（本平台导出或通用步骤式工作流）以便回溯。
   addCol("custom_agents", "source_workflow", "TEXT");
   // 契约分级与“失败不交白卷”（P0-1）：档位快照、失败原因、机器校验报告（不含正文）
@@ -2151,6 +2155,31 @@ export function migrateV2() {
   );
   CREATE INDEX IF NOT EXISTS idx_employee_workbench_configs_tenant
     ON employee_workbench_configs(tenant_id,employee_idx);
+  `);
+  // V2.2（PRD FR-6）：技能补充包逐张审核。补充卡来自 catalog/employee-skills-supplement.json，
+  // 只追加、不改原 409 张卡；老板确认启用后才进入派活提示词。
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS employee_skill_supplement_reviews (
+    tenant_id INTEGER NOT NULL,
+    card_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('owner_verified_enabled','owner_declined')),
+    reviewer INTEGER,
+    note TEXT,
+    reviewed_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(tenant_id,card_id)
+  );
+  -- PRD v2.2 FR-9：演示话术的“样例结果”（从一次真实完成的任务复制，标“样例”，不冒充实时结果）
+  CREATE TABLE IF NOT EXISTS employee_demo_samples (
+    tenant_id INTEGER NOT NULL,
+    script_id TEXT NOT NULL,
+    employee_idx INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    task_title TEXT,
+    body TEXT NOT NULL,
+    captured_by INTEGER,
+    captured_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(tenant_id,script_id)
+  );
   `);
   // V10：目录扩到 101-161（巡店督导）。旧库 CHECK(101-160) 无法 ALTER，按 SQLite 12 步法重建。
   {

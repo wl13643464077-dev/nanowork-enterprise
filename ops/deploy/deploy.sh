@@ -21,6 +21,7 @@
 #  12. 清理旧 release（默认保留 5 个）
 #
 # 失败时不会切换 current；若在第 10 步失败会提示 rollback.sh。
+# --service-env <path>：由 systemd 向预检进程注入服务配置。调用方另设 ENV_FILE 为仅含数据库等非敏感路径的文件；就绪矩阵通过后台核验。
 set -euo pipefail
 
 APP_USER="${APP_USER:-nanowork}"
@@ -34,6 +35,7 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3107/api/health}"
 API_BASE="${API_BASE:-http://127.0.0.1:3107}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-90}"
 
+SERVICE_ENV=""
 SOURCE=""
 REF=""
 DIST_TARBALL=""
@@ -54,6 +56,7 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --service-env) SERVICE_ENV="${2:?需指定 systemd 的 EnvironmentFile 路径}"; shift 2 ;;
     --source) SOURCE="${2:-}"; shift 2 ;;
     --ref) REF="${2:-}"; shift 2 ;;
     --dist) DIST_TARBALL="${2:-}"; shift 2 ;;
@@ -79,6 +82,10 @@ command -v systemctl >/dev/null || die "缺少 systemctl"
 command -v curl >/dev/null || die "缺少 curl"
 id -u "${APP_USER}" >/dev/null 2>&1 || die "系统用户 ${APP_USER} 不存在，请先运行 install-ubuntu.sh"
 [[ -f "${ENV_FILE}" ]] || die "缺少 ${ENV_FILE}（从 ops/deploy/server.env.production.example 复制并填写）"
+if [[ -n "${SERVICE_ENV}" ]]; then
+  [[ -f "${SERVICE_ENV}" && ! "${ENV_FILE}" -ef "${SERVICE_ENV}" ]] || die "--service-env 需配套独立的非敏感路径配置 ENV_FILE"
+  command -v systemd-run >/dev/null || die "缺少 systemd-run"
+fi
 [[ -d "${DATA_DIR}" ]] || die "缺少数据目录 ${DATA_DIR}，请先运行 install-ubuntu.sh"
 node -e 'const [maj, min] = process.versions.node.split(".").map(Number); process.exit(maj > 22 || (maj === 22 && min >= 12) ? 0 : 1)' \
   || die "node $(node -v) 过低，需要 ≥ 22.12"
@@ -250,11 +257,13 @@ BACKUP_REF=""
 if [[ -f "${NANOWORK_DB_PATH}" ]]; then
   if [[ -x "${SCRIPT_DIR}/backup.sh" || -f "${SCRIPT_DIR}/backup.sh" ]]; then
     BACKUP_REF="$(ENV_FILE="${ENV_FILE}" BACKUP_ROOT="${BACKUP_ROOT}" DATA_DIR="${DATA_DIR}" bash "${SCRIPT_DIR}/backup.sh" "pre-deploy-${TS}" --print-path)"
+    [[ -n "${BACKUP_REF}" && -s "${BACKUP_REF}/manifest.txt" ]] || die "备份未产生有效清单，停止发布"
     ok "备份：${BACKUP_REF}"
   else
-    warn "找不到 backup.sh，跳过发布前备份（不建议）"
+    die "已有数据库但找不到 backup.sh，停止发布"
   fi
 else
+  [[ ! -e "${CURRENT_LINK}" ]] || die "已有 release 但未找到数据库，停止发布"
   ok "数据库尚不存在（首次部署），无需备份"
 fi
 
@@ -280,9 +289,15 @@ fi
 # 8. 启动前自检（以运行用户身份、用真实 env 文件）
 # ---------------------------------------------------------------------------
 log "8/12 启动前自检 preflight-production.mjs"
-if ! sudo -u "${APP_USER}" -H env -i PATH="${PATH}" HOME="${DATA_DIR%/data}" TZ=Asia/Shanghai NODE_ENV=production \
-  "${NODE_BIN}" "${RELEASE_DIR}/scripts/preflight-production.mjs" --env-file "${ENV_FILE}"; then
-  die "自检存在 FAIL 项，未切换版本。修复 ${ENV_FILE} 或系统依赖后重试"
+if [[ -n "${SERVICE_ENV}" ]]; then
+  systemd-run --quiet --pipe --wait --collect --uid="${APP_USER}" \
+    -p "WorkingDirectory=${RELEASE_DIR}/server" -p "EnvironmentFile=${SERVICE_ENV}" \
+    "${NODE_BIN}" "${RELEASE_DIR}/scripts/preflight-production.mjs" || die "运行环境自检失败，未切换版本"
+else
+  if ! sudo -u "${APP_USER}" -H env -i PATH="${PATH}" HOME="${DATA_DIR%/data}" TZ=Asia/Shanghai NODE_ENV=production \
+    "${NODE_BIN}" "${RELEASE_DIR}/scripts/preflight-production.mjs" --env-file "${ENV_FILE}"; then
+    die "自检存在 FAIL 项，未切换版本。修复 ${ENV_FILE} 或系统依赖后重试"
+  fi
 fi
 ok "自检通过"
 
@@ -352,6 +367,8 @@ fi
 log "11/12 就绪矩阵摘要（/api/sys/runtime-readiness）"
 if [[ "${NO_RESTART}" == "1" ]]; then
   warn "--no-restart：跳过"
+elif [[ -n "${SERVICE_ENV}" ]]; then
+  ok "使用服务配置预检；请用已登录的管理后台核验就绪矩阵"
 else
   SUPER_PASSWORD_VALUE="$(env_value PLATFORM_SUPER_PASSWORD)"
   if [[ -z "${SUPER_PASSWORD_VALUE}" ]]; then

@@ -244,6 +244,10 @@ export type EmployeeRuntimeTask = {
   nextAction?: string;
   requirement?: string;
   presentationKey?: string;
+  // PRD v2.2 FR-8：交付里建议接手的同事，前端一键带任务书派给对方
+  handoffs?: { idx: number; person: string; duty?: string; reason?: string; explicit?: boolean }[];
+  // PRD v2.2 FR-1：本单判题结果（时间线显示“判题：快查”）
+  intent?: { type: string; label: string; answerShape?: string | null };
   // P0-1 未达标草稿（草稿待处理 / 草稿已接受）的老板可读信息；结构见 components/EmployeeDraftCard
   draft?: {
     state: 'pending' | 'accepted';

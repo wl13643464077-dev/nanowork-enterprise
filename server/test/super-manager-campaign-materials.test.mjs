@@ -416,7 +416,7 @@ test('附加物料图后仍保留原方案，工作台与体验页都能展示�
   assert.match(vite, /['\"]\/uploads['\"]/);
   assert.match(gallery, /点选这套/);
   assert.match(gallery, /两套备选，点选一套使用/);
-  assert.match(gallery, /先读品牌 Logo 和调性再图生图/);
+  assert.match(gallery, /先读品牌 Logo\s+和调性再图生图/);
   assert.match(workbenchJs, /艺术设计成品/);
   assert.match(workbenchJs, /先读取品牌知识包里的 Logo/);
   assert.match(workbenchJs, /禁止把折扣、价格、平台产品名/);

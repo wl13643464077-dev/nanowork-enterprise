@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import './CampaignMaterialsGallery.css';
 
 type CampaignMaterial = {
@@ -85,11 +85,9 @@ function MaterialCard({
   onSelect?: () => void;
 }) {
   const ok = item.status === 'succeeded' && src;
-  const className = [
-    'campaign-material-card',
-    ok ? '' : 'is-failed',
-    selected ? 'is-picked' : '',
-  ].filter(Boolean).join(' ');
+  const className = ['campaign-material-card', ok ? '' : 'is-failed', selected ? 'is-picked' : '']
+    .filter(Boolean)
+    .join(' ');
   return (
     <figure className={className} data-slot={item.id} data-kind={item.kind || item.id}>
       {selectable ? (
@@ -115,7 +113,7 @@ function MaterialCard({
   );
 }
 
-export default function CampaignMaterialsGallery({
+function MaterialGallery({
   items,
   invitationToken,
   accessToken,
@@ -127,17 +125,15 @@ export default function CampaignMaterialsGallery({
   conversationId?: number;
 }) {
   const list = Array.isArray(items) ? items : [];
-  const itemKey = list.map(item => `${item.id}:${item.status}`).join('|');
-  const groups = useMemo(() => groupCampaignMaterials(list), [itemKey]);
+  const groups = groupCampaignMaterials(list);
   const [resolvedSrc, setResolvedSrc] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<Record<string, string>>({});
   const trialAuth = Boolean(invitationToken && accessToken && conversationId);
   useEffect(() => {
     const created: string[] = [];
     let active = true;
-    setResolvedSrc({});
     Promise.all(
-      list
+      (items || [])
         .filter(item => item.status === 'succeeded')
         .map(async item => {
           try {
@@ -150,8 +146,12 @@ export default function CampaignMaterialsGallery({
                 ? await sessionImageUrl(item.url)
                 : '';
             if (!src) return;
+            if (!active) {
+              URL.revokeObjectURL(src);
+              return;
+            }
             created.push(src);
-            if (active) setResolvedSrc(current => ({ ...current, [item.id]: src }));
+            setResolvedSrc(current => ({ ...current, [item.id]: src }));
           } catch {
             /* keep the /uploads fallback on the img tag */
           }
@@ -161,26 +161,22 @@ export default function CampaignMaterialsGallery({
       active = false;
       created.forEach(url => URL.revokeObjectURL(url));
     };
-  }, [trialAuth, invitationToken, accessToken, conversationId, itemKey]);
-  useEffect(() => {
-    setPicked(current => {
-      const next = { ...current };
-      for (const group of groups) {
-        if (next[group.key] && group.items.some(item => item.id === next[group.key])) continue;
-        const firstOk = group.items.find(item => item.status === 'succeeded') || group.items[0];
-        if (firstOk) next[group.key] = firstOk.id;
-      }
-      return next;
-    });
-  }, [itemKey]);
+  }, [trialAuth, invitationToken, accessToken, conversationId, items]);
   if (!list.length) return null;
   return (
     <section className="campaign-materials" aria-label="活动物料成图">
       <div className="campaign-materials-head">
         <strong>活动物料成图</strong>
-        <span>同一套品牌视觉。宣传单、Banner 各给两套备选，点选一套带走。先读品牌 Logo 和调性再图生图，融进店名和活动，不会后期硬贴系统字。</span>
+        <span>
+          同一套品牌视觉。宣传单、Banner 各给两套备选，点选一套带走。先读品牌 Logo
+          和调性再图生图，融进店名和活动，不会后期硬贴系统字。
+        </span>
       </div>
       {groups.map(group => {
+        const chosen =
+          group.items.find(item => item.id === picked[group.key]) ||
+          group.items.find(item => item.status === 'succeeded') ||
+          group.items[0];
         const selectable = group.items.length > 1;
         return (
           <div key={group.key} className="campaign-material-group">
@@ -200,7 +196,7 @@ export default function CampaignMaterialsGallery({
                     src={src}
                     downloadUrl={downloadUrl}
                     selectable={selectable}
-                    selected={picked[group.key] === item.id}
+                    selected={chosen?.id === item.id}
                     onSelect={() => setPicked(current => ({ ...current, [group.key]: item.id }))}
                   />
                 );
@@ -211,4 +207,14 @@ export default function CampaignMaterialsGallery({
       })}
     </section>
   );
+}
+
+export default function CampaignMaterialsGallery(props: Parameters<typeof MaterialGallery>[0]) {
+  const key = JSON.stringify([
+    props.invitationToken,
+    props.accessToken,
+    props.conversationId,
+    props.items?.map(item => [item.id, item.status, item.url]),
+  ]);
+  return <MaterialGallery key={key} {...props} />;
 }

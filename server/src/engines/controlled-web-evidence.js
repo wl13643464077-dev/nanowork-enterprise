@@ -1,3 +1,4 @@
+import { excludedRestaurantSource } from './restaurant-source-host.js';
 import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -133,6 +134,7 @@ function parsePublicUrl(rawUrl) {
   const defaultPort = parsed.protocol === 'https:' ? '443' : '80';
   if (!['http:', 'https:'].includes(parsed.protocol)
     || parsed.username || parsed.password || !hostname
+    || excludedRestaurantSource(parsed)
     || malformedEncodedUrlMaterial(parsed)
     || sensitiveQuery(parsed)
     || sensitiveFragment(parsed)
@@ -432,6 +434,7 @@ export async function fetchControlledWebEvidence(sources, {
   signal = null,
   fetchPageFn = fetchPublicPageEvidence,
   tinyfishFetchFn = tinyfishFetchPages,
+  allowRenderedFetch = true,
 } = {}) {
   const urls = [...new Set((Array.isArray(sources) ? sources : [])
     .map(source => String(source?.url || '').trim()).filter(Boolean))]
@@ -455,7 +458,7 @@ export async function fetchControlledWebEvidence(sources, {
   // TinyFish 是平台凭证，个人供应商上下文只能使用本地受控 HTTP 抓取，
   // 避免搜索走个人 360、正文抓取又暗中消耗平台 TinyFish。
   const personalProviderKey = providerContext()?.billingMode === 'personal';
-  if (pending.length && !personalProviderKey && tinyfishAvailable()) {
+  if (pending.length && allowRenderedFetch && !personalProviderKey && tinyfishAvailable()) {
     try {
       const batch = await tinyfishFetchFn(pending, { signal, purpose: '为门店经营调研核验公开网页正文' });
       const got = new Set();

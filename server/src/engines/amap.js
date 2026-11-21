@@ -15,7 +15,28 @@
 
 export const AMAP_DEFAULT_BASE_URL = "https://restapi.amap.com";
 export const AMAP_DEFAULT_TIMEOUT_MS = 8_000;
+// 旧版“全局串行 1.1 秒”的单 QPS 间隔，保留为下限参考与兼容导出。
 export const AMAP_REQUEST_INTERVAL_MS = 1_100;
+// PRD v2.2 FR-4.3：按 QPS 发放请求令牌（默认 3 QPS，可用 AMAP_QPS 配置 0.5–20）。
+// 均匀间隔发放等价于容量为 1 的令牌桶，既提升吞吐，又不会在同一出口 IP 上形成突发。
+export const AMAP_DEFAULT_QPS = 3;
+export function amapConfiguredQps(env = process.env) {
+  const raw = Number(String(env.AMAP_QPS ?? "").trim());
+  if (!Number.isFinite(raw) || raw <= 0) return AMAP_DEFAULT_QPS;
+  return Math.min(20, Math.max(0.5, raw));
+}
+export function amapRequestIntervalMs(env = process.env) {
+  return Math.ceil(1000 / amapConfiguredQps(env));
+}
+// 每日调用量提醒：AMAP_DAILY_QUOTA（默认 5000 次/天），达到 80% 视为接近配额。
+export const AMAP_DEFAULT_DAILY_QUOTA = 5_000;
+export const AMAP_QUOTA_WARN_RATIO = 0.8;
+// PRD v2.2 FR-4.3：每个任务分配高德请求预算（默认 ≤25 次，可用 AMAP_TASK_REQUEST_BUDGET 调整）；
+// 当日调用接近配额（≥80%）时预算收紧到 AMAP_NEAR_QUOTA_TASK_BUDGET，其余数据优先走 24 小时缓存与公开检索。
+export const AMAP_DEFAULT_TASK_REQUEST_BUDGET = 25;
+export const AMAP_NEAR_QUOTA_TASK_BUDGET = 8;
+// 凭证/配额类告警节流：同一 infocode 30 分钟内只告警一次。
+export const AMAP_ALERT_THROTTLE_MS = 30 * 60 * 1000;
 export const AMAP_QUEUE_TIMEOUT_MS = 60_000;
 export const AMAP_MAX_PAGE_SIZE = 25;
 export const AMAP_MAX_PAGES = 3;
@@ -86,7 +107,7 @@ function abortableWait(milliseconds, signal) {
 export function createAmapRequestPacer({ intervalMs = AMAP_REQUEST_INTERVAL_MS, nowMs = Date.now, waitFn = abortableWait } = {}) {
   const origins = new Map();
   return {
-    async wait(origin, { signal, deadlineAt = Infinity } = {}) {
+    async wait(origin, { signal, deadlineAt = Infinity, onStart } = {}) {
       if (signal?.aborted) throw abortReason(signal);
       const state = origins.get(origin) || { tail: Promise.resolve(), lastStart: null };
       origins.set(origin, state);
@@ -97,6 +118,9 @@ export function createAmapRequestPacer({ intervalMs = AMAP_REQUEST_INTERVAL_MS, 
         if (nowMs() + delay >= deadlineAt) throw new DOMException("高德排队等待超时", "TimeoutError");
         if (delay) await waitFn(delay, signal);
         if (signal?.aborted) throw abortReason(signal);
+        if (nowMs() >= deadlineAt) throw new DOMException("高德排队等待超时", "TimeoutError");
+        // 在同一队列回调中启动 HTTP，再计算下一个起点；响应可并行。
+        onStart?.();
         state.lastStart = nowMs();
       });
       state.tail = work.catch(() => {});
@@ -114,7 +138,7 @@ export function createAmapRequestPacer({ intervalMs = AMAP_REQUEST_INTERVAL_MS, 
 }
 
 const sharedRequestPacer = createAmapRequestPacer({
-  intervalMs: () => process.env.NODE_ENV === "test" ? 0 : AMAP_REQUEST_INTERVAL_MS,
+  intervalMs: () => process.env.NODE_ENV === "test" ? 0 : amapRequestIntervalMs(),
 });
 
 export class AmapError extends Error {
@@ -184,7 +208,48 @@ const runtimeState = {
   lastError: null,
   callCount: 0,
   cacheHits: 0,
+  // FR-4.3：最近 20 次错误、当日调用计数（进程内，重启清零；配额以高德控制台为准）。
+  recentErrors: [],
+  daily: { date: null, count: 0 },
 };
+
+function localDateKey(at = new Date()) {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function noteCall(at = new Date()) {
+  const key = localDateKey(at);
+  if (runtimeState.daily.date !== key) runtimeState.daily = { date: key, count: 0 };
+  runtimeState.daily.count += 1;
+  try {
+    const usage = amapDailyUsage();
+    if (usage.nearQuota) {
+      emitAmapAlert("near_quota", { date: usage.date, count: usage.count, quota: usage.quota });
+    }
+  } catch {
+    // 配额统计异常不影响调用。
+  }
+}
+
+export function amapDailyUsage(env = process.env) {
+  const quotaRaw = Number(String(env.AMAP_DAILY_QUOTA ?? "").trim());
+  const quota = Number.isFinite(quotaRaw) && quotaRaw > 0 ? quotaRaw : AMAP_DEFAULT_DAILY_QUOTA;
+  const today = localDateKey();
+  const count = runtimeState.daily.date === today ? runtimeState.daily.count : 0;
+  return {
+    date: today,
+    count,
+    quota,
+    ratio: Number((count / quota).toFixed(3)),
+    nearQuota: count >= quota * AMAP_QUOTA_WARN_RATIO,
+    qps: amapConfiguredQps(env),
+  };
+}
+
+export function amapRecentErrors() {
+  return runtimeState.recentErrors.map((item) => ({ ...item }));
+}
 
 export function amapRuntimeState() {
   const blocked =
@@ -198,6 +263,8 @@ export function amapRuntimeState() {
     callCount: runtimeState.callCount,
     cacheHits: runtimeState.cacheHits,
     blocked,
+    daily: amapDailyUsage(),
+    recentErrors: amapRecentErrors(),
   };
 }
 
@@ -207,10 +274,45 @@ export function resetAmapRuntimeState() {
   runtimeState.lastError = null;
   runtimeState.callCount = 0;
   runtimeState.cacheHits = 0;
+  runtimeState.recentErrors = [];
+  runtimeState.daily = { date: null, count: 0 };
 }
 
 function noteSuccess(at) {
   runtimeState.lastSuccessAt = at;
+}
+
+let alertHandler = null;
+const alertSentAt = new Map();
+
+/** 注册凭证/配额告警处理器（站内信 + 飞书推送在 amap-alerts.js 里实现，本模块保持无依赖）。 */
+export function setAmapAlertHandler(fn) {
+  alertHandler = typeof fn === "function" ? fn : null;
+}
+
+export function resetAmapAlertState() {
+  alertSentAt.clear();
+}
+
+function emitAmapAlert(kind, payload, nowMs = Date.now()) {
+  if (!alertHandler) return false;
+  const key = `${kind}:${payload?.infocode || payload?.date || ""}`;
+  const last = alertSentAt.get(key);
+  if (last != null && nowMs - last < AMAP_ALERT_THROTTLE_MS) return false;
+  alertSentAt.set(key, nowMs);
+  try {
+    const result = alertHandler({ kind, ...payload });
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch {
+    // 告警失败不影响高德调用本身。
+  }
+  return true;
+}
+
+export function amapTaskRequestBudget(env = process.env) {
+  const raw = Number(String(env.AMAP_TASK_REQUEST_BUDGET ?? "").trim());
+  const configured = Number.isFinite(raw) && raw > 0 ? Math.min(200, Math.max(5, Math.round(raw))) : AMAP_DEFAULT_TASK_REQUEST_BUDGET;
+  return amapDailyUsage(env).nearQuota ? Math.min(configured, AMAP_NEAR_QUOTA_TASK_BUDGET) : configured;
 }
 
 function noteFailure(error, at) {
@@ -222,7 +324,19 @@ function noteFailure(error, at) {
     message: redactKey(String(error?.message || error || "")).slice(0, 200),
   };
   runtimeState.lastError = summary;
-  if (error?.blocked) runtimeState.lastBlocked = summary;
+  runtimeState.recentErrors = [
+    { ...summary, explanation: summary.infocode ? classifyAmapInfocode(summary.infocode).message || null : null },
+    ...runtimeState.recentErrors,
+  ].slice(0, 20);
+  if (error?.blocked) {
+    runtimeState.lastBlocked = summary;
+    emitAmapAlert(error?.quotaExceeded ? "quota" : "credential", {
+      infocode: summary.infocode,
+      explanation: summary.infocode ? classifyAmapInfocode(summary.infocode).message || null : null,
+      message: summary.message,
+      at,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,8 +558,13 @@ export function createAmapClient({
   cache,
   now = () => new Date(),
   env = process.env,
+  requestBudget = null,
 } = {}) {
   const key = apiKey === undefined ? amapWebKey(env) : String(apiKey || "").trim();
+  const budgetLimit = Number.isFinite(Number(requestBudget)) && Number(requestBudget) > 0
+    ? Math.round(Number(requestBudget))
+    : null;
+  let budgetUsed = 0;
   const origin = baseUrl ? amapBaseUrl({ AMAP_BASE_URL: baseUrl }) : amapBaseUrl(env);
   const timeout = Math.max(1_000, Math.min(30_000, Number(timeoutMs) || AMAP_DEFAULT_TIMEOUT_MS));
   const queueTimeout = Math.max(1, Math.min(120_000, Number(queueTimeoutMs) || AMAP_QUEUE_TIMEOUT_MS));
@@ -476,30 +595,52 @@ export function createAmapClient({
     const safeErrorText = value => redactKey(String(value || "")).split(key).join("[已脱敏]");
     try {
       for (let attempt = 0; attempt <= 2; attempt += 1) {
-        await requestPacer.wait(origin, { signal: totalSignal, deadlineAt });
-        if (totalSignal.aborted) throw abortReason(totalSignal);
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(new DOMException("高德网络请求超时", "TimeoutError")), timeout);
-        const fetchSignal = AbortSignal.any([totalSignal, controller.signal]);
-        const fetchedAt = now().toISOString();
-        const id = requestId();
-        runtimeState.callCount += 1;
-        let payload;
-        try {
-          const response = await fetcher(url.toString(), {
-            method: "GET", headers: { Accept: "application/json" }, signal: fetchSignal,
-          });
-          if (!response?.ok) throw new AmapError(`高德HTTP ${response?.status ?? "?"}`, {
-            endpoint, category: Number(response?.status) === 429 ? "transient" : "request", httpStatus: Number(response?.status) || null,
-          });
-          try { payload = await response.json(); }
-          catch { throw new AmapError("高德响应不是合法JSON", { endpoint, category: "request" }); }
-        } catch (error) {
-          if (error instanceof AmapError) throw error;
-          throw new AmapError(signal?.aborted ? "高德请求已取消" : fetchSignal.aborted
-            ? `高德请求超时（${timeout}ms）` : `高德请求失败：${safeErrorText(error?.message || error)}`,
-          { endpoint, category: signal?.aborted ? "cancelled" : "transient" });
-        } finally { clearTimeout(timer); }
+        const send = async () => {
+          if (totalSignal.aborted) throw abortReason(totalSignal);
+          if (budgetLimit != null && budgetUsed >= budgetLimit) {
+            throw new AmapError(`本单高德请求预算已用完（${budgetLimit} 次），其余数据改用缓存或公开检索`, {
+              endpoint,
+              category: "budget",
+            });
+          }
+          budgetUsed += 1;
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(new DOMException("高德网络请求超时", "TimeoutError")), timeout);
+          const fetchSignal = AbortSignal.any([totalSignal, controller.signal]);
+          const fetchedAt = now().toISOString();
+          const id = requestId();
+          runtimeState.callCount += 1;
+          noteCall();
+          let payload;
+          try {
+            const response = await fetcher(url.toString(), {
+              method: "GET", headers: { Accept: "application/json" }, signal: fetchSignal,
+            });
+            if (!response?.ok) throw new AmapError(`高德HTTP ${response?.status ?? "?"}`, {
+              endpoint, category: Number(response?.status) === 429 ? "transient" : "request", httpStatus: Number(response?.status) || null,
+            });
+            try { payload = await response.json(); }
+            catch { throw new AmapError("高德响应不是合法JSON", { endpoint, category: "request" }); }
+          } catch (error) {
+            if (error instanceof AmapError) throw error;
+            throw new AmapError(signal?.aborted ? "高德请求已取消" : fetchSignal.aborted
+              ? `高德请求超时（${timeout}ms）` : `高德请求失败：${safeErrorText(error?.message || error)}`,
+            { endpoint, category: signal?.aborted ? "cancelled" : "transient" });
+          } finally { clearTimeout(timer); }
+          return { payload, fetchedAt, id };
+        };
+        let pending;
+        await requestPacer.wait(origin, {
+          signal: totalSignal,
+          deadlineAt,
+          onStart() {
+            pending = send();
+            // 即便在排队信号回调中取消，网络请求的拒绝也始终有人接收。
+            pending.catch(() => {});
+          },
+        });
+        // 外部注入的旧版节流器只实现 wait，保留其放行后再发请求的契约。
+        const { payload, fetchedAt, id } = await (pending || send());
         if (String(payload?.status) !== "1") {
           const infocode = str(payload?.infocode, 12);
           const info = safeErrorText(str(payload?.info, 200));
@@ -515,7 +656,8 @@ export function createAmapClient({
       }
     } catch (error) {
       const safe = error instanceof AmapError ? error : new AmapError(signal?.aborted ? "高德请求已取消" : "高德请求排队或执行超时", { endpoint, category: signal?.aborted ? "cancelled" : "transient" });
-      noteFailure(safe, now().toISOString());
+      // 本单预算用完是主动限流，不计入“最近错误”。
+      if (safe.category !== "budget") noteFailure(safe, now().toISOString());
       throw safe;
     } finally {
       clearTimeout(deadlineTimer);
@@ -695,6 +837,7 @@ export function createAmapClient({
     searchAround,
     searchText,
     districtInfo,
+    requestBudget: () => ({ limit: budgetLimit, used: budgetUsed }),
   });
 }
 
@@ -745,4 +888,62 @@ export async function verifyAmapConnection({ fetchImpl, address = "北京市朝�
       endpoint: error?.endpoint || "/v3/geocode/geo",
     };
   }
+}
+
+/**
+ * PRD v2.2 FR-4.3：三步自检（固定公开地标与关键词，不接受任意地址，避免成为代理）。
+ * 地理编码（望京SOHO）→ 周边搜索（1000 米，餐饮 050000）→ 关键字搜索（望京 火锅）。
+ * 每步输出：是否成功、耗时、返回条数、是否带人均（biz_ext.cost）、infocode 与中文说明。
+ */
+export async function runAmapSelfCheck({ fetchImpl, signal } = {}) {
+  const client = createAmapClient({ fetchImpl, cache: false });
+  const startedAt = new Date().toISOString();
+  if (!client.configured) {
+    return { ok: false, configured: false, startedAt, steps: [], error: AMAP_UNCONFIGURED_REASON, usage: amapDailyUsage() };
+  }
+  const steps = [];
+  const timed = async (name, fn) => {
+    const t0 = Date.now();
+    try {
+      const result = await fn();
+      const pois = Array.isArray(result?.data?.pois) ? result.data.pois : null;
+      const step = {
+        name,
+        ok: Boolean(result?.data),
+        ms: Date.now() - t0,
+        returned: pois ? pois.length : result?.data ? 1 : 0,
+        withCost: pois ? pois.filter((poi) => Number(poi?.biz_ext?.cost) > 0).length : null,
+        infocode: null,
+        explanation: result?.data ? null : result?.note || "未返回数据",
+      };
+      steps.push(step);
+      return result;
+    } catch (error) {
+      steps.push({
+        name,
+        ok: false,
+        ms: Date.now() - t0,
+        returned: 0,
+        withCost: null,
+        infocode: error?.infocode || null,
+        explanation: redactKey(error?.message || String(error)).slice(0, 200),
+        blocked: error?.blocked === true,
+      });
+      return null;
+    }
+  };
+  const geo = await timed("地理编码·望京SOHO", () => client.geocode("望京SOHO", "北京", { signal }));
+  const center = geo?.data ? { lng: geo.data.lng, lat: geo.data.lat } : { lng: 116.4807, lat: 39.9965 };
+  await timed("周边搜索·1000米餐饮", () =>
+    client.searchAround({ ...center, radius: 1000, types: AMAP_RESTAURANT_TYPECODE, pages: 1, signal }));
+  await timed("关键字搜索·望京 火锅", () =>
+    client.searchText({ keywords: "望京 火锅", city: "北京", types: AMAP_RESTAURANT_TYPECODE, pages: 1, signal }));
+  return {
+    ok: steps.every((step) => step.ok),
+    configured: true,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    steps,
+    usage: amapDailyUsage(),
+  };
 }

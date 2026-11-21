@@ -3,6 +3,8 @@ import { runWithTenant } from '../db.js';
 import {
   assertWorkbenchManager,
   buildEmployeeWorkbench,
+  employeeSkillSupplementView,
+  reviewEmployeeSkillSupplement,
   updateEmployeePrompt,
   updateEmployeeSkills,
   updateEmployeeWorkConfig,
@@ -14,6 +16,15 @@ import {
   startSkillLearningRun,
 } from '../engines/employee-skill-learning.js';
 import { dispatchMarshalTask } from './marshals.js';
+import { classifyEmployeeIntent, INTENT_LABELS } from '../engines/employee-intent-router.js';
+import { fillQuestionTemplate, questionTemplatesForEmployee } from '../engines/employee-question-templates.js';
+import {
+  buildFollowupQuestions,
+  getSlotPreferences,
+  saveSlotPreferences,
+  SLOT_PREFERENCE_KEYS,
+} from '../engines/employee-dispatch-followups.js';
+import { demoScriptsView, getDemoSample, saveDemoSampleFromTask } from '../engines/employee-demo-scripts.js';
 
 const r = Router();
 const TASK_PAGE_SIZE = 8;
@@ -103,6 +114,147 @@ r.put('/restaurant/:idx/config', (req, res) => {
 r.put('/restaurant/:idx/skills', (req, res) => {
   try {
     res.json(updateEmployeeSkills(req.params.idx, req.body, req.user));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+// ===== PRD v2.2：技能补充包审核（FR-6）、常用问法（FR-13）、判题预览（FR-1）=====
+r.get('/restaurant/:idx/skill-supplement', (req, res) => {
+  try {
+    const workbench = buildEmployeeWorkbench(req.params.idx, { user: req.user, redactRestricted: true });
+    if (workbench.permissions?.canViewSkills !== true) {
+      return res.status(403).json({ error: '仅老板或管理员可查看员工技能库' });
+    }
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      ...employeeSkillSupplementView(workbench.identity.idx),
+      canReview: workbench.permissions?.canEditSkills === true,
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.put('/restaurant/:idx/skill-supplement', (req, res) => {
+  try {
+    const decisions = Array.isArray(req.body?.decisions)
+      ? req.body.decisions
+      : req.body?.cardId
+        ? [req.body]
+        : null;
+    if (!decisions) return res.status(400).json({ error: 'decisions 必须是数组' });
+    res.json(reviewEmployeeSkillSupplement(req.params.idx, decisions, req.user));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.get('/restaurant/:idx/question-templates', (req, res) => {
+  try {
+    const workbench = buildEmployeeWorkbench(req.params.idx, { user: req.user, redactRestricted: true });
+    const preferences = getSlotPreferences();
+    const data = questionTemplatesForEmployee(workbench.identity.idx);
+    res.set('Cache-Control', 'private, no-store');
+    // FR-7.2：用“我的版本”保存的值预填模板；没填上的槽位前端高亮。
+    res.json({
+      ...data,
+      items: data.items.map((item) => {
+        const filled = fillQuestionTemplate(item.template, preferences.values);
+        return {
+          ...item,
+          filled,
+          unfilledSlots: [...filled.matchAll(/\{([^{}]{1,12})\}/gu)].map((match) => match[1]),
+        };
+      }),
+      preferences: preferences.values,
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.post('/restaurant/:idx/intent-preview', (req, res) => {
+  try {
+    const workbench = buildEmployeeWorkbench(req.params.idx, { user: req.user, redactRestricted: true });
+    const title = String(req.body?.title || '').slice(0, 200);
+    const requirement = String(req.body?.requirement || '').slice(0, 4000);
+    if (!title.trim() && !requirement.trim()) return res.status(400).json({ error: '请输入问题后再预判题型' });
+    const intent = classifyEmployeeIntent({
+      employeeIdx: workbench.identity.idx,
+      title,
+      requirement,
+      attachmentCount: Number(req.body?.attachmentCount) || 0,
+      requestedType: req.body?.intentType || null,
+    });
+    // FR-2：缺关键业务参数时的追问（≤3，带默认值，可跳过；已保存的偏好不再问）。
+    const questions = buildFollowupQuestions(intent, { preferences: getSlotPreferences() });
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      intent,
+      questions,
+      hint: `将按【${intent.label}】回答，约 ${Math.max(1, Math.round(intent.eta_seconds / 60))} 分钟`,
+      switchable: Object.entries(INTENT_LABELS)
+        .filter(([type]) => type !== 'team')
+        .map(([type, label]) => ({ type, label })),
+    });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+// FR-7.2「我的版本」：企业级常用槽位（城市/商圈/店名/品类/人均…）与“不再追问”开关。
+r.get('/restaurant-preferences/slots', (req, res) => {
+  try {
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ ...getSlotPreferences(), keys: SLOT_PREFERENCE_KEYS });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.put('/restaurant-preferences/slots', (req, res) => {
+  try {
+    assertWorkbenchManager(req.user);
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (body.values !== undefined && (typeof body.values !== 'object' || Array.isArray(body.values) || body.values === null)) {
+      return res.status(400).json({ error: 'values 必须是对象' });
+    }
+    res.json({ ...saveSlotPreferences(body, req.user), keys: SLOT_PREFERENCE_KEYS });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+// PRD v2.2 FR-9：演示话术（A1–A8 各 2 条）与样例结果。字段默认取“我的版本”。
+r.get('/restaurant-demo/scripts', (req, res) => {
+  try {
+    const saved = getSlotPreferences().values || {};
+    const fields = {};
+    for (const key of ['店名', '城市', '商圈', '品类']) {
+      const value = req.query?.[key];
+      fields[key] = typeof value === 'string' && value.trim() ? value : saved[key] || '';
+    }
+    res.set('Cache-Control', 'private, no-store');
+    res.json(demoScriptsView(fields));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.get('/restaurant-demo/samples/:scriptId', (req, res) => {
+  try {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(getDemoSample(req.params.scriptId));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+r.put('/restaurant-demo/samples/:scriptId', (req, res) => {
+  try {
+    assertWorkbenchManager(req.user);
+    res.json(saveDemoSampleFromTask(req.params.scriptId, req.body?.taskId, req.user));
   } catch (error) {
     sendError(res, error);
   }

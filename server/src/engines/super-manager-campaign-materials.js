@@ -1,3 +1,4 @@
+import { excludedRestaurantSource } from './restaurant-source-host.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -219,7 +220,17 @@ async function loadBrandLogoReference(url, { fetchFn = globalThis.fetch, signal 
   const onAbort = () => controller.abort();
   signal?.addEventListener?.('abort', onAbort, { once: true });
   try {
-    const response = await fetchFn(href, { signal: controller.signal, redirect: 'follow' });
+    let target = href;
+    let response;
+    for (let hop = 0; hop <= 3; hop++) {
+      if (excludedRestaurantSource(target)) return null;
+      response = await fetchFn(target, { signal: controller.signal, redirect: 'manual' });
+      if (![301, 302, 303, 307, 308].includes(response?.status)) break;
+      const location = response.headers?.get?.('location');
+      if (!location) return null;
+      target = new URL(location, target).href;
+      if (!/^https?:\/\//iu.test(target)) return null;
+    }
     if (!response?.ok) return null;
     const mime = String(response.headers?.get?.('content-type') || 'image/png').split(';')[0].trim();
     if (!/^image\/(?:png|jpeg|jpg|webp|svg\+xml)$/iu.test(mime) && !/\.(?:png|jpe?g|webp|svg)$/iu.test(href)) {

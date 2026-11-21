@@ -12,6 +12,7 @@ import {
   startSchedulerIfEnabled,
 } from "./engines/scheduler.js";
 import { aiChannel } from "./engines/ai.js";
+import { registerAmapAlerts } from "./engines/amap-alerts.js";
 import { recoverStaleEmbeddingHolds } from "./engines/rag.js";
 import { createApp } from "./app.js";
 import { createToolboxBackgroundRun } from "./routes/toolbox.js";
@@ -200,6 +201,8 @@ const runSchedulerTick = () => {
     });
 };
 startSchedulerIfEnabled({ runTick: runSchedulerTick });
+// PRD v2.2 FR-4.3：高德凭证/配额异常与接近日配额时，站内信 + 飞书通知管理员（30 分钟节流）。
+registerAmapAlerts();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`[server] 纳米Work行业版 后端已启动: http://${HOST}:${PORT}`);

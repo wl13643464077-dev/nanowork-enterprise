@@ -1,3 +1,4 @@
+const testCampaignPng = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4AWP8DwQMQMDEAAUAPfgEADYYS7QAAAAASUVORK5CYII=";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -327,6 +328,7 @@ function generationProgressScenario(marker, { fail = false } = {}) {
 
 function makeApp() {
   const app = express();
+  app.locals.generateImageFn = app.locals.editImageFn = async () => ({ b64: testCampaignPng });
   app.locals.employeeWebSearch = async (query) => ({
     ok: true,
     note: null,

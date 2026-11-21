@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { suggestPreferenceFromFeedback } from "./feedback-preference-suggest.js";
+import { getSlotPreferences } from "./employee-dispatch-followups.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2816,11 +2818,30 @@ export function recordUnifiedTaskFeedback(user, kind, rawId, body = {}) {
       reason: "本次选择已保存；原结果与执行记录保留",
     };
     if (body.decision === "reject") task.businessUsable = false;
+    // PRD v2.2 FR-7.3：连续两次同类原因（太长/不要英文…）→ 提示老板存为默认设置（不自动生效）。
+    let preferenceSuggestion = null;
+    if (subject.domain === "restaurant" && note) {
+      try {
+        const recentNotes = q
+          .all(
+            "SELECT note FROM task_feedback WHERE tenant_id=? AND reviewer_id=? AND employee_domain='restaurant' AND note IS NOT NULL AND note<>'' ORDER BY id DESC LIMIT 2",
+            curTenant(),
+            user.id,
+          )
+          .map((row) => row.note);
+        preferenceSuggestion = suggestPreferenceFromFeedback(recentNotes, {
+          savedPrefs: getSlotPreferences().outputPrefs,
+        });
+      } catch {
+        preferenceSuggestion = null;
+      }
+    }
     const result = {
       ok: true,
       duplicated: false,
       feedback: task.feedback,
       task,
+      ...(preferenceSuggestion ? { preferenceSuggestion } : {}),
     };
     db.exec("COMMIT");
     return result;

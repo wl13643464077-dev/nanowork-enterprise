@@ -35,7 +35,7 @@ test('正式员工目录和工作台区分个人供应商计费与企业积分',
 
 test('个人任务中心不挂载不支持的数字人服务，账单和流水线保留正确的个人文案', () => {
   const tasks = source('pages/TaskCenter.tsx');
-  assert.match(tasks, /personalApi\s*\?\s*\(\s*<Alert[^>]*当前个人API暂不支持[^>]*\/?>\s*\)\s*:\s*<AvatarStudio/s);
+  assert.match(tasks, /personalApi\s*\?\s*\(\s*<Alert[^>]*当前个人API暂不支持[^>]*\/?>\s*\)\s*:\s*\(?\s*<AvatarStudio/s);
   assert.match(tasks, /personalApi\s*\?\s*personalApiBillingLabel\(detail\.billing\)\s*:\s*detail\.billing\.label/);
   assert.match(tasks, /!personalApi \|\| !\/credits\/i\.test\(key\)/);
   const pipeline = source('components/ContentPipelineWorkbench.tsx');

@@ -35,7 +35,7 @@ import {
   recordRuntimeReadinessCheck,
   runtimeReadinessConfigFingerprint,
 } from '../engines/runtime-readiness.js';
-import { verifyAmapConnection } from '../engines/amap.js';
+import { amapRuntimeState, runAmapSelfCheck, verifyAmapConnection } from '../engines/amap.js';
 import adminModelBudgetRoutes from './admin-model-budget.js';
 import {
   platformDefaultProviderId, platformProviderAvailability, providerDefinition, selectedProviderCredentials,
@@ -940,6 +940,21 @@ r.post('/web-search/test', requirePlatformConfigOwner, async (req, res) => {
 // 高德 Web 服务显式验收：固定用一个公开地标做一次最小地理编码，不接受任意地址，
 // 避免变成地理编码代理。成功才记录 passed 并持久化 sys_config.amap_verified_at；
 // 密钥/配额类错误（10001/10003/10044…）记录 blocked，就绪矩阵翻成 blocked。
+// PRD v2.2 FR-4.3：高德三步自检与当日用量（固定地标/关键词；不返回 Key）。
+r.post('/api-config/amap/selfcheck', requirePlatformConfigOwner, async (req, res) => {
+  try {
+    res.json(await runAmapSelfCheck());
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 200) });
+  }
+});
+
+r.get('/api-config/amap/usage', requirePlatformConfigOwner, (req, res) => {
+  const state = amapRuntimeState();
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ usage: state.daily, recentErrors: state.recentErrors, blocked: state.blocked, lastSuccessAt: state.lastSuccessAt });
+});
+
 r.post('/api-config/amap/test', requirePlatformConfigOwner, async (req, res) => {
   const tenantId = curTenant();
   const amapChannel = () => buildRuntimeReadiness({ tenantId }).channels.find(item => item.key === 'amap');

@@ -1,17 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Alert,
-  Button,
-  Checkbox,
-  Empty,
-  Input,
-  Modal,
-  Popconfirm,
-  Space,
-  Spin,
-  Tag,
-  message,
-} from 'antd';
+import { Alert, Button, Checkbox, Empty, Input, Modal, Popconfirm, Space, Spin, Tag, message } from 'antd';
 import {
   BookOutlined,
   CheckOutlined,
@@ -68,7 +56,9 @@ const STATUS: Record<string, { color: string; label: string }> = {
 
 function imageUrlsFrom(item: Dimension) {
   const blob = `${item.body || ''}\n${(item.sources || []).map(source => source.url || '').join('\n')}`;
-  return [...new Set([...blob.matchAll(/https?:\/\/[^\s)）"'<>]+?\.(?:png|jpe?g|gif|svg|webp)/giu)].map(match => match[0]))].slice(0, 3);
+  return [
+    ...new Set([...blob.matchAll(/https?:\/\/[^\s)）"'<>]+?\.(?:png|jpe?g|gif|svg|webp)/giu)].map(match => match[0])),
+  ].slice(0, 3);
 }
 
 export default function BrandKb() {
@@ -82,7 +72,6 @@ export default function BrandKb() {
   const [draft, setDraft] = useState('');
 
   const load = useCallback(() => {
-    setLoading(true);
     return api
       .get('/brand-kb')
       .then((data: Overview) => {
@@ -96,6 +85,11 @@ export default function BrandKb() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const reload = () => {
+    setLoading(true);
+    void load();
+  };
 
   const applyPack = (pack: Pack) => {
     setOverview(current => (current ? { ...current, pack } : current));
@@ -185,7 +179,8 @@ export default function BrandKb() {
         <p className="brand-kb-kicker">就在这一页看、改、确认</p>
         <h1>品牌知识包</h1>
         <p>
-          抓回来的资料不会立刻给数字员工用。你在本页看完全部分量，改错的、去掉不要的，或告诉系统哪里不对让它重抓，最后点「确认入库」。确认前，系统管理 → 知识库里也看不到这版。
+          抓回来的资料不会立刻给数字员工用。你在本页看完全部分量，改错的、去掉不要的，或告诉系统哪里不对让它重抓，最后点「确认入库」。确认前，系统管理
+          → 知识库里也看不到这版。
         </p>
       </div>
 
@@ -205,7 +200,7 @@ export default function BrandKb() {
           </>
         }
         extra={
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
+          <Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading}>
             刷新
           </Button>
         }
@@ -240,7 +235,7 @@ export default function BrandKb() {
                     .then(() => {
                       message.success('品牌知识包已删除');
                       setBrandName('');
-                      void load();
+                      reload();
                     })
                     .finally(() => setSaving(false));
                 }}
@@ -290,106 +285,124 @@ export default function BrandKb() {
             <Empty description="没有可核验的公开资料。核对品牌名后再抓，不要把空卡片当成已采集。" />
           ) : (
             <>
-          {awaitingConfirm && (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message="这是待确认稿，还没进知识库"
-              description="勾选要留下的维度，点「修改」改正文，或勾选错的维度写下哪里不对后点「按纠正重抓」。核对完再点确认入库。"
-            />
-          )}
-          {pack.status === 'ready' && (
-            <Alert
-              type="success"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message="当前这版已在知识库里，数字员工会先调用它"
-              description="再改或重抓会回到待确认。确认前，员工仍使用上一版已入库内容。"
-            />
-          )}
-          {pack.summary && <p className="brand-kb-summary">{pack.summary}</p>}
+              {awaitingConfirm && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="这是待确认稿，还没进知识库"
+                  description="勾选要留下的维度，点「修改」改正文，或勾选错的维度写下哪里不对后点「按纠正重抓」。核对完再点确认入库。"
+                />
+              )}
+              {pack.status === 'ready' && (
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="当前这版已在知识库里，数字员工会先调用它"
+                  description="再改或重抓会回到待确认。确认前，员工仍使用上一版已入库内容。"
+                />
+              )}
+              {pack.summary && <p className="brand-kb-summary">{pack.summary}</p>}
 
-          <div className="brand-kb-review-actions">
-            <Input.TextArea
-              rows={3}
-              maxLength={800}
-              placeholder="哪些是错的？直接说，例如：价格不是这个、没有加盟、Logo 不是这个链接、招牌菜漏了果木烤鸭。"
-              value={feedback}
-              onChange={event => setFeedback(event.target.value)}
-              disabled={saving}
-            />
-            <Space wrap>
-              <Button loading={saving} onClick={recollect}>
-                按纠正重抓勾选的维度
-              </Button>
-              <Button type="primary" size="large" icon={<CheckOutlined />} loading={saving} onClick={confirm}>
-                确认这版入库
-              </Button>
-            </Space>
-          </div>
-
-          <div className="brand-kb-grid">
-            {(pack.dimensions || []).map(item => (
-              <article
-                key={item.id}
-                className={`brand-kb-card is-${item.status} ${item.included === false ? 'is-dropped' : ''} ${wrongSet.has(item.key) ? 'is-wrong' : ''}`}
-              >
-                <header>
-                  <Checkbox checked={item.included !== false} onChange={event => toggleIncluded(item, event.target.checked)}>
-                    <b>
-                      {item.sortOrder}. {item.title}
-                    </b>
-                  </Checkbox>
-                  <Tag color={item.status === 'edited' ? 'gold' : item.status === 'filled' ? 'green' : 'default'}>
-                    {item.included === false ? '不入库' : item.status === 'edited' ? '已改' : item.status === 'filled' ? '已采集' : '待核验'}
-                  </Tag>
-                </header>
-                <p>{item.body}</p>
-                {item.key === 'logo' && imageUrlsFrom(item).map(url => (
-                  <img key={url} className="brand-kb-logo" src={url} alt="品牌Logo公开图" />
-                ))}
-                {!!item.sources?.length && (
-                  <ul>
-                    {item.sources.slice(0, 3).map(source => (
-                      <li key={source.url}>
-                        <a href={source.url} target="_blank" rel="noreferrer">
-                          {source.title || source.url}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <div className="brand-kb-review-actions">
+                <Input.TextArea
+                  rows={3}
+                  maxLength={800}
+                  placeholder="哪些是错的？直接说，例如：价格不是这个、没有加盟、Logo 不是这个链接、招牌菜漏了果木烤鸭。"
+                  value={feedback}
+                  onChange={event => setFeedback(event.target.value)}
+                  disabled={saving}
+                />
                 <Space wrap>
-                  <Checkbox
-                    checked={wrongSet.has(item.key)}
-                    onChange={event => {
-                      setWrongKeys(current => (
-                        event.target.checked ? [...new Set([...current, item.key])] : current.filter(key => key !== item.key)
-                      ));
-                    }}
-                  >
-                    这条有错，重抓
-                  </Checkbox>
-                  <Button
-                    size="small"
-                    icon={<EditOutlined />}
-                    onClick={() => {
-                      setEditing(item);
-                      setDraft(item.body);
-                    }}
-                  >
-                    修改
+                  <Button loading={saving} onClick={recollect}>
+                    按纠正重抓勾选的维度
+                  </Button>
+                  <Button type="primary" size="large" icon={<CheckOutlined />} loading={saving} onClick={confirm}>
+                    确认这版入库
                   </Button>
                 </Space>
-              </article>
-            ))}
-          </div>
+              </div>
+
+              <div className="brand-kb-grid">
+                {(pack.dimensions || []).map(item => (
+                  <article
+                    key={item.id}
+                    className={`brand-kb-card is-${item.status} ${item.included === false ? 'is-dropped' : ''} ${wrongSet.has(item.key) ? 'is-wrong' : ''}`}
+                  >
+                    <header>
+                      <Checkbox
+                        checked={item.included !== false}
+                        onChange={event => toggleIncluded(item, event.target.checked)}
+                      >
+                        <b>
+                          {item.sortOrder}. {item.title}
+                        </b>
+                      </Checkbox>
+                      <Tag color={item.status === 'edited' ? 'gold' : item.status === 'filled' ? 'green' : 'default'}>
+                        {item.included === false
+                          ? '不入库'
+                          : item.status === 'edited'
+                            ? '已改'
+                            : item.status === 'filled'
+                              ? '已采集'
+                              : '待核验'}
+                      </Tag>
+                    </header>
+                    <p>{item.body}</p>
+                    {item.key === 'logo' &&
+                      imageUrlsFrom(item).map(url => (
+                        <img key={url} className="brand-kb-logo" src={url} alt="品牌Logo公开图" />
+                      ))}
+                    {!!item.sources?.length && (
+                      <ul>
+                        {item.sources.slice(0, 3).map(source => (
+                          <li key={source.url}>
+                            <a href={source.url} target="_blank" rel="noreferrer">
+                              {source.title || source.url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <Space wrap>
+                      <Checkbox
+                        checked={wrongSet.has(item.key)}
+                        onChange={event => {
+                          setWrongKeys(current =>
+                            event.target.checked
+                              ? [...new Set([...current, item.key])]
+                              : current.filter(key => key !== item.key),
+                          );
+                        }}
+                      >
+                        这条有错，重抓
+                      </Checkbox>
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => {
+                          setEditing(item);
+                          setDraft(item.body);
+                        }}
+                      >
+                        修改
+                      </Button>
+                    </Space>
+                  </article>
+                ))}
+              </div>
             </>
           )}
         </Panel>
       ) : (
-        <Empty description={uploadedCount ? '上传知识库已可调用。若要自动补品牌画像，输入品牌名即可。' : '还没有品牌知识包。输入品牌名后开始采集。'} />
+        <Empty
+          description={
+            uploadedCount
+              ? '上传知识库已可调用。若要自动补品牌画像，输入品牌名即可。'
+              : '还没有品牌知识包。输入品牌名后开始采集。'
+          }
+        />
       )}
 
       <Modal
