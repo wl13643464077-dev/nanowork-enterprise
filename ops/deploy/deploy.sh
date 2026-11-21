@@ -291,6 +291,7 @@ fi
 log "8/12 启动前自检 preflight-production.mjs"
 if [[ -n "${SERVICE_ENV}" ]]; then
   systemd-run --quiet --pipe --wait --collect --uid="${APP_USER}" \
+    --setenv=TZ=Asia/Shanghai --setenv=NODE_ENV=production --setenv="HOME=${DATA_DIR%/data}" \
     -p "WorkingDirectory=${RELEASE_DIR}/server" -p "EnvironmentFile=${SERVICE_ENV}" \
     "${NODE_BIN}" "${RELEASE_DIR}/scripts/preflight-production.mjs" || die "运行环境自检失败，未切换版本"
 else

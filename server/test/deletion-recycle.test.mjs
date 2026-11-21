@@ -39,7 +39,7 @@ function makeApp(user) {
 }
 
 async function withServer(user, fn) {
-  const server = makeApp(user).listen(0);
+  const server = makeApp(user).listen(0, '127.0.0.1');
   const port = await new Promise(resolve => server.once('listening', () => resolve(server.address().port)));
   try { return await fn(`http://127.0.0.1:${port}`); }
   finally { await new Promise(resolve => server.close(resolve)); }
@@ -62,7 +62,7 @@ test('删除客户：本人只能删简单误录，关键客户进老板权限�
 
   await withServer(salesA, async base => {
     const blockedOther = await call(base, `/growth/leads/${otherLead}`, { method: 'DELETE' });
-    assert.equal(blockedOther.status, 404);
+    assert.equal(blockedOther.status, 404, JSON.stringify(blockedOther.json));
 
     const blockedClosed = await call(base, `/growth/leads/${closedLead}`, { method: 'DELETE' });
     assert.equal(blockedClosed.status, 403);
