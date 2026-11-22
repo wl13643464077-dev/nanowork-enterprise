@@ -442,11 +442,11 @@ function taskAnchorTerms(task = {}) {
   const output = new Set(chunks);
   const intent = normalizeLocationIntent(`${title}\n${requirement}`);
   for (const candidate of intent.centerCandidates || []) {
-    if (candidate.length >= 3) output.add(candidate);
+    if (candidate.length >= 2) output.add(candidate);
     const localName = intent.city && candidate.startsWith(intent.city)
       ? candidate.slice(intent.city.length).replace(/^市/u, '')
       : candidate;
-    if (localName.length >= 3) output.add(localName);
+    if (localName.length >= 2) output.add(localName);
   }
   for (const chunk of chunks) {
     if (!/(?:广场|商场|购物中心|门店|餐厅|饭店|酒店|大厦|街区)/u.test(chunk)) {

@@ -275,7 +275,7 @@ const TOOLS: ToolDefinition[] = [
     accent: '#4f77dd',
     employee: '章文案',
     employeeIdx: 140,
-    cost: '真实调用按量计费',
+    cost: '视频模型按量计费（费用高于图文，建议先明确素材与目标）',
     inputs: ['素材/现场说明', '目标平台', '成片目的'],
     output: '可预览视频文件 + 成片核验时间轴',
   },
@@ -298,7 +298,7 @@ const TOOLS: ToolDefinition[] = [
     short: '看懂对手动作',
     description: '记录最多 8 个对标门店，整理价格、产品、口碑和活动变化，标出可行动的空白。',
     icon: <EyeOutlined />,
-    accent: '#755db9',
+    accent: '#3d7a80',
     employee: '钱商圈',
     employeeIdx: 102,
     cost: '真实调用按量计费',
@@ -379,7 +379,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       '先从公开视频或公开网页取得可核验正文，正文不足时再隔离搜索并受控取证，最后由真实模型改写成可直接试读的结构化口播稿。',
     icon: <LinkOutlined />,
-    accent: '#7a5d9b',
+    accent: '#b86b35',
     employee: '章文案',
     employeeIdx: 140,
     cost: '真实转录/模型调用按量计费',
@@ -805,6 +805,12 @@ export default function Toolbox() {
     if (active.key === 'remix')
       return (
         <>
+          <Alert
+            className="toolbox-video-cost-alert"
+            type="warning"
+            showIcon
+            message="视频成片费用显著高于图文，按实际视频模型用量计费；日常测款或高频种草建议优先使用图文工具。"
+          />
           <Form.Item name="materials" label="手机素材说明" rules={[{ required: true, message: '请说明现有素材' }]}>
             <Input.TextArea rows={4} placeholder="例：后厨出锅3段、顾客夹菜2段、门头夜景1段；每段约5秒" />
           </Form.Item>
@@ -1228,7 +1234,15 @@ export default function Toolbox() {
 
         <main className={`toolbox-workbench${textVideoStudioOpen ? ' toolbox-workbench--studio' : ''}`}>
           {textVideoStudioOpen ? (
-            <TextVideoStudio />
+            <>
+              <Alert
+                className="toolbox-video-cost-alert"
+                type="warning"
+                showIcon
+                message="视频合成与配音费用高于纯图文，按实际生成用量计费；建议先核对文案与素材再提交制作。"
+              />
+              <TextVideoStudio />
+            </>
           ) : (
             <>
               <div className="toolbox-active-head">

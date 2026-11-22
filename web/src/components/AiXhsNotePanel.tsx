@@ -105,17 +105,20 @@ export default function AiXhsNotePanel({
   open,
   embedded = false,
   canDispatch = true,
+  presetBrief,
   onOpenChange,
 }: {
   open: boolean;
   embedded?: boolean;
   canDispatch?: boolean;
+  presetBrief?: { key: number; text: string } | null;
   onOpenChange: (open: boolean) => void;
 }) {
   const personalBilling = isPersonalApiUser(getUser());
   const [loading, setLoading] = useState(false);
   const [retryingImages, setRetryingImages] = useState(false);
   const [recoveringImages, setRecoveringImages] = useState(false);
+  const [deciding, setDeciding] = useState<'adopt' | 'reject' | null>(null);
   const [jobs, setJobs] = useState<NoteJob[]>([]);
   const [job, setJob] = useState<NoteJob | null>(null);
   const [draft, setDraft] = useState<NoteOutput | null>(null);
@@ -128,6 +131,7 @@ export default function AiXhsNotePanel({
   const [jobsRefreshSerial, setJobsRefreshSerial] = useState(0);
   const retryingImagesRef = useRef(false);
   const recoveringImagesRef = useRef(false);
+  const decidingRef = useRef(false);
   const imageMutationEpoch = useRef(0);
   const selectedId = useRef<number | null>(null);
   const draftSourceId = useRef<number | null>(null);
@@ -391,6 +395,29 @@ export default function AiXhsNotePanel({
     active: Number(item.id) === Number(job?.id),
     businessDecision: item.decision || 'pending',
   }));
+  const currentHistoryRow = historyRows.find(item => item.active) || null;
+  const canDecideCurrent = Boolean(
+    currentHistoryRow &&
+    job &&
+    job.status === 'success' &&
+    !isJobRunning(job) &&
+    canDispatch &&
+    (!job.decision || job.decision === 'pending'),
+  );
+  const handleInlineDecision = async (decision: 'adopt' | 'reject') => {
+    if (!currentHistoryRow || !canDecideCurrent || decidingRef.current) return;
+    decidingRef.current = true;
+    setDeciding(decision);
+    try {
+      await saveXhsBusinessDecision(currentHistoryRow, decision);
+      message.success(decision === 'adopt' ? '已采纳当前发布包' : '已标记为未采纳，原稿仍保留');
+    } catch (failure) {
+      message.error(failure instanceof Error ? failure.message : '操作未能保存，请稍后重试');
+    } finally {
+      decidingRef.current = false;
+      setDeciding(null);
+    }
+  };
 
   const content = (
     <>
@@ -403,6 +430,7 @@ export default function AiXhsNotePanel({
           onGeneration={openGeneratedJob}
           imageOptions={imageOptions}
           mediaReady={imageQuoteReady}
+          initialText={presetBrief}
         >
           {(imageOptionsError || (imageOptions && !imageOptions.available)) && (
             <Alert
@@ -687,7 +715,7 @@ export default function AiXhsNotePanel({
                     image.originalUrl?.startsWith('/uploads/') && image.originalUrl !== image.url ? (
                       <p key={image.id}>
                         <a href={image.originalUrl} download target="_blank" rel="noreferrer">
-                          下载{image.label}的 Image2 原图
+                          下载{image.label}的高清底图
                         </a>
                       </p>
                     ) : null,
@@ -723,7 +751,35 @@ export default function AiXhsNotePanel({
                 <Tag color={job?.decision === 'adopted' ? 'green' : job?.decision === 'rejected' ? 'default' : 'blue'}>
                   {job?.decision === 'adopted' ? '已采纳' : job?.decision === 'rejected' ? '未采纳' : '待你选择'}
                 </Tag>
-                <span className="ai-xhs-note-billing">在下方生成历史中展开本条，可直接采纳或不采纳。</span>
+                {canDecideCurrent ? (
+                  <>
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={deciding === 'adopt'}
+                      disabled={Boolean(deciding)}
+                      onClick={() => void handleInlineDecision('adopt')}
+                    >
+                      采纳发布包
+                    </Button>
+                    <Button
+                      size="small"
+                      loading={deciding === 'reject'}
+                      disabled={Boolean(deciding)}
+                      onClick={() => void handleInlineDecision('reject')}
+                    >
+                      不采纳，保留原稿
+                    </Button>
+                  </>
+                ) : (
+                  <span className="ai-xhs-note-billing">
+                    {job?.decision === 'adopted'
+                      ? '已采纳当前发布包；如需补充经验反馈，可在下方历史展开本条。'
+                      : job?.decision === 'rejected'
+                        ? '已记录未采纳，当前文案与配图仍保留。'
+                        : '生成完成后且具备派活权限时，可在此直接采纳或不采纳。'}
+                  </span>
+                )}
               </Space>
             </section>
           )}

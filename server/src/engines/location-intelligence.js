@@ -32,16 +32,22 @@ const VALHALLA_COSTING_BY_MODE = Object.freeze({
 const LOCATION_SUFFIX =
   "(?:购物中心|商业街|步行街|写字楼|地铁站|公交站|火车站|高铁站|街道|大道|广场|商场|社区|园区|大厦|小区|公寓|中心|医院|学校|公园|街区|路|街|站|城|园|号|栋|座|区|县|桥|镇|村|屯|巷)";
 const NAMED_PLACE_SUFFIX =
-  /(?:购物中心|商业街|步行街|写字楼|广场|商场|社区|园区|大厦|小区|公寓|中心|街区|城|园|栋|座)$/u;
+  /(?:购物中心|商业街|步行街|写字楼|广场|商场|社区|园区|大厦|小区|公寓|中心|街区|城|园|栋|座|太古里|太古汇|合生汇|万象汇|万象天地|来福士|新天地|天街|颐堤港|蓝色港湾|SOHO|MALL|PLAZA|K11|IFS|SKP)(?:\s*[A-Za-z]?\d+[号栋座]?)?$/iu;
 const ROAD_SUFFIX = /(?:街道|大道|路|街|号)$/u;
 const FACILITY_SUFFIX =
   /(?:地铁站|公交站|火车站|高铁站|车站|医院|学校|公园|站)$/u;
 const GENERIC_LOCATION_CORE =
-  /^(?:地铁站|地铁口|地铁|公交站|公交|火车站|高铁站|车站|站|商圈|底商|商铺|门店|周边|附近)$/u;
+  /^(?:地铁站|地铁口|地铁|公交站|公交|火车站|高铁站|车站|站|商圈|商业圈|片区|核心区|一带|底商|商铺|门店|周边|附近|周围|当地|本地|目标|核心|主要|热门|商业|餐饮|美食|全国|同城|全市|这个|那个|该|本|某)$/u;
+const COMMERCIAL_LANDMARK_RE =
+  /([\p{Script=Han}]{2,12}\s*(?:SOHO|CBD|MALL|PLAZA|K11|IFS|SKP)(?:\s*[A-Za-z]?\d+[号栋座]?)?|[\p{Script=Han}]{1,10}(?:太古里|太古汇|合生汇|万象汇|万象天地|来福士|新天地|天街|颐堤港|蓝色港湾))/giu;
+const BUSINESS_DISTRICT_RE =
+  /([\p{Script=Han}A-Za-z0-9·-]{2,20}?)(?:商圈|商业圈|片区|核心区|一带)/gu;
 const LOCATION_SCOPE_START =
-  /(?:\d+(?:\.\d+)?\s*(?:楼|层)(?:底商|商铺|铺位)?|(?:周边|周围|附近|方圆|半径|覆盖范围)\s*(?:(?:\d+(?:\.\d+)?\s*(?:公里|千米|km|米|m)?\s*(?:-|~|～|–|—|至|到|\/)\s*)?\d+(?:\.\d+)?\s*(?:公里|千米|km|米|m))?)/iu;
+  /(?:\d+(?:\.\d+)?\s*(?:楼|层)(?:底商|商铺|铺位)?|(?:底商|商铺|铺位)|(?:周边|周围|附近|方圆|半径|覆盖范围)\s*(?:(?:\d+(?:\.\d+)?\s*(?:公里|千米|km|米|m)?\s*(?:-|~|～|–|—|至|到|\/)\s*)?\d+(?:\.\d+)?\s*(?:公里|千米|km|米|m))?)/iu;
 const LOCATION_LEADING_REQUEST =
-  /^(?:(?:请|帮我|帮忙|给我|我想|我要|需要|围绕|针对|关于|基于|分析|调研|研究|看看|查看|核验|评估|做|完成|把|在|位于|周边|周围|附近|方圆)\s*)+/u;
+  /^(?:(?:(?:我们|我家|咱们|咱家|本店)(?:的)?(?:门店|店面|店|餐厅|商铺|铺子|新店)?\s*(?:在|位于|开在|选在)?|请|帮我|帮忙|给我|我想|我要|需要|如何|怎么|怎样|围绕|针对|关于|基于|分析|调研|研究|看看|查看|核验|评估|判断|了解|调查|做|完成|把|在|位于|开在|选在|周边|周围|附近|方圆|我|本)\s*)+/u;
+const NON_DISTRICT_TERM_RE =
+  /(?:如何|怎么|怎样|什么|哪些|分析|调研|评估|判断|了解|提升|优化|选择|考察|比较|对比|整理|目标|核心|主要|热门|周边|周围|附近|当地|本地|餐饮|美食|火锅|客流|选址|竞品|竞争|行业|市场|全国|同城|全市|门店|餐厅|品牌|风险|候选|备选|待选|拟选|两个|三个|多个|几个|一个|不同|各个|所有|全部|成熟|新兴|老旧|大型|小型|中型|社区|办公|住宅|写字楼|高校|学校|交通|地铁|商业|高档|中档|低档|平价|高端|普通|一般|典型|常见|具体|实际|现有|当前|目前|原有|新开|重点|优先|优质|潜力|空白|流量|客群|消费|资料|报告|方案|清单|问题|情况|的|在|是|去|到|看|查|帮|做|个|类|型)/u;
 const LOCATION_INSTRUCTION_FRAGMENT =
   /(?:输出标准|交付物|上下游|前置依赖|专业词|首次出现|用括号|括号做|一句话解释|行动项|负责人|每家标注|给出住宅|白领数量)/u;
 const CITY_NAMES = [
@@ -271,6 +277,17 @@ function buildLocationCandidates(value) {
   if (!text) return [];
   const cities = CITY_NAMES.filter((city) => text.includes(city));
   const primaryCity = cities[0] || null;
+  const landmarkFragments = [];
+  for (const match of text.matchAll(COMMERCIAL_LANDMARK_RE)) {
+    const fragment = stripLocationScope(match[1]);
+    if (
+      fragment &&
+      !isGenericLocationCandidate(fragment) &&
+      !isInstructionalLocationCandidate(fragment)
+    ) {
+      landmarkFragments.push(fragment);
+    }
+  }
   const fragments = [];
   const suffixPattern = new RegExp(
     `[\\p{Script=Han}A-Za-z0-9·-]{2,40}?${LOCATION_SUFFIX}`,
@@ -286,29 +303,59 @@ function buildLocationCandidates(value) {
       fragments.push(fragment);
   }
 
-  const usableFragments = unique(fragments).filter(
+  const usableFragments = unique([...landmarkFragments, ...fragments]).filter(
     (fragment) =>
       !isGenericLocationCandidate(fragment) &&
       !isInstructionalLocationCandidate(fragment) &&
-      new RegExp(`${LOCATION_SUFFIX}$`, "u").test(fragment),
+      (NAMED_PLACE_SUFFIX.test(fragment) ||
+        new RegExp(`${LOCATION_SUFFIX}$`, "u").test(fragment)),
   );
 
   // 这条链路只解析一个商圈中心。一旦正文已经出现明确命名场所，后续
   // 出现的道路、地铁站和写作示例都只能是周边事实，不能成为中心回退。
-  // 中心地理编码失败时，只尝试同一实体的“城市+名称/名称”两个别名。
+  // 中心地理编码失败时，只尝试同一实体的“城市+名称/名称”及去掉楼栋号的基础地标。
   const primaryNamedPlace = usableFragments.find((fragment) =>
     NAMED_PLACE_SUFFIX.test(fragment),
   );
   if (primaryNamedPlace) {
     const core = candidateCore(primaryNamedPlace);
+    const baseCore = core.replace(/\s+[A-Za-z]?\d+[号栋座]?$/u, "").trim();
     const entityCity =
       CITY_NAMES.find((city) => primaryNamedPlace.startsWith(city)) ||
       primaryCity;
-    return unique([entityCity ? `${entityCity}${core}` : null, core]).filter(
+    // 带楼栋号（如“望京SOHO T1”）时，优先用“望京SOHO”定位商圈中心，同时保留完整名作备选。
+    const orderedCores =
+      baseCore && baseCore !== core && !isGenericLocationCandidate(baseCore)
+        ? [baseCore, core]
+        : [core];
+    return unique(
+      orderedCores.flatMap((item) => [
+        entityCity ? `${entityCity}${item}` : null,
+        item,
+      ]),
+    ).filter(
       (candidate) =>
         !isGenericLocationCandidate(candidate) &&
         !isInstructionalLocationCandidate(candidate),
     );
+  }
+
+  const districtFragments = [];
+  for (const match of text.matchAll(BUSINESS_DISTRICT_RE)) {
+    const cleaned = stripLocationScope(match[1]);
+    if (!cleaned || isInstructionalLocationCandidate(cleaned)) continue;
+    const core = candidateCore(cleaned);
+    if (
+      core.length >= 2 &&
+      core.length <= 6 &&
+      !isGenericLocationCandidate(core) &&
+      !NON_DISTRICT_TERM_RE.test(core)
+    ) {
+      const entityCity =
+        CITY_NAMES.find((city) => cleaned.startsWith(city)) || primaryCity;
+      if (entityCity) districtFragments.push(`${entityCity}${core}`);
+      districtFragments.push(core);
+    }
   }
 
   const candidates = [];
@@ -322,16 +369,23 @@ function buildLocationCandidates(value) {
       candidates.push(`${primaryCity}${fragment}`);
     }
   }
+  const districtSet = new Set(districtFragments);
+  for (const district of districtFragments) {
+    candidates.push(district);
+  }
   return unique(candidates)
     .filter(
       (candidate) =>
         !isGenericLocationCandidate(candidate) &&
         !isInstructionalLocationCandidate(candidate) &&
-        new RegExp(`${LOCATION_SUFFIX}$`, "u").test(candidate),
+        (districtSet.has(candidate) ||
+          NAMED_PLACE_SUFFIX.test(candidate) ||
+          new RegExp(`${LOCATION_SUFFIX}$`, "u").test(candidate)),
     )
     .sort(
       (a, b) =>
         locationCandidateScore(b) - locationCandidateScore(a) ||
+        Number(districtSet.has(b)) - Number(districtSet.has(a)) ||
         a.length - b.length,
     )
     .slice(0, 6);
@@ -1785,6 +1839,78 @@ export async function resolveTradeAreaFacts({
         break;
       }
     }
+    if (!center && !facts.amap.blocked && typeof client.searchText === "function") {
+      // 商圈名（如“北京望京”）偶尔被 geocode 判为区县粗定位时，按候选顺序用高德 POI 关键词搜索补定精确中心。
+      for (const anchorCandidate of normalizedAddressCandidates.slice(0, 2)) {
+        try {
+          const textRes = await client.searchText({
+            keywords: anchorCandidate,
+            city: facts.input.city || undefined,
+            citylimit: Boolean(facts.input.city),
+            pages: 1,
+            signal,
+          });
+          if (textRes?.unavailable) break;
+          facts.amap.requestCount += Number(textRes?.data?.requestCount || 1);
+          addSource(textRes.source, "商圈中心POI搜索补定位");
+          const hit = (textRes?.data?.pois || []).find(
+            (poi) =>
+              poi?.coords &&
+              Number.isFinite(Number(poi.coords.lng)) &&
+              Number.isFinite(Number(poi.coords.lat)),
+          );
+          if (hit) {
+            center = {
+              lng: Number(hit.coords.lng),
+              lat: Number(hit.coords.lat),
+              adcode: hit.adcode || null,
+              formattedAddress: safeText(hit.address || hit.name, 200) || anchorCandidate,
+              province: hit.pname || null,
+              city: hit.cityname || facts.input.city || null,
+              district: hit.adname || null,
+              level: "poi_search",
+            };
+            facts.provider = "amap";
+            facts.amap.ok = true;
+            facts.center = {
+              value: {
+                ...center,
+                matchedAddressText: anchorCandidate,
+              },
+              provenance: provenanceOf(
+                "amap",
+                textRes.source?.endpoint || "/v3/place/text",
+                textRes.source?.fetchedAt || now().toISOString(),
+              ),
+            };
+            facts.attempts.push({
+              step: "amap_center_text_search",
+              candidate: anchorCandidate,
+              ok: true,
+              poiName: hit.name || null,
+            });
+            break;
+          }
+          facts.attempts.push({
+            step: "amap_center_text_search",
+            candidate: anchorCandidate,
+            ok: false,
+            note: "高德POI搜索未返回带坐标中心点",
+          });
+        } catch (error) {
+          const reason = amapErrorSummary(error);
+          if (reason.blocked) facts.amap.blocked = true;
+          if (!facts.amap.error || reason.blocked) facts.amap.error = reason;
+          facts.attempts.push({
+            step: "amap_center_text_search",
+            candidate: anchorCandidate,
+            ok: false,
+            note: reason.message,
+          });
+          if (reason.blocked) break;
+        }
+      }
+    }
   } else if (normalizedAddressCandidates.length) {
     facts.amap.error = { message: AMAP_UNCONFIGURED_REASON, blocked: false };
   }
@@ -2109,9 +2235,35 @@ export async function resolveTradeAreaFacts({
     if (widest) {
       const costs = widest.pois.map((poi) => poi.biz_ext?.cost);
       const costDistribution = numericDistribution(costs, COST_BUCKETS);
+      const bandExamples = costDistribution
+        ? Object.fromEntries(
+            COST_BUCKETS.map(([label, min, max]) => [
+              label,
+              widest.pois
+                .filter((poi) => {
+                  const raw = poi?.biz_ext?.cost;
+                  if (raw == null || raw === "") return false;
+                  const num = Number(raw);
+                  return Number.isFinite(num) && num >= min && num < max && Boolean(poi?.name);
+                })
+                .sort(
+                  (a, b) =>
+                    (a.distance ?? Number.POSITIVE_INFINITY) -
+                    (b.distance ?? Number.POSITIVE_INFINITY),
+                )
+                .slice(0, 4)
+                .map((poi) => ({
+                  name: poi.name,
+                  cost: Number(poi.biz_ext.cost),
+                  distance: poi.distance ?? null,
+                })),
+            ]),
+          )
+        : null;
       facts.priceDistribution = {
         radius: widest.radius,
         value: costDistribution,
+        ...(bandExamples ? { bandExamples } : {}),
         note: costDistribution
           ? `周边全部餐饮返回明细中 ${costDistribution.sampleSize}/${widest.pois.length} 个POI带人均字段，非目标品类总体`
           : "高德未提供人均（周边POI的 biz_ext.cost 为空）",
@@ -2484,7 +2636,8 @@ export function tradeAreaFactsLocationEvidence(facts, { previous = null, require
     && Number.isFinite(Number(value.lat)) && Math.abs(Number(value.lat)) <= 90;
   if (facts?.ok !== true || facts.provider !== "amap" || facts.amap?.ok !== true
     || facts.amap?.configured !== true || !validCoords(facts.center?.value)
-    || !validProvenance(facts.center?.provenance, "/v3/geocode/geo")) return null;
+    || (!validProvenance(facts.center?.provenance, "/v3/geocode/geo")
+      && !validProvenance(facts.center?.provenance, "/v3/place/text"))) return null;
   const center = facts.center.value;
   const centerTitle = safeText(center.matchedAddressText || facts.input?.addressText || center.formattedAddress, 200);
   const markerUrl = (coords, name, id) => {

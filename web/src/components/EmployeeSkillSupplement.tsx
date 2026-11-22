@@ -73,7 +73,7 @@ export default function EmployeeSkillSupplement({ idx }: { idx: number }) {
     <section className="ewb-skill-supplement">
       <Space align="center" wrap style={{ marginBottom: 8 }}>
         <Typography.Title level={5} style={{ margin: 0 }}>
-          本轮补充技能（待你确认）
+          {pending.length > 0 ? `本轮补充技能（${pending.length} 项待确认）` : '本轮本土补充技能（已全部处理）'}
         </Typography.Title>
         <Typography.Text type="secondary">
           已启用 {view.summary.enabled} · 待确认 {view.summary.pending} · 暂不启用 {view.summary.declined}

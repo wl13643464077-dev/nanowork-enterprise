@@ -482,7 +482,7 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                       >
                         <Space.Compact block className="trial-invite-quick">
                           <Form.Item name="recipientNote" noStyle>
-                            <Input placeholder="发给谁？例如 张总·火锅店（选填，方便你和平台追踪）" maxLength={40} />
+                            <Input placeholder="发给谁？例如 张总·望京门店（选填，方便你和平台追踪）" maxLength={40} />
                           </Form.Item>
                           <Button
                             htmlType="submit"
@@ -749,14 +749,14 @@ export default function TesterPortal({ embedded = false }: { embedded?: boolean 
                       <li>
                         <strong>选择数字员工。</strong>
                         在完整产品的「餐饮数字员工」中按部门或需求搜索岗位并派活，任务结果到「任务中心」查看。「历史文字测试」仅保留旧记录。客户扫码的
-                        H5 提供五个满血岗位。
+                        H5 提供五个正式完整岗位。
                       </li>
                       <li>
                         <strong>一键生成体验码。</strong>
                         到「体验二维码」，填一下「发给谁」（选填），点「一键生成体验码」，复制链接或下载二维码发给客户。
                         销售手机号、每位客户次数（默认 2 次）和开通方式都有默认值，需要时在「更多设置」里改。
-                        客户扫码可选选址、超级店长、巡店、小红书种草、AI 带货五个满血场景，调用使用此二维码绑定的个人
-                        Key。
+                        客户扫码可选选址、超级店长、巡店、小红书种草、AI
+                        带货五个正式完整场景，调用使用此二维码绑定的个人 Key。
                       </li>
                       <li>
                         <strong>客户扫码即用。</strong>

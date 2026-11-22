@@ -250,7 +250,10 @@ export default function Agents() {
         ),
       );
     } catch {
-      if (version === viewRef.current) setMessages(prev => prev.filter(item => item.id !== loadingId));
+      if (version === viewRef.current) {
+        setMessages(prev => prev.filter(item => item.id !== loadingId && item.id !== `${loadingId}-user`));
+        setInput(prev => (prev.trim() ? prev : text));
+      }
     } finally {
       setSending(false);
     }
@@ -634,7 +637,7 @@ export default function Agents() {
               通用格式：<code>{'{ name, description, steps:[{ title, prompt }], variables:[{ key, label }] }'}</code>
               ，导入时会把步骤编译成一个带编号与变量占位说明的系统提示词。
               <br />
-              扣子 / 火山 / 龙虾等平台的私有格式暂不直接兼容，请先在原平台把工作流导出或整理为上述提示词步骤再导入。
+              第三方平台的私有导出格式暂不直接兼容，请先在原平台把工作流整理为上述提示词步骤再导入。
             </>
           }
         />

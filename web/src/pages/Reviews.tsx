@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Button,
+  DatePicker,
   Drawer,
   Empty,
   Form,
@@ -17,8 +18,10 @@ import {
   Tag,
   message,
 } from 'antd';
-import { ImportOutlined, PlusOutlined, RobotOutlined, StarFilled } from '@ant-design/icons';
+import { ImportOutlined, PlusOutlined, RobotOutlined, StarFilled, ThunderboltOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { dispatchToEmployee } from '../utils/dispatchEmployee';
 import { loadXlsx } from '../utils/xlsx';
 import './Reviews.css';
 
@@ -51,6 +54,7 @@ type ReviewInsights = {
 };
 
 export default function Reviews() {
+  const nav = useNavigate();
   const [summary, setSummary] = useState<any>(null);
   const [insights, setInsights] = useState<ReviewInsights | null>(null);
   const [rows, setRows] = useState<Review[] | null>(null);
@@ -143,9 +147,13 @@ export default function Reviews() {
 
   const submitAdd = async () => {
     const values = await addForm.validateFields();
+    const payload = {
+      ...values,
+      reviewDate: values.reviewDate?.format ? values.reviewDate.format('YYYY-MM-DD') : values.reviewDate || undefined,
+    };
     setAdding(true);
     try {
-      await api.post('/reviews', values);
+      await api.post('/reviews', payload);
       message.success('评价已录入');
       setAddOpen(false);
       addForm.resetFields();
@@ -316,6 +324,23 @@ export default function Reviews() {
                   {item.category} <b>{item.count}</b>
                 </button>
               ))}
+              <Button
+                size="small"
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                className="nw-dispatch-inline"
+                onClick={() =>
+                  dispatchToEmployee(
+                    nav,
+                    143,
+                    `当前门店差评归因统计：${insights.categories
+                      .map(item => `${item.category} ${item.count} 条`)
+                      .join('、')}。请输出分类差评高情商回复模板、门店整改 SOP 与本周评分回升行动清单。`,
+                  )
+                }
+              >
+                派给评价运营整改
+              </Button>
             </div>
           )}
           {insights.mentionedDishes.length > 0 && (
@@ -327,6 +352,23 @@ export default function Reviews() {
                 </em>
               ))}
               <small>差评正文点到名的菜品，优先复盘出品</small>
+              <Button
+                size="small"
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                className="nw-dispatch-inline"
+                onClick={() =>
+                  dispatchToEmployee(
+                    nav,
+                    108,
+                    `近期差评正文高频点名菜品：${insights.mentionedDishes
+                      .map(dish => `${dish.name}（被点名 ${dish.count} 次）`)
+                      .join('、')}。请排查出品稳定性、口味份量与定价性价比，给出菜品改良或菜单结构调整方案。`,
+                  )
+                }
+              >
+                派给王菜单整改菜品
+              </Button>
             </div>
           )}
         </div>
@@ -366,9 +408,14 @@ export default function Reviews() {
           <Empty description="当前筛选条件下没有匹配的评价；试试切换「全部」或清掉平台/归因筛选" />
         ) : (
           <Empty description="没有评价记录；点右上角「录入评价」或「导入 Excel」把平台评价搬进来">
-            <Button type="primary" onClick={() => setAddOpen(true)}>
-              录入第一条评价
-            </Button>
+            <Space wrap>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>
+                录入第一条评价
+              </Button>
+              <Button icon={<ImportOutlined />} loading={importing} onClick={importExcel}>
+                导入评价 Excel
+              </Button>
+            </Space>
           </Empty>
         )
       ) : (
@@ -380,7 +427,7 @@ export default function Reviews() {
                 <Tag color={review.rating <= 3 ? 'error' : 'success'}>
                   <StarFilled /> {review.rating} 星
                 </Tag>
-                {review.category && <Tag color="purple">{review.category}</Tag>}
+                {review.category && <Tag color="cyan">{review.category}</Tag>}
                 <span className="rv-card-platform">{review.platform}</span>
                 {review.author && <span className="rv-card-author">{review.author}</span>}
                 <span className="rv-card-date">{review.review_date || ''}</span>
@@ -517,8 +564,8 @@ export default function Reviews() {
           <Form.Item name="author" label="顾客昵称">
             <Input maxLength={50} />
           </Form.Item>
-          <Form.Item name="reviewDate" label="评价日期（YYYY-MM-DD）">
-            <Input placeholder="2026-08-28" maxLength={10} />
+          <Form.Item name="reviewDate" label="评价日期">
+            <DatePicker className="nw-full-width" placeholder="选择评价日期（默认今天）" />
           </Form.Item>
         </Form>
       </Modal>

@@ -78,7 +78,7 @@ function Root() {
         algorithm: uiTheme === 'midnight' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
           colorPrimary: p.primary,
-          borderRadius: 9,
+          borderRadius: 8,
           colorBgLayout: p.bg,
           colorBgContainer: p.surface,
           colorBgElevated: p.elevated,

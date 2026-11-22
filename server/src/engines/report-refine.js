@@ -129,8 +129,11 @@ export function getReportRefineState(user, taskId) {
   });
   const revisions = listRevisionRows(task.id).map((row) => publicRevision(row));
   const availability = refineAvailability(task, baseMarkdown, revisions.length);
-  // FR-7.1：最新版本里的“可改的假设”表格 → 前端可编辑卡片。
-  const assumptions = extractReportAssumptions(revisions.length ? revisions.at(-1).markdown : baseMarkdown);
+  // FR-7.1：最新版本里的“可改的假设”表格（兼容中文章节号与任务书给定预算）→ 前端可编辑卡片。
+  const assumptions = extractReportAssumptions(
+    revisions.length ? revisions.at(-1).markdown : baseMarkdown,
+    { requirement: revisions.length ? "" : task.requirement },
+  );
   return {
     task: {
       id: Number(task.id),
@@ -231,7 +234,10 @@ export async function refineReport(user, taskId, body = {}, { signal } = {}) {
   const baseVersion = baseRow ? Number(baseRow.version) : 0;
   // FR-7.1：老板在假设卡片上改了值 → 生成结构化重算指令（不重新检索）。
   if (assumptionChanges?.length) {
-    const built = buildAssumptionChangeInstruction(extractReportAssumptions(baseMarkdown), assumptionChanges);
+    const built = buildAssumptionChangeInstruction(
+      extractReportAssumptions(baseMarkdown, { requirement: baseRow ? "" : task.requirement }),
+      assumptionChanges,
+    );
     if (!built.applied.length) throw httpError(400, "没有识别到改动的假设，请修改卡片上的数值后再重算");
     instruction = instruction
       ? `${built.instruction}\n补充要求：${instruction}`.slice(0, REPORT_REFINE_MAX_INSTRUCTION)

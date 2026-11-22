@@ -485,6 +485,7 @@ export function initSchema() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL DEFAULT 1,
     brand_name TEXT NOT NULL,
+    pack_role TEXT NOT NULL DEFAULT 'own',
     status TEXT NOT NULL DEFAULT 'collecting',
     version INTEGER NOT NULL DEFAULT 1,
     window_days INTEGER NOT NULL DEFAULT 90,
@@ -772,6 +773,7 @@ const ISOLATED = new Set([
   "kb_docs",
   "brand_knowledge_packs",
   "brand_knowledge_dimensions",
+  "store_inspection_rectifications",
   "goals",
   "tasks",
   "task_submissions",
@@ -1273,6 +1275,7 @@ export function migrateV2() {
   // 巡店归档冻结标准库版本（派活AI-R7标准移植）。新库由下方 CREATE TABLE
   // 自带此列；这里只为已存在的老库补列。
   addCol("store_inspections", "standards_version", "TEXT");
+  addCol("brand_knowledge_packs", "pack_role", "TEXT NOT NULL DEFAULT 'own'");
   addCol("users", "credits", "INTEGER DEFAULT 0");
   addCol("users", "manager_id", "INTEGER");
   addCol("users", "modules", "TEXT"); // JSON 数组，用户级菜单覆盖（空=继承角色）
@@ -2232,6 +2235,31 @@ export function migrateV2() {
   );
   CREATE INDEX IF NOT EXISTS idx_store_inspections_tenant_time ON store_inspections(tenant_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_store_inspections_tenant_store ON store_inspections(tenant_id, store_name);
+  -- 督导巡店「查→改→复检」整改台账闭环（关联 store_inspections 与 tasks）
+  CREATE TABLE IF NOT EXISTS store_inspection_rectifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    inspection_id INTEGER NOT NULL,
+    issue_index INTEGER NOT NULL,
+    store_name TEXT NOT NULL,
+    store_id INTEGER,
+    board TEXT,
+    severity TEXT NOT NULL DEFAULT '中',
+    problem TEXT NOT NULL,
+    action_plan TEXT,
+    assignee_id INTEGER,
+    assignee_name TEXT,
+    task_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    due_date TEXT,
+    recheck_note TEXT,
+    recheck_by TEXT,
+    recheck_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(tenant_id, inspection_id, issue_index)
+  );
+  CREATE INDEX IF NOT EXISTS idx_inspection_rect_tenant ON store_inspection_rectifications(tenant_id, inspection_id, status);
   -- ===== 门店日清（开店/闭店/交接班 + 食安三件套）：每日勾选留痕 =====
   CREATE TABLE IF NOT EXISTS store_checklist_marks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

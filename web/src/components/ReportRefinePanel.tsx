@@ -214,6 +214,75 @@ export default function ReportRefinePanel({
         <Alert type="info" showIcon message={state.availability.reason || '当前不能优化这份报告'} />
       )}
 
+      {state.availability.available && assumptions.length > 0 && (
+        <div className="report-refine__assumptions" aria-label="可改的假设">
+          <div className="report-refine__assumptions-head">
+            <strong>可改的假设</strong>
+            <small>改数字后按 Enter 或点“按新假设重算”：不重新检索，只重算受影响的数字，生成新版本，原稿保留</small>
+          </div>
+          <div className="report-refine__assumption-cards">
+            {assumptions.map(item => {
+              const currentValue = assumptionDraft[item.key] ?? item.value;
+              const draft = assumptionDraft[item.key];
+              const isDirty = draft != null && draft.trim() !== '' && draft.trim() !== item.value;
+              const unitText = item.unit?.trim() || '';
+              const showUnit = Boolean(unitText && !currentValue.includes(unitText));
+              return (
+                <Tooltip key={item.key} title={item.impact ? `改了会影响：${item.impact}` : undefined}>
+                  <div className={`report-refine__assumption-card${isDirty ? ' is-dirty' : ''}`}>
+                    <div className="report-refine__assumption-label">
+                      <span id={assumptionId + item.key}>
+                        {item.label}
+                        {item.source_tier === 'B' ? <Tag className="report-refine__tier">参考</Tag> : null}
+                        {item.source_tier === 'C' ? <Tag className="report-refine__tier">推测</Tag> : null}
+                      </span>
+                      {isDirty && <span className="report-refine__dirty-badge">已修改</span>}
+                    </div>
+                    <Input
+                      aria-labelledby={assumptionId + item.key}
+                      size="small"
+                      maxLength={40}
+                      disabled={sending}
+                      value={currentValue}
+                      suffix={showUnit ? <span className="report-refine__unit">{unitText}</span> : undefined}
+                      onChange={event =>
+                        setAssumptionDraft(draftMap => ({ ...draftMap, [item.key]: event.target.value }))
+                      }
+                      onPressEnter={() => {
+                        if (changedAssumptions.length > 0 && !sending) {
+                          void send('', { assumptionChanges: changedAssumptions });
+                        }
+                      }}
+                    />
+                  </div>
+                </Tooltip>
+              );
+            })}
+          </div>
+          <Space size={6} wrap>
+            <Button
+              type="primary"
+              size="small"
+              loading={sending}
+              disabled={!changedAssumptions.length}
+              onClick={() => void send('', { assumptionChanges: changedAssumptions })}
+            >
+              按新假设重算{changedAssumptions.length ? `（改了 ${changedAssumptions.length} 项）` : ''}
+            </Button>
+            {changedAssumptions.length > 0 && (
+              <Button size="small" type="text" disabled={sending} onClick={() => setAssumptionDraft({})}>
+                还原
+              </Button>
+            )}
+          </Space>
+          {sending && (
+            <div className="report-refine__recalc-status" role="status" aria-live="polite">
+              正在按新假设重算受影响的分项与数量（不重新联网检索，通常 20–50 秒）…
+            </div>
+          )}
+        </div>
+      )}
+
       {state.availability.available && (
         <div className="report-refine__composer">
           <Space size={[6, 6]} wrap>
@@ -252,52 +321,6 @@ export default function ReportRefinePanel({
             </Button>
           </div>
           <small>Ctrl/⌘ + Enter 发送 · 每轮按真实用量计费，模型没交出完整新版则不扣费</small>
-        </div>
-      )}
-
-      {state.availability.available && assumptions.length > 0 && (
-        <div className="report-refine__assumptions" aria-label="可改的假设">
-          <div className="report-refine__assumptions-head">
-            <strong>可改的假设</strong>
-            <small>改数字后点“按新假设重算”：不重新检索，只重算受影响的数字，生成新版本，原稿保留</small>
-          </div>
-          <div className="report-refine__assumption-cards">
-            {assumptions.map(item => (
-              <Tooltip key={item.key} title={item.impact ? `改了会影响：${item.impact}` : undefined}>
-                <div className="report-refine__assumption-card">
-                  <span id={assumptionId + item.key}>
-                    {item.label}
-                    {item.source_tier === 'B' ? <Tag className="report-refine__tier">参考</Tag> : null}
-                    {item.source_tier === 'C' ? <Tag className="report-refine__tier">推测</Tag> : null}
-                  </span>
-                  <Input
-                    aria-labelledby={assumptionId + item.key}
-                    size="small"
-                    maxLength={40}
-                    disabled={sending}
-                    value={assumptionDraft[item.key] ?? item.value}
-                    onChange={event => setAssumptionDraft(draft => ({ ...draft, [item.key]: event.target.value }))}
-                  />
-                </div>
-              </Tooltip>
-            ))}
-          </div>
-          <Space size={6}>
-            <Button
-              type="primary"
-              size="small"
-              loading={sending}
-              disabled={!changedAssumptions.length}
-              onClick={() => void send('', { assumptionChanges: changedAssumptions })}
-            >
-              按新假设重算{changedAssumptions.length ? `（改了 ${changedAssumptions.length} 项）` : ''}
-            </Button>
-            {changedAssumptions.length > 0 && (
-              <Button size="small" type="text" disabled={sending} onClick={() => setAssumptionDraft({})}>
-                还原
-              </Button>
-            )}
-          </Space>
         </div>
       )}
 

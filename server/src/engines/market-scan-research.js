@@ -215,7 +215,7 @@ export function marketScanCoveragePromptLines(coverage) {
   if (coverage.shortfalls.includes("priceBands")) reasons.push(`价格档只有 ${coverage.priceBands} 档（目标 ≥${coverage.thresholds.priceBands}）`);
   if (coverage.shortfalls.includes("sources")) reasons.push(`可用来源 ${coverage.sources} 个（目标 ≥${coverage.thresholds.sources}）`);
   lines.push(
-    `【覆盖度未达标·已自动补检一轮】${reasons.join("；")}。正文第一段必须如实写“本次只找到 N 家（N 为你实际列出的店数），原因……，你可以……”（可以：把商圈写得更具体到商场/路名、补一个细分品类、上传自己导出的平台数据）。表格只列真实找到的店，不要用“待核验”“—”行凑数。`,
+    `【覆盖度未达标·已自动补检一轮】${reasons.join("；")}。正文第一段必须如实写“本次只找到 N 家（N 必须严格等于下文去重清单里的实际店数，不得把本企业品牌资料/自家门店算作周边竞品，也不得重复计数），原因……，你可以……”（可以：把商圈写得更具体到商场/路名、补一个细分品类、上传自己导出的平台数据）。表格只列真实找到的店，缺失字段写“—”并在口径说明写明，不要用“待核验”“—”行凑数。`,
   );
   return lines;
 }

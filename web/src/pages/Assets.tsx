@@ -516,7 +516,7 @@ export default function Assets() {
                         radius: ['58%', '80%'],
                         avoidLabelOverlap: false,
                         label: { show: false },
-                        itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
+                        itemStyle: { borderColor: 'var(--ui-surface)', borderWidth: 2, borderRadius: 4 },
                         data: categories.map((c, i) => ({
                           name: c.category,
                           value: c.n,
@@ -770,6 +770,7 @@ export default function Assets() {
             <Table
               size="small"
               rowKey="id"
+              scroll={{ x: 1080 }}
               dataSource={list.rows || []}
               pagination={{
                 current: page,
@@ -1263,17 +1264,9 @@ export default function Assets() {
                       {c.count ?? 0} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ui-muted)' }}>项</span>
                     </span>
                   </div>
-                  <div
-                    style={{
-                      fontSize: 11.5,
-                      color: 'var(--ui-muted)',
-                      margin: '6px 0 4px',
-                      fontFamily: 'Consolas,Menlo,monospace',
-                    }}
-                  >
-                    {c.table}
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.6, marginTop: 6 }}>
+                    来源：{c.source}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.6 }}>来源：{c.source}</div>
                   <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', lineHeight: 1.6, marginTop: 4 }}>
                     溯源链：{c.trace}
                   </div>
@@ -1304,7 +1297,7 @@ export default function Assets() {
       >
         {!drill.data ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

@@ -101,15 +101,24 @@ export default function Mobile() {
         </div>
       </header>
 
-      <main data-onboarding="workspace" className="mobile-workspace" key={storeVersion}>
-        {view === 'home' && <MobileHome nav={nav} user={user} mods={mods} inboxCount={inbox.count} />}
-        {view === 'customers' && <MobileCustomers />}
-        {view === 'content' && <MobileContent />}
+      <main data-onboarding="workspace" className="mobile-workspace">
+        {view === 'home' && (
+          <MobileHome key={storeVersion} nav={nav} user={user} mods={mods} inboxCount={inbox.count} />
+        )}
+        {view === 'customers' && <MobileCustomers key={storeVersion} />}
+        {view === 'content' && <MobileContent key={storeVersion} />}
         {view === 'dispatch' && <MobileDispatch nav={nav} params={params} />}
         {view === 'tasks' && (
-          <MobileTasks nav={nav} params={params} mods={mods} user={user} realtimeConnected={realtimeConnected} />
+          <MobileTasks
+            key={storeVersion}
+            nav={nav}
+            params={params}
+            mods={mods}
+            user={user}
+            realtimeConnected={realtimeConnected}
+          />
         )}
-        {view === 'inbox' && <MobileInbox nav={nav} onChanged={inbox.refresh} />}
+        {view === 'inbox' && <MobileInbox key={storeVersion} nav={nav} onChanged={inbox.refresh} />}
         {view === 'me' && <MobileMe user={user} nav={nav} />}
       </main>
 

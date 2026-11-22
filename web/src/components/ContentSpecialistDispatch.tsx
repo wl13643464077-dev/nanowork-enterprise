@@ -28,7 +28,13 @@ export default function ContentSpecialistDispatch({
     <section className="ewb-section" aria-label={xhs ? '小红书图文派活' : 'AI带货视频派活'}>
       {!available && <Alert type="info" showIcon message="当前账号未开通此岗位派活权限" />}
       {xhs ? (
-        <AiXhsNotePanel embedded open={active} canDispatch={available} onOpenChange={noRelatedList} />
+        <AiXhsNotePanel
+          embedded
+          open={active}
+          canDispatch={available}
+          presetBrief={presetBrief}
+          onOpenChange={noRelatedList}
+        />
       ) : (
         <AiSalesVideoPanel
           embedded

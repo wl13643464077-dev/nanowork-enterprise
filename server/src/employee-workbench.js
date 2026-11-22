@@ -51,7 +51,7 @@ import {
   supplementSummary,
   withReviewStatus,
 } from "./engines/employee-skill-supplement.js";
-import { answerShapePromptLines } from "./engines/employee-answer-shapes.js";
+import { answerShapeFor, answerShapePromptLines } from "./engines/employee-answer-shapes.js";
 import { normalizeIntentType } from "./engines/employee-intent-router.js";
 import { buildEmployeeStoreDataPack } from "./engines/employee-store-data-pack.js";
 import {
@@ -60,6 +60,10 @@ import {
   outputPrefsPromptLine,
   preferenceContextLine,
 } from "./engines/employee-dispatch-followups.js";
+import {
+  buildEmployeeKernelDetail,
+  redactEmployeeKernelDetail,
+} from "./engines/employee-expert-kernel.js";
 
 export const EMPLOYEE_SKILLS_PATH = EMPLOYEE_SKILL_EVIDENCE_CATALOG_PATH;
 export const EMPLOYEE_TASK_TYPES = Object.freeze([
@@ -89,6 +93,7 @@ export const REQUIRED_WORKBENCH_KEYS = Object.freeze([
   "dispatch",
   "permissions",
   "provenance",
+  "expertKernel",
 ]);
 
 const RESTAURANT_CATALOG = loadRestaurantCatalog();
@@ -1045,6 +1050,23 @@ export function buildEmployeeWorkbench(
           "企业提示词只可追加，不能替换或弱化出厂岗位手册、必备能力、质量门与安全边界。",
       };
 
+  const enabledSupplements = (() => {
+    try {
+      return enabledSupplementCards(
+        withReviewStatus(
+          supplementCardsForEmployee(employee.idx),
+          supplementReviewMap(tenantId),
+        ),
+      );
+    } catch {
+      return [];
+    }
+  })();
+  const fullExpertKernel = buildEmployeeKernelDetail(canonical, {
+    webMode: config.webMode,
+    enabledSupplements,
+  });
+
   return {
     identity: {
       ...structuredClone(canonical.identity),
@@ -1185,6 +1207,9 @@ export function buildEmployeeWorkbench(
           tenantId,
           noSilentFallback: true,
         },
+    expertKernel: internalProfileRestricted
+      ? redactEmployeeKernelDetail(fullExpertKernel)
+      : fullExpertKernel,
   };
 }
 
@@ -1373,6 +1398,8 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
     : [];
   const intentIsShortForm =
     taskIntent && !["full_report", "team"].includes(normalizeIntentType(taskIntent.type));
+  const intentIsProduceArtifact =
+    Boolean(taskIntent && answerShapeFor(taskIntent).key === "produce.artifact");
   // FR-5：本企业自有数据包（只在派活带题型时注入，旧调用链保持不变）。
   const storeDataPack = taskIntent
     ? (() => {
@@ -1458,18 +1485,22 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
   // repetitive prose; the server-side contract/gates remain unchanged and
   // the production path keeps the configured full/standard length.
   const acceptanceCompact = process.env.NANOWORK_ACCEPTANCE_COMPACT === "1";
-  const paihuoLengthHint = acceptanceCompact
-    ? "【篇幅】本轮真实验收采用紧凑完整版：控制在约3500字以内，必须覆盖手册要求的每个交付物、关键公式/判断、证据与下一步动作；禁止复述材料、能力清单或凑字。"
-    : workbench.workConfig.outputLength === "full"
-      ? "【篇幅】本次按完整版交付：可以充分展开，但信息密度优先，禁止凑字与复述材料。"
-      : "【篇幅】本次按标准版交付：整体控制在约2000字以内，宁可精炼，不要注水。";
+  const paihuoLengthHint = intentIsProduceArtifact
+    ? "【篇幅与形态·最高优先级】本次为「产物」直接交付：直接输出可直接复制使用的成品表格/清单/话术，表外说明文字全文严格不超过 3 行（不含标题和表格本身）；禁止写成分析报告，禁止写“背景分析”“方法说明”“验证指标与复盘”“下一步建议”“可改的假设”等章节。"
+    : acceptanceCompact
+      ? "【篇幅】本轮真实验收采用紧凑完整版：控制在约3500字以内，必须覆盖手册要求的每个交付物、关键公式/判断、证据与下一步动作；禁止复述材料、能力清单或凑字。"
+      : workbench.workConfig.outputLength === "full"
+        ? "【篇幅】本次按完整版交付：可以充分展开，但信息密度优先，禁止凑字与复述材料。"
+        : "【篇幅】本次按标准版交付：整体控制在约2000字以内，宁可精炼，不要注水。";
   const paihuoSystemContext = [
     `你是「纳米Work行业版 · ${workbench.identity.department.name}」的数字员工「${workbench.identity.person}」，岗位「${workbench.identity.name}」。`,
     `岗位职责：${workbench.identity.duty}`,
     "",
-    intentIsShortForm
-      ? "【你的岗位工作手册（方法参考：本次按下方“本次题型”的形态交付，不必逐个交付手册全部交付物）】"
-      : "【你的岗位工作手册（必须按其中的必要输入/工作流/交付物执行）】",
+    intentIsProduceArtifact
+      ? "【你的岗位工作手册（仅参考行业标准与表格字段规范，严禁照搬手册里的分析、复盘和长段落；本次直接交付可复制成品，表外说明严格 ≤3 行）】"
+      : intentIsShortForm
+        ? "【你的岗位工作手册（方法参考：本次按下方“本次题型”的形态交付，不必逐个交付手册全部交付物）】"
+        : "【你的岗位工作手册（必须按其中的必要输入/工作流/交付物执行）】",
     String(workbench.workMethod.manualMarkdown || "").slice(0, 12_000),
     "",
     // 巡店督导：注入版本化巡店标准清单（派活AI-R7标准库1:1移植），
@@ -1515,9 +1546,11 @@ export function buildEmployeeExecutionProfile(idx, options = {}) {
     "如有联网证据，先核实关键事实与数据并标注来源；证据不足则显著标注「待核验」；",
     "手册里要求的数据老板没给的，合理假设并显著标注「假设」；",
     "如果任务明显超出岗位职责，先给出 3-5 条力所能及的建议，再在结尾推荐更对口岗位；",
-    intentIsShortForm
-      ? "只输出可直接使用的 Markdown 报告本体。按本次答题形态组织段落、表格和结尾，不重复岗位手册。"
-      : "产出可直接落地的 Markdown（结构清晰，有表格用表格），开头一行「# 标题」，结尾给「下一步建议」3 条。只输出 Markdown 报告本体，不要把整份产出写成 JSON、不要多余客套。",
+    intentIsProduceArtifact
+      ? "直接输出可复制使用的 Markdown 成品（如菜单/价格梯度/套餐表格或清单）；表格之外的说明文字全文严格不超过 3 行，不要写背景分析、方法说明、复盘指标、下一步建议或可改的假设。"
+      : intentIsShortForm
+        ? "只输出可直接使用的 Markdown 报告本体。按本次答题形态组织段落、表格和结尾，不重复岗位手册。"
+        : "产出可直接落地的 Markdown（结构清晰，有表格用表格），开头一行「# 标题」，结尾给「下一步建议」3 条。只输出 Markdown 报告本体，不要把整份产出写成 JSON、不要多余客套。",
     "唯一例外：若岗位工作手册明确要求在文末追加机读归档代码块（如 ```nanowork-inspection JSON），必须在报告最后原样附上且字段完整——那是系统自动归档接口，省略会导致本次工作无法入档。",
     paihuoLengthHint,
     `【输出语言】${workbench.workConfig.language}`,

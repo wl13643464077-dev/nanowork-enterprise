@@ -25,7 +25,7 @@
 
 .execution-command-copy > span {
   color: var(--ui-primary);
-  font-size: 10px;
+  font-size: var(--font-1);
   font-weight: 760;
   letter-spacing: 0.13em;
 }
@@ -94,7 +94,7 @@
 
 .execution-command-actions small {
   color: var(--ui-muted);
-  font-size: 9px;
+  font-size: var(--font-1);
   white-space: nowrap;
 }
 
@@ -307,7 +307,7 @@
 
 .execution-task-trace__entry > .ant-tag {
   margin-left: 6px;
-  font-size: 10px;
+  font-size: var(--font-1);
 }
 
 .execution-task-trace__entry p {

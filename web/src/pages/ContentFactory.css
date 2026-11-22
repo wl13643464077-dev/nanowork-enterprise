@@ -81,11 +81,118 @@
   color: var(--ok);
 }
 
+/* —— 分区呈现：独立出片主推区 vs 10 工位标准内容流水线 —— */
+.content-crew-zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.content-crew-zone--featured {
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
+  border: 1px solid var(--ui-warm-border);
+  border-radius: var(--radius-lg);
+  background: var(--ui-warm-surface);
+}
+
+.content-crew-zone--pipeline {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--ui-border);
+}
+
+.content-crew-zone-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.content-crew-zone-head h3 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.content-crew-zone-head p {
+  margin: var(--space-1) 0 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.content-crew-zone-count {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.content-crew-zones {
+  display: flex;
+  flex-direction: column;
+}
+
+.content-crew-zone--featured .content-crew-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
 /* —— 内容数字员工卡片阵列：与餐饮员工卡片同一套视觉语言 —— */
 .content-crew-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(252px, 1fr));
   gap: 14px;
+}
+
+.content-crew-card--featured {
+  background: var(--ui-surface);
+  box-shadow: var(--shadow-1);
+}
+
+.content-crew-card--recommended {
+  border-color: color-mix(in srgb, var(--ui-primary) 26%, var(--ui-border));
+  border-top-width: 3px;
+}
+
+.content-crew-card--video {
+  border-color: color-mix(in srgb, var(--warn) 36%, var(--ui-border));
+  border-top-width: 3px;
+}
+
+.content-crew-card-badge-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.content-crew-priority-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-1);
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.content-crew-priority-tag--recommended {
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.content-crew-priority-tag--cost {
+  background: var(--ui-warning-surface);
+  color: var(--ui-warning-text);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
 }
 
 .content-crew-card {
@@ -95,7 +202,7 @@
   gap: 10px;
   padding: 16px;
   border: 1px solid var(--ui-border);
-  border-top: 2px solid color-mix(in srgb, var(--dept, #7a5bd8) 45%, transparent);
+  border-top: 2px solid color-mix(in srgb, var(--dept, var(--ui-primary)) 45%, transparent);
   border-radius: 14px;
   background: var(--ui-surface);
   transition:
@@ -106,8 +213,8 @@
 
 .content-crew-card:hover,
 .content-crew-card:focus-within {
-  border-color: color-mix(in srgb, var(--dept, #7a5bd8) 30%, var(--ui-border));
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--dept, #7a5bd8) 10%, rgba(29, 35, 43, 0.05));
+  border-color: color-mix(in srgb, var(--dept, var(--ui-primary)) 30%, var(--ui-border));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--dept, var(--ui-primary)) 10%, rgba(29, 35, 43, 0.05));
   transform: translateY(-2px);
 }
 
@@ -194,14 +301,14 @@
   padding: 8px 10px;
   border: none;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--dept, #7a5bd8) 6%, var(--ui-surface-2));
+  background: color-mix(in srgb, var(--dept, var(--ui-primary)) 6%, var(--ui-surface-2));
   cursor: pointer;
   text-align: left;
   transition: background 0.15s var(--ease-out);
 }
 
 .content-crew-card-powers:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--dept, #7a5bd8) 12%, var(--ui-surface-2));
+  background: color-mix(in srgb, var(--dept, var(--ui-primary)) 12%, var(--ui-surface-2));
 }
 
 .content-crew-card-powers:disabled {
@@ -211,7 +318,7 @@
 
 .content-crew-card-powers > span {
   flex: 0 0 auto;
-  color: color-mix(in srgb, var(--dept, #7a5bd8) 78%, var(--ui-text));
+  color: color-mix(in srgb, var(--dept, var(--ui-primary)) 78%, var(--ui-text));
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -354,6 +461,12 @@
     flex-direction: column;
   }
 
+  .content-crew-zone-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .content-crew-zone--featured .content-crew-grid,
   .content-crew-grid {
     grid-template-columns: 1fr;
   }

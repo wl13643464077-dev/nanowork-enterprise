@@ -733,7 +733,7 @@ export default function System() {
       ),
   );
   const QUICK: { label: string; icon: React.ReactNode; color: string; tab: string; badge?: number }[] = [
-    { label: '数据录入中枢', icon: <InboxOutlined />, color: '#715b7b', tab: 'data-intake' },
+    { label: '数据录入中枢', icon: <InboxOutlined />, color: 'var(--ui-primary)', tab: 'data-intake' },
     { label: '用户管理', icon: <TeamOutlined />, color: 'var(--ui-accent)', tab: 'users' },
     { label: '审批中心', icon: <AuditOutlined />, color: 'var(--danger)', tab: 'approvals', badge: pendingCount },
     {
@@ -1244,11 +1244,7 @@ export default function System() {
           description={
             <span>
               {kbVector.message}
-              {kbVector.state === 'disabled' && (
-                <>
-                  。需由部署人员设置 <code>ENABLE_BACKGROUND_EMBEDDINGS=true</code> 并重启服务，再由老板确认回填。
-                </>
-              )}
+              {kbVector.state === 'disabled' && <>。如需开启自动智能检索，请联系平台运维人员配置。</>}
             </span>
           }
         />
@@ -1579,7 +1575,7 @@ export default function System() {
               <button type="button" className="ui-link-button" onClick={() => window.open('/admin', '_blank')}>
                 管理后台 → 员工管理
               </button>{' '}
-              编辑并点「同步」生效。<b style={{ color: '#16a34a' }}>所有修改仅对本企业生效</b>
+              编辑并点「同步」生效。<b style={{ color: 'var(--ok)' }}>所有修改仅对本企业生效</b>
               ，每家企业可定制自己的餐饮分部话术与 AI 风格（千客千面）。
             </span>
           }
@@ -2111,7 +2107,7 @@ export default function System() {
                           justifyContent: 'space-between',
                           alignItems: 'center',
                           background: 'var(--ui-surface)',
-                          border: '1px solid var(--ui-surface)',
+                          border: '1px solid var(--ui-border)',
                           borderRadius: 8,
                           padding: '7px 9px',
                           fontSize: 12,
@@ -2279,7 +2275,7 @@ export default function System() {
                       style={{
                         width: 282,
                         height: 282,
-                        border: '1px solid var(--ui-surface)',
+                        border: '1px solid var(--ui-border)',
                         borderRadius: 12,
                         display: 'grid',
                         placeItems: 'center',
@@ -2299,13 +2295,13 @@ export default function System() {
                         style={{
                           width: '100%',
                           textAlign: 'left',
-                          border: '1px solid var(--ui-surface)',
+                          border: '1px solid var(--ui-border)',
                           background: 'var(--ui-surface)',
                           borderRadius: 10,
                           padding: '10px 12px',
                         }}
                       >
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#1d4ed8', marginBottom: 6 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-primary)', marginBottom: 6 }}>
                           当前系统使用的飞书 App ID
                         </div>
                         <Input
@@ -2335,13 +2331,15 @@ export default function System() {
                         style={{
                           width: '100%',
                           textAlign: 'left',
-                          border: '1px solid var(--ui-surface)',
+                          border: '1px solid var(--ui-border)',
                           background: 'var(--ui-surface)',
                           borderRadius: 10,
                           padding: '10px 12px',
                         }}
                       >
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8a5a00', marginBottom: 6 }}>
+                        <div
+                          style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-warning-text)', marginBottom: 6 }}
+                        >
                           飞书提示 20029 时，复制这个重定向 URL 到飞书后台
                         </div>
                         <Input.TextArea
@@ -2361,7 +2359,7 @@ export default function System() {
                         >
                           复制重定向 URL
                         </Button>
-                        <div style={{ fontSize: 11.5, color: '#9a6b00', marginTop: 6, lineHeight: 1.6 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--ui-warning-text)', marginTop: 6, lineHeight: 1.6 }}>
                           位置：飞书开发者后台 → 当前应用 → 开发配置 → 安全设置 → 重定向 URL。
                         </div>
                       </div>
@@ -2507,7 +2505,7 @@ export default function System() {
                     height: 36,
                     borderRadius: 9,
                     margin: '0 auto',
-                    background: `${q.color}1a`,
+                    background: `color-mix(in srgb, ${q.color} 12%, transparent)`,
                     color: q.color,
                     fontSize: 17,
                     display: 'flex',

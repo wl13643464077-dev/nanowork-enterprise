@@ -603,14 +603,15 @@ export default function Growth() {
 
   // ===== 工作台操作 =====
   const saveFollow = () => {
-    if (selectedId == null) return;
+    const targetId = detail?.id ?? selectedId;
+    if (targetId == null) return;
     if (!followText.trim()) {
       message.warning('请先填写本次沟通摘要');
       return;
     }
     setSavingFollow(true);
     api
-      .post(`/growth/leads/${selectedId}/follow`, {
+      .post(`/growth/leads/${targetId}/follow`, {
         content: followText.trim(),
         next_follow_at: followNextAt ? followNextAt.format('YYYY-MM-DD') : undefined,
         next_action: followNextAction.trim() || undefined,
@@ -620,7 +621,7 @@ export default function Growth() {
         setFollowText('');
         setFollowNextAt(null);
         setFollowNextAction('');
-        loadDetail(selectedId);
+        loadDetail(targetId);
         loadConvs();
         loadSummary();
         loadLeads();
@@ -629,7 +630,8 @@ export default function Growth() {
       .finally(() => setSavingFollow(false));
   };
   const fetchWbSuggest = (goal = '生成可复制的私域回复话术') => {
-    if (selectedId == null) return;
+    const targetId = detail?.id ?? selectedId;
+    if (targetId == null) return;
     const current = detail || {};
     const recentFollows = [...(current.follows || [])]
       .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
@@ -652,7 +654,7 @@ export default function Growth() {
       .join('\n');
     setWbAiLoading(true);
     api
-      .post('/growth/suggest-reply', { leadId: selectedId, context })
+      .post('/growth/suggest-reply', { leadId: targetId, context })
       .then((d: any) => {
         setWbSugs(parseSuggestions(d.suggestions));
         if (d.billing) {
@@ -664,25 +666,28 @@ export default function Growth() {
       .finally(() => setWbAiLoading(false));
   };
   const addObjection = () => {
-    if (selectedId == null) return;
+    const targetId = detail?.id ?? selectedId;
+    if (targetId == null) return;
     if (!objText.trim()) {
       message.warning('请先填写客户顾虑');
       return;
     }
     setObjLoading(true);
     api
-      .post(`/growth/leads/${selectedId}/objection`, { text: objText.trim() })
+      .post(`/growth/leads/${targetId}/objection`, { text: objText.trim() })
       .then((d: any) => {
         setObjModal({ open: true, text: d.suggestion || '' });
         setObjText('');
-        loadDetail(selectedId);
+        loadDetail(targetId);
       })
       .finally(() => setObjLoading(false));
   };
   const resolveObjection = (i: number) => {
-    api.post(`/growth/leads/${selectedId}/objection`, { resolveIndex: i }).then(() => {
+    const targetId = detail?.id ?? selectedId;
+    if (targetId == null) return;
+    api.post(`/growth/leads/${targetId}/objection`, { resolveIndex: i }).then(() => {
       message.success('顾虑已标记解决');
-      loadDetail(selectedId);
+      loadDetail(targetId);
     });
   };
 
@@ -1128,7 +1133,7 @@ export default function Growth() {
             kpiFilter({ sort: 'follow', hint: '台账已按「下次跟进时间」排序，最上方为最急迫客户' });
             return;
           }
-          loadDetail(id);
+          setSelectedId(id);
         }}
       />
       {/* ===== 近期生日客户：低成本复购动作 ===== */}
@@ -1296,7 +1301,7 @@ export default function Growth() {
                   borderRadius: 8,
                   padding: '8px 12px',
                   fontSize: 12,
-                  color: '#cf1322',
+                  color: 'var(--danger)',
                 }}
               >
                 <AlertOutlined /> 当前卡点：「{funnel.bottleneck}」环节
@@ -1502,7 +1507,7 @@ export default function Growth() {
                           {c.last_msg || c.last_content || c.last_follow || c.summary || '暂无跟进记录'}
                         </span>
                       </div>
-                      <div style={{ fontSize: 11, color: '#a6afbd', marginTop: 2 }}>
+                      <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 2 }}>
                         {c.last_user_name ? `最近跟进：${c.last_user_name}` : '尚未有人跟进'}
                       </div>
                     </div>
@@ -1956,7 +1961,9 @@ export default function Growth() {
                                   </span>
                                 )}
                                 {j.reached && j.stayDays != null && j.stayDays > 0 && !isCurrent && (
-                                  <span style={{ fontSize: 10.5, color: '#cbb887' }}>停留{j.stayDays}天</span>
+                                  <span style={{ fontSize: 10.5, color: 'var(--ui-warning-text)' }}>
+                                    停留{j.stayDays}天
+                                  </span>
                                 )}
                                 {j.inferred && <span style={{ fontSize: 10, color: 'var(--ui-muted)' }}>(推导)</span>}
                               </div>
@@ -2041,7 +2048,7 @@ export default function Growth() {
                     <span
                       style={{
                         flex: 1,
-                        color: c.resolved ? 'var(--ui-muted)' : '#e0a253',
+                        color: c.resolved ? 'var(--ui-muted)' : 'var(--ui-warning-text)',
                         textDecoration: c.resolved ? 'line-through' : 'none',
                       }}
                     >
@@ -2149,7 +2156,7 @@ export default function Growth() {
               <div
                 style={{
                   background: 'var(--ui-surface)',
-                  border: '1px solid var(--ui-surface)',
+                  border: '1px solid var(--ui-border)',
                   borderRadius: 8,
                   padding: '8px 10px',
                 }}
@@ -2597,7 +2604,7 @@ export default function Growth() {
                         label="成交金额（元）"
                         rules={st === '已成交' ? [{ required: true, message: '成交必须填写成交金额' }] : []}
                       >
-                        <InputNumber style={{ width: '100%' }} min={0} placeholder="如 56800" />
+                        <InputNumber style={{ width: '100%' }} min={0} placeholder="如 1280" />
                       </Form.Item>
                       <Form.Item name="deal_reason" label="成交原因">
                         <Input placeholder="如 主题试吃现场转化 / 老客转介绍" />
@@ -2623,7 +2630,7 @@ export default function Growth() {
       {/* ===== Modal：新增线索 ===== */}
       {/* 员工每日数据上报：累加进经营数据表，总控台/分析/周报全联动（PRD V2 §17） */}
       <Modal
-        title="今日数据上报（员工口子）"
+        title="今日数据上报（员工填报）"
         open={reportOpen}
         forceRender
         width={520}
@@ -2868,7 +2875,7 @@ export default function Growth() {
             </Col>
             <Col span={12}>
               <Form.Item name="region" label="区域">
-                <Input placeholder="如 临沂兰山区" />
+                <Input placeholder="如 朝阳区望京" />
               </Form.Item>
             </Col>
             <Col span={12}>

@@ -1,82 +1,149 @@
 /* 派活助手（常用问法/题型预判/追问/我的版本）：桌面工作台与手机派活页共用 */
 .ewb-dispatch-assist {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
+
+.ewb-dispatch-assist-templates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ewb-dispatch-assist-templates-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .ewb-dispatch-assist-label {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 4px;
+  display: inline-block;
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
 }
+
+.ewb-templates-toggle {
+  padding: 0 var(--space-1);
+  height: auto;
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
 .ewb-dispatch-assist-chip {
   margin-inline-end: 0;
+  cursor: pointer;
   user-select: none;
 }
+
+.ewb-dispatch-assist-chip.is-disabled {
+  cursor: not-allowed;
+}
+
 .ewb-dispatch-assist-intent {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  font-size: 12px;
+  gap: var(--space-2);
+  font-size: var(--font-1);
 }
+
+.ewb-dispatch-assist-loading {
+  color: var(--ui-primary);
+}
+
+.ewb-dispatch-assist-select {
+  min-width: 148px;
+}
+
 .ewb-pref-trigger {
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   height: auto;
+  font-size: var(--font-1);
 }
+
 .ewb-pref-editor {
   width: 280px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
+
 .ewb-pref-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
+
 .ewb-pref-key {
   flex: 0 0 64px;
-  color: rgba(0, 0, 0, 0.65);
-  font-size: 12px;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
 }
+
 .ewb-followups {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(22, 119, 255, 0.04);
-  border: 1px dashed rgba(22, 119, 255, 0.25);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ui-primary-soft) 55%, var(--ui-surface));
+  border: 1px dashed color-mix(in srgb, var(--ui-primary) 36%, var(--ui-border));
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
+
 .ewb-followups-title {
-  font-size: 12px;
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
 }
+
 .ewb-followup-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
+
 .ewb-followup-label {
   flex: 0 0 64px;
-  font-size: 12px;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
 }
+
+.ewb-followup-input {
+  min-width: 180px;
+  flex: 1;
+}
+
+.ewb-followup-default-tag {
+  margin-inline-end: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ewb-followup-default-tag.is-disabled {
+  cursor: not-allowed;
+}
+
 .ewb-pref-output {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: flex-start;
 }
+
 .ewb-pref-output > div {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
+
 @media (max-width: 640px) {
   .ewb-pref-editor {
     width: 240px;
   }
+
   .ewb-followup-row .ant-select {
     min-width: 140px !important;
   }

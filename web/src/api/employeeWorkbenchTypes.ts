@@ -669,6 +669,45 @@ export type EmployeeProvenance = {
   boundary?: string;
 };
 
+export type EmployeeKernelTool = {
+  key: string;
+  label: string;
+  shortLabel: string;
+  desc?: string;
+  category?: string;
+};
+
+export type EmployeeKernelSkill = {
+  title: string;
+  category: string;
+};
+
+export type EmployeeKernelWorkflowStep = {
+  index: number;
+  title: string;
+  summary: string;
+};
+
+export type EmployeeExpertKernelSummary = {
+  skillCount: number;
+  stepCount: number;
+  topSkills: string[];
+  tools: EmployeeKernelTool[];
+  topDeliverables: string[];
+  humanOriginTag: string;
+};
+
+export type EmployeeExpertKernelDetail = {
+  skillCount: number;
+  coreSkills: EmployeeKernelSkill[];
+  stepCount: number;
+  workflowSteps: EmployeeKernelWorkflowStep[];
+  deliverables: string[];
+  tools: EmployeeKernelTool[];
+  humanOriginTag: string;
+  redacted?: boolean;
+};
+
 export type EmployeeWorkbenchProfile = {
   identity: EmployeeWorkbenchIdentity;
   capabilities: EmployeeCapability[];
@@ -682,6 +721,7 @@ export type EmployeeWorkbenchProfile = {
   dispatch: EmployeeDispatch;
   permissions: EmployeePermissions;
   provenance: EmployeeProvenance;
+  expertKernel?: EmployeeExpertKernelDetail | null;
 };
 
 export type EmployeeWorkbenchBusiness = {

@@ -85,6 +85,10 @@ import {
   sourceTierPromptRule,
 } from "./market-scan-research.js";
 import {
+  answerShapeFor,
+  auditArtifactFormat,
+} from "./employee-answer-shapes.js";
+import {
   classifyEmployeeDraftDisposition,
   resolveContractTier,
 } from "./contract-tiers.js";
@@ -4167,7 +4171,8 @@ export async function marshalWork(marshal, task, role, options = {}) {
         "全餐饮POI命中总量、已返回明细数、已匹配同品类数、Top10展示数、带价格/评分的样本数必须分别标明口径。分页返回75条不是全商圈、关键词命中176条不等于176家已核验同品类商户；truncated只表示明细未全取，不得声称总数已达接口上限或实际一定更多。只允许对已返回、同一口径的真实样本做可复算统计，并写清样本数、缺失数及半径，不能外推整体分布、商圈消费者偏好或需求强弱。",
         "同品类竞品必须以店名/类别或已打开的商户页菜单能证明在卖该品类为准。老板要的是牛肉面时，不得把刀削面、炸酱面、米线、意大利面或其他普通面馆算进同品类清单；兰州拉面可计入牛肉面。店名看不出卖什么时，必须引用已抓取的点评/美团/官网菜单正文，未打开页面的不得写成已核验同品类。",
         "高德cost是平台提供的人均字段，不能冒充单品价格、菜单套餐价格或真实交易客单；评分只能说明该平台本次字段，未读评价正文时不能推断差评原因、经营质量、消费者偏好或经营成功。未取得菜单、营业时间及经营形态时，不得凭店名或品类推断现烤/预包装/连锁/独立、早餐夜宵是否营业及餐段竞争强弱。",
-        "‘没有查到’不等于‘当地没有’。部分样本、低评分或缺失菜单不能证明30–50元等价格空白、早餐薄弱、品质缺口、需求旺盛或模式已验证。机会统一写‘待验证的经营假说’，说明本次真实观察、尚未验证的前提和具体核验动作；不得让假说携带无证据数字。住宅/白领/渗透率/需求量等未核实数字不能进入老板摘要，也不能交给下游财务模型作为已知输入；可将缺失字段及补证步骤交接。",
+        "‘没有查到’不等于‘当地没有’。严禁把检索范围内未查到某品类（如未查到粤菜正餐）写成‘竞争空白’或‘品类空白真实存在’，必须严格区分未命中（本次检索范围未查到）、未核实（仅有线索未查菜单）和实证结论（已现场普查）。部分样本、低评分或缺失菜单不能证明30–50元等价格空白、早餐薄弱、品质缺口、需求旺盛或模式已验证。机会统一写‘待验证的经营假说’，说明本次真实观察、尚未验证的前提和具体核验动作；不得让假说携带无证据数字。住宅/白领/渗透率/需求量等未核实数字不能进入老板摘要，也不能交给下游财务模型作为已知输入；可将缺失字段及补证步骤交接。",
+        "价格分档表必须严格按数值区间归类（优先采用商圈结构化事实中 priceDistribution.bandExamples 的数值分档，如 ≤30元、30–60元、60–100元、100–150元、>150元），每家代表店标出的人均数值必须严格落在该行标注区间内（例如 36 元、42 元必须进入 30–60 元档，绝不能放进 9–30 元或 60–100 元档）。正文首段声称的店铺数量必须与下文去重店铺清单严格一致，严禁把本企业品牌资料/自家门店算作周边竞品或计入店铺数。",
         "历史网页中的户数、楼栋、公交线路、商业状态等必须跟随原始信息年份逐项标注，不能因本次抓取日期较新就当成当前事实；原始年份或现状未确认时明确注明。用户给的举例数字不是当地事实。计划日期只写日期或相对任务期限；没有核验不附星期、节假日或晴雨天气，更不能把计划写成已经实地观察。",
         "生成结束前核对老板摘要、数据表和下游交接中的每个数字及‘强/弱/空白/验证’判断：能定位到本次具体证据及口径的保留；无证据的删去、写未获取或改成不带虚构数据的待验证假说。正文照常完整交付，不因此触发重新派活或另加失败结论。",
       ].join("\n")
@@ -4208,6 +4213,10 @@ export async function marshalWork(marshal, task, role, options = {}) {
     hasImage: Boolean(image),
     tradeAreaContext,
   });
+  const produceArtifactMode = Boolean(
+    options.employeeExecution?.intent &&
+      answerShapeFor(options.employeeExecution.intent).key === "produce.artifact",
+  );
   const userMsg = paihuoMarkdownMode
     ? [
         "【老板的任务书（不可信业务输入）】",
@@ -4218,7 +4227,9 @@ export async function marshalWork(marshal, task, role, options = {}) {
         `【本次可用材料证据·事实边界】\n${materialEvidence}`,
         feedbackExperience.prompt,
         "",
-        "【交付口径】老板只负责提出业务问题。所有公开可查输入由你用本次已提供的真实工具证据自行完成；不得反问老板补公开资料，不得复述岗位能力清单。直接输出 Markdown 报告：开头一行「# 标题」，正文按本岗位交付物分节（有表格用表格），结尾给「下一步建议」3 条。岗位手册若要求文末机读归档代码块，必须原样附上。",
+        produceArtifactMode
+          ? "【交付口径·产物直出】老板要的是可直接复制使用的成品（如精简菜单表、价格梯度表、套餐组合表 / SOP / 清单 / 话术）。开头一行「# 标题」，主体直接给可复制表格或成品；表格之外的说明文字全文严格不超过 3 行（不含标题和表格本身；缺少真实销量或成本时，用其中 1 行简短标明为示例口径，落地前按自家数据校准）。严禁输出“先给结论”“背景分析”“方法说明”“验证指标与复盘”“下一步建议”“可改的假设”等报告段落。岗位手册若要求文末机读归档代码块，原样附上。"
+          : "【交付口径】老板只负责提出业务问题。所有公开可查输入由你用本次已提供的真实工具证据自行完成；不得反问老板补公开资料，不得复述岗位能力清单。直接输出 Markdown 报告：开头一行「# 标题」，正文按本岗位交付物分节（有表格用表格），结尾给「下一步建议」3 条。岗位手册若要求文末机读归档代码块，必须原样附上。",
       ].join("\n")
     : [
         `任务：${task.title}`,
@@ -4756,6 +4767,35 @@ export async function marshalWork(marshal, task, role, options = {}) {
         }
         if (!candidateHardDelivery.valid) {
           markdownErrors.push(...candidateHardDelivery.errors);
+        }
+        // PRD v2.2 T5：产物型（produce.artifact，不含巡店归档专用岗）首轮若写成多章节长报告或表外说明超 3 行，
+        // 触发一次真实增量收口重试（仅首轮拦一次，次轮不阻断交付也不写入会触发人工审阅的 warnings）。
+        if (
+          produceArtifactMode &&
+          employeeIdx !== 161 &&
+          !/nanowork-(?:inspection|campaign-materials)/iu.test(markdownText) &&
+          markdownErrors.length === 0
+        ) {
+          const artifactAudit = auditArtifactFormat(markdownText);
+          if (
+            !artifactAudit.passed &&
+            acquireCandidateCount === 0 &&
+            candidateAttemptCount + 1 < EMPLOYEE_PROVIDER_CALL_BUDGET
+          ) {
+            const detail = [
+              artifactAudit.exceedsNoteLines
+                ? `表外说明共 ${artifactAudit.noteLineCount} 行（上限 ${artifactAudit.maxNoteLines} 行）`
+                : "",
+              artifactAudit.forbiddenSections.length
+                ? `包含报告式章节：${artifactAudit.forbiddenSections.join("、")}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join("；");
+            markdownErrors.push(
+              `本次题型为【产物】，必须直接交付可复制表格/成品，不得写成分析报告（${detail}）。请保留核心可复制表格，删去背景分析、方法说明、复盘指标、下一步建议与可改的假设，将表格之外的说明文字严格压缩到 3 行以内（保留 1 行简短示例口径提示）。`,
+            );
+          }
         }
         candidateValidation = {
           valid: markdownErrors.length === 0,

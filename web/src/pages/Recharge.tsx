@@ -14,6 +14,7 @@ import {
   Radio,
   Spin,
   Popover,
+  Popconfirm,
 } from 'antd';
 import {
   WalletOutlined,
@@ -79,12 +80,6 @@ type Equivalents = {
 };
 
 const fmt = (n: any) => Number(n ?? 0).toLocaleString();
-// 成本小字：≥1 元保留 2 位，<1 元保留到分/厘（¥0.09、¥0.108）
-const fmtYuan = (n: any) => {
-  const v = Number(n ?? 0);
-  if (!Number.isFinite(v)) return '—';
-  return v >= 1 ? v.toFixed(2) : v.toFixed(v >= 0.1 ? 2 : 3);
-};
 const validDaysLabel = (days: any) => {
   const d = Number(days || 0);
   if (!d) return '';
@@ -385,33 +380,25 @@ export default function Recharge() {
           <ThunderboltOutlined /> 当前余额 {fmt(bal.credits)} 积分能做什么
           {assumptions && (
             <Popover
-              title="换算假设"
+              title="换算说明"
               content={
                 <div className="rc-equiv-assumptions">
                   <span>{assumptions.image.label}</span>
                   <span>{assumptions.video.label}</span>
                   <span>{assumptions.text.label}</span>
                   <span>
-                    1 积分 = ¥{assumptions.creditYuan}；{assumptions.formula}（毛利系数{' '}
-                    {eq?.marginFactor ?? assumptions.marginMultiplier}）
+                    1 积分 = ¥{assumptions.creditYuan}，按实际生成用量透明结算，企业全员共享积分池，任务未完成自动退回。
                   </span>
-                  {assumptions.marginLabel && <span>{assumptions.marginLabel}</span>}
-                  {eq?.supplierCostYuan != null && (
-                    <span>
-                      当前 {fmt(eq.credits)} 积分对应供应商成本约 ¥{fmtYuan(eq.supplierCostYuan)}（积分面值 ÷ 毛利系数{' '}
-                      {eq.marginFactor ?? assumptions.marginMultiplier}）；每项后的"≈ ¥"为该产出的单位供应商成本。
-                    </span>
-                  )}
                   <span>
                     {eq?.basis === 'observed' && eq.observedSample
-                      ? `文本任务 token 口径取自本企业 ${fmt(eq.observedSample.calls)} 次真实调用均值（输入 ${fmt(eq.observedSample.avgTokens.input)} / 输出 ${fmt(eq.observedSample.avgTokens.output)}）。`
-                      : '文本任务 token 口径为固定假设；本企业真实调用达 5 次后自动改用真实均值。'}
+                      ? `文本任务按本企业近 ${fmt(eq.observedSample.calls)} 次实际使用均值估算。`
+                      : '文本任务按标准文案长度估算，使用满 5 次后将按本企业实际均值动态测算。'}
                   </span>
-                  <span>结果为按当前价目表的估算，实际以真实用量结算。</span>
+                  <span>以上为参考估算，实际以任务完成后的真实用量结算。</span>
                 </div>
               }
             >
-              <InfoCircleOutlined aria-label="查看换算假设" />
+              <InfoCircleOutlined aria-label="查看换算说明" />
             </Popover>
           )}
         </span>
@@ -419,23 +406,17 @@ export default function Recharge() {
           <span className="rc-equiv-items">
             <span>
               ≈ <b>{fmt(eq.images)}</b> 张图
-              {eq.unit.imageCostYuan != null && (
-                <small className="rc-equiv-cost">≈ ¥{fmtYuan(eq.unit.imageCostYuan)} 成本/张</small>
-              )}
+              <small className="rc-equiv-cost">约 {eq.unit.imageCredits} 积分/张</small>
             </span>
             <span>
               <b>{fmt(eq.videos)}</b> 条 {assumptions?.video.durationSeconds ?? 30} 秒视频
-              {eq.unit.videoCostYuan != null && (
-                <small className="rc-equiv-cost">≈ ¥{fmtYuan(eq.unit.videoCostYuan)} 成本/条</small>
-              )}
+              <small className="rc-equiv-cost">约 {eq.unit.videoCredits} 积分/条</small>
             </span>
             <span>
               <b>{fmt(eq.textTasks)}</b> 次文本任务
-              {eq.unit.textTaskCostYuan != null && (
-                <small className="rc-equiv-cost">
-                  ≈ ¥{fmtYuan(eq.unit.textTaskCostYuan)} 成本/次{eq.basis === 'observed' ? '（真实均值）' : ''}
-                </small>
-              )}
+              <small className="rc-equiv-cost">
+                约 {eq.unit.textTaskCredits} 积分/次{eq.basis === 'observed' ? '（近期均值）' : ''}
+              </small>
             </span>
           </span>
         ) : (
@@ -448,8 +429,8 @@ export default function Recharge() {
         showIcon
         message={
           eq
-            ? `计费规则：1 积分 = ¥${eq.assumptions.creditYuan}；按中转站真实 AI 成本 ×${eq.marginFactor ?? eq.assumptions.marginMultiplier} 扣减。典型文本任务约 ${eq.unit.textTaskCredits} 分/次、生图约 ${eq.unit.imageCredits} 分/张、${eq.assumptions.video.durationSeconds} 秒视频约 ${eq.unit.videoCredits} 分/条。企业内所有账号共享同一积分池。`
-            : '计费规则：按真实 AI 成本上浮后扣减积分，企业内所有账号共享同一积分池。'
+            ? `计费规则：1 积分 = ¥${eq.assumptions.creditYuan}，按实际生成用量透明结算，企业全员共享积分池，任务未完成自动退回。典型文本任务约 ${eq.unit.textTaskCredits} 积分/次、生图约 ${eq.unit.imageCredits} 积分/张、${eq.assumptions.video.durationSeconds} 秒视频约 ${eq.unit.videoCredits} 积分/条。`
+            : '计费规则：1 积分 = ¥0.01，按实际生成用量透明结算，企业全员共享积分池，任务未完成自动退回。'
         }
       />
 
@@ -524,18 +505,22 @@ export default function Recharge() {
                       查看扩容
                     </Button>
                   ) : r.status === '待支付' ? (
-                    <button
-                      type="button"
-                      className="ui-link-button"
-                      onClick={() =>
+                    <Popconfirm
+                      title="确认取消这笔待支付订单？"
+                      description="取消后该订单将失效，如需充值可重新下单。"
+                      okText="确认取消"
+                      cancelText="暂不取消"
+                      onConfirm={() =>
                         api.post(`/recharge/orders/${r.id}/cancel`, {}).then(() => {
                           message.success('已取消');
                           loadOrders().catch(() => {});
                         })
                       }
                     >
-                      取消
-                    </button>
+                      <button type="button" className="ui-link-button">
+                        取消
+                      </button>
+                    </Popconfirm>
                   ) : (
                     <CheckCircleOutlined style={{ color: 'var(--chart-2)' }} />
                   ),

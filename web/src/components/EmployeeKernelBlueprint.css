@@ -1,0 +1,548 @@
+/* =====================================================================
+   EmployeeKernelBlueprint —— 真人专家内核 · 技能流程与真实工具链蓝图
+   设计规则：全部使用 theme.css 设计 Token，无紫蓝渐变、无旧黑金、无越档字号。
+   ===================================================================== */
+
+.ekb-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ui-primary-soft) 42%, var(--ui-surface)),
+    var(--ui-surface) 44%
+  );
+  box-shadow: var(--shadow-1);
+}
+
+.ekb-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.ekb-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.ekb-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ekb-title-icon {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+  font-size: var(--font-2);
+}
+
+.ekb-title-row h3 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-4);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.ekb-origin-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--ui-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 9%, var(--ui-surface));
+  color: var(--ok);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+.ekb-stats {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.5;
+}
+
+.ekb-stats strong {
+  color: var(--ui-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ekb-header-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--space-2);
+}
+
+.ekb-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font: inherit;
+  font-size: var(--font-1);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.ekb-action-btn:hover,
+.ekb-action-btn:focus-visible {
+  border-color: color-mix(in srgb, var(--ui-primary) 50%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.ekb-action-btn.is-link {
+  border-color: color-mix(in srgb, var(--ui-primary) 32%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.ekb-action-btn.is-link:hover,
+.ekb-action-btn.is-link:focus-visible {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+}
+
+/* —— 区块结构 —— */
+.ekb-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ekb-block-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ekb-block-index {
+  display: inline-grid;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  color: var(--ui-primary);
+  font-size: var(--font-1);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ekb-block-head h4 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.ekb-block-head small {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+/* —— ① 专家工作流步骤流 —— */
+.ekb-workflow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: var(--space-2);
+}
+
+.ekb-step-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-warm-surface);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.ekb-step-card:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 42%, var(--ui-border));
+  box-shadow: var(--shadow-1);
+}
+
+.ekb-step-card.is-deliverable {
+  border-color: color-mix(in srgb, var(--ok) 38%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 6%, var(--ui-surface));
+}
+
+.ekb-step-num {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ui-primary);
+  font-size: var(--font-1);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ekb-step-card.is-deliverable .ekb-step-num {
+  color: var(--ok);
+}
+
+.ekb-step-title {
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ekb-step-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ekb-redacted-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px dashed var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.ekb-redacted-deliverables {
+  color: var(--ui-text);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+/* —— ② 真实工具链卡片网格 —— */
+.ekb-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+
+.ekb-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}
+
+.ekb-tool-card.is-signature {
+  border-color: color-mix(in srgb, var(--ui-primary) 34%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-primary-soft) 52%, var(--ui-surface));
+}
+
+.ekb-tool-card.is-evidence {
+  border-color: color-mix(in srgb, var(--ok) 28%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 5%, var(--ui-surface));
+}
+
+.ekb-tool-card-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ekb-tool-icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  color: var(--ui-primary);
+  font-size: var(--font-2);
+}
+
+.ekb-tool-card.is-signature .ekb-tool-icon {
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+}
+
+.ekb-tool-card.is-evidence .ekb-tool-icon {
+  background: color-mix(in srgb, var(--ok) 15%, var(--ui-surface));
+  color: var(--ok);
+}
+
+.ekb-tool-card-top strong {
+  overflow: hidden;
+  flex: 1;
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ekb-tool-short {
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+.ekb-tool-card p {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.5;
+}
+
+/* —— ③ 核心真人技能徽章 —— */
+.ekb-skill-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ekb-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-warm-surface-2);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--font-1);
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.ekb-skill-chip .anticon {
+  color: var(--ok);
+}
+
+.ekb-skill-chip.is-clickable {
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.ekb-skill-chip.is-clickable:hover,
+.ekb-skill-chip.is-clickable:focus-visible {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.ekb-skill-chip.is-more {
+  border-style: dashed;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+}
+
+/* —— 已有任务态：收敛单行横条 —— */
+.ekb-compact-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, var(--ui-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ui-primary-soft) 36%, var(--ui-surface));
+}
+
+.ekb-compact-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.ekb-compact-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+  font-size: var(--font-1);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.ekb-compact-meta {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  white-space: nowrap;
+}
+
+.ekb-compact-meta strong {
+  color: var(--ui-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ekb-compact-tools {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.ekb-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* —— 共用真实工具胶囊 —— */
+.ekb-tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.ekb-tool-pill.is-signature {
+  border-color: color-mix(in srgb, var(--ui-primary) 36%, var(--ui-border));
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+}
+
+.ekb-tool-pill.is-evidence {
+  border-color: color-mix(in srgb, var(--ok) 34%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--ui-surface));
+  color: var(--ok);
+}
+
+.ekb-tool-pill.is-more {
+  color: var(--ui-muted);
+}
+
+/* —— 交付报告顶部：本次实调工具与专家流程核验条 —— */
+.ekb-delivery-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--ok) 32%, var(--ui-border));
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ok) 6%, var(--ui-surface));
+}
+
+.ekb-delivery-lead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--ui-text);
+  font-size: var(--font-2);
+}
+
+.ekb-delivery-check {
+  color: var(--ok);
+  font-size: var(--font-3);
+}
+
+.ekb-delivery-fact {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+.ekb-delivery-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.ekb-delivery-tools-label {
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .ekb-panel {
+    padding: var(--space-3);
+  }
+
+  .ekb-header {
+    flex-direction: column;
+  }
+
+  .ekb-workflow,
+  .ekb-tools-grid {
+    grid-template-columns: 1fr;
+  }
+}

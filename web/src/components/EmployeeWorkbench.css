@@ -1846,7 +1846,7 @@
 }
 
 .ewb-public-conversation {
-  padding: 24px 28px 190px;
+  padding: 24px 28px 320px;
 }
 
 .ewb-conversation {
@@ -2219,13 +2219,16 @@
   position: fixed;
   z-index: 12;
   right: 28px;
-  bottom: 22px;
+  bottom: 18px;
   width: min(984px, calc(100vw - 56px));
-  padding: 12px;
+  max-height: min(44vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 28%, var(--ui-border));
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--ui-surface) 94%, transparent);
-  box-shadow: 0 16px 48px color-mix(in srgb, var(--ui-text) 16%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--ui-surface) 95%, transparent);
+  box-shadow: var(--shadow-3);
   backdrop-filter: blur(18px);
   scroll-margin-bottom: 170px;
 }
@@ -2340,7 +2343,7 @@
 
 @media (max-width: 760px) {
   .ewb-public-conversation {
-    padding: 18px 14px 176px;
+    padding: 18px 14px 290px;
   }
 
   .ewb-chat-welcome,
@@ -2462,110 +2465,90 @@
   justify-self: start;
 }
 
-/* PRD v2.2：派活框常用问法与题型预判；补充技能审核区 */
-.ewb-dispatch-assist {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ewb-dispatch-assist-label {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-.ewb-dispatch-assist-chip {
-  margin-inline-end: 0;
-  user-select: none;
-}
-.ewb-dispatch-assist-intent {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  font-size: 12px;
-}
+/* PRD v2.2：补充技能审核区、下一步协作接棒卡与演示样例存档 */
 .ewb-skill-supplement-list {
   display: grid;
-  gap: 10px;
-}
-.ewb-skill-supplement-card {
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fff;
+  gap: var(--space-2);
 }
 
-/* PRD v2.2 第三轮：我的版本 / 追问 / 派单闭环 */
-.ewb-pref-trigger {
-  padding: 0 4px;
-  height: auto;
+.ewb-skill-supplement-card {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  background: var(--ui-surface);
 }
-.ewb-pref-editor {
-  width: 280px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ewb-pref-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.ewb-pref-key {
-  flex: 0 0 64px;
-  color: rgba(0, 0, 0, 0.65);
-  font-size: 12px;
-}
-.ewb-followups {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(22, 119, 255, 0.04);
-  border: 1px dashed rgba(22, 119, 255, 0.25);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ewb-followups-title {
-  font-size: 12px;
-}
-.ewb-followup-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.ewb-followup-label {
-  flex: 0 0 64px;
-  font-size: 12px;
-}
+
 .ewb-handoffs {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 28%, var(--ui-border));
+  border-left: 3px solid var(--ui-primary);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ui-primary-soft) 45%, var(--ui-surface));
+}
+
+.ewb-handoffs-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ewb-handoffs-label {
+  font-size: var(--font-2);
+  font-weight: 650;
+  color: var(--ui-text);
+}
+
+.ewb-handoffs-head small {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+}
+
+.ewb-handoffs-actions {
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 10px 0;
+  gap: var(--space-2);
 }
-.ewb-handoffs-label {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.55);
+
+.ewb-handoff-btn {
+  border-color: color-mix(in srgb, var(--ui-primary) 36%, var(--ui-border));
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+  font-weight: 600;
 }
-.ewb-pref-output {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
+
+.ewb-handoff-btn:hover,
+.ewb-handoff-btn:focus-visible {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
 }
-.ewb-pref-output > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
+
 .ewb-demo-sample-saver {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.55);
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+}
+
+/* ===== 真人专家内核模块在对话流中的衔接 ===== */
+.ewb-conversation .ekb-panel,
+.ewb-conversation .ekb-compact-bar {
+  margin-top: var(--space-1);
+}
+
+.ewb-run-detail .ekb-delivery-bar {
+  margin-top: var(--space-2);
 }

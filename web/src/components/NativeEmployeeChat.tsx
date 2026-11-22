@@ -1,6 +1,6 @@
 import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Checkbox, Input, Select, Space, Spin, message } from 'antd';
+import { Alert, Button, Checkbox, Input, Modal, Select, Space, Spin, message } from 'antd';
 import { api, getUser, notifyCredits } from '../api/client';
 import { Markdown } from './Markdown';
 import { UnifiedFilePicker, type UploadedFileRef } from './UnifiedFilePicker';
@@ -49,6 +49,12 @@ export type NativeImageOptions = {
   styles?: Array<{ id: string; label: string }>;
   coverLayouts?: Array<{ id: string; label: string }>;
 };
+export type NativeVideoDurationQuote = {
+  durationSeconds: 15 | 30;
+  segmentCount?: number;
+  estimatedMaxCredits?: number;
+};
+const formatYuanFromCredits = (credits: number) => `≈ ¥${(credits * 0.01).toFixed(2)}`;
 const defaults: NativeChatOptions = { imageCount: 6, style: 'seed', coverLayout: 'photo', includeDiner: false };
 const optionsOf = (options?: Partial<NativeChatOptions>): NativeChatOptions => ({ ...defaults, ...options });
 const initialOptions = (employeeIdx: 10 | 11) => optionsOf(employeeIdx === 10 ? { durationSeconds: 15 } : undefined);
@@ -88,7 +94,7 @@ const examples = {
   ],
   11: [
     {
-      text: '给我们火锅店做6图种草，封面用四宫格，正文自然一点。',
+      text: '给我们门店做6图种草，封面用四宫格，正文自然一点。',
       options: { imageCount: 6, style: 'seed', coverLayout: 'collage4' },
     },
     {
@@ -111,6 +117,7 @@ export default function NativeEmployeeChat({
   imageOptions,
   mediaReady = true,
   mediaQuote,
+  videoDurationOptions,
   onVideoDurationChange,
   initialText,
   resultFirst = false,
@@ -124,6 +131,7 @@ export default function NativeEmployeeChat({
   imageOptions?: NativeImageOptions | null;
   mediaReady?: boolean;
   mediaQuote?: string;
+  videoDurationOptions?: NativeVideoDurationQuote[] | null;
   onVideoDurationChange?: (durationSeconds: 15 | 30) => void;
   initialText?: { key: number; text: string } | null;
   resultFirst?: boolean;
@@ -147,6 +155,7 @@ export default function NativeEmployeeChat({
   const sessionRef = useRef<number | null>(null);
   const epochRef = useRef(0);
   const busyRef = useRef(false);
+  const confirmModalOpenRef = useRef(false);
   const messageRequest = useRef<{ signature: string; key: string } | null>(null);
   const pendingDraft = useRef<{ text: string; content: string; fileIds: number[]; previousCount: number } | null>(null);
   const confirmationRequest = useRef<{ signature: string; key: string } | null>(null);
@@ -230,6 +239,7 @@ export default function NativeEmployeeChat({
       setConfirming(false);
       setRechecking(false);
       busyRef.current = false;
+      confirmModalOpenRef.current = false;
       if (previousOwner.current !== ownerKey) {
         previousOwner.current = ownerKey;
         setComposerOwner(ownerKey);
@@ -267,6 +277,7 @@ export default function NativeEmployeeChat({
         if (epoch === epochRef.current) setLoading(false);
       });
     return () => {
+      confirmModalOpenRef.current = false;
       epochRef.current += 1;
     };
   }, [open, ownerKey, employeeIdx, refresh, loadVersion]);
@@ -415,6 +426,91 @@ export default function NativeEmployeeChat({
       }
     }
   };
+  const quote15 = videoDurationOptions?.find(item => item.durationSeconds === 15) || null;
+  const quote30 = videoDurationOptions?.find(item => item.durationSeconds === 30) || null;
+  const credits15 =
+    quote15?.estimatedMaxCredits != null && Number.isFinite(quote15.estimatedMaxCredits)
+      ? quote15.estimatedMaxCredits
+      : null;
+  const credits30 =
+    quote30?.estimatedMaxCredits != null && Number.isFinite(quote30.estimatedMaxCredits)
+      ? quote30.estimatedMaxCredits
+      : null;
+  const planVideoCredits = planDurationSeconds === 30 ? credits30 : credits15;
+  const requestConfirm = () => {
+    if (!confirmationReady || busyRef.current || !session || !plan) return;
+    if (employeeIdx === 10 && typeof Modal.confirm === 'function') {
+      if (confirmModalOpenRef.current) return;
+      confirmModalOpenRef.current = true;
+      Modal.confirm({
+        title: `确认生成 ${planDurationSeconds} 秒带货视频？`,
+        width: 520,
+        okText: personalBilling
+          ? `确认生成 ${planDurationSeconds} 秒视频`
+          : planVideoCredits != null
+            ? `确认预占 ${planVideoCredits} 积分并生成`
+            : `确认生成 ${planDurationSeconds} 秒视频`,
+        cancelText: '再改改脚本',
+        content: (
+          <div className="native-employee-chat__confirm-modal">
+            <div className="native-employee-chat__confirm-summary">
+              <strong>
+                所选时长：
+                {planDurationSeconds === 30
+                  ? '30 秒（完整口播 · 费用翻倍 · 两段）'
+                  : '15 秒（推荐试拍 · 更省成本 · 一段）'}
+              </strong>
+              <span>
+                {personalBilling
+                  ? PERSONAL_API_PRICING_NOTE
+                  : planVideoCredits != null
+                    ? `预计最高预占 ${planVideoCredits} 积分（${formatYuanFromCredits(planVideoCredits)}），按上游实际扣费结算，多退少补。`
+                    : mediaQuote || '按上游实际扣费结算，多退少补。'}
+              </span>
+            </div>
+            <div className="native-employee-chat__confirm-compare">
+              <div
+                className={`native-employee-chat__confirm-tier${planDurationSeconds === 15 ? ' native-employee-chat__confirm-tier--current' : ''}`}
+              >
+                <span>15 秒（推荐试拍 · 更省成本）</span>
+                <span>
+                  {personalBilling
+                    ? '单段生成 · 按供应商账单计费'
+                    : credits15 != null
+                      ? `最高预占 ${credits15} 积分（${formatYuanFromCredits(credits15)}）`
+                      : '单段试拍，成本更低'}
+                </span>
+              </div>
+              <div
+                className={`native-employee-chat__confirm-tier${planDurationSeconds === 30 ? ' native-employee-chat__confirm-tier--current' : ''}`}
+              >
+                <span>30 秒（完整口播 · 费用翻倍）</span>
+                <span>
+                  {personalBilling
+                    ? '两段生成 · 上游费用约翻倍'
+                    : credits30 != null
+                      ? `最高预占 ${credits30} 积分（${formatYuanFromCredits(credits30)}）`
+                      : '两段拼接，费用约翻倍'}
+                </span>
+              </div>
+            </div>
+            <p className="native-employee-chat__confirm-tip">
+              省钱建议：日常高频测款建议优先使用小红书图文，成本约为视频的 1/10。
+            </p>
+          </div>
+        ),
+        onOk: async () => {
+          confirmModalOpenRef.current = false;
+          await confirm();
+        },
+        onCancel: () => {
+          confirmModalOpenRef.current = false;
+        },
+      });
+      return;
+    }
+    void confirm();
+  };
   const recheck = async () => {
     if (!canRecheck || blocked || busyRef.current || !session || !plan) return;
     const epoch = epochRef.current;
@@ -441,6 +537,7 @@ export default function NativeEmployeeChat({
   };
   const restart = () => {
     if (working || busyRef.current) return;
+    confirmModalOpenRef.current = false;
     epochRef.current += 1;
     sessionRef.current = null;
     messageRequest.current = null;
@@ -617,10 +714,32 @@ export default function NativeEmployeeChat({
             </p>
           )}
           {mediaQuote && <p className="native-employee-chat__hint">{mediaQuote}</p>}
-          {hasUnsentChanges && !alreadyConfirmed && (
-            <p className="native-employee-chat__hint">有未发送的调整，先发送给员工更新方案，再确认生成。</p>
+          {employeeIdx === 10 && !alreadyConfirmed && (
+            <Alert
+              type="warning"
+              showIcon
+              message="视频渲染成本显著高于图文，请先审定脚本再确认生成"
+              description={
+                personalBilling
+                  ? `单条视频按所选时长（当前 ${planDurationSeconds} 秒）由个人 API 供应商账户计费；如仅需日常测款或高频种草，建议优先使用「AI小红书种草员」图文出片。`
+                  : `单条视频按所选时长（当前 ${planDurationSeconds} 秒）计费，费用显著高于图文；如仅需日常测款或高频种草，建议优先使用「AI小红书种草员」图文出片。`
+              }
+            />
           )}
-          <Button type="primary" loading={confirming} disabled={!confirmationReady} onClick={() => void confirm()}>
+          {hasUnsentChanges && !alreadyConfirmed && (
+            <Alert
+              type="info"
+              showIcon
+              message="确认按钮已暂停：你有尚未发送的调整"
+              description="检测到输入框、照片或时长/参数有未同步修改，请先发送给员工更新方案，更新完成后即可确认生成。"
+              action={
+                <Button size="small" type="primary" loading={sending} disabled={blocked} onClick={() => void send()}>
+                  一键更新方案
+                </Button>
+              }
+            />
+          )}
+          <Button type="primary" loading={confirming} disabled={!confirmationReady} onClick={requestConfirm}>
             {alreadyConfirmed
               ? '此方案已确认生成'
               : employeeIdx === 10
@@ -663,6 +782,52 @@ export default function NativeEmployeeChat({
       <div className="native-employee-chat__composer">
         {employeeIdx === 10 && (
           <div className="native-employee-chat__duration">
+            <div className="native-employee-chat__duration-cards" role="group" aria-label="选择视频时长">
+              <button
+                type="button"
+                disabled={blocked}
+                aria-pressed={durationSeconds === 15}
+                className={`native-employee-chat__duration-card${durationSeconds === 15 ? ' native-employee-chat__duration-card--active' : ''}`}
+                onClick={() => setOptions(current => ({ ...current, durationSeconds: 15 }))}
+              >
+                <span className="native-employee-chat__duration-title">
+                  <span>15 秒（推荐试拍 · 更省成本）</span>
+                  <span className="native-employee-chat__duration-badge native-employee-chat__duration-badge--ok">
+                    推荐
+                  </span>
+                </span>
+                <span className="native-employee-chat__duration-cost">
+                  {personalBilling
+                    ? '单段生成 · 按个人 API 供应商账单计费'
+                    : credits15 != null
+                      ? `参考预占 ${credits15} 积分（${formatYuanFromCredits(credits15)}）`
+                      : '一段完整口播 · 成本更低'}
+                </span>
+                <span className="native-employee-chat__duration-desc">适合新品试拍、高频测款与日常引流</span>
+              </button>
+              <button
+                type="button"
+                disabled={blocked}
+                aria-pressed={durationSeconds === 30}
+                className={`native-employee-chat__duration-card native-employee-chat__duration-card--warn${durationSeconds === 30 ? ' native-employee-chat__duration-card--active' : ''}`}
+                onClick={() => setOptions(current => ({ ...current, durationSeconds: 30 }))}
+              >
+                <span className="native-employee-chat__duration-title">
+                  <span>30 秒（完整口播 · 费用翻倍）</span>
+                  <span className="native-employee-chat__duration-badge native-employee-chat__duration-badge--warn">
+                    高成本
+                  </span>
+                </span>
+                <span className="native-employee-chat__duration-cost">
+                  {personalBilling
+                    ? '两段拼接 · 上游费用约翻倍'
+                    : credits30 != null
+                      ? `参考预占 ${credits30} 积分（${formatYuanFromCredits(credits30)}）`
+                      : '两段视频拼接 · 费用约翻倍'}
+                </span>
+                <span className="native-employee-chat__duration-desc">适合重点大促主推，分段声音音色可能略有差异</span>
+              </button>
+            </div>
             <Checkbox
               aria-label="生成30秒（两段）"
               checked={durationSeconds === 30}
@@ -673,7 +838,9 @@ export default function NativeEmployeeChat({
             >
               生成30秒（两段）
             </Checkbox>
-            <p className="native-employee-chat__hint">默认15秒一段。30秒由两段视频组成，分段声音的音色可能不同。</p>
+            <p className="native-employee-chat__hint">
+              默认15秒一段；日常高频测款建议优先使用小红书图文，成本约为视频的 1/10。
+            </p>
           </div>
         )}
         {employeeIdx === 11 && (
@@ -730,7 +897,7 @@ export default function NativeEmployeeChat({
           placeholder={
             employeeIdx === 10
               ? `例如：这是我的门头和招牌菜，帮我做一条${durationSeconds}秒视频，先给我看口播稿。`
-              : '例如：这是罗二火锅的门头和菜品，想做一组有食欲的小红书种草图文。'
+              : '例如：这是望京门店的门头和招牌菜，想做一组有食欲的小红书种草图文。'
           }
           value={composerOwner === ownerKey ? text : ''}
           onChange={event => setText(event.target.value)}

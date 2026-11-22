@@ -1,5 +1,6 @@
 import { RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { fmtMoney } from '../api/client';
+import { dispatchToEmployee, resolveEmployeeForIssue } from '../utils/dispatchEmployee';
 import './BossGlance.css';
 
 // 老板「今日一眼」：驾驶舱首屏锚点。
@@ -33,9 +34,10 @@ export default function BossGlance({
   scopeLabel: string;
   canViewGrowth: boolean;
   canViewExecution: boolean;
-  onNavigate: (path: string) => void;
+  onNavigate: (path: string, options?: { state?: unknown }) => void;
 }) {
   const topIssue = diagnosis?.[0] || null;
+  const issueTarget = topIssue?.issue ? resolveEmployeeForIssue(topIssue.dimension, topIssue.issue) : null;
   const slaOverdue = Number(todos.slaOverdueReviews) || 0;
   const todoChips = [
     // 超24小时未回的差评单列（行业黄金线），比普通待回复更紧急
@@ -110,14 +112,41 @@ export default function BossGlance({
 
       <div className="bg-glance-side">
         {topIssue?.issue ? (
-          <button type="button" className="bg-glance-issue" onClick={() => onNavigate('/advisor')}>
+          <div className="bg-glance-issue bg-glance-issue-calm">
             <span className="bg-glance-issue-kicker">最要紧的一件事</span>
             <strong>{topIssue.issue}</strong>
             {topIssue.suggestion && <p>{topIssue.suggestion}</p>}
-            <span className="bg-glance-issue-cta">
-              问参谋怎么办 <RightOutlined />
-            </span>
-          </button>
+            <div className="nw-glance-issue-actions">
+              {issueTarget && (
+                <button
+                  type="button"
+                  className="nw-glance-issue-btn nw-glance-issue-btn--primary"
+                  onClick={() =>
+                    dispatchToEmployee(
+                      onNavigate,
+                      issueTarget.idx,
+                      `请优先处理门店当前最要紧的经营异常：${topIssue.dimension ? `【${topIssue.dimension}】` : ''}${topIssue.issue}${topIssue.suggestion ? `（建议方向：${topIssue.suggestion}）` : ''}。请输出可执行整改步骤、责任分工与验收标准。`,
+                    )
+                  }
+                >
+                  <ThunderboltOutlined /> 一键派给{issueTarget.person}
+                </button>
+              )}
+              <button
+                type="button"
+                className="nw-glance-issue-btn"
+                onClick={() =>
+                  onNavigate('/advisor', {
+                    state: {
+                      q: `请针对这个经营异常给出具体排查步骤与落地方案：${topIssue.dimension ? `【${topIssue.dimension}】` : ''}${topIssue.issue}${topIssue.suggestion ? `（当前建议：${topIssue.suggestion}）` : ''}`,
+                    },
+                  })
+                }
+              >
+                问老板参谋 <RightOutlined />
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="bg-glance-issue bg-glance-issue-calm">
             <span className="bg-glance-issue-kicker">经营诊断</span>

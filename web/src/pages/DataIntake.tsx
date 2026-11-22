@@ -27,6 +27,8 @@ import {
   FileSearchOutlined,
   HistoryOutlined,
   InboxOutlined,
+  SafetyCertificateOutlined,
+  ShopOutlined,
   UndoOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -36,6 +38,7 @@ import { Panel } from '../components/Kit';
 import { UnifiedFilePicker, type UploadedFileRef } from '../components/UnifiedFilePicker';
 import { DataIntakeTemplates, StoreIssuesBar } from '../components/DataIntakeTemplates';
 import { DataIntakeVisionImport } from '../components/DataIntakeVisionImport';
+import './DataIntake.css';
 
 interface RawSheet {
   name: string;
@@ -54,6 +57,33 @@ const LONG_EDIT_FIELDS = new Set(['body', 'detail', 'week_problem', 'next_action
 function newImportKey() {
   return globalThis.crypto?.randomUUID?.() || `import-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
+
+const PLATFORM_EXPORT_GUIDES = [
+  {
+    key: 'meituan',
+    name: '美团商家版',
+    tag: '外卖 / 到店团购',
+    tagColor: 'gold',
+    exportPath: '美团外卖商家端 / 开店宝 → 经营数据 → 订单明细 / 营业统计 → 导出 Excel',
+    formats: '支持订单销售明细、营业日报汇总、平台顾客评价导出表（.xlsx / .csv）',
+  },
+  {
+    key: 'eleme',
+    name: '饿了么商家版',
+    tag: '外卖经营数据',
+    tagColor: 'blue',
+    exportPath: '饿了么商家后台 → 财务 / 数据中心 → 账单明细 / 经营日报 → 导出表格',
+    formats: '支持日结营收、菜品销量排行、外卖订单与顾客评价导出表（.xlsx / .csv）',
+  },
+  {
+    key: 'keruyun',
+    name: '客如云 POS',
+    tag: '堂食收银 / 会员',
+    tagColor: 'cyan',
+    exportPath: '客如云商家后台 → 报表中心 → 营业汇总 / 菜品销售 / 会员消费 → 导出报表',
+    formats: '支持堂食营业日报、菜品销量结构、储值会员消费明细表（.xlsx / .xls / .csv）',
+  },
+];
 
 const STARTER_GUIDE = [
   {
@@ -78,7 +108,7 @@ const STARTER_GUIDE = [
     sheet: '经营日报表',
     required: '日期',
     recommended: '新增线索、邀约、到店、成交数、成交金额、复购金额、订单数、营销费用、经营问题、下一步动作',
-    output: '总裁驾驶舱、销售趋势、目标缺口、每日战果与经营简报',
+    output: '经营驾驶舱、销售趋势、目标缺口、每日战果与经营简报',
   },
   {
     key: 'activities',
@@ -116,7 +146,7 @@ const TEMPLATE_SHEETS: Record<string, string[]> = {
     '成交数',
     '成交金额',
     '复购金额',
-    '活跃合伙人',
+    '活跃会员',
     '订单数',
     '营销费用',
     '经营问题',
@@ -155,7 +185,7 @@ async function downloadStarterWorkbook() {
   Object.entries(TEMPLATE_SHEETS).forEach(([name, headers]) => {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers]), name);
   });
-  XLSX.writeFile(workbook, '纳米WorkOS_数据录入标准模板.xlsx');
+  XLSX.writeFile(workbook, '纳米Work行业版_数据录入标准模板.xlsx');
 }
 
 export default function DataIntake() {
@@ -447,6 +477,56 @@ export default function DataIntake() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 餐饮三平台快速导入向导：直连高频餐饮后台导出表 */}
+      <Panel
+        title={
+          <>
+            <ShopOutlined /> 餐饮三平台快速导入向导
+          </>
+        }
+        extra={
+          <span className="di-platform-compliance">
+            <SafetyCertificateOutlined /> 由商家自行导出上传，安全合规
+          </span>
+        }
+      >
+        <div className="di-platform-guide">
+          <div className="di-platform-head">
+            <p className="di-platform-sub">
+              无需手动改表头：从美团商家版、饿了么商家版或客如云 POS
+              导出原始报表后直接上传，系统自动识别字段格式并先预览再写入。
+            </p>
+          </div>
+          <div className="di-platform-grid">
+            {PLATFORM_EXPORT_GUIDES.map(item => (
+              <div className="di-platform-card" key={item.key}>
+                <div className="di-platform-card-top">
+                  <span className="di-platform-name">{item.name}</span>
+                  <Tag color={item.tagColor}>{item.tag}</Tag>
+                </div>
+                <div className="di-platform-path">
+                  <strong>推荐导出路径</strong>
+                  {item.exportPath}
+                </div>
+                <div className="di-platform-formats">{item.formats}</div>
+                <div className="di-platform-foot">
+                  <span className="di-platform-auto-hint">支持直接上传导出表格，系统自动识别字段格式</span>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<CloudUploadOutlined />}
+                    loading={parsing}
+                    onClick={pickWorkbook}
+                  >
+                    上传表格
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Panel>
+
       {/* 向导步骤条：老板/管理员随时知道自己在第几步、下一步干什么 */}
       <Panel>
         <Steps
@@ -716,7 +796,7 @@ export default function DataIntake() {
           }
         >
           <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', lineHeight: 1.75, marginBottom: 12 }}>
-            Word、PDF、文本和图片会自动读取正文或识图。上传记录会保留在全局文件库，可在战略中枢和餐饮数字员工中再次选择，也可直接入档知识库。
+            Word、PDF、文本和图片会自动读取正文或识图。上传记录会保留在全局文件库，可在老板参谋和餐饮数字员工中再次选择，也可直接入档知识库。
           </div>
           <UnifiedFilePicker
             files={files}
@@ -780,7 +860,7 @@ export default function DataIntake() {
                   {r.sheet} → {r.targetLabel || r.target}：成功 {r.imported}，跳过 {r.skipped}
                 </div>
                 {(r.errors || []).slice(0, 3).map((error: any, index: number) => (
-                  <div key={index} style={{ color: 'var(--ui-danger)', fontSize: 12 }}>
+                  <div key={index} style={{ color: 'var(--danger)', fontSize: 12 }}>
                     {typeof error === 'string' ? error : `第 ${error.row || '-'} 行：${error.error || '未通过校验'}`}
                   </div>
                 ))}

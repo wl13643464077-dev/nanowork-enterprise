@@ -147,6 +147,8 @@
 
 .rc-pkg {
   position: relative;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   padding: var(--space-4) var(--space-5);
   border: 1px solid var(--ui-border);
@@ -174,7 +176,7 @@
 
 .rc-pkg-price {
   margin: var(--space-3) 0 var(--space-1);
-  color: var(--danger);
+  color: var(--ui-text);
   font-size: var(--font-7);
   font-weight: 800;
   line-height: 1.1;
@@ -227,12 +229,13 @@
 }
 
 .rc-pkg-buy {
+  margin-top: auto;
   border: none;
-  background: linear-gradient(90deg, var(--ui-primary-strong), var(--ui-muted));
+  background: var(--ui-primary);
 }
 
 .rc-pkg[data-kind='plan'] .rc-pkg-buy {
-  background: linear-gradient(90deg, var(--ui-primary-strong), var(--ui-primary));
+  background: var(--ui-primary-strong);
 }
 
 /* 下单确认框内的说明块 */
@@ -245,7 +248,7 @@
 }
 
 .rc-order-box .rc-price {
-  color: var(--danger);
+  color: var(--ui-text);
 }
 
 .rc-order-box .rc-credit {

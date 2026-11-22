@@ -44,6 +44,7 @@ type Props = {
   question: string;
   intentType: string | null;
   disabled?: boolean;
+  compactTemplates?: boolean;
   onPickTemplate: (text: string) => void;
   onIntentTypeChange: (type: string | null) => void;
   followupAnswers?: Record<string, string>;
@@ -52,16 +53,16 @@ type Props = {
 };
 
 const PREFERENCE_FIELDS: { key: string; placeholder: string }[] = [
-  { key: '店名', placeholder: '如 罗二火锅' },
-  { key: '门店名', placeholder: '如 望京店' },
-  { key: '城市', placeholder: '如 北京' },
-  { key: '商圈', placeholder: '如 望京' },
-  { key: '品类', placeholder: '如 火锅' },
+  { key: '店名', placeholder: '如：望京旗舰店' },
+  { key: '门店名', placeholder: '如：望京店' },
+  { key: '城市', placeholder: '如：北京' },
+  { key: '商圈', placeholder: '如：望京' },
+  { key: '品类', placeholder: '如：中式正餐 / 快餐 / 茶饮 / 火锅' },
   { key: '人均', placeholder: '如 95元' },
   { key: '门店数', placeholder: '如 8家' },
   { key: '招牌菜', placeholder: '如 鲜切牛肉' },
   { key: '外卖平台', placeholder: '如 美团外卖' },
-  { key: '竞品', placeholder: '如 海底捞' },
+  { key: '竞品', placeholder: '如：周边核心对标品牌' },
   { key: '预算', placeholder: '常用活动预算，如 8000元' },
   { key: '目标', placeholder: '常用目标，如 拉新客' },
 ];
@@ -70,15 +71,29 @@ const TYPE_COLOR: Record<string, string> = {
   lookup: 'blue',
   diagnose: 'orange',
   plan: 'green',
-  produce: 'purple',
+  produce: 'cyan',
   full_report: 'gold',
 };
+
+const INTENT_OPTION_SUBTITLES: Record<string, string> = {
+  lookup: '约1分钟',
+  diagnose: '找核心卡点',
+  plan: '含假设重算',
+  produce: '直接可复制',
+  full_report: '深度取证',
+};
+
+function formatIntentOptionLabel(type: string, label: string) {
+  const subtitle = INTENT_OPTION_SUBTITLES[type];
+  return subtitle ? `${label} · ${subtitle}` : label;
+}
 
 export default function RestaurantDispatchAssist({
   idx,
   question,
   intentType,
   disabled,
+  compactTemplates = false,
   onPickTemplate,
   onIntentTypeChange,
   followupAnswers = {},
@@ -89,6 +104,8 @@ export default function RestaurantDispatchAssist({
     null,
   );
   const [previewResult, setPreviewResult] = useState<{ key: string; payload: IntentPreview } | null>(null);
+  const [previewLoadingKey, setPreviewLoadingKey] = useState<string | null>(null);
+  const [templatesOverride, setTemplatesOverride] = useState<{ compact: boolean; expanded: boolean } | null>(null);
   const [prefs, setPrefs] = useState<SlotPreferences | null>(null);
   const [prefDraft, setPrefDraft] = useState<Record<string, string>>({});
   const [prefSkip, setPrefSkip] = useState(false);
@@ -97,6 +114,8 @@ export default function RestaurantDispatchAssist({
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const templates = templateResult?.idx === idx && templateResult.revision === refreshKey ? templateResult.items : [];
+  const templatesExpanded =
+    templatesOverride?.compact === compactTemplates ? templatesOverride.expanded : !compactTemplates;
 
   useEffect(() => {
     let alive = true;
@@ -155,11 +174,14 @@ export default function RestaurantDispatchAssist({
   const trimmed = (question || '').trim();
   const previewKey = JSON.stringify([idx, trimmed, intentType, refreshKey]);
   const preview = trimmed.length >= 4 && previewResult?.key === previewKey ? previewResult.payload : null;
+  const previewLoading = trimmed.length >= 4 && !preview && previewLoadingKey === previewKey;
   const followupDismissed = dismissedKey === previewKey;
   useEffect(() => {
     if (trimmed.length < 4) return;
     let active = true;
     const timer = window.setTimeout(() => {
+      if (!active) return;
+      setPreviewLoadingKey(previewKey);
       api
         .post(
           `/employee-workbench/restaurant/${idx}/intent-preview`,
@@ -169,7 +191,10 @@ export default function RestaurantDispatchAssist({
         .then((payload: any) => {
           if (active && payload?.intent) setPreviewResult({ key: previewKey, payload });
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          if (active) setPreviewLoadingKey(current => (current === previewKey ? null : current));
+        });
     }, 450);
     return () => {
       active = false;
@@ -210,110 +235,131 @@ export default function RestaurantDispatchAssist({
           { type: 'produce', label: '产物' },
           { type: 'full_report', label: '完整报告' },
         ]
-      ).map(item => ({ value: item.type, label: item.label })),
+      ).map(item => ({ value: item.type, label: formatIntentOptionLabel(item.type, item.label) })),
     ],
     [preview?.switchable],
   );
+
+  const showChips = !compactTemplates || templatesExpanded;
 
   return (
     <div className="ewb-dispatch-assist">
       {templates.length > 0 && (
         <div className="ewb-dispatch-assist-templates">
-          <Typography.Text type="secondary" className="ewb-dispatch-assist-label">
-            常用问法（点一下填入，把花括号里的词换成你的）：
-          </Typography.Text>
-          <Popover
-            trigger="click"
-            open={prefOpen}
-            onOpenChange={openPreferences}
-            title="我的版本：保存后常用问法自动填好"
-            content={
-              <div className="ewb-pref-editor">
-                {PREFERENCE_FIELDS.map(field => (
-                  <div key={field.key} className="ewb-pref-row">
-                    <span className="ewb-pref-key">{field.key}</span>
-                    <Input
-                      size="small"
-                      maxLength={40}
-                      value={prefDraft[field.key] || ''}
-                      placeholder={field.placeholder}
-                      disabled={!canEditPreferences}
-                      onChange={event => setPrefDraft(draft => ({ ...draft, [field.key]: event.target.value }))}
-                    />
-                  </div>
-                ))}
-                {(prefs?.outputPrefs || []).length > 0 && (
-                  <div className="ewb-pref-output">
-                    <span className="ewb-pref-key">固定要求</span>
-                    <div>
-                      {(prefs?.outputPrefs || []).map(item => (
-                        <Tag
-                          key={item}
-                          closable={canEditPreferences}
-                          onClose={async event => {
-                            event.preventDefault();
-                            try {
-                              const saved = (await api.put('/employee-workbench/restaurant-preferences/slots', {
-                                outputPrefs: (prefs?.outputPrefs || []).filter(pref => pref !== item),
-                              })) as SlotPreferences;
-                              setPrefs(saved);
-                            } catch (error: any) {
-                              message.error(error?.message || '删除失败');
-                            }
-                          }}
-                        >
-                          {item}
-                        </Tag>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="ewb-pref-row">
-                  <span className="ewb-pref-key">不再追问</span>
-                  <Switch size="small" checked={prefSkip} disabled={!canEditPreferences} onChange={setPrefSkip} />
-                </div>
-                {canEditPreferences ? (
-                  <Button type="primary" size="small" loading={prefSaving} onClick={savePreferences} block>
-                    保存
-                  </Button>
-                ) : (
-                  <Typography.Text type="secondary">仅老板或管理员可修改</Typography.Text>
-                )}
-              </div>
-            }
-          >
-            <Button size="small" type="link" className="ewb-pref-trigger">
-              我的版本
-              {prefs && Object.keys(prefs.values || {}).length ? `（已存 ${Object.keys(prefs.values).length} 项）` : ''}
-            </Button>
-          </Popover>
-          <Space size={[6, 6]} wrap>
-            {templates.map(item => (
-              <Tooltip
-                key={item.id}
-                title={
-                  <div>
-                    <div>为什么问：{item.why}</div>
-                    {item.youGet ? <div>你会拿到：{item.youGet}</div> : null}
-                    {item.exampleFilled ? <div>示例：{item.exampleFilled}</div> : null}
-                    {item.unfilledSlots?.length ? <div>还需填：{item.unfilledSlots.join('、')}</div> : null}
-                  </div>
-                }
+          <div className="ewb-dispatch-assist-templates-bar">
+            {compactTemplates ? (
+              <Button
+                size="small"
+                type="link"
+                className="ewb-templates-toggle"
+                aria-expanded={templatesExpanded}
+                onClick={() => setTemplatesOverride({ compact: compactTemplates, expanded: !templatesExpanded })}
               >
-                <Tag
-                  color={TYPE_COLOR[item.type] || 'default'}
-                  className="ewb-dispatch-assist-chip"
-                  style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
-                  onClick={() => {
-                    if (!disabled) onPickTemplate(item.filled || item.template);
-                  }}
+                {templatesExpanded
+                  ? `收起常用问法（${templates.length} 条）`
+                  : `常用问法（点击展开 · ${templates.length} 条）`}
+              </Button>
+            ) : (
+              <Typography.Text type="secondary" className="ewb-dispatch-assist-label">
+                常用问法（点一下填入，把花括号里的词换成你的）：
+              </Typography.Text>
+            )}
+            <Popover
+              trigger="click"
+              open={prefOpen}
+              onOpenChange={openPreferences}
+              title="我的版本：保存后常用问法自动填好"
+              content={
+                <div className="ewb-pref-editor">
+                  {PREFERENCE_FIELDS.map(field => (
+                    <div key={field.key} className="ewb-pref-row">
+                      <span className="ewb-pref-key">{field.key}</span>
+                      <Input
+                        size="small"
+                        maxLength={40}
+                        value={prefDraft[field.key] || ''}
+                        placeholder={field.placeholder}
+                        disabled={!canEditPreferences}
+                        onChange={event => setPrefDraft(draft => ({ ...draft, [field.key]: event.target.value }))}
+                      />
+                    </div>
+                  ))}
+                  {(prefs?.outputPrefs || []).length > 0 && (
+                    <div className="ewb-pref-output">
+                      <span className="ewb-pref-key">固定要求</span>
+                      <div>
+                        {(prefs?.outputPrefs || []).map(item => (
+                          <Tag
+                            key={item}
+                            closable={canEditPreferences}
+                            onClose={async event => {
+                              event.preventDefault();
+                              try {
+                                const saved = (await api.put('/employee-workbench/restaurant-preferences/slots', {
+                                  outputPrefs: (prefs?.outputPrefs || []).filter(pref => pref !== item),
+                                })) as SlotPreferences;
+                                setPrefs(saved);
+                              } catch (error: any) {
+                                message.error(error?.message || '删除失败');
+                              }
+                            }}
+                          >
+                            {item}
+                          </Tag>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="ewb-pref-row">
+                    <span className="ewb-pref-key">不再追问</span>
+                    <Switch size="small" checked={prefSkip} disabled={!canEditPreferences} onChange={setPrefSkip} />
+                  </div>
+                  {canEditPreferences ? (
+                    <Button type="primary" size="small" loading={prefSaving} onClick={savePreferences} block>
+                      保存
+                    </Button>
+                  ) : (
+                    <Typography.Text type="secondary">仅老板或管理员可修改</Typography.Text>
+                  )}
+                </div>
+              }
+            >
+              <Button size="small" type="link" className="ewb-pref-trigger">
+                我的版本
+                {prefs && Object.keys(prefs.values || {}).length
+                  ? `（已存 ${Object.keys(prefs.values).length} 项）`
+                  : ''}
+              </Button>
+            </Popover>
+          </div>
+          {showChips && (
+            <Space size={[6, 6]} wrap>
+              {templates.map(item => (
+                <Tooltip
+                  key={item.id}
+                  title={
+                    <div>
+                      <div>为什么问：{item.why}</div>
+                      {item.youGet ? <div>你会拿到：{item.youGet}</div> : null}
+                      {item.exampleFilled ? <div>示例：{item.exampleFilled}</div> : null}
+                      {item.unfilledSlots?.length ? <div>还需填：{item.unfilledSlots.join('、')}</div> : null}
+                    </div>
+                  }
                 >
-                  {item.isNewRule ? '【新规】' : ''}
-                  {item.typeLabel}·{item.why.length > 16 ? `${item.why.slice(0, 16)}…` : item.why}
-                </Tag>
-              </Tooltip>
-            ))}
-          </Space>
+                  <Tag
+                    color={TYPE_COLOR[item.type] || 'default'}
+                    className={`ewb-dispatch-assist-chip${disabled ? ' is-disabled' : ''}`}
+                    onClick={() => {
+                      if (!disabled) onPickTemplate(item.filled || item.template);
+                    }}
+                  >
+                    {item.isNewRule ? '【新规】' : ''}
+                    {item.typeLabel}·{item.why.length > 16 ? `${item.why.slice(0, 16)}…` : item.why}
+                  </Tag>
+                </Tooltip>
+              ))}
+            </Space>
+          )}
         </div>
       )}
       <div className="ewb-dispatch-assist-intent">
@@ -321,6 +367,10 @@ export default function RestaurantDispatchAssist({
           <Typography.Text type="secondary">
             {intentType ? `将按【${preview.intent.label}】回答（已手动选择）` : preview.hint}
             {preview.intent.out_of_scope ? '；这个问题不完全在本岗位主业内，可考虑换更对口的员工' : ''}
+          </Typography.Text>
+        ) : previewLoading ? (
+          <Typography.Text type="secondary" className="ewb-dispatch-assist-loading">
+            正在判断最合适的回答方式…
           </Typography.Text>
         ) : (
           <Typography.Text type="secondary">
@@ -332,7 +382,8 @@ export default function RestaurantDispatchAssist({
           value={intentType || ''}
           options={options}
           disabled={disabled}
-          style={{ minWidth: 110, marginLeft: 8 }}
+          className="ewb-dispatch-assist-select"
+          popupMatchSelectWidth={false}
           aria-label="回答方式"
           onChange={value => onIntentTypeChange(value ? String(value) : null)}
         />
@@ -350,7 +401,7 @@ export default function RestaurantDispatchAssist({
                 <span className="ewb-followup-label">{question.label}</span>
                 <AutoComplete
                   size="small"
-                  style={{ minWidth: 180, flex: 1 }}
+                  className="ewb-followup-input"
                   value={usingDefault ? '' : value}
                   options={question.options.map(option => ({ value: option }))}
                   placeholder={`默认：${question.default}`}
@@ -359,7 +410,7 @@ export default function RestaurantDispatchAssist({
                 />
                 <Tag
                   color={usingDefault ? 'blue' : 'default'}
-                  style={{ cursor: disabled ? 'not-allowed' : 'pointer', marginLeft: 6 }}
+                  className={`ewb-followup-default-tag${disabled ? ' is-disabled' : ''}`}
                   onClick={() => {
                     if (!disabled) setAnswer(question.key, usingDefault ? '' : '__default__');
                   }}

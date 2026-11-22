@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { EmployeeExecutionProgress } from '../api/employeeWorkbenchTypes';
 import './EmployeeExecutionTimeline.css';
 
@@ -49,16 +50,25 @@ function normalizeReceivedChars(value: unknown) {
   return Number.isFinite(count) && count >= 0 ? Math.trunc(count) : null;
 }
 
-function elapsedSinceCurrentAttempt(progress?: EmployeeExecutionProgress | null) {
+function elapsedSinceCurrentAttempt(progress?: EmployeeExecutionProgress | null, nowMs = Date.now()) {
+  const steps = Array.isArray(progress?.steps) ? progress.steps : [];
   const attemptNumber = Number(progress?.attemptNumber);
-  if (!Number.isInteger(attemptNumber) || attemptNumber < 1) return '';
-  const startedAt = (Array.isArray(progress?.steps) ? progress.steps : [])
-    .filter(step => step.attemptNumber === attemptNumber && MODEL_RESPONSE_STAGES.has(step.stage))
-    .map(step => Date.parse(step.at))
-    .filter(Number.isFinite)
-    .sort((left, right) => left - right)[0];
+  let startedAt = Number.NaN;
+  if (Number.isInteger(attemptNumber) && attemptNumber >= 1) {
+    startedAt = steps
+      .filter(step => step.attemptNumber === attemptNumber && MODEL_RESPONSE_STAGES.has(step.stage))
+      .map(step => Date.parse(step.at))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)[0];
+  }
+  if (!Number.isFinite(startedAt)) {
+    startedAt = steps
+      .map(step => Date.parse(step.at))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)[0];
+  }
   if (!Number.isFinite(startedAt)) return '';
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedAt) / 1000));
   if (elapsedSeconds < 1) return '已用时不足 1 秒';
   if (elapsedSeconds < 60) return `已用时约 ${elapsedSeconds} 秒`;
   const minutes = Math.floor(elapsedSeconds / 60);
@@ -77,6 +87,7 @@ const STAGE_LABELS: Record<string, string> = {
   generate: '正在生成内容',
   validate: '正在检查结果',
   repair: '正在完善内容',
+  campaign_materials: '正在绘制活动物料图 · 可先浏览上方或稍后下载成图',
   persist: '正在保存结果',
   settle: '正在核对费用',
   done: '任务已完成',
@@ -94,21 +105,44 @@ export default function EmployeeExecutionTimeline({
   diagnostics = false,
 }: Props) {
   const steps = Array.isArray(progress?.steps) ? progress.steps : [];
+  const currentStage = String(progress?.currentStage || '');
   const currentLabel = executionStageLabel(progress);
-  const running = !['done', 'error'].includes(String(progress?.currentStage || ''));
+  const running = !['done', 'error'].includes(currentStage);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    let cancelled = false;
+    let timerId: number | undefined;
+    const tick = () => {
+      if (cancelled) return;
+      setNowMs(Date.now());
+      timerId = window.setTimeout(tick, 1000);
+    };
+    timerId = window.setTimeout(tick, 1000);
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+    };
+  }, [running]);
+  const elapsedText = elapsedSinceCurrentAttempt(progress, nowMs);
   const receivedChars = normalizeReceivedChars(progress?.receivedChars);
   const attemptNumber = Number(progress?.attemptNumber);
   const diagnosticDetails = [
     Number.isInteger(attemptNumber) && attemptNumber > 0 ? `第 ${attemptNumber} 次生成` : '',
     receivedChars != null ? `已接收 ${receivedChars.toLocaleString('zh-CN')} 个响应字符` : '',
-    elapsedSinceCurrentAttempt(progress),
   ].filter(Boolean);
+  const statusHint =
+    currentStage === 'campaign_materials'
+      ? elapsedText || '成图完成后会自动显示'
+      : elapsedText
+        ? `${elapsedText} · 可稍后回来查看结果`
+        : '可稍后回来查看结果';
 
   return (
     <section className={`employee-execution${compact ? ' is-compact' : ''}`} aria-label={title}>
       <div className="employee-execution-current" role="status" aria-live="polite">
         <strong>{currentLabel}</strong>
-        {running && <span>可稍后回来查看结果</span>}
+        {running && <span>{statusHint}</span>}
       </div>
       {running && (
         <div className="employee-execution-track" role="progressbar" aria-label={currentLabel}>

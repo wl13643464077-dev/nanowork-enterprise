@@ -53,7 +53,7 @@ test('独立手机工作台复用同一账号完成态，并让 partner 看得�
   assert.match(mobile, /data-onboarding="navigation"/);
   assert.match(mobile, /data-onboarding="workspace"/);
   assert.match(mobile, /data-onboarding="help"/);
-  assert.match(mobile, /view === 'home' && <MobileHome[\s\S]*mods=\{mods\}/);
+  assert.match(mobile, /view === 'home' &&[\s(]*<MobileHome[\s\S]*mods=\{mods\}/);
   assert.match(
     mobileHome,
     /key: 'execution'[\s\S]*roles: \['boss', 'ops_director', 'manager', 'sales', 'partner', 'admin'\]/,

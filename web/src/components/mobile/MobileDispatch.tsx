@@ -10,6 +10,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { api, getUser } from '../../api/client';
+import { isPersonalApiUser } from '../personalApiBilling.js';
 import RestaurantDispatchAssist from '../RestaurantDispatchAssist';
 import type { EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
 import EmployeeAvatar from '../EmployeeAvatar';
@@ -139,7 +140,7 @@ export default function MobileDispatch({ nav, params }: { nav: (path: string) =>
 }
 
 function DispatchList({ nav }: { nav: (path: string) => void }) {
-  const personalBilling = getUser()?.accountType === 'tester';
+  const personalBilling = isPersonalApiUser(getUser());
   const [catalog, setCatalog] = useState<MobileEmployeeCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -588,7 +589,7 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
 }
 
 function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }) {
-  const personalBilling = getUser()?.accountType === 'tester';
+  const personalBilling = isPersonalApiUser(getUser());
   const [prefill] = useState(() => takeDispatchPrefill(idx));
   const [profile, setProfile] = useState<EmployeeWorkbenchProfile | null>(null);
   const [employee, setEmployee] = useState<MobileEmployee | null>(null);

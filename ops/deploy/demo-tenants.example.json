@@ -6,6 +6,7 @@
     "phone 与 industry/purpose 只用于卡片与联系人展示，可以留空。",
     "一次新建 6 家会触发 /api/auth/register 的 IP 限流（默认 5/小时）：建租户前把 REGISTER_IP_MAX_ATTEMPTS 临时改为 20 并重启，建完改回。"
   ],
+  "_demoSeedHint": "开通演示租户并记下 tenantId 后，可执行 `node server/scripts/seed-sales-demo-data.mjs --tenant-id <id> --dry-run` 预览，再去掉 `--dry-run` 幂等注入脱敏演示样例数据（3 店/12 菜品/近 14 天经营日报与订单/12 评价/2 条 #161 查巡巡 巡店与整改台账）。",
   "tenants": [
     {
       "key": "sales-a-hotpot",

@@ -1,4 +1,5 @@
 import { Col, Row } from 'antd';
+import './DashboardRoleHeader.css';
 
 export type DashboardGuideStep = {
   icon: string;
@@ -82,19 +83,12 @@ export default function DashboardRoleHeader({
   const greeting = hour < 11 ? '早上好' : hour < 18 ? '下午好' : '晚上好';
   return (
     <>
-      <div
-        style={{
-          background: 'linear-gradient(100deg, rgba(218,179,105,.14), rgba(218,179,105,.03) 55%, transparent)',
-          border: '1px solid rgba(218,179,105,.22)',
-          borderRadius: 14,
-          padding: '15px 20px',
-        }}
-      >
-        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ui-text)', letterSpacing: 0.5 }}>
+      <div className="drh-banner">
+        <div className="drh-banner-title">
           {greeting}，{userName || DASHBOARD_ROLE_NAMES[role || ''] || '伙伴'}　
-          <span style={{ color: 'var(--ui-primary)' }}>欢迎回来</span>
+          <span className="drh-banner-accent">欢迎回来</span>
         </div>
-        <div style={{ fontSize: 13, color: 'var(--ui-text-2)', marginTop: 5 }}>{summary}</div>
+        <div className="drh-banner-summary">{summary}</div>
       </div>
       {isEmpty && guide.length > 0 && (
         <div

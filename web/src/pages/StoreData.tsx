@@ -35,7 +35,7 @@ import { Panel } from '../components/Kit';
 import StoreCompare from '../components/StoreCompare';
 import './StoreData.css';
 
-const BIZ_TYPES = ['快餐', '正餐', '茶饮', '火锅', '其他'];
+const BIZ_TYPES = ['中式正餐', '快餐简餐', '火锅烧烤', '茶饮咖啡', '小吃粉面', '烘焙甜品', '西餐日料', '其他'];
 const STORE_STATUSES = ['营业中', '筹备中', '已关店'];
 const DISH_STATUSES = ['在售', '下架'];
 const COST_CATEGORIES = ['食材', '人力', '房租', '水电', '营销', '其他'];
@@ -47,7 +47,7 @@ const storeStatusColor: Record<string, string> = {
 const costCatColor: Record<string, string> = {
   食材: 'green',
   人力: 'blue',
-  房租: 'purple',
+  房租: 'geekblue',
   水电: 'cyan',
   营销: 'orange',
   其他: 'default',
@@ -181,7 +181,7 @@ export default function StoreData() {
             is_default: Number(editing.is_default) === 1,
             manager_user_id: editing.manager_user_id ?? undefined,
           }
-        : { biz_type: '快餐', status: '营业中', is_default: stores.length === 0 },
+        : { biz_type: '快餐简餐', status: '营业中', is_default: stores.length === 0 },
     );
   };
   const submitStore = async () => {
@@ -436,8 +436,21 @@ export default function StoreData() {
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="nw-alert-banner"
           message="请先在「门店」页签创建门店，再登记菜品。录入菜品后，驾驶舱可显示真实客单与毛利。"
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setActiveTab('stores');
+                openStoreModal();
+              }}
+            >
+              立即新建门店
+            </Button>
+          }
         />
       )}
       <Table
@@ -566,8 +579,21 @@ export default function StoreData() {
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="nw-alert-banner"
           message="请先在「门店」页签创建门店，再登记成本。食材成本用于毛利率，全部成本用于经营利润率与盈亏平衡进度。"
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setActiveTab('stores');
+                openStoreModal();
+              }}
+            >
+              立即新建门店
+            </Button>
+          }
         />
       )}
       <Table

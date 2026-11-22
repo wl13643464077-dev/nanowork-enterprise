@@ -1,0 +1,395 @@
+/* 督导巡店「查 → 改 → 复检」完整台账闭环工作台（R-02） */
+.irp-anchor {
+  scroll-margin-top: var(--space-5);
+}
+
+.irp-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* 顶部 4 格状态栏 */
+.irp-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.irp-kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface-2);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.irp-kpi-card--danger {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--ui-border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--ui-surface));
+}
+
+.irp-kpi-card--ok {
+  border-color: color-mix(in srgb, var(--ok) 32%, var(--ui-border));
+  background: color-mix(in srgb, var(--ok) 6%, var(--ui-surface));
+}
+
+.irp-kpi-card--warn {
+  border-color: color-mix(in srgb, var(--warn) 38%, var(--ui-border));
+  background: color-mix(in srgb, var(--warn) 7%, var(--ui-surface));
+}
+
+.irp-kpi-label {
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+  font-weight: 500;
+}
+
+.irp-kpi-value {
+  font-size: var(--font-5);
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--ui-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.irp-kpi-value--danger {
+  color: var(--danger);
+}
+
+.irp-kpi-value--ok {
+  color: var(--ok);
+}
+
+.irp-kpi-value--warn {
+  color: var(--ui-warning-text);
+}
+
+.irp-kpi-sub {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 加载与空态 */
+.irp-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.irp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  border: 1px dashed var(--ui-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+}
+
+.irp-empty-title {
+  margin: 0;
+  font-size: var(--font-3);
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.irp-empty-desc {
+  margin: 0;
+  font-size: var(--font-2);
+  color: var(--ui-text-2);
+  max-width: 480px;
+}
+
+/* 巡店记录列表 */
+.irp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.irp-record {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.irp-record:hover {
+  border-color: var(--ui-border-strong);
+}
+
+.irp-record-head {
+  appearance: none;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.irp-record-head:hover {
+  background: var(--ui-surface-2);
+}
+
+.irp-record-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.irp-record-caret {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  transition: transform var(--dur-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.irp-record-caret--open {
+  transform: rotate(90deg);
+}
+
+.irp-store-name {
+  font-size: var(--font-3);
+  font-weight: 700;
+  color: var(--ui-text);
+}
+
+.irp-score-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-2);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.irp-score-pill--ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.irp-score-pill--warn {
+  color: var(--ui-warning-text);
+  background: var(--ui-warning-surface);
+}
+
+.irp-score-pill--danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.irp-meta-text {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.irp-record-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.irp-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 140px;
+}
+
+.irp-progress-bar {
+  width: 80px;
+}
+
+.irp-progress-label {
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 展开的问题清单 */
+.irp-issues {
+  border-top: 1px solid var(--ui-border);
+  background: var(--ui-chrome-2);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.irp-no-issues {
+  font-size: var(--font-2);
+  color: var(--ok);
+  padding: var(--space-2) 0;
+}
+
+.irp-issue-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.irp-issue-row--closed {
+  background: color-mix(in srgb, var(--ok) 4%, var(--ui-surface));
+  border-color: color-mix(in srgb, var(--ok) 25%, var(--ui-border));
+}
+
+.irp-issue-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.irp-issue-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.irp-issue-index {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.irp-issue-problem {
+  font-size: var(--font-3);
+  font-weight: 600;
+  color: var(--ui-text);
+  line-height: 1.45;
+}
+
+.irp-issue-detail {
+  font-size: var(--font-2);
+  color: var(--ui-text-2);
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.irp-rect-trail {
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  font-size: var(--font-1);
+  color: var(--ui-text-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.irp-rect-note {
+  width: 100%;
+  color: var(--ui-text);
+  font-size: var(--font-2);
+}
+
+.irp-issue-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* 弹窗内部表单提示 */
+.irp-modal-context {
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  border: 1px solid var(--ui-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.irp-modal-context-store {
+  font-size: var(--font-2);
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.irp-modal-context-problem {
+  font-size: var(--font-2);
+  color: var(--ui-text-2);
+}
+
+.irp-full-control {
+  width: 100%;
+}
+
+.irp-recheck-radio-group {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1024px) {
+  .irp-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .irp-record-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .irp-record-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .irp-issue-row {
+    flex-direction: column;
+  }
+
+  .irp-issue-actions {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+}

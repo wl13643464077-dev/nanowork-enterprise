@@ -100,6 +100,8 @@ import ConversationTaskFeedback from './ConversationTaskFeedback';
 import RestaurantDispatchAssist from './RestaurantDispatchAssist';
 import { DemoSampleSaver } from './RestaurantDemoPanel';
 import EmployeeSkillSupplement from './EmployeeSkillSupplement';
+import ReportRefinePanel from './ReportRefinePanel';
+import EmployeeKernelBlueprint, { EmployeeDeliveryKernelBar } from './EmployeeKernelBlueprint';
 
 type Props = {
   open: boolean;
@@ -110,6 +112,7 @@ type Props = {
   initialTaskId?: string | number | null;
   initialMediaJobId?: number | null;
   initialSalesVideoBrief?: { key: number; text: string } | null;
+  initialXhsNoteBrief?: { key: number; text: string } | null;
   onSpecialistTaskSubmitted?: () => void;
   initialProfileTab?: 'skills';
   onSkillsChanged?: () => void | Promise<unknown>;
@@ -809,7 +812,7 @@ function SkillCard({
         <strong>{skillTitle(skill)}</strong>
         <p>{skillDescription(skill) || '接口未提供技能说明'}</p>
         <div className="ewb-card-meta">
-          <Tag color={ownerVerified || kind === 'factory' ? 'blue' : 'purple'}>{kindLabel}</Tag>
+          <Tag color={ownerVerified || kind === 'factory' ? 'blue' : 'cyan'}>{kindLabel}</Tag>
           {skill.source && <Tag>{skill.source}</Tag>}
           {ownerVerified && <Tag icon={<LockOutlined />}>执行时必定加载</Tag>}
         </div>
@@ -1057,6 +1060,7 @@ function EmployeeWorkbenchInstance({
   initialTaskId,
   initialMediaJobId,
   initialSalesVideoBrief,
+  initialXhsNoteBrief,
   onSpecialistTaskSubmitted,
   initialProfileTab,
   onSkillsChanged,
@@ -1962,7 +1966,7 @@ function EmployeeWorkbenchInstance({
             available={dispatchAvailable}
             onChanged={refreshProfileQuietly}
             initialJobId={initialMediaJobId}
-            presetBrief={initialSalesVideoBrief}
+            presetBrief={idx === 11 ? initialXhsNoteBrief : initialSalesVideoBrief}
             onTaskSubmitted={onSpecialistTaskSubmitted}
           />
         );
@@ -2060,6 +2064,19 @@ function EmployeeWorkbenchInstance({
               )}
             </div>
           </div>
+          {domain === 'restaurant' && profile.expertKernel && (
+            <EmployeeKernelBlueprint
+              key={`kernel-${profile.identity.idx}`}
+              kernel={profile.expertKernel}
+              employeeName={profile.identity.person || profile.identity.name}
+              compact={restaurantRecentTasks.length > 0 || Boolean(restaurantTask)}
+              canOpenSkillLibrary={canViewInternalProfile && profile.permissions.canViewSkills === true}
+              onOpenSkillLibrary={() => {
+                setActiveTab('skills');
+                setBackendProfileOpen(true);
+              }}
+            />
+          )}
           {domain === 'content' && idx !== null && [2, 3, 10].includes(idx) && (
             <ContentBenchmarkLibrary
               canManage={canManageContentProfile}
@@ -2784,6 +2801,14 @@ function EmployeeWorkbenchInstance({
                   )}
                   {restaurantOutputBody ? (
                     <>
+                      {profile.expertKernel && !restaurantDraft && (
+                        <EmployeeDeliveryKernelBar
+                          person={profile.identity.person || profile.identity.name}
+                          kernel={profile.expertKernel}
+                          webEvidence={restaurantTask.executionSnapshot?.webEvidence}
+                          hasCampaignMaterials={restaurantReportView.campaignMaterials.length > 0}
+                        />
+                      )}
                       <div className="ewb-report-view" aria-label="餐饮数字员工岗位报告">
                         <section className="ewb-run-output ewb-report-overview" aria-label="老板速览">
                           <div className="ewb-report-eyebrow">
@@ -2849,6 +2874,9 @@ function EmployeeWorkbenchInstance({
                         error={currentSourceDeliverablesError}
                         onRetry={retrySourceDeliverables}
                       />
+                      {!isTaskRunning(restaurantTask.status) && !restaurantDraft && Number(restaurantTask.id) > 0 && (
+                        <ReportRefinePanel key={Number(restaurantTask.id)} taskId={Number(restaurantTask.id)} />
+                      )}
                       <details className="ewb-report-details is-operational">
                         <summary>
                           <span>
@@ -2931,29 +2959,35 @@ function EmployeeWorkbenchInstance({
                       <DemoSampleSaver employeeIdx={idx} taskId={Number(restaurantTask.id)} />
                     )}
                   {onHandoff && Array.isArray(restaurantTask.handoffs) && restaurantTask.handoffs.length > 0 && (
-                    <div className="ewb-handoffs">
-                      <span className="ewb-handoffs-label">建议接手的同事：</span>
-                      {restaurantTask.handoffs.map(handoff => (
-                        <Button
-                          key={`handoff-${handoff.idx}`}
-                          size="small"
-                          title={handoff.reason || undefined}
-                          onClick={() =>
-                            onHandoff(
-                              handoff.idx,
-                              [
-                                `${profile.identity.person || profile.identity.name || '同事'}在《${restaurantTask.title || '上一单'}》里建议由你接手：`,
-                                handoff.reason || '请按上一单结论跟进执行。',
-                                '请给出可直接执行的做法。',
-                              ].join('\n'),
-                            )
-                          }
-                        >
-                          派给{handoff.person}
-                          {handoff.duty ? `（${handoff.duty}）` : ''}
-                        </Button>
-                      ))}
-                    </div>
+                    <section className="ewb-handoffs" aria-label="下一步协作接棒">
+                      <div className="ewb-handoffs-head">
+                        <strong className="ewb-handoffs-label">下一步协作接棒 · 建议派给</strong>
+                        <small>点击自动带入本单结论并预填对方派活框</small>
+                      </div>
+                      <div className="ewb-handoffs-actions">
+                        {restaurantTask.handoffs.map(handoff => (
+                          <Button
+                            key={`handoff-${handoff.idx}`}
+                            className="ewb-handoff-btn"
+                            size="small"
+                            title={handoff.reason || undefined}
+                            onClick={() =>
+                              onHandoff(
+                                handoff.idx,
+                                [
+                                  `${profile.identity.person || profile.identity.name || '同事'}在《${restaurantTask.title || '上一单'}》里建议由你接手：`,
+                                  handoff.reason || '请按上一单结论跟进执行。',
+                                  '请给出可直接执行的做法。',
+                                ].join('\n'),
+                              )
+                            }
+                          >
+                            派给{handoff.person}
+                            {handoff.duty ? `（${handoff.duty}）` : ''} →
+                          </Button>
+                        ))}
+                      </div>
+                    </section>
                   )}
                   <ConversationTaskFeedback
                     key={`restaurant-feedback-${restaurantTask.id}`}
@@ -3058,6 +3092,11 @@ function EmployeeWorkbenchInstance({
                   question={String(watchedDispatchQuestion || '')}
                   intentType={dispatchIntentType}
                   disabled={!dispatchAvailable}
+                  compactTemplates={Boolean(
+                    restaurantTask &&
+                    restaurantResultOpen &&
+                    (!isTaskRunning(restaurantTask.status) || Boolean(restaurantOutputBody)),
+                  )}
                   onPickTemplate={template => {
                     dispatchForm.setFieldValue('question', template);
                     document.getElementById(dispatchFormId)?.querySelector('textarea')?.focus();

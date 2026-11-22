@@ -94,9 +94,9 @@ const taskKinds = new Set([
 const pipelinePhaseLabels: Record<string, string> = {
   claim: '领取工位',
   context: '装载真实上游',
-  agentic_search: '隔离 WebSearch',
-  controlled_fetch: '受控 WebFetch',
-  provider: '调用 Provider',
+  agentic_search: '全网公开检索',
+  controlled_fetch: '受控网页取证',
+  provider: 'AI 生成中',
   validate: '岗位契约校验',
   persist: '产物入库',
   settle: '账务结算',
@@ -407,7 +407,7 @@ export default function TaskCenter() {
   const confirmPipelineCancel = () => {
     Modal.confirm({
       title: '确认取消这条内容流水线？',
-      content: '未交付hold会先释放；已交付产物、已结算历史和phase事件保留。',
+      content: '未交付预占积分会自动退回；已交付结果与消费记录保留。',
       okText: '确认取消',
       cancelText: '保留任务',
       okButtonProps: { danger: true },
@@ -419,7 +419,7 @@ export default function TaskCenter() {
     setWechatMutation('reconcile');
     try {
       await api.post(`/wechat-draft/deliveries/${detail.id}/reconcile`, {});
-      message.success('已按隐藏 Marker 核对微信草稿箱');
+      message.success('已按系统识别码核对微信草稿箱');
       openDetailByRef('wechat', Number(detail.id), detail.sourceKey);
       load(true);
     } catch {
@@ -436,7 +436,7 @@ export default function TaskCenter() {
       content: (
         <div>
           <p>
-            系统会在退回预授权前再做一次只读 Marker 核对。请完整输入文章标题：
+            系统会在退回预授权前再做一次只读系统识别码核对。请完整输入文章标题：
             <strong>{detail.title}</strong>
           </p>
           <Input
@@ -667,11 +667,16 @@ export default function TaskCenter() {
           )}
         </>
       )}
-      {personalApi ? (
-        <Alert type="info" showIcon message="数字人摄影棚需单独配置服务，当前个人API暂不支持" />
-      ) : (
-        <AvatarStudio />
-      )}
+      <details className="task-center-avatar-fold">
+        <summary>数字人出镜工具（按需展开）</summary>
+        <div className="task-center-avatar-fold__body">
+          {personalApi ? (
+            <Alert type="info" showIcon message="数字人摄影棚需单独配置服务，当前个人API暂不支持" />
+          ) : (
+            <AvatarStudio />
+          )}
+        </div>
+      </details>
 
       <Drawer
         className="task-center-drawer"
@@ -1257,7 +1262,7 @@ export default function TaskCenter() {
                   {detail.wechat.needsReconciliation && (
                     <p>
                       <Button loading={wechatMutation === 'reconcile'} onClick={() => void reconcileWechat()}>
-                        按 Marker 核对草稿箱
+                        按系统识别码核对草稿箱
                       </Button>
                       {detail.wechat.canConfirmNotDelivered && (
                         <Button danger loading={wechatMutation === 'confirm'} onClick={confirmWechatNotDelivered}>

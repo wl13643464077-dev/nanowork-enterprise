@@ -106,6 +106,7 @@ function mountComponent(file, initialProps, responses = {}) {
       if (name === "react-router-dom")
         return {
           useNavigate: () => (value) => navigation.push(value),
+          useLocation: () => ({ pathname: "/content", search: "", state: null }),
           useSearchParams: () => [new URLSearchParams(responses.query || "")],
         };
       if (name === "../api/client")

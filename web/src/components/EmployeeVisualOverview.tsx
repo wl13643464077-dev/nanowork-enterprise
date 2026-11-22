@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Tag, Tooltip } from 'antd';
 import {
+  ApiOutlined,
   CheckCircleOutlined,
   ExportOutlined,
   InboxOutlined,
@@ -58,6 +59,7 @@ export default function EmployeeVisualOverview({ profile, business, deptColor }:
   const learnedSkills = Array.isArray((skills as { learned?: unknown[] }).learned)
     ? ((skills as { learned?: { title?: string; name?: string }[] }).learned as { title?: string; name?: string }[])
     : [];
+  const kernelTools = Array.isArray(profile.expertKernel?.tools) ? profile.expertKernel.tools : [];
   const displayName = identity.person || identity.name;
   const roleName = identity.name && identity.name !== displayName ? identity.name : '';
 
@@ -88,9 +90,9 @@ export default function EmployeeVisualOverview({ profile, business, deptColor }:
         type: 'category',
         data: activity.days,
         ...axisStyle,
-        axisLabel: { fontSize: 9, interval: 3 },
+        axisLabel: { fontSize: 12, interval: 3 },
       },
-      yAxis: { type: 'value', minInterval: 1, ...axisStyle, axisLabel: { fontSize: 9 } },
+      yAxis: { type: 'value', minInterval: 1, ...axisStyle, axisLabel: { fontSize: 12 } },
       series: [
         {
           type: 'bar',
@@ -138,7 +140,7 @@ export default function EmployeeVisualOverview({ profile, business, deptColor }:
               {typeof identity.department === 'object' ? identity.department?.name : identity.group}
             </Tag>
             <Tag>{identity.status || '在岗'}</Tag>
-            {identity.extension && <Tag color="purple">扩展岗</Tag>}
+            {identity.extension && <Tag color="cyan">扩展岗</Tag>}
           </div>
           <p>{business?.intro || identity.intro || identity.duty}</p>
         </div>
@@ -259,6 +261,27 @@ export default function EmployeeVisualOverview({ profile, business, deptColor }:
               <span key={index}>
                 <CheckCircleOutlined aria-hidden="true" /> {String(item).replace(/。$/u, '').slice(0, 24)}
               </span>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ===== 自动调用工具链 ===== */}
+      {kernelTools.length > 0 && (
+        <section className="evo-card" aria-label="自动调用工具链">
+          <h3>自动调用工具链 · {kernelTools.length} 项真实工具</h3>
+          <div className="evo-tools-grid">
+            {kernelTools.map(tool => (
+              <article className="evo-tool-item" key={tool.key}>
+                <div className="evo-tool-head">
+                  <span className="evo-tool-icon" aria-hidden="true">
+                    <ApiOutlined />
+                  </span>
+                  <strong>{tool.label}</strong>
+                  <span className="evo-tool-tag">{tool.shortLabel}</span>
+                </div>
+                {tool.desc && <p>{tool.desc}</p>}
+              </article>
             ))}
           </div>
         </section>

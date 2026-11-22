@@ -1,7 +1,7 @@
 import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Modal, Space, Tag, message } from 'antd';
-import NativeEmployeeChat, { type NativeGeneration } from './NativeEmployeeChat';
+import NativeEmployeeChat, { type NativeGeneration, type NativeVideoDurationQuote } from './NativeEmployeeChat';
 import NativeDeliverableDownloadButton from './NativeDeliverableDownloadButton';
 import SpecialistTaskHistory, { type SpecialistHistoryRow } from './SpecialistTaskHistory';
 import SalesVideoPublishKit from './SalesVideoPublishKit';
@@ -467,6 +467,30 @@ export default function AiSalesVideoPanel({
   const previewUrl = [result?.previewUrl, result?.url].find(
     (url): url is string => typeof url === 'string' && url.startsWith('/uploads/'),
   );
+  const durationQuotes: NativeVideoDurationQuote[] | null = Array.isArray(videoOptions?.durationOptions)
+    ? videoOptions.durationOptions
+        .filter(
+          (option: any) => option && (Number(option.durationSeconds) === 15 || Number(option.durationSeconds) === 30),
+        )
+        .map((option: any) => ({
+          durationSeconds: Number(option.durationSeconds) as 15 | 30,
+          segmentCount: Number(option.segmentCount || (Number(option.durationSeconds) === 30 ? 2 : 1)),
+          estimatedMaxCredits:
+            option.estimatedMaxCredits != null && Number.isFinite(Number(option.estimatedMaxCredits))
+              ? Number(option.estimatedMaxCredits)
+              : undefined,
+        }))
+    : videoOptions?.estimatedMaxCredits != null && Number.isFinite(Number(videoOptions.estimatedMaxCredits))
+      ? [
+          {
+            durationSeconds: (Number(videoOptions.durationSeconds ?? 15) === 30 ? 30 : 15) as 15 | 30,
+            segmentCount: Number(videoOptions.durationSeconds ?? 15) === 30 ? 2 : 1,
+            estimatedMaxCredits: Number(videoOptions.estimatedMaxCredits),
+          },
+        ]
+      : null;
+  const quote15 = durationQuotes?.find(item => item.durationSeconds === 15) || null;
+  const quote30 = durationQuotes?.find(item => item.durationSeconds === 30) || null;
   const selectedQuote =
     videoOptions?.durationOptions?.find((option: any) => option.durationSeconds === durationSeconds) ||
     (Number(videoOptions?.durationSeconds ?? 15) === durationSeconds ? videoOptions : null);
@@ -676,6 +700,55 @@ export default function AiSalesVideoPanel({
 
   const taskContent = (
     <>
+      {videoOptions?.ready === true && (
+        <section className="native-employee-video-compare" aria-label="视频时长与成本对比">
+          <div className="native-employee-video-compare__header">
+            <span className="native-employee-video-compare__title">视频时长与成本参考（默认推荐 15 秒试拍）</span>
+            <Tag color={durationSeconds === 30 ? 'orange' : 'green'}>
+              当前已选：{durationSeconds === 30 ? '30 秒（两段 · 高成本）' : '15 秒（推荐试拍）'}
+            </Tag>
+          </div>
+          <div className="native-employee-video-compare__grid">
+            <div
+              className={`native-employee-video-compare__item${durationSeconds === 15 ? ' native-employee-video-compare__item--active' : ''}`}
+            >
+              <span className="native-employee-chat__duration-title">
+                <span>15 秒（推荐试拍 · 更省成本）</span>
+                <span className="native-employee-chat__duration-badge native-employee-chat__duration-badge--ok">
+                  推荐
+                </span>
+              </span>
+              <span className="native-employee-chat__duration-cost">
+                {personalBilling
+                  ? '一段完整口播 · 按个人 API 供应商账单计费'
+                  : quote15?.estimatedMaxCredits != null
+                    ? `参考预占 ${quote15.estimatedMaxCredits} 积分（≈ ¥${(quote15.estimatedMaxCredits * 0.01).toFixed(2)}）`
+                    : '暂未提供 15 秒报价'}
+              </span>
+            </div>
+            <div
+              className={`native-employee-video-compare__item native-employee-video-compare__item--warn${durationSeconds === 30 ? ' native-employee-video-compare__item--active' : ''}`}
+            >
+              <span className="native-employee-chat__duration-title">
+                <span>30 秒（完整口播 · 费用翻倍）</span>
+                <span className="native-employee-chat__duration-badge native-employee-chat__duration-badge--warn">
+                  费用翻倍
+                </span>
+              </span>
+              <span className="native-employee-chat__duration-cost">
+                {personalBilling
+                  ? '两段视频拼接 · 上游费用约翻倍'
+                  : quote30?.estimatedMaxCredits != null
+                    ? `参考预占 ${quote30.estimatedMaxCredits} 积分（≈ ¥${(quote30.estimatedMaxCredits * 0.01).toFixed(2)}）`
+                    : '暂未提供 30 秒报价'}
+              </span>
+            </div>
+          </div>
+          <p className="native-employee-video-compare__tip">
+            日常高频测款建议优先使用小红书图文，成本约为视频的 1/10；确认生成前仍可在下方切换时长并审定口播脚本。
+          </p>
+        </section>
+      )}
       <NativeEmployeeChat
         open={open}
         employeeIdx={10}
@@ -683,12 +756,13 @@ export default function AiSalesVideoPanel({
         generating={Boolean(result && currentStatus === 'processing')}
         onGeneration={openGeneratedJob}
         onVideoDurationChange={setDurationSeconds}
+        videoDurationOptions={durationQuotes}
         mediaReady={videoOptions?.ready === true && selectedQuote != null}
         mediaQuote={
           personalBilling
             ? `${durationSeconds}秒视频。${PERSONAL_API_PRICING_NOTE}`
             : selectedQuote?.estimatedMaxCredits != null
-              ? `${durationSeconds}秒视频参考预占 ${selectedQuote.estimatedMaxCredits} 积分。按上游实际扣费结算，多退少补；余额不足时保留成片，补足余额后核对费用。`
+              ? `${durationSeconds}秒视频参考预占 ${selectedQuote.estimatedMaxCredits} 积分（≈ ¥${(selectedQuote.estimatedMaxCredits * 0.01).toFixed(2)}）。按上游实际扣费结算，多退少补；余额不足时保留成片，补足余额后核对费用。`
               : undefined
         }
         initialText={presetBrief}

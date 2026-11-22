@@ -32,7 +32,6 @@ import {
   SettingOutlined,
   ShopOutlined,
   BellOutlined,
-  MailOutlined,
   QuestionCircleOutlined,
   LogoutOutlined,
   LockOutlined,
@@ -76,10 +75,21 @@ const NOTIF_POLL_MS = 60_000;
 const NOTIF_POLL_REALTIME_MS = 5 * 60_000;
 
 // 左侧任务导航：用实体店老板能立即理解的语言描述，而不是技术模块名。
-// group 字段把一级导航按「老板一天里的动作顺序」聚成 4 组：
-// 先看数据 → 再派活干活 → 产出内容 → 最后才是配置。
+// group 字段把一级导航按商业核心价值与经营闭环聚成 4 组：
+// 核心干活置顶 → 门店经营 → 经营分析 → 系统与资产。
 const MENUS = [
-  { key: '/', icon: <DashboardOutlined />, label: '老板驾驶舱', mod: 'dashboard', group: 'watch' },
+  { key: '/employees', icon: <AppstoreOutlined />, label: '餐饮数字员工', mod: 'marshals', group: 'work' },
+  { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'work' },
+  { key: '/brand-kb', icon: <BookOutlined />, label: '品牌知识包', mod: 'system', group: 'work' },
+  { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'work' },
+  { key: '/advisor', icon: <RobotOutlined />, label: '老板参谋', mod: 'advisor', group: 'work' },
+  { key: '/', icon: <DashboardOutlined />, label: '老板驾驶舱', mod: 'dashboard', group: 'ops' },
+  { key: '/tasks', icon: <UnorderedListOutlined />, label: '任务中心', mod: 'execution', group: 'ops' },
+  { key: '/execution', icon: <ScheduleOutlined />, label: '经营执行', mod: 'execution', group: 'ops' },
+  { key: '/store-ops', icon: <CheckSquareOutlined />, label: '门店日常', mod: 'dashboard', group: 'ops' },
+  { key: '/reviews', icon: <CommentOutlined />, label: '评价中心', mod: 'dashboard', group: 'ops' },
+  { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities', group: 'ops' },
+  { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth', group: 'ops' },
   { key: '/analysis', icon: <BarChartOutlined />, label: '经营洞察', mod: 'analysis', group: 'watch' },
   {
     key: '/store-data',
@@ -89,28 +99,25 @@ const MENUS = [
     managerOnly: true,
     group: 'watch',
   },
-  { key: '/advisor', icon: <RobotOutlined />, label: '老板参谋', mod: 'advisor', group: 'work' },
-  { key: '/employees', icon: <AppstoreOutlined />, label: '餐饮数字员工', mod: 'marshals', group: 'work' },
-  { key: '/tasks', icon: <UnorderedListOutlined />, label: '任务中心', mod: 'execution', group: 'work' },
-  { key: '/execution', icon: <ScheduleOutlined />, label: '经营执行', mod: 'execution', group: 'work' },
-  { key: '/store-ops', icon: <CheckSquareOutlined />, label: '门店日常', mod: 'dashboard', group: 'work' },
-  { key: '/reviews', icon: <CommentOutlined />, label: '评价中心', mod: 'dashboard', group: 'work' },
-  { key: '/activities', icon: <CalendarOutlined />, label: '营销活动', mod: 'activities', group: 'work' },
-  { key: '/growth', icon: <RiseOutlined />, label: '会员增长', mod: 'growth', group: 'work' },
-  { key: '/content', icon: <ExperimentOutlined />, label: '内容生产仓', mod: 'content', group: 'make' },
-  { key: '/toolbox', icon: <ToolOutlined />, label: '经营工具箱', mod: 'content', group: 'make' },
-  { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'make' },
-  { key: '/brand-kb', icon: <BookOutlined />, label: '品牌知识包', mod: 'system', group: 'setup' },
+  { key: '/assets', icon: <GoldOutlined />, label: '知识资产', mod: 'assets', group: 'setup' },
   { key: '/system', icon: <SettingOutlined />, label: '系统管理', mod: 'system', group: 'setup' },
   { key: '/recharge', icon: <WalletOutlined />, label: '充值中心', bossOnly: true, group: 'setup' },
 ];
 
 const MENU_GROUPS: { key: string; label: string }[] = [
-  { key: 'watch', label: '看经营' },
-  { key: 'work', label: '派活干活' },
-  { key: 'make', label: '做内容' },
-  { key: 'setup', label: '配置' },
+  { key: 'work', label: '核心干活' },
+  { key: 'ops', label: '门店经营' },
+  { key: 'watch', label: '经营分析' },
+  { key: 'setup', label: '系统与资产' },
 ];
+
+// 非一级菜单路由的页头标题覆盖，避免未知路径回退显示“老板驾驶舱”
+const ROUTE_TITLE_OVERRIDES: Record<string, { title: string; group: string }> = {
+  '/onboarding': { title: '开店向导', group: '开店准备' },
+  '/agents': { title: '自定义员工', group: '核心干活' },
+  '/data-intake': { title: '数据录入中枢', group: '系统与资产' },
+  '/tester': { title: '测试员后台', group: '测试员中心' },
+};
 
 const ROLE_NAME: Record<string, string> = {
   boss: '老板',
@@ -307,8 +314,11 @@ export default function MainLayout() {
   };
   const visibleMenus = menusFor(modules, user?.role, isTester);
   const menuPath = menuPathOf(loc.pathname);
-  const current = MENUS.find(m => m.key === menuPath) || visibleMenus[0] || MENUS[0];
-  const currentGroup = MENU_GROUPS.find(group => group.key === current.group)?.label || '经营工作台';
+  const matchedMenu = MENUS.find(m => m.key === menuPath);
+  const current = matchedMenu || visibleMenus[0] || MENUS[0];
+  const routeOverride = ROUTE_TITLE_OVERRIDES[loc.pathname];
+  const currentGroup =
+    routeOverride?.group || MENU_GROUPS.find(group => group.key === current.group)?.label || '经营工作台';
   const menuLabel = (m: any) => {
     if (isTester) return m.label;
     if (m.mod === 'advisor') {
@@ -798,7 +808,7 @@ export default function MainLayout() {
                             </Tag>
                           )}
                         </div>
-                        <div style={{ fontSize: 12, color: '#9aa4b5' }}>{n.body}</div>
+                        <div style={{ fontSize: 12, color: 'var(--ui-text-2)' }}>{n.body}</div>
                         <div style={{ fontSize: 10.5, color: 'var(--ui-muted)' }}>
                           {(n.created_at || '').slice(5, 16)}
                         </div>
@@ -806,40 +816,42 @@ export default function MainLayout() {
                     </List.Item>
                   )}
                 />
-                {notifs.length > 0 && (
+                <div className="os-notif-foot">
+                  {notifs.length > 0 ? (
+                    <button
+                      type="button"
+                      className="ui-link-button"
+                      onClick={() =>
+                        api.post('/sys/notifications/read').then(() => api.get('/sys/notifications').then(setNotifs))
+                      }
+                    >
+                      全部标为已读
+                    </button>
+                  ) : (
+                    <span />
+                  )}
                   <button
                     type="button"
                     className="ui-link-button"
-                    style={{ fontSize: 12 }}
-                    onClick={() =>
-                      api.post('/sys/notifications/read').then(() => api.get('/sys/notifications').then(setNotifs))
-                    }
+                    onClick={() => {
+                      setMailOpen(true);
+                      reloadNotifs(100);
+                    }}
                   >
-                    全部标为已读
+                    查看全部消息 ›
                   </button>
-                )}
+                </div>
               </div>
             }
           >
-            <Badge count={unread} size="small">
-              <BellOutlined className="os-ic" />
-            </Badge>
+            <Tooltip title="消息通知">
+              <Badge count={unread} size="small">
+                <button type="button" className="os-icon-btn" aria-label="打开消息通知">
+                  <BellOutlined className="os-ic" />
+                </button>
+              </Badge>
+            </Tooltip>
           </Popover>
-          <Tooltip title="消息中心">
-            <Badge count={unread} size="small">
-              <button
-                type="button"
-                className="os-icon-btn"
-                aria-label="打开消息中心"
-                onClick={() => {
-                  setMailOpen(true);
-                  reloadNotifs(100);
-                }}
-              >
-                <MailOutlined className="os-ic" />
-              </button>
-            </Badge>
-          </Tooltip>
           <Tooltip title="帮助中心">
             <button
               type="button"
@@ -913,7 +925,7 @@ export default function MainLayout() {
             mode="inline"
             theme="dark"
             inlineCollapsed={navCollapsed}
-            selectedKeys={[current.key]}
+            selectedKeys={matchedMenu ? [matchedMenu.key] : []}
             items={menuItems}
             onClick={({ key }) => nav(key)}
           />
@@ -934,7 +946,7 @@ export default function MainLayout() {
           <div className="os-page-head">
             <div className="os-page-heading">
               <span className="os-page-context">{currentGroup}</span>
-              <span className="os-page-title">{menuLabel(current)}</span>
+              <span className="os-page-title">{routeOverride?.title || menuLabel(current)}</span>
             </div>
             <div className="os-page-actions">
               <button
@@ -946,19 +958,6 @@ export default function MainLayout() {
                 <QuestionCircleOutlined />
                 <span>本页怎么用</span>
               </button>
-              {canUseAdvisor && (
-                <button
-                  type="button"
-                  className="os-page-assistant"
-                  aria-label={`打开${assistantCopy.title}`}
-                  aria-expanded={aiOpen}
-                  aria-controls="boss-assistant-inspector"
-                  onClick={() => setAiOpen(true)}
-                >
-                  <RobotOutlined />
-                  <span>{assistantCopy.short}</span>
-                </button>
-              )}
             </div>
           </div>
           <div className="os-page-body">
@@ -1076,7 +1075,7 @@ export default function MainLayout() {
       <Drawer
         title={
           <>
-            <MailOutlined /> 消息中心 <Tag color="blue">{notifs.length} 条</Tag>
+            <BellOutlined /> 消息通知 <Tag color="blue">{notifs.length} 条</Tag>
           </>
         }
         width={460}
@@ -1125,7 +1124,7 @@ export default function MainLayout() {
                     </Tag>
                   )}
                 </div>
-                <div style={{ fontSize: 12, color: '#9aa4b5', marginTop: 2 }}>{n.body}</div>
+                <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginTop: 2 }}>{n.body}</div>
                 <div style={{ fontSize: 10.5, color: 'var(--ui-muted)', marginTop: 2 }}>
                   {(n.created_at || '').slice(0, 16)}
                 </div>

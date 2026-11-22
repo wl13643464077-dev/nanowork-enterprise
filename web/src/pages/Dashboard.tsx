@@ -579,7 +579,15 @@ export default function Dashboard() {
                 <button
                   key={index}
                   type="button"
-                  onClick={() => nav(hasModule('advisor') ? '/advisor' : '/analysis')}
+                  onClick={() =>
+                    hasModule('advisor')
+                      ? nav('/advisor', {
+                          state: {
+                            q: `请针对这条今日经营诊断给出原因拆解与可执行方案：${item.dimension ? `【${item.dimension}】` : ''}${item.issue}${item.suggestion ? `（当前建议：${item.suggestion}）` : ''}`,
+                          },
+                        })
+                      : nav('/analysis')
+                  }
                   style={{
                     appearance: 'none',
                     textAlign: 'left',
@@ -591,7 +599,7 @@ export default function Dashboard() {
                     padding: 'var(--space-3) var(--space-4)',
                     color: 'inherit',
                   }}
-                  aria-label={`经营诊断：${item.issue}，${hasModule('advisor') ? '点击咨询数据员工' : '点击查看完整分析'}`}
+                  aria-label={`经营诊断：${item.issue}，${hasModule('advisor') ? '点击问老板参谋怎么办' : '点击查看完整分析'}`}
                 >
                   <Tag color="blue" style={{ marginBottom: 'var(--space-1)' }}>
                     {item.dimension}
@@ -610,7 +618,7 @@ export default function Dashboard() {
                     {item.suggestion}
                   </div>
                   <div style={{ color: 'var(--ui-primary)', fontSize: 'var(--font-1)', marginTop: 'var(--space-2)' }}>
-                    {hasModule('advisor') ? '问数据员工怎么做' : '查看完整分析'}{' '}
+                    {hasModule('advisor') ? '问老板参谋怎么办' : '查看完整分析'}{' '}
                     <RightOutlined style={{ fontSize: 10 }} />
                   </div>
                 </button>

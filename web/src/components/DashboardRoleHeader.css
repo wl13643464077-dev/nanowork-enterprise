@@ -1,0 +1,28 @@
+.drh-banner {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--ui-primary) 10%, var(--ui-surface)) 0%,
+    var(--ui-primary-soft) 52%,
+    var(--ui-surface) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 18%, var(--ui-border));
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+}
+
+.drh-banner-title {
+  font-size: var(--font-5);
+  font-weight: 700;
+  color: var(--ui-text);
+  letter-spacing: 0.02em;
+}
+
+.drh-banner-accent {
+  color: var(--ui-primary);
+}
+
+.drh-banner-summary {
+  font-size: var(--font-2);
+  color: var(--ui-text-2);
+  margin-top: var(--space-1);
+}

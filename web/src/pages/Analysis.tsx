@@ -49,6 +49,7 @@ import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import EmployeeOutputInsights from '../components/EmployeeOutputInsights';
+import { dispatchToEmployee, resolveEmployeeForIssue } from '../utils/dispatchEmployee';
 
 const { RangePicker } = DatePicker;
 
@@ -63,7 +64,7 @@ const KPI_LINES = [
 const levelColor: Record<string, string> = { 优秀: 'green', 健康: 'green', 良好: 'blue', 一般: 'orange', 预警: 'red' };
 const scoreColor = (s: number) =>
   s >= 85 ? 'var(--chart-2)' : s >= 70 ? 'var(--ui-accent)' : s >= 55 ? 'var(--warn)' : 'var(--danger)';
-const DIM_TAG = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan'];
+const DIM_TAG = ['blue', 'green', 'geekblue', 'orange', 'cyan', 'blue'];
 const wanAxis = (v: number) => (v >= 10000 ? `${Math.round(v / 10000)}万` : `${v}`);
 const buttonResetStyle = {
   appearance: 'none',
@@ -100,6 +101,12 @@ export default function Analysis() {
   };
   const openBucketOrders = (b: any) => {
     const m: Record<string, [number, number | '']> = {
+      '<30元': [0, 30],
+      '30-60元': [30, 60],
+      '60-120元': [60, 120],
+      '120-250元': [120, 250],
+      '≥250元': [250, ''],
+      // 兼容历史后端客单价分段 key
       '<2千': [0, 2000],
       '2-5千': [2000, 5000],
       '5千-1万': [5000, 10000],
@@ -307,7 +314,7 @@ export default function Analysis() {
         ? (weekly.topContents || []).map((c: any) => `· ${c.title}（带来线索 ${c.effect_leads}）`)
         : ['· 暂无']),
       '',
-      '【合伙人周榜】',
+      '【储值复购周榜】',
       ...((weekly.partnerBoard || []).length
         ? (weekly.partnerBoard || []).map((p: any, i: number) => `${i + 1}. ${p.name}（积分 ${p.total}）`)
         : ['· 暂无']),
@@ -329,27 +336,43 @@ export default function Analysis() {
     message.success('周报已导出为 txt 文件');
   };
 
+  const rangeText = `${range[0].format('YYYY-MM-DD')} 至 ${range[1].format('YYYY-MM-DD')}`;
   const customEntries = [
     {
       icon: <ExperimentOutlined />,
       color: 'var(--ui-accent)',
       title: '经营诊断',
       desc: '老板参谋多维度诊断经营卡点',
-      onClick: () => nav('/advisor'),
+      onClick: () =>
+        nav('/advisor', {
+          state: {
+            q: `请基于 ${rangeText} 的经营数据，从营收、客流、客单价、复购与成本多维度诊断当前最核心的经营卡点，并给出可落地改进动作。`,
+          },
+        }),
     },
     {
       icon: <RiseOutlined />,
       color: 'var(--chart-2)',
       title: '趋势预测',
       desc: '基于历史数据预测营收走势',
-      onClick: () => nav('/advisor'),
+      onClick: () =>
+        nav('/advisor', {
+          state: {
+            q: `请结合 ${rangeText} 的营收、订单与客户增长趋势，预测下一阶段营收走势与目标缺口，并给出提前应对策略。`,
+          },
+        }),
     },
     {
       icon: <SwapOutlined />,
       color: 'var(--chart-3)',
       title: '对比分析',
       desc: '渠道 / 产品 / 区域多维对比',
-      onClick: () => nav('/advisor'),
+      onClick: () =>
+        nav('/advisor', {
+          state: {
+            q: `请结合 ${rangeText} 的经营数据，对比各渠道、核心菜品/产品与区域的表现差异，找出高贡献增长点与需要止血的拖累项。`,
+          },
+        }),
     },
     {
       icon: <ExportOutlined />,
@@ -770,10 +793,10 @@ export default function Analysis() {
         </Col>
       </Row>
 
-      {/* 第三行：商品TOP10 + 区域分布 + 经营健康度 */}
+      {/* 第三行：菜品/套餐TOP10 + 区域分布 + 经营健康度 */}
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={9}>
-          <Panel title="商品销售TOP10">
+          <Panel title="菜品/套餐销售TOP10">
             <Table
               size="small"
               rowKey="product"
@@ -808,7 +831,7 @@ export default function Analysis() {
                     </span>
                   ),
                 },
-                { title: '商品', dataIndex: 'product', ellipsis: true },
+                { title: '菜品/套餐', dataIndex: 'product', ellipsis: true },
                 { title: '销量', dataIndex: 'qty', align: 'right', width: 56 },
                 {
                   title: '销售额',
@@ -837,14 +860,24 @@ export default function Analysis() {
                 {
                   title: '环比',
                   key: 'mom',
-                  width: 46,
+                  width: 68,
                   align: 'center',
-                  render: (_: any, r: any, i: number) =>
-                    ((r.product || '').length + i) % 3 === 1 ? (
-                      <ArrowDownOutlined style={{ color: '#ef4444', fontSize: 12 }} />
-                    ) : (
-                      <ArrowUpOutlined style={{ color: '#16a34a', fontSize: 12 }} />
-                    ),
+                  render: (_: any, r: any) => {
+                    const delta = r.wow ?? r.mom;
+                    if (typeof delta === 'number' && Number.isFinite(delta)) {
+                      return (
+                        <span className={delta >= 0 ? 'nw-mom-up' : 'nw-mom-down'}>
+                          {delta >= 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
+                          {Math.abs(delta)}%
+                        </span>
+                      );
+                    }
+                    return (
+                      <Tooltip title="录入连续两期数据后自动计算环比">
+                        <span className="nw-mom-empty">—</span>
+                      </Tooltip>
+                    );
+                  },
                 },
               ]}
             />
@@ -1029,71 +1062,93 @@ export default function Analysis() {
               {insights.length === 0 && (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无洞察，经营状态良好" />
               )}
-              {insights.map((it, i) => (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  key={i}
-                  onClick={() => openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`)}
-                  onKeyDown={e => {
-                    if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
-                    e.preventDefault();
-                    openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`);
-                  }}
-                  style={{
-                    border: '1px solid var(--ui-border)',
-                    borderRadius: 8,
-                    padding: '10px 12px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                    <Tag color={DIM_TAG[i % DIM_TAG.length]} style={{ marginRight: 0, flexShrink: 0 }}>
-                      {it.dimension}
-                    </Tag>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', lineHeight: 1.6 }}>
-                      {it.issue}
-                    </span>
+              {insights.map((it, i) => {
+                const targetEmp = resolveEmployeeForIssue(it.dimension, it.issue);
+                return (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    key={i}
+                    onClick={() => openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`)}
+                    onKeyDown={e => {
+                      if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+                      e.preventDefault();
+                      openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`);
+                    }}
+                    style={{
+                      border: '1px solid var(--ui-border)',
+                      borderRadius: 8,
+                      padding: '10px 12px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                      <Tag color={DIM_TAG[i % DIM_TAG.length]} style={{ marginRight: 0, flexShrink: 0 }}>
+                        {it.dimension}
+                      </Tag>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', lineHeight: 1.6 }}>
+                        {it.issue}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', margin: '6px 0 8px', lineHeight: 1.65 }}>
+                      <BulbOutlined style={{ color: 'var(--warn)' }} /> {it.suggestion}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      <Button
+                        size="small"
+                        icon={<DatabaseOutlined />}
+                        onClick={e => {
+                          e.stopPropagation();
+                          openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`);
+                        }}
+                      >
+                        看依据
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<CarryOutOutlined />}
+                        onClick={e => {
+                          e.stopPropagation();
+                          toTask(it);
+                        }}
+                      >
+                        转任务
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<CommentOutlined />}
+                        onClick={e => {
+                          e.stopPropagation();
+                          nav('/advisor', {
+                            state: {
+                              q: `请针对这条经营洞察给出原因拆解与可执行落地方案：${it.dimension ? `【${it.dimension}】` : ''}${it.issue}${it.suggestion ? `（当前建议：${it.suggestion}）` : ''}`,
+                            },
+                          });
+                        }}
+                      >
+                        去会诊
+                      </Button>
+                      <Tooltip title={`派给 ${targetEmp.person}（${targetEmp.role}）处理`}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          icon={<ThunderboltOutlined />}
+                          onClick={e => {
+                            e.stopPropagation();
+                            dispatchToEmployee(
+                              nav,
+                              targetEmp.idx,
+                              `请针对以下经营洞察输出落地执行方案：${it.dimension ? `【${it.dimension}】` : ''}${it.issue}${it.suggestion ? `（建议方向：${it.suggestion}）` : ''}。请给出具体动作、执行周期与验收指标。`,
+                            );
+                          }}
+                        >
+                          派给{targetEmp.person}
+                        </Button>
+                      </Tooltip>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', margin: '6px 0 8px', lineHeight: 1.65 }}>
-                    <BulbOutlined style={{ color: 'var(--warn)' }} /> {it.suggestion}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                    <Button
-                      size="small"
-                      icon={<DatabaseOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        openVisualDetail('insight', { dimension: it.dimension }, `${it.dimension}依据`);
-                      }}
-                    >
-                      看依据
-                    </Button>
-                    <Button
-                      size="small"
-                      icon={<CarryOutOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        toTask(it);
-                      }}
-                    >
-                      转任务
-                    </Button>
-                    <Button
-                      size="small"
-                      type="primary"
-                      ghost
-                      icon={<CommentOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        nav('/advisor');
-                      }}
-                    >
-                      去会诊
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Panel>
         </Col>
@@ -1155,7 +1210,7 @@ export default function Analysis() {
                     lineHeight: 1.7,
                   }}
                 >
-                  <b style={{ color: '#e0a253' }}>本周诊断：</b>
+                  <b style={{ color: 'var(--ui-warning-text)' }}>本周诊断：</b>
                   {weekly.diagnosis}
                 </div>
                 <div style={{ background: 'var(--ui-surface)', borderRadius: 8, padding: '8px 10px' }}>
@@ -1294,7 +1349,7 @@ export default function Analysis() {
                     width: 42,
                     height: 42,
                     borderRadius: 10,
-                    background: `${c.color}1a`,
+                    background: `color-mix(in srgb, ${c.color} 12%, transparent)`,
                     color: c.color,
                     fontSize: 20,
                     display: 'flex',
@@ -1400,7 +1455,7 @@ export default function Analysis() {
       >
         {!drill.data ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1512,7 +1567,7 @@ export default function Analysis() {
                     dataIndex: 'type',
                     width: 66,
                     render: (v: any) => (
-                      <Tag color={v === '复购' ? 'purple' : 'blue'} style={{ margin: 0 }}>
+                      <Tag color={v === '复购' ? 'cyan' : 'blue'} style={{ margin: 0 }}>
                         {v}
                       </Tag>
                     ),
@@ -1546,7 +1601,7 @@ export default function Analysis() {
                     width: 84,
                     align: 'right',
                     render: (v: any) => (
-                      <Tag color="purple" style={{ margin: 0 }}>
+                      <Tag color="geekblue" style={{ margin: 0 }}>
                         {v} 笔
                       </Tag>
                     ),
@@ -1615,7 +1670,7 @@ export default function Analysis() {
       >
         {subDrill.loading ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : subDrill.rows.length === 0 ? (
           <Empty description="该范围暂无订单" />
@@ -1651,7 +1706,7 @@ export default function Analysis() {
                   dataIndex: 'type',
                   width: 64,
                   render: (v: any) => (
-                    <Tag color={v === '复购' ? 'purple' : 'blue'} style={{ margin: 0 }}>
+                    <Tag color={v === '复购' ? 'cyan' : 'blue'} style={{ margin: 0 }}>
                       {v}
                     </Tag>
                   ),
@@ -1679,7 +1734,7 @@ export default function Analysis() {
           showIcon
           style={{ marginBottom: 12 }}
           message="只补录过程数据"
-          description="新增线索、邀约、到店、内容数、活跃合伙人可人工补录；成交单数、成交金额、复购金额仍由客户订单自动归集，避免重复计算。"
+          description="新增线索、邀约、到店、内容数、活跃会员可人工补录；成交单数、成交金额、复购金额仍由客户订单自动归集，避免重复计算。"
         />
         <Form form={uploadForm} layout="vertical" initialValues={{ date: dayjs() }}>
           <Form.Item name="date" label="日期" rules={[{ required: true, message: '请选择日期' }]}>
@@ -1707,7 +1762,7 @@ export default function Analysis() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="active_partners" label="活跃合伙人">
+              <Form.Item name="active_partners" label="活跃会员">
                 <InputNumber min={0} precision={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>

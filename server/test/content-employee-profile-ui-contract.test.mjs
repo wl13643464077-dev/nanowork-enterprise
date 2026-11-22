@@ -20,7 +20,7 @@ test("登录落地页宣传权威73位口径，普通内部产出不再被写成
     "总数应为61餐饮（60核心+1扩展）+10 Paihuo+1 AI带货员+1 AI小红书种草员",
   );
   assert.match(login, /\{ value: '61', label: '餐饮数字员工 · 8 大分部' \}/u);
-  assert.match(login, /\{ value: '10', label: '内容生产数字员工' \}/u);
+  assert.match(login, /\{ value: '12', label: '内容生产与种草带货数字员工' \}/u);
   assert.match(login, /title: '61 位懂餐饮的数字员工'/u);
   assert.match(login, /title: '内容生产仓 · 10 工位流水线'/u);
 

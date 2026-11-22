@@ -107,14 +107,14 @@ function pickStepValues(step: StepDef, answers: Answers): Answers {
 }
 
 function vectorizationText(vectorization: CompleteResult['vectorization']) {
-  if (vectorization.accepted) return '企业档案已进入知识库，正在后台生成语义索引。';
+  if (vectorization.accepted) return '企业档案已进入知识库，正在让数字员工学习你的门店资料。';
   switch (vectorization.reason) {
     case 'billing_hold_failed':
-      return '企业档案已进入知识库；语义索引因积分不足暂未生成，充值后可在知识库里一键回填。';
+      return '企业档案已进入知识库；因当前积分不足，待充值后即可让数字员工继续学习门店资料。';
     case 'disabled':
-      return '企业档案已进入知识库；后台语义索引未开启，管理员开启后可在知识库里回填。';
+      return '企业档案已进入知识库；管理员开启智能学习后，数字员工即可自动检索门店资料。';
     default:
-      return '企业档案已进入知识库；语义索引暂未生成，可稍后在知识库里回填。';
+      return '企业档案已进入知识库；稍后可在知识库中同步给数字员工学习。';
   }
 }
 
@@ -457,10 +457,22 @@ export default function Onboarding() {
           <div className="onboarding-team-head">
             <h3>为你推荐的 {result.recommendation.members.length} 位数字员工</h3>
             <Tag color={result.recommendation.source === 'ai' ? 'blue' : 'default'}>
-              {result.recommendation.source === 'ai' ? 'AI 读花名册挑的' : '按目标推荐'}
+              {result.recommendation.source === 'ai' ? 'AI 智能匹配' : '按目标推荐'}
             </Tag>
           </div>
           {result.recommendation.note ? <p className="onboarding-team-note">{result.recommendation.note}</p> : null}
+          {balance <= 0 ? (
+            <Alert
+              type="info"
+              showIcon
+              message="当前企业积分余额为 0，充值后即可一键派活让数字员工开工"
+              action={
+                <Button size="small" type="primary" onClick={() => navigate('/recharge')}>
+                  前往充值中心
+                </Button>
+              }
+            />
+          ) : null}
           <div className="onboarding-team">
             {result.recommendation.members.map(member => {
               const doneTaskId = dispatched[String(member.idx)];
@@ -495,15 +507,18 @@ export default function Onboarding() {
                       >
                         看进度
                       </Button>
+                    ) : balance <= 0 ? (
+                      <Button size="small" onClick={() => navigate('/recharge')}>
+                        前往充值中心
+                      </Button>
                     ) : (
                       <Button
-                        type="primary"
+                        type={shortOnCredits ? 'default' : 'primary'}
                         size="small"
                         icon={<RocketOutlined />}
                         loading={dispatchingIdx === member.idx}
                         disabled={dispatchingIdx !== null && dispatchingIdx !== member.idx}
-                        danger={shortOnCredits}
-                        title={shortOnCredits ? '积分可能不够，派活时会做预检' : undefined}
+                        title={shortOnCredits ? '当前积分偏低，可先前往充值中心补充后再派活' : undefined}
                         onClick={() => void dispatch(member)}
                       >
                         让 TA 现在就干
@@ -515,6 +530,11 @@ export default function Onboarding() {
             })}
           </div>
           <div className="onboarding-done-actions">
+            {balance <= 0 ? (
+              <Button type="primary" onClick={() => navigate('/recharge')}>
+                前往充值中心
+              </Button>
+            ) : null}
             <Button onClick={() => navigate('/')}>先去看驾驶舱</Button>
             <Button onClick={() => navigate('/employees')}>去数字员工大厅自己挑人</Button>
             <Button type="link" onClick={() => setResult(null)}>

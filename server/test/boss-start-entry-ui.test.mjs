@@ -24,6 +24,7 @@ vm.runInNewContext(
   {
     exports,
     require(name) {
+      if (name.endsWith(".css")) return {};
       if (name === "antd") return { Row: "Row", Col: "Col" };
       if (name === "react/jsx-runtime")
         return { jsx: element, jsxs: element, Fragment: "Fragment" };

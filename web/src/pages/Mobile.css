@@ -156,17 +156,17 @@
 }
 
 .mobile-tester-backend {
-  border: 1px solid #c9dafb;
-  border-radius: 8px;
-  background: #f0f5ff;
-  color: #245bcc;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
   padding: 6px 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-1);
   white-space: nowrap;
   cursor: pointer;
 }
 .mobile-tester-backend:focus-visible {
-  outline: 2px solid #245bcc;
+  outline: 2px solid var(--ui-primary);
   outline-offset: 2px;
 }

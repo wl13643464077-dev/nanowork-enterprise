@@ -160,7 +160,7 @@
   --auth-blob-1: rgba(44, 118, 220, 0.2);
   --auth-blob-2: rgba(103, 168, 246, 0.18);
   --auth-blob-3: rgba(52, 199, 158, 0.1);
-  --auth-blob-4: rgba(139, 116, 246, 0.1);
+  --auth-blob-4: rgba(23, 105, 210, 0.1);
   --auth-hex-line: rgba(44, 118, 220, 0.16);
   --auth-card-bg: rgba(255, 255, 255, 0.72);
   --auth-card-border: rgba(255, 255, 255, 0.72);
@@ -216,7 +216,7 @@
   --auth-blob-1: rgba(44, 118, 220, 0.3);
   --auth-blob-2: rgba(23, 105, 210, 0.24);
   --auth-blob-3: rgba(52, 199, 158, 0.12);
-  --auth-blob-4: rgba(120, 98, 255, 0.16);
+  --auth-blob-4: rgba(44, 118, 220, 0.14);
   --auth-hex-line: rgba(103, 168, 246, 0.2);
   --auth-card-bg: rgba(13, 31, 54, 0.66);
   --auth-card-border: rgba(137, 184, 238, 0.22);
@@ -423,4 +423,107 @@ select {
   [data-glow]::after {
     display: none;
   }
+}
+
+/* ===== 经营闭环快捷操作通用工具类 ===== */
+.nw-advisor-brand-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  display: block;
+}
+
+.nw-glance-issue-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.nw-glance-issue-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 28%, var(--ui-border));
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+  font: inherit;
+  font-size: var(--font-1);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.nw-glance-issue-btn:hover {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary-soft);
+}
+
+.nw-glance-issue-btn--primary {
+  background: var(--ui-primary);
+  border-color: var(--ui-primary);
+  color: var(--ui-on-primary);
+}
+
+.nw-glance-issue-btn--primary:hover {
+  background: var(--ui-primary-strong);
+  border-color: var(--ui-primary-strong);
+  color: var(--ui-on-primary);
+}
+
+.nw-dispatch-inline {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.nw-alert-desc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nw-alert-muted-note {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+.nw-mom-up {
+  color: var(--ok);
+  font-size: var(--font-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.nw-mom-down {
+  color: var(--danger);
+  font-size: var(--font-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.nw-mom-empty {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  cursor: help;
+}
+
+.nw-full-width {
+  width: 100%;
+}
+
+.nw-alert-banner {
+  margin-bottom: var(--space-3);
+}
+
+.nw-delivery-alert-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }

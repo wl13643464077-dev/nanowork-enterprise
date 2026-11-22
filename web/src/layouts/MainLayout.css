@@ -89,6 +89,7 @@
   cursor: pointer;
   font-size: var(--font-1);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--ui-text);
   background: color-mix(in srgb, var(--ui-surface-2) 74%, transparent);
   border: 0;
@@ -125,7 +126,7 @@
 }
 .os-user-account-type {
   margin-left: 6px;
-  font-size: 11px;
+  font-size: var(--font-1);
   font-weight: 400;
   color: var(--ui-muted);
 }
@@ -714,7 +715,7 @@
     gap: 9px;
   }
   .os-credit {
-    font-size: 11px;
+    font-size: var(--font-1);
     padding: 3px 8px;
   }
   .os-mid {
@@ -862,4 +863,14 @@
 .os-help-card-copy {
   margin: 6px 0 var(--space-3);
   color: var(--ui-text-2);
+}
+
+.os-notif-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--ui-border);
+  font-size: var(--font-1);
 }

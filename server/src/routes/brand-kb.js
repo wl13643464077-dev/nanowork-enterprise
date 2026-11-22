@@ -33,10 +33,12 @@ r.post('/collect', requireRole(...WRITE_ROLES), async (req, res) => {
   try {
     const pack = await collectBrandKnowledgePack({
       brandName: req.body?.brandName,
+      packRole: req.body?.packRole,
+      packId: req.body?.packId,
       userId: req.user?.id,
       upgrade: false,
     });
-    logOp(req.user, '品牌知识包', '联网采集', pack.brandName);
+    logOp(req.user, '品牌知识包', pack.packRole === 'competitor' ? '竞品联网采集' : '联网采集', pack.brandName);
     res.json(pack);
   } catch (error) {
     sendError(res, error, '品牌知识包采集失败，请稍后重试');
@@ -46,13 +48,21 @@ r.post('/collect', requireRole(...WRITE_ROLES), async (req, res) => {
 r.post('/upgrade', requireRole(...WRITE_ROLES), async (req, res) => {
   try {
     const overview = brandKnowledgeOverview();
-    const brandName = req.body?.brandName || overview.pack?.brandName;
+    const targetId = req.body?.packId !== undefined && req.body?.packId !== null && req.body?.packId !== ''
+      ? Number(req.body.packId)
+      : null;
+    const matchedCompetitor = targetId
+      ? (overview.competitors || []).find(item => item.id === targetId)
+      : null;
+    const brandName = req.body?.brandName || matchedCompetitor?.brandName || overview.pack?.brandName;
     const pack = await collectBrandKnowledgePack({
       brandName,
+      packRole: req.body?.packRole,
+      packId: targetId,
       userId: req.user?.id,
       upgrade: true,
     });
-    logOp(req.user, '品牌知识包', '升级采集', pack.brandName);
+    logOp(req.user, '品牌知识包', pack.packRole === 'competitor' ? '竞品升级采集' : '升级采集', pack.brandName);
     res.json(pack);
   } catch (error) {
     sendError(res, error, '品牌知识包升级失败，请稍后重试');
@@ -85,6 +95,7 @@ r.put('/dimensions/:id/include', requireRole(...WRITE_ROLES), (req, res) => {
 r.post('/recollect', requireRole(...WRITE_ROLES), async (req, res) => {
   try {
     const pack = await recollectBrandDimensions({
+      packId: req.body?.packId,
       keys: req.body?.keys,
       feedback: req.body?.feedback,
       userId: req.user?.id,
@@ -98,8 +109,8 @@ r.post('/recollect', requireRole(...WRITE_ROLES), async (req, res) => {
 
 r.post('/confirm', requireRole(...WRITE_ROLES), (req, res) => {
   try {
-    const pack = confirmBrandPack();
-    logOp(req.user, '品牌知识包', '确认入库', pack.brandName);
+    const pack = confirmBrandPack(req.body?.packId);
+    logOp(req.user, '品牌知识包', pack.packRole === 'competitor' ? '竞品确认入库' : '确认入库', pack.brandName);
     res.json(pack);
   } catch (error) {
     sendError(res, error, '确认入库失败');
@@ -113,6 +124,21 @@ r.delete('/dimensions/:id', requireRole(...WRITE_ROLES), (req, res) => {
     res.json(pack);
   } catch (error) {
     sendError(res, error, '维度删除失败');
+  }
+});
+
+r.delete('/:id', requireRole(...WRITE_ROLES), (req, res) => {
+  try {
+    const result = archiveBrandPack(req.params.id);
+    logOp(
+      req.user,
+      '品牌知识包',
+      result.packRole === 'competitor' ? '删除竞品档案' : '删除知识包',
+      String(result.id),
+    );
+    res.json(result);
+  } catch (error) {
+    sendError(res, error, '品牌知识包删除失败');
   }
 });
 

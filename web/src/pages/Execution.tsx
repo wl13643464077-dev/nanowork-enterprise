@@ -18,6 +18,7 @@ import {
   Space,
   Tooltip,
   Segmented,
+  Spin,
   message,
   Alert,
 } from 'antd';
@@ -53,6 +54,7 @@ import ExecutionTaskCard, {
 } from '../components/ExecutionTaskCard';
 import ExecutionTaskTraceDialog from '../components/ExecutionTaskTraceDialog';
 import ExecutionWorkflowDialogs from '../components/ExecutionWorkflowDialogs';
+import InspectionRectificationPanel from '../components/InspectionRectificationPanel';
 import { CHART_COLORS } from '../components/Charts';
 import './Execution.css';
 const TASK_STATUSES = ['待执行', '进行中', '返工中', '待审核', '已完成'];
@@ -720,7 +722,7 @@ export default function Execution() {
           onClick={() => setRollupDetail({ key, title, color, data: d })}
           style={{
             ...buttonResetStyle,
-            border: '1px solid var(--ui-surface)',
+            border: '1px solid var(--ui-border)',
             borderRadius: 8,
             padding: '10px 12px',
             background: 'var(--ui-surface)',
@@ -921,7 +923,7 @@ export default function Execution() {
           />
         </Col>
       </Row>
-
+      <InspectionRectificationPanel onChanged={loadAll} />
       {/* 公司经营目标与作战计划仅供管理层查看；员工直接进入本人任务。 */}
       {isManager && (
         <Row gutter={[12, 12]}>
@@ -1262,7 +1264,7 @@ export default function Execution() {
                           justifyContent: 'space-between',
                           alignItems: 'center',
                           background: {
-                            green: '#112018',
+                            green: 'color-mix(in srgb, var(--ok) 9%, var(--ui-surface))',
                             blue: 'var(--ui-surface)',
                             orange: 'var(--ui-warning-surface)',
                             red: 'var(--ui-surface)',
@@ -1272,9 +1274,12 @@ export default function Execution() {
                         <b
                           style={{
                             fontSize: 13,
-                            color: { green: '#16a34a', blue: 'var(--ui-accent)', orange: '#d97706', red: '#dc2626' }[
-                              g.color as string
-                            ],
+                            color: {
+                              green: 'var(--ok)',
+                              blue: 'var(--ui-accent)',
+                              orange: 'var(--warn)',
+                              red: 'var(--danger)',
+                            }[g.color as string],
                           }}
                         >
                           {g.tier}
@@ -2065,7 +2070,7 @@ export default function Execution() {
       >
         {!execDrill.data ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -2092,7 +2097,7 @@ export default function Execution() {
                         key={s.key}
                         style={{
                           background: 'var(--ui-surface)',
-                          border: '1px solid var(--ui-surface)',
+                          border: '1px solid var(--ui-border)',
                           borderRadius: 8,
                           padding: '8px 10px',
                         }}
@@ -2319,7 +2324,7 @@ export default function Execution() {
       >
         {!drill.data ? (
           <div style={{ textAlign: 'center', padding: 32 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -2354,7 +2359,13 @@ export default function Execution() {
                 })}
               </div>
             </div>
-            <div style={{ background: '#112018', borderRadius: 10, padding: '12px 14px' }}>
+            <div
+              style={{
+                background: 'color-mix(in srgb, var(--ok) 9%, var(--ui-surface))',
+                borderRadius: 10,
+                padding: '12px 14px',
+              }}
+            >
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                 <b>L2 团队月度 {drill.data.month.period}</b>
                 <span>
@@ -2477,7 +2488,7 @@ export default function Execution() {
                 </div>
                 <div
                   style={{
-                    border: '1px solid var(--ui-surface)',
+                    border: '1px solid var(--ui-border)',
                     borderRadius: 10,
                     padding: '12px 14px',
                     background: 'var(--ui-surface)',
@@ -2566,7 +2577,7 @@ export default function Execution() {
       >
         {!pDetail.data ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中…" />
+            <Spin />
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -2639,13 +2650,13 @@ export default function Execution() {
               loading={remindLoading === pDetail.data.id}
               onClick={() => sendRemind(pDetail.data.id)}
             >
-              生成 PAR-06 提醒卡并通知管理层
+              生成跟进提醒卡并通知管理层
             </Button>
           </div>
         )}
       </Modal>
 
-      {/* ===== PAR-06 提醒卡 Modal ===== */}
+      {/* ===== 跟进提醒卡 Modal ===== */}
       <Modal
         open={!!remindCard}
         width={520}
@@ -2697,7 +2708,7 @@ export default function Execution() {
               {remindCard.script}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--chart-2)' }}>
-              ✓ 已同步站内通知给老板与运营总监（口径：PAR-06 未行动提醒动作表）
+              ✓ 已同步站内通知给老板与运营总监（已列入待跟进提醒清单）
             </div>
           </div>
         )}

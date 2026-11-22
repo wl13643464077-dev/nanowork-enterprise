@@ -249,6 +249,7 @@ test("关闭工作台返回卡片会刷新crew，避免展示打开前的旧技�
     setCrewWorkbenchRunId: noop,
     setCrewMediaJobId: noop,
     setSalesVideoPreset: noop,
+    setXhsNotePreset: noop,
     setRetroContentId: noop,
     setEmployeeTaskRefreshToken: noop,
     loadMaterials: noop,

@@ -1,0 +1,115 @@
+/* 餐饮三平台快速导入向导 */
+.di-platform-guide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.di-platform-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.di-platform-sub {
+  margin: var(--space-1) 0 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-2);
+  line-height: 1.6;
+}
+
+.di-platform-compliance {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--ui-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 7%, var(--ui-surface));
+  color: var(--ok);
+  font-size: var(--font-1);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.di-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.di-platform-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.di-platform-card:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 45%, var(--ui-border));
+  box-shadow: var(--shadow-1);
+}
+
+.di-platform-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.di-platform-name {
+  color: var(--ui-text);
+  font-size: var(--font-3);
+  font-weight: 700;
+}
+
+.di-platform-path {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-2);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.65;
+}
+
+.di-platform-path strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ui-text);
+  font-size: var(--font-1);
+}
+
+.di-platform-formats {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  line-height: 1.6;
+}
+
+.di-platform-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--ui-hairline);
+}
+
+.di-platform-auto-hint {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+}
+
+@media (max-width: 1024px) {
+  .di-platform-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -455,6 +455,78 @@
   color: var(--ui-muted);
 }
 
+/* ===== 自动调用工具链 ===== */
+.evo-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.evo-tool-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.evo-tool-item:hover {
+  border-color: color-mix(in srgb, var(--evo-color, var(--ui-primary)) 40%, var(--ui-border));
+  background: var(--ui-surface);
+}
+
+.evo-tool-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.evo-tool-icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--evo-color, var(--ui-primary)) 14%, var(--ui-surface));
+  color: color-mix(in srgb, var(--evo-color, var(--ui-primary)) 86%, var(--ui-text));
+  font-size: var(--font-2);
+}
+
+.evo-tool-head strong {
+  overflow: hidden;
+  flex: 1;
+  color: var(--ui-text);
+  font-size: var(--font-2);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evo-tool-tag {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+}
+
+.evo-tool-item p {
+  margin: 0;
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  line-height: 1.55;
+}
+
 /* ===== 响应式 ===== */
 @media (max-width: 960px) {
   .evo-hero {

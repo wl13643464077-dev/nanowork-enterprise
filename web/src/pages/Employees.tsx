@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Alert, Button, Empty, Input, Select, Skeleton, Tooltip } from 'antd';
-import { AppstoreOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
-import { Link, useSearchParams } from 'react-router-dom';
+import {
+  AppstoreOutlined,
+  ArrowRightOutlined,
+  FileDoneOutlined,
+  FilterOutlined,
+  FireOutlined,
+  PictureOutlined,
+  SearchOutlined,
+  ThunderboltOutlined,
+  ToolOutlined,
+} from '@ant-design/icons';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, getUser } from '../api/client';
+import type { EmployeeExpertKernelSummary } from '../api/employeeWorkbenchTypes';
 import { isPersonalApiUser, PERSONAL_API_PRICING_NOTE } from '../components/personalApiBilling.js';
 import { AnimatedNumber } from '../components/Kit';
 import EmployeeAvatar from '../components/EmployeeAvatar';
@@ -46,6 +57,7 @@ type Employee = {
   capabilityCount?: number;
   capabilityNames?: string[];
   skillCount?: number;
+  expertKernel?: EmployeeExpertKernelSummary | null;
   inputs?: string[];
   steps?: string[];
   deliverables?: string[];
@@ -96,8 +108,33 @@ function pulseStatusClass(item: any) {
   return 'other';
 }
 
+type FeaturedEmployeeSpec = {
+  idx: number;
+  person: string;
+  roleTitle: string;
+  painTag: string;
+};
+
+function toolPillTone(category?: string) {
+  if (category === 'location' || category === 'compliance' || category === 'creative') return 'is-signature';
+  if (category === 'data' || category === 'research') return 'is-evidence';
+  return 'is-core';
+}
+
+const FEATURED_CORE_ROLES: FeaturedEmployeeSpec[] = [
+  { idx: 102, person: '钱商圈', roleTitle: '商圈竞争画像', painTag: '摸清周边竞品与客流结构' },
+  { idx: 101, person: '赵先机', roleTitle: '开店选址机会调研', painTag: '新店选址排雷，算清回本账' },
+  { idx: 108, person: '王菜单', roleTitle: '菜单精简与定价', painTag: '砍滞销菜，拉高招牌毛利' },
+  { idx: 160, person: '店小满', roleTitle: '周末引流活动策划', painTag: '一键策划拉新促活与物料' },
+  { idx: 144, person: '葛会员', roleTitle: '会员分层与唤回', painTag: '分层唤醒沉睡老客提复购' },
+  { idx: 161, person: '查巡巡', roleTitle: '督导巡店整改', painTag: '管住多店出品、卫生与服务' },
+  { idx: 143, person: '评价运营', roleTitle: '差评归因与口碑', painTag: '差评定位止损，稳步升评分' },
+];
+
 export default function Employees() {
   const personalApi = isPersonalApiUser(getUser());
+  const location = useLocation();
+  const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const [catalog, setCatalog] = useState<EmployeeCatalog>({ total: 0, groups: [], employees: [] });
   const [loading, setLoading] = useState(true);
@@ -108,6 +145,16 @@ export default function Employees() {
   const requestedEmployee = params.get('employee');
   const requestedTask = params.get('task');
   const requestedTaskId = /^\d+$/u.test(requestedTask || '') && Number(requestedTask) > 0 ? requestedTask : null;
+  const incomingDirective = useMemo(() => {
+    const stateDirective =
+      location.state &&
+      typeof location.state === 'object' &&
+      typeof (location.state as { directive?: unknown }).directive === 'string'
+        ? String((location.state as { directive?: string }).directive).trim()
+        : '';
+    const queryDirective = (params.get('directive') || '').trim();
+    return stateDirective || queryDirective || null;
+  }, [location.state, params]);
   const selected = useMemo(() => {
     if (!/^\d+$/u.test(requestedEmployee || '')) return null;
     const employeeIdx = Number(requestedEmployee);
@@ -243,7 +290,7 @@ export default function Employees() {
 
   // 部门专属色系：8 个分部各占一个明确色相（低饱和专业调），按目录分部顺序分配；
   // 头像、工号、分组视觉随部门换色，扫一眼即可区分部门
-  const DEPT_PALETTE = ['#3b74d1', '#0f9f89', '#d97f2b', '#7a5bd8', '#d1548c', '#4a9d4f', '#2a9dbf', '#8a6d3b'];
+  const DEPT_PALETTE = ['#3b74d1', '#0f9f89', '#d97f2b', '#3d7a80', '#d1548c', '#4a9d4f', '#2a9dbf', '#8a6d3b'];
   const deptColorMap = useMemo(() => {
     const map = new Map<string, string>();
     catalog.groups.forEach((g, i) => map.set(g.name, DEPT_PALETTE[i % DEPT_PALETTE.length]));
@@ -294,15 +341,30 @@ export default function Employees() {
     setParams(next, { replace: true });
   };
 
-  // 「带原话派给TA」的一次性预填：打开工作台时把老板那句话填进派活框。
-  const [dispatchPrefill, setDispatchPrefill] = useState<string | null>(null);
+  // 「带原话派给TA」或跨页跳转带来的一次性预填：打开工作台时把老板那句话填进派活框。
+  const [prefillState, setPrefillState] = useState<{ incoming: string | null; value: string | null }>(() => ({
+    incoming: incomingDirective,
+    value: incomingDirective,
+  }));
+  const dispatchPrefill = prefillState.incoming === incomingDirective ? prefillState.value : incomingDirective;
+  const setDispatchPrefill = (value: string | null) => setPrefillState({ incoming: null, value });
   // PRD v2.2 FR-9：演示模式抽屉
   const [demoOpen, setDemoOpen] = useState(false);
+
+  const employeeByIdx = useMemo(() => {
+    const map = new Map<number, Employee>();
+    for (const item of catalog.employees) map.set(item.idx, item);
+    return map;
+  }, [catalog.employees]);
+
+  const showFeaturedCore =
+    group === '全部分部' && !debouncedKeyword && !introReviewOnly && !statusFilter && !loading && !loadError;
 
   const openEmployee = (employee: Employee, taskId?: string | number | null) => {
     setDispatchPrefill(null);
     const next = new URLSearchParams(params);
     next.set('employee', String(employee.idx));
+    next.delete('directive');
     if (taskId == null || String(taskId).trim() === '') next.delete('task');
     else next.set('task', String(taskId));
     setParams(next, { replace: true });
@@ -313,6 +375,7 @@ export default function Employees() {
     const next = new URLSearchParams(params);
     next.set('employee', String(member.idx));
     next.delete('task');
+    next.delete('directive');
     setParams(next, { replace: true });
   };
 
@@ -322,6 +385,7 @@ export default function Employees() {
     const next = new URLSearchParams(params);
     next.set('employee', String(targetIdx));
     next.delete('task');
+    next.delete('directive');
     setParams(next, { replace: true });
   };
 
@@ -330,6 +394,7 @@ export default function Employees() {
     const next = new URLSearchParams(params);
     next.delete('employee');
     next.delete('task');
+    next.delete('directive');
     setParams(next, { replace: true });
   };
 
@@ -352,12 +417,14 @@ export default function Employees() {
           </div>
           <h1 id="employee-directory-title">选择数字员工</h1>
           <p>按经营问题找到对应岗位，一句话派活后即可查看进度、业务结果和真实费用。</p>
-          <Link to="/agents" style={{ fontSize: 13 }}>
-            自定义员工 / 导入工作流
-          </Link>
-          <Button size="small" type="link" style={{ fontSize: 13, paddingInline: 8 }} onClick={() => setDemoOpen(true)}>
-            演示模式
-          </Button>
+          <div className="employee-directory-actions">
+            <Button className="employee-demo-trigger" icon={<ThunderboltOutlined />} onClick={() => setDemoOpen(true)}>
+              演示模式 · 8 位拳头岗位
+            </Button>
+            <Link to="/agents" className="employee-agents-link">
+              自定义员工 / 导入工作流
+            </Link>
+          </div>
         </div>
         <dl className="employee-summary" aria-label="数字员工概况">
           <div>
@@ -383,6 +450,75 @@ export default function Employees() {
           if (employee) openEmployee(employee, taskId);
         }}
       />
+
+      {showFeaturedCore && (
+        <section className="employee-featured" aria-label="高频拳头岗位">
+          <header className="employee-featured-head">
+            <div className="employee-featured-title">
+              <FireOutlined aria-hidden="true" />
+              <strong>高频拳头岗位 · 老板最常用（8 位核心岗位）</strong>
+            </div>
+            <span>点一下即开工作台派活，覆盖选址、菜单、引流、口碑与内容种草</span>
+          </header>
+          <div className="employee-featured-grid">
+            {FEATURED_CORE_ROLES.map(spec => {
+              const matched = employeeByIdx.get(spec.idx);
+              const color = matched ? deptColor(matched) : DEPT_PALETTE[0];
+              const featuredTools = matched?.expertKernel?.tools?.slice(0, 3) || [];
+              return (
+                <button
+                  key={spec.idx}
+                  type="button"
+                  className="employee-featured-card"
+                  disabled={!matched}
+                  onClick={() => {
+                    if (matched) openEmployee(matched);
+                  }}
+                >
+                  <span className="employee-featured-avatar" aria-hidden="true">
+                    <EmployeeAvatar idx={spec.idx} name={matched?.person || spec.person} color={color} size={40} />
+                  </span>
+                  <span className="employee-featured-body">
+                    <strong>
+                      {matched?.person || spec.person} · {spec.roleTitle}
+                    </strong>
+                    <em className="employee-featured-tag">{spec.painTag}</em>
+                    {featuredTools.length > 0 && (
+                      <span className="employee-featured-tools" aria-label="自动调用的真实工具">
+                        {featuredTools.map(tool => (
+                          <span key={tool.key} className={`employee-tool-chip ${toolPillTone(tool.category)}`}>
+                            {tool.shortLabel}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </span>
+                  <ArrowRightOutlined className="employee-featured-arrow" aria-hidden="true" />
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="employee-featured-card is-content"
+              onClick={() => nav('/content?task=ai-xhs-note')}
+            >
+              <span className="employee-featured-avatar is-content-icon" aria-hidden="true">
+                <PictureOutlined />
+              </span>
+              <span className="employee-featured-body">
+                <strong>AI小红书种草图文</strong>
+                <em className="employee-featured-tag">直达内容仓 · 爆款笔记一键出图</em>
+                <span className="employee-featured-tools" aria-label="内容生成工具">
+                  <span className="employee-tool-chip is-signature">AI生图</span>
+                  <span className="employee-tool-chip is-evidence">爆款框架</span>
+                  <span className="employee-tool-chip is-core">品牌知识包</span>
+                </span>
+              </span>
+              <ArrowRightOutlined className="employee-featured-arrow" aria-hidden="true" />
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="employee-toolbar" aria-label="筛选数字员工">
         <div className="employee-search">
@@ -607,21 +743,46 @@ export default function Employees() {
                     <p className="employee-duty">
                       {plainCatalogText(employee.business?.intro || employee.intro || employee.duty || employee.desc)}
                     </p>
-                    {(employee.capabilityCount || employee.skillCount || null) && (
+                    {employee.expertKernel && employee.expertKernel.tools.length > 0 && (
+                      <div className="employee-kernel-tools" aria-label="真实调用工具链">
+                        <ToolOutlined className="employee-kernel-tools-icon" aria-hidden="true" />
+                        {employee.expertKernel.tools.slice(0, 3).map(tool => (
+                          <Tooltip key={tool.key} title={tool.label}>
+                            <span className={`employee-tool-chip ${toolPillTone(tool.category)}`}>
+                              {tool.shortLabel}
+                            </span>
+                          </Tooltip>
+                        ))}
+                        {employee.expertKernel.tools.length > 3 && (
+                          <span className="employee-tool-chip is-more">+{employee.expertKernel.tools.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                    {(employee.expertKernel || employee.capabilityCount || employee.skillCount || null) && (
                       <button
                         type="button"
                         className="employee-powers"
-                        aria-label={`查看${employee.person || employee.name}的完整能力与技能`}
-                        title="点击打开工作台查看完整能力与技能"
+                        aria-label={`查看${employee.person || employee.name}的真人技能与专家流程`}
+                        title="点击打开工作台查看完整真人技能与工作流"
                         onClick={() => openEmployee(employee)}
                       >
                         <span className="employee-powers-count">
-                          能力 {employee.capabilityCount || 0} · 技能 {employee.skillCount || 0}
+                          {employee.expertKernel
+                            ? `${employee.expertKernel.skillCount} 项真人技能 · ${employee.expertKernel.stepCount} 步专家流程`
+                            : `${employee.skillCount || 0} 项真人技能 · ${employee.capabilityCount || 0} 步专家流程`}
                         </span>
-                        {(employee.capabilityNames || []).slice(0, 2).map(name => (
+                        {(employee.capabilityNames || []).slice(0, 1).map(name => (
                           <em key={name}>{name}</em>
                         ))}
                       </button>
+                    )}
+                    {employee.expertKernel && employee.expertKernel.topDeliverables.length > 0 && (
+                      <Tooltip title={`标准交付：${employee.expertKernel.topDeliverables.join(' · ')}`}>
+                        <div className="employee-kernel-deliverables">
+                          <FileDoneOutlined aria-hidden="true" />
+                          <span>交付：{employee.expertKernel.topDeliverables.join(' · ')}</span>
+                        </div>
+                      </Tooltip>
                     )}
                     {employee.status === '执行中' && (
                       <div className="employee-current-action" role="status">
@@ -680,7 +841,7 @@ export default function Employees() {
           <span>员工档案说明</span>
           <small>查看来源与数据边界</small>
         </summary>
-        <p>员工定义来自派活餐饮产业部岗位手册；历史测试输出未作为经营事实或知识答案导入。</p>
+        <p>员工定义来自纳米Work行业版餐饮数字员工岗位手册；历史测试输出未作为经营事实或知识答案导入。</p>
       </details>
 
       <RestaurantDemoPanel

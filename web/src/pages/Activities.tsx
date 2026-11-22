@@ -1073,7 +1073,7 @@ export default function Activities() {
                       borderRadius: 10,
                       padding: 14,
                       flexShrink: 0,
-                      background: `linear-gradient(160deg, ${coverColor}c8, ${coverColor})`,
+                      background: `linear-gradient(160deg, color-mix(in srgb, ${coverColor} 82%, black), ${coverColor})`,
                       color: '#fff',
                       display: 'flex',
                       flexDirection: 'column',
@@ -1334,22 +1334,11 @@ export default function Activities() {
                     options={['待确认', '1万以内', '1-3万', '3-5万', '5万以上'].map(v => ({ value: v, label: v }))}
                   />
                 </div>
-                <Button
-                  block
-                  icon={<ThunderboltOutlined />}
-                  loading={planLoading}
-                  onClick={genPlan}
-                  style={{
-                    background: 'linear-gradient(135deg,var(--ui-primary-strong),var(--chart-3))',
-                    border: 'none',
-                    color: '#fff',
-                    fontWeight: 600,
-                  }}
-                >
+                <Button type="primary" block icon={<ThunderboltOutlined />} loading={planLoading} onClick={genPlan}>
                   生成策划案
                 </Button>
                 <div style={{ fontSize: 11, color: 'var(--ui-muted)', textAlign: 'center' }}>
-                  仅使用当前账号可见的CRM与本店已配置基准；缺失项标记待确认，上游超时会切换本地策划引擎
+                  结合当前门店客户记录与已配置经营基准生成策划案，缺失项将标明待确认
                 </div>
                 <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 10px' }}>
                   <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 4 }}>
@@ -1880,7 +1869,7 @@ export default function Activities() {
                         alignItems: 'center',
                         fontSize: 12,
                         background: 'var(--ui-surface)',
-                        border: '1px solid var(--ui-surface)',
+                        border: '1px solid var(--ui-border)',
                         borderRadius: 8,
                         padding: '6px 8px',
                       }}
@@ -1936,7 +1925,7 @@ export default function Activities() {
               </div>
               <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', lineHeight: 1.8 }}>
                 飞书日历 →「＋」→「订阅日历」→ 粘贴下方地址。新建/改期活动自动出现，无需再操作。
-                <b>需系统部署到公网后生效</b>（本地试用阶段请用方式一）。
+                <b>需在公网访问环境下生效</b>（未配置订阅时可先使用上方下载导入）。
               </div>
               <Input.Search
                 readOnly
@@ -2466,7 +2455,7 @@ export default function Activities() {
           style={{
             background:
               'linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 7%, transparent),color-mix(in srgb, var(--chart-3) 7%, transparent))',
-            border: '1px solid var(--ui-surface)',
+            border: '1px solid var(--ui-border)',
             borderRadius: 10,
             padding: '12px 14px',
             marginBottom: 14,
@@ -2667,7 +2656,7 @@ export default function Activities() {
               borderRadius: 8,
               padding: '8px 12px',
               fontSize: 12,
-              color: '#e0a253',
+              color: 'var(--ui-warning-text)',
             }}
           >
             <DollarOutlined /> 预算建议：<span style={{ whiteSpace: 'pre-wrap' }}>{displayText(plan.budgetNote)}</span>
@@ -2733,7 +2722,7 @@ export default function Activities() {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="保存后立即写入员工的组织协同舱"
+          message="保存后立即写入员工的经营任务看板"
           description="员工会收到站内任务通知；已绑定个人飞书的员工还会收到单独提醒。相同分工项再次保存只更新原任务，不会重复创建。"
         />
         <Table
@@ -2803,7 +2792,7 @@ export default function Activities() {
                         style={{
                           marginTop: 4,
                           fontSize: 10.5,
-                          color: assignee.feishuBound ? '#6d5279' : 'var(--ui-muted)',
+                          color: assignee.feishuBound ? 'var(--ui-primary)' : 'var(--ui-muted)',
                         }}
                       >
                         {assignee.feishuBound ? '已绑定飞书，将同步提醒' : '未绑定飞书，仅站内通知'}
@@ -2853,7 +2842,7 @@ export default function Activities() {
                       {row.status || '已同步'}
                     </Tag>
                     {row.feishuNotified && (
-                      <div style={{ fontSize: 10, color: '#6d5279', marginTop: 4 }}>飞书已发送</div>
+                      <div style={{ fontSize: 10, color: 'var(--ui-primary)', marginTop: 4 }}>飞书已发送</div>
                     )}
                   </div>
                 ) : (
@@ -2865,7 +2854,7 @@ export default function Activities() {
               width: 60,
               render: (_: any, row: any) =>
                 row.taskId ? (
-                  <Tooltip title="已同步任务请到组织协同舱调整或删除">
+                  <Tooltip title="已同步任务请到经营任务看板调整或删除">
                     <span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>已入档</span>
                   </Tooltip>
                 ) : (
@@ -2936,7 +2925,7 @@ export default function Activities() {
             <div
               style={{
                 background: 'var(--ui-surface)',
-                border: '1px solid var(--ui-surface)',
+                border: '1px solid var(--ui-border)',
                 borderRadius: 10,
                 padding: 12,
                 marginBottom: 12,
@@ -3011,7 +3000,7 @@ export default function Activities() {
               <Sect
                 title={
                   <Space size={6}>
-                    <Avatar size={20} src="/avatars/M-07.png" style={{ background: 'var(--ui-surface-2)' }} />
+                    <Avatar size={20} icon={<FileDoneOutlined />} style={{ background: 'var(--ui-primary)' }} />
                     {rv.aiMeta?.marshal || '数据复盘员工'} · 深度复盘{' '}
                     {rv.aiMeta?.model && (
                       <Tag color="geekblue" style={{ fontSize: 10 }}>
@@ -3081,9 +3070,10 @@ export default function Activities() {
                         padding: '7px 10px',
                       }}
                     >
-                      <Checkbox>
+                      <Space size={8}>
+                        <Tag color="blue">{i + 1}</Tag>
                         <span style={{ fontSize: 12.5, color: 'var(--ui-text-2)' }}>{s}</span>
-                      </Checkbox>
+                      </Space>
                       <Button
                         size="small"
                         type="link"

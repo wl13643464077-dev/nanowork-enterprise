@@ -16,7 +16,7 @@
     linear-gradient(
         120deg,
         color-mix(in srgb, var(--ui-primary) 55%, transparent),
-        color-mix(in srgb, #8b5cf6 45%, transparent) 45%,
+        color-mix(in srgb, var(--info) 42%, transparent) 45%,
         color-mix(in srgb, var(--ui-primary) 25%, var(--ui-border)) 90%
       )
       border-box;
@@ -44,7 +44,7 @@
   gap: 8px;
   font-size: 15px;
   font-weight: 800;
-  background: linear-gradient(100deg, var(--ui-primary), #8b5cf6 70%);
+  background: linear-gradient(100deg, var(--ui-primary), var(--info) 70%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -279,7 +279,7 @@
   background: linear-gradient(
     90deg,
     var(--ui-primary),
-    #8b5cf6 55%,
+    var(--info) 55%,
     color-mix(in srgb, var(--ui-primary) 30%, transparent)
   );
 }

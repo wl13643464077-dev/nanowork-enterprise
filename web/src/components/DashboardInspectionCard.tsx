@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Table, Tag, Tooltip } from 'antd';
+import { Button, Table, Tag, Tooltip } from 'antd';
+import { ThunderboltOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { dispatchToEmployee } from '../utils/dispatchEmployee';
 import { Panel } from './Kit';
 import './DashboardInspectionCard.css';
 
@@ -30,10 +33,19 @@ type StoreRow = {
   lastAt: string;
 };
 
+type RectificationStats = {
+  totalIssues: number;
+  created: number;
+  closed: number;
+  pending: number;
+  closureRate: number;
+};
+
 type Summary = {
   bySupervisor: SupervisorRow[];
   byStore: StoreRow[];
   totals: { inspections: number; stores: number; avgScore: number | null; highIssues: number };
+  rectificationStats?: RectificationStats;
 };
 
 function scoreTone(score: number | null) {
@@ -43,7 +55,14 @@ function scoreTone(score: number | null) {
   return 'red';
 }
 
+function closureTone(rate: number) {
+  if (rate >= 80) return 'green';
+  if (rate >= 40) return 'gold';
+  return 'red';
+}
+
 export default function DashboardInspectionCard() {
+  const nav = useNavigate();
   const [summary, setSummary] = useState<Summary | null>(null);
 
   useEffect(() => {
@@ -61,6 +80,8 @@ export default function DashboardInspectionCard() {
 
   if (!summary) return null;
 
+  const rectStats = summary.rectificationStats;
+
   return (
     <Panel
       title="巡店看板 · 近3个月"
@@ -68,6 +89,18 @@ export default function DashboardInspectionCard() {
         <span className="dic-totals">
           {summary.totals.inspections} 次巡店 · {summary.totals.stores} 家门店 · 均分 {summary.totals.avgScore ?? '—'}
           {summary.totals.highIssues > 0 && <Tag color="red">高危问题 {summary.totals.highIssues}</Tag>}
+          {rectStats && (
+            <Tooltip
+              title={`累计问题 ${rectStats.totalIssues} 项 · 已派整改 ${rectStats.created} 项 · 已复检闭环 ${rectStats.closed} 项`}
+            >
+              <Tag color={rectStats.totalIssues > 0 ? closureTone(rectStats.closureRate) : 'default'}>
+                整改闭环率 {rectStats.closureRate}%
+              </Tag>
+            </Tooltip>
+          )}
+          <Button size="small" type="link" onClick={() => nav('/execution#inspections')}>
+            巡店整改台账 →
+          </Button>
         </span>
       }
     >
@@ -128,6 +161,29 @@ export default function DashboardInspectionCard() {
                 render: (value: string) => (
                   <Tooltip title={value}>
                     <span className="dic-time">{String(value || '').slice(5, 16)}</span>
+                  </Tooltip>
+                ),
+              },
+              {
+                title: '闭环复检',
+                key: 'recheck',
+                width: 132,
+                render: (_: unknown, row: StoreRow) => (
+                  <Tooltip title="派给巡店督导（#161 查巡巡）生成复检清单与整改验收方案">
+                    <Button
+                      size="small"
+                      type="link"
+                      icon={<ThunderboltOutlined />}
+                      onClick={() =>
+                        dispatchToEmployee(
+                          nav,
+                          161,
+                          `请对门店「${row.store}」发起巡店复检：近 3 个月已巡店 ${row.inspections} 次、均分 ${row.avgScore ?? '—'}、最低分 ${row.minScore ?? '—'}、累计问题 ${row.issues} 项${row.highIssues > 0 ? `（含高危 ${row.highIssues} 项）` : ''}。请给出针对性复检清单、食安与卫生红线核查项及限期整改验收表。`,
+                        )
+                      }
+                    >
+                      派督导复检
+                    </Button>
                   </Tooltip>
                 ),
               },

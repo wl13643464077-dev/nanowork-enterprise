@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Checkbox, Form, Input, Progress, Result, Spin } from 'antd';
+import { Alert, Button, Checkbox, Form, Input, Progress, Result, Spin, message } from 'antd';
 import { Link, useParams } from 'react-router-dom';
-import {
-  TrialHistory,
-  newTrialRequestId,
-  trialError,
-  trialProviderLabel,
-  trialRequest,
-  trialTurnLimit,
-} from './TrialShared';
+import { TrialHistory, newTrialRequestId, trialError, trialRequest, trialTurnLimit } from './TrialShared';
 import type { TrialConversation, TrialEmployee, TrialLead } from './TrialShared';
 import TrialEmployeePicker, {
   TrialEmployeeGuide,
@@ -43,6 +36,7 @@ export default function TrialExperience() {
   const [fatal, setFatal] = useState('');
   const retry = useRef<{ employeeId: string; message: string; requestId: string } | null>(null);
   const sending = useRef(false);
+  const applySectionRef = useRef<HTMLElement | null>(null);
 
   const refresh = useCallback(
     async (sessionToken = accessToken) => {
@@ -134,6 +128,13 @@ export default function TrialExperience() {
   const selected = landing?.employees.find(item => item.id === employeeId);
   const turnLimit = trialTurnLimit(lead?.turnLimit, landing?.turnLimit);
   const exhausted = lead && lead.remainingTurns <= 0;
+  const handleExample = (value: string) => {
+    setDraft(value);
+    if (!lead) {
+      message.info('已预填该需求，填写下方资料通过后即可发送');
+      applySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
   const chooseEmployee = (id: string) => {
     if (busy || !landing?.employees.some(item => item.id === id)) return;
     setEmployeeId(id);
@@ -198,18 +199,16 @@ export default function TrialExperience() {
                 onChange={chooseEmployee}
                 disabled={busy}
               />
-              <TrialEmployeeGuide employee={selected} onExample={setDraft} disabled={busy} compact />
+              <TrialEmployeeGuide employee={selected} onExample={handleExample} disabled={busy} compact />
               <p className="trial-team-note">
                 五个场景共用 {turnLimit}{' '}
                 次成功体验，切换员工不会增加次数。这五位都按正式岗位完整能力执行，含调研、报告和完整文案方案。
               </p>
             </section>
-            <section className="trial-panel">
+            <section className="trial-panel" ref={applySectionRef} data-provider={landing.providerLabel || ''}>
               <div className="trial-section-title">
                 <h2>{landing.title || '数字员工限次体验'}</h2>
-                <span className="trial-pill">
-                  {turnLimit} 次问答 · {trialProviderLabel(landing.provider, landing.providerLabel || '360 智脑')}
-                </span>
+                <span className="trial-pill">专属限次体验 · 邀请人赠送额度</span>
               </div>
               {landing.salesPhone && (
                 <p className="trial-muted">
@@ -224,10 +223,7 @@ export default function TrialExperience() {
               )}
               {!lead && !restoring && (
                 <>
-                  <p>
-                    填写资料，邀请人审核后即可开始。本邀请固定使用
-                    {trialProviderLabel(landing.provider, landing.providerLabel || '360 智脑')}，体验费用由邀请人承担。
-                  </p>
+                  <p>填写资料，邀请人审核后即可开始，专属限次体验额度由邀请人赠送。</p>
                   <Form layout="vertical" requiredMark={false} onFinish={apply}>
                     <Form.Item name="name" label="你的称呼" rules={[{ required: true, message: '请填写你的称呼' }]}>
                       <Input autoComplete="name" maxLength={40} />
@@ -314,7 +310,7 @@ export default function TrialExperience() {
                         autoSize={{ minRows: 4, maxRows: 10 }}
                         maxLength={6000}
                         disabled={busy}
-                        placeholder="例如：我开火锅店，新推鲜切牛肉，帮我写一篇让人有食欲的小红书文案。"
+                        placeholder="例如：我是某连锁餐饮门店（望京店），新推当季招牌菜，帮我写一篇让人有食欲的小红书文案。"
                       />
                       <Button
                         className="trial-send"

@@ -147,7 +147,7 @@
 .lp-aurora i:nth-child(2) {
   top: 4%;
   right: -12%;
-  background: radial-gradient(circle, color-mix(in srgb, #8b5cf6 34%, transparent), transparent 65%);
+  background: radial-gradient(circle, color-mix(in srgb, #1769d2 34%, transparent), transparent 65%);
   animation: lp-aurora-drift 26s ease-in-out -8s infinite reverse;
 }
 
@@ -424,7 +424,7 @@
   font-size: 30px;
   font-weight: 780;
   font-variant-numeric: tabular-nums;
-  background: linear-gradient(110deg, var(--ui-primary), #8b5cf6 85%);
+  background: linear-gradient(110deg, var(--ui-primary), #1769d2 85%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -466,10 +466,10 @@
 /* ==== 深色首屏区：高级感的锚点（深蓝黑底 + 网格纹理 + 极光） ==== */
 .lp-dark-zone {
   position: relative;
-  overflow: hidden;
+  overflow: clip;
   background:
-    radial-gradient(ellipse 90% 60% at 70% -10%, rgba(47, 107, 218, 0.28), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 12% 8%, rgba(139, 92, 246, 0.16), transparent 55%),
+    radial-gradient(ellipse 90% 60% at 70% -10%, rgba(44, 118, 220, 0.28), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 12% 8%, rgba(23, 105, 210, 0.2), transparent 55%),
     linear-gradient(175deg, #0a1322 0%, #0c1930 55%, #0e1c36 100%);
   color: #eaf1fb;
 }
@@ -541,7 +541,7 @@
 }
 
 .lp-dark-zone .lp-hero h1 em {
-  background: linear-gradient(95deg, #6fb2ff 8%, #a78bfa 55%, #67e8c8 100%);
+  background: linear-gradient(95deg, #7dbaff 8%, #2c76dc 55%, #67e8c8 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -554,7 +554,7 @@
 /* 发光主按钮 + 玻璃次按钮 */
 .lp-dark-zone .lp-cta-main {
   border: 0;
-  background: linear-gradient(120deg, #2f6bda, #7c5cf0 85%);
+  background: linear-gradient(120deg, #2c76dc, #1769d2 85%);
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.12) inset,
     0 12px 34px rgba(64, 112, 224, 0.45);
@@ -635,7 +635,7 @@
 }
 
 .lp-dark-zone .lp-stat strong {
-  background: linear-gradient(110deg, #8db9ff, #c2b0ff 85%);
+  background: linear-gradient(110deg, #8db9ff, #67e8c8 85%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -673,7 +673,7 @@
     90deg,
     color-mix(in srgb, var(--ui-primary) 15%, transparent),
     var(--ui-primary) 18%,
-    #8b5cf6 55%,
+    #1769d2 55%,
     #22c4a8 85%,
     color-mix(in srgb, #22c4a8 15%, transparent)
   );
@@ -709,8 +709,8 @@
 
 .lp-day-slot:nth-child(3)::before,
 .lp-day-slot:nth-child(4)::before {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.16);
+  border-color: #1769d2;
+  box-shadow: 0 0 0 4px rgba(23, 105, 210, 0.16);
 }
 
 .lp-day-slot:nth-child(5)::before,
@@ -810,7 +810,7 @@
   aspect-ratio: 16 / 8.4;
   overflow: hidden;
   background:
-    radial-gradient(ellipse 70% 90% at 80% 10%, rgba(124, 92, 240, 0.35), transparent 60%),
+    radial-gradient(ellipse 70% 90% at 80% 10%, rgba(44, 118, 220, 0.34), transparent 60%),
     radial-gradient(ellipse 60% 80% at 15% 90%, rgba(34, 196, 168, 0.22), transparent 55%),
     linear-gradient(135deg, #14243f, #1b3054 70%, #16294a);
 }
@@ -1047,7 +1047,7 @@
   border-radius: 26px;
   background:
     radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--ui-accent) 38%, transparent), transparent 42%),
-    linear-gradient(130deg, var(--auth-bg, var(--ui-primary-strong)), var(--ui-primary-strong));
+    linear-gradient(135deg, var(--nav-bg), var(--ui-primary-strong));
   color: var(--ui-on-primary);
   text-align: center;
   overflow: hidden;

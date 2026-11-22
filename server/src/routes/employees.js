@@ -29,6 +29,7 @@ import { refundHold,
 import { executeHeldDelivery } from '../engines/two-phase-delivery.js';
 import { aggregateSupplierCosts } from '../engines/provider-cost-receipts.js';
 import { canonicalRestaurantEmployeeProfileFor } from '../engines/canonical-employee-profile.js';
+import { buildEmployeeKernelSummary } from '../engines/employee-expert-kernel.js';
 
 const r = Router();
 const ALLOWED_STATUS = new Set(['空闲', '执行中']);
@@ -52,9 +53,10 @@ const CAPABILITY_SUMMARY_BY_IDX = new Map(Array.from({ length: 61 }, (_, index) 
       capabilityCount: names.length,
       capabilityNames: names.slice(0, 4),
       skillCount: profile.skills?.catalog?.length ?? 0,
+      expertKernel: buildEmployeeKernelSummary(profile.identity, profile),
     }];
   } catch {
-    return [idx, { capabilityCount: 0, capabilityNames: [], skillCount: 0 }];
+    return [idx, { capabilityCount: 0, capabilityNames: [], skillCount: 0, expertKernel: null }];
   }
 }));
 
@@ -74,7 +76,14 @@ function toEmployee(row, canViewInternalProfile = false, viewerRole = null) {
     capabilityCount: 0,
     capabilityNames: [],
     skillCount: 0,
+    expertKernel: null,
   };
+  const expertKernel = capabilitySummary.expertKernel
+    ? {
+        ...capabilitySummary.expertKernel,
+        topSkills: canViewInternalProfile ? capabilitySummary.expertKernel.topSkills : [],
+      }
+    : null;
   return {
     idx: row.employee_idx,
     avatar: restaurantAvatar(num),
@@ -83,6 +92,7 @@ function toEmployee(row, canViewInternalProfile = false, viewerRole = null) {
     capabilityCount: capabilitySummary.capabilityCount,
     skillCount: capabilitySummary.skillCount,
     capabilityNames: canViewInternalProfile ? capabilitySummary.capabilityNames : [],
+    ...(expertKernel ? { expertKernel } : {}),
     key: row.key,
     person: row.person,
     name: row.name,

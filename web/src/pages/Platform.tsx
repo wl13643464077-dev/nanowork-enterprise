@@ -19,6 +19,7 @@ import {
   DatePicker,
   Alert,
   Flex,
+  Popconfirm,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -257,7 +258,7 @@ export default function Platform() {
       <div
         style={{
           height: 56,
-          background: 'linear-gradient(90deg,var(--ui-border-strong),var(--ui-primary-strong))',
+          background: 'linear-gradient(90deg, var(--nav-bg), var(--nav-bg-2))',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -653,7 +654,7 @@ export default function Platform() {
                           v == null ? (
                             '待核验'
                           ) : (
-                            <span style={{ color: v >= 0 ? '#16a34a' : 'var(--danger)' }}>
+                            <span style={{ color: v >= 0 ? 'var(--ok)' : 'var(--danger)' }}>
                               ¥{v.toFixed(2)}
                               {r.marginStatus === 'estimated' ? '（估算）' : ''}
                             </span>
@@ -783,9 +784,18 @@ export default function Platform() {
                           </Button>
                         )}
                         {r.status === '已开通' ? (
-                          <Button size="small" danger onClick={() => setStatus(r, '已停用')}>
-                            停用
-                          </Button>
+                          <Popconfirm
+                            title={`确认停用「${r.name}」？`}
+                            description="停用后该企业全部账号将无法登录。"
+                            okText="确认停用"
+                            okButtonProps={{ danger: true }}
+                            cancelText="取消"
+                            onConfirm={() => setStatus(r, '已停用')}
+                          >
+                            <Button size="small" danger>
+                              停用
+                            </Button>
+                          </Popconfirm>
                         ) : r.status === '已停用' ? (
                           <Button size="small" onClick={() => setStatus(r, '已开通')}>
                             启用
@@ -1051,7 +1061,7 @@ export default function Platform() {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="enabled" label="在售（is_active）" valuePropName="checked">
+              <Form.Item name="enabled" label="上架销售" valuePropName="checked">
                 <Switch />
               </Form.Item>
             </Col>
@@ -1243,7 +1253,7 @@ function PlatformCreditLogs({ tenants }: { tenants: any[] }) {
               ) : v > 0 ? (
                 <b style={{ color: 'var(--danger)' }}>-{v}</b>
               ) : v < 0 ? (
-                <b style={{ color: '#16a34a' }}>+{-v}</b>
+                <b style={{ color: 'var(--ok)' }}>+{-v}</b>
               ) : (
                 '0'
               ),

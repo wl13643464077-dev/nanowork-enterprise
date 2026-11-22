@@ -1,8 +1,9 @@
 // PRD v2.2 FR-9：演示模式。A1–A8 各 2 条固定话术，只填店名/城市/商圈/品类即可一键派活。
 // 每条话术可查看“样例结果”（一次真实实跑的存档，明确标“样例”和日期），仅作现场网络或
 // 供应商故障时的兜底；始终保留“现在实跑”。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Drawer, Empty, Input, Modal, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { Markdown } from './Markdown';
 
@@ -34,11 +35,13 @@ type Props = {
 };
 
 export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
+  const nav = useNavigate();
   const [fields, setFields] = useState<Record<string, string>>({});
   const [view, setView] = useState<DemoView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [sample, setSample] = useState<Sample | null>(null);
+  const fieldsDirtyRef = useRef(false);
 
   const load = useCallback(async (values: Record<string, string>) => {
     setLoading(true);
@@ -59,6 +62,14 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
     }
   }, []);
 
+  useEffect(() => {
+    if (!open || !fieldsDirtyRef.current) return undefined;
+    const timer = window.setTimeout(() => {
+      void load(fields);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [fields, load, open]);
+
   const openSample = async (script: DemoScript) => {
     try {
       const payload = (await api.get(`/employee-workbench/restaurant-demo/samples/${encodeURIComponent(script.id)}`, {
@@ -72,7 +83,7 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
 
   const groups = new Map<string, DemoScript[]>();
   for (const item of view?.items || []) {
-    const key = `${item.tierCode}·${item.person}`;
+    const key = `${item.person} · ${item.title}`;
     groups.set(key, [...(groups.get(key) || []), item]);
   }
 
@@ -84,39 +95,40 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
       }}
       onClose={onClose}
       width={720}
-      title="演示模式：8 位 A 级员工 · 每位 2 条话术"
+      title="实战演示模式 · 8 位核心拳头岗位"
       destroyOnClose={false}
     >
       <div className="demo-panel-fields">
         <Typography.Text type="secondary">
-          填好客户的店名、城市、商圈、品类，话术自动替换（默认取“我的版本”）：
+          填好客户的店名、城市、商圈、品类，350ms 自动同步替换全部演示话术（默认取“我的版本”）：
         </Typography.Text>
-        <Space wrap style={{ marginTop: 8 }}>
+        <Space wrap className="demo-panel-fields-row">
           {(view?.fields || ['店名', '城市', '商圈', '品类']).map(key => (
             <Input
               key={key}
               size="small"
-              style={{ width: 130 }}
+              className="demo-panel-field-input"
               maxLength={40}
               addonBefore={key}
               placeholder={view?.defaults?.[key] || ''}
               value={fields[key] || ''}
-              onChange={event => setFields(current => ({ ...current, [key]: event.target.value }))}
+              onChange={event => {
+                fieldsDirtyRef.current = true;
+                setFields(current => ({ ...current, [key]: event.target.value }));
+              }}
             />
           ))}
           <Button size="small" type="primary" loading={loading} onClick={() => void load(fields)}>
-            替换话术
+            立即刷新
           </Button>
         </Space>
       </div>
-      {error && <Alert type="warning" showIcon message={error} style={{ marginTop: 12 }} />}
+      {error && <Alert type="warning" showIcon message={error} className="demo-panel-alert" />}
       {!loading && view && !view.items.length && <Empty description="没有演示话术" />}
       <div className="demo-panel-list">
         {[...groups.entries()].map(([group, scripts]) => (
           <section key={group} className="demo-panel-group">
-            <h4>
-              {group} <small>{scripts[0]?.title}</small>
-            </h4>
+            <h4>{group}</h4>
             {scripts.map(script => (
               <div key={script.id} className="demo-panel-script">
                 <div className="demo-panel-script-text">
@@ -139,19 +151,33 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
                       现在实跑
                     </Button>
                   ) : (
-                    <Button
-                      size="small"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(script.filled);
-                          message.success('话术已复制，到内容工厂找种草员粘贴派活');
-                        } catch {
-                          message.info(script.filled);
-                        }
-                      }}
-                    >
-                      复制话术
-                    </Button>
+                    <>
+                      <Button
+                        size="small"
+                        type="primary"
+                        onClick={() => {
+                          const contentTask =
+                            String(script.employee) === 'content-10' ? 'ai-sales-video' : 'ai-xhs-note';
+                          onClose();
+                          nav(`/content?task=${contentTask}`, { state: { brief: script.filled } });
+                        }}
+                      >
+                        去内容仓实跑
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(script.filled);
+                            message.success('话术已复制，可随时粘贴到内容生产仓派活');
+                          } catch {
+                            message.info(script.filled);
+                          }
+                        }}
+                      >
+                        复制话术
+                      </Button>
+                    </>
                   )}
                   <Button size="small" disabled={!script.sample} onClick={() => void openSample(script)}>
                     {script.sample ? `看样例（${String(script.sample.capturedAt || '').slice(0, 10)}）` : '暂无样例'}
@@ -175,7 +201,7 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
               type="warning"
               showIcon
               message="这是之前一次真实实跑的样例存档，不是本次实时生成；现场网络恢复后请点“现在实跑”。"
-              style={{ marginBottom: 12 }}
+              className="demo-panel-sample-alert"
             />
             <Markdown content={sample.markdown} />
           </>
@@ -183,6 +209,13 @@ export default function RestaurantDemoPanel({ open, onClose, onRun }: Props) {
       </Modal>
     </Drawer>
   );
+}
+
+function demoScriptButtonLabel(script: DemoScript) {
+  const source = (script.youGet || script.filled || '').replace(/\s+/gu, ' ').trim();
+  if (!source) return script.typeLabel;
+  const snippet = source.length > 14 ? `${source.slice(0, 14)}…` : source;
+  return `${script.typeLabel} · ${snippet}`;
 }
 
 /** 工作台结果区：把这一单真实结果存为某条演示话术的样例（仅老板/管理员，且该员工有演示话术）。 */
@@ -228,7 +261,7 @@ export function DemoSampleSaver({ employeeIdx, taskId }: { employeeIdx: number; 
               }
             }}
           >
-            {script.typeLabel}·{script.id.split('-').pop()}
+            {demoScriptButtonLabel(script)}
           </Button>
         </Tooltip>
       ))}

@@ -1,0 +1,41 @@
+.kit-stat-card--clickable {
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+.kit-stat-card--clickable:hover,
+.kit-stat-card--clickable:focus-visible {
+  border-color: color-mix(in srgb, var(--ui-primary) 42%, var(--ui-border));
+}
+
+.kit-stat-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.kit-stat-card-label {
+  color: var(--ui-muted);
+  font-size: var(--font-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kit-stat-card-hint {
+  flex: 0 0 auto;
+  color: var(--ui-primary);
+  font-size: var(--font-1);
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0.85;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.kit-stat-card--clickable:hover .kit-stat-card-hint,
+.kit-stat-card--clickable:focus-visible .kit-stat-card-hint {
+  opacity: 1;
+}

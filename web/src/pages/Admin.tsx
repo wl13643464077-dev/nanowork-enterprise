@@ -19,6 +19,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   message,
 } from 'antd';
 import {
@@ -330,7 +331,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                   style={{
                     fontWeight: 700,
                     fontSize: 15,
-                    color: aiReadiness.effective === 'connected' ? 'var(--ok)' : '#e0a253',
+                    color: aiReadiness.effective === 'connected' ? 'var(--ok)' : 'var(--ui-warning-text)',
                   }}
                 >
                   {aiState.label}
@@ -439,7 +440,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                   {
                     type: 'pie',
                     radius: ['42%', '68%'],
-                    itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+                    itemStyle: { borderRadius: 6, borderColor: 'var(--ui-surface)', borderWidth: 2 },
                     label: { fontSize: 11, color: 'var(--ui-text-2)' },
                     data: (stats.byModel || []).map((x: any) => ({ name: x.model, value: x.credits })),
                   },
@@ -918,11 +919,15 @@ function Permissions() {
     load();
   }, []);
 
-  const toggleRm = (role: string, mod: string) =>
+  const isLockedModule = (role: string, mod: string) =>
+    (role === 'boss' || role === 'admin') && (mod === 'system' || mod === 'dashboard');
+  const toggleRm = (role: string, mod: string) => {
+    if (isLockedModule(role, mod)) return;
     setRm(prev => {
       const list = prev[role] || [];
       return { ...prev, [role]: list.includes(mod) ? list.filter(x => x !== mod) : [...list, mod] };
     });
+  };
   const toggleFf = (feat: string, role: string) =>
     setFf(prev => {
       const list = prev[feat] || [];
@@ -983,9 +988,18 @@ function Permissions() {
                 title: <div style={{ textAlign: 'center' as const }}>{m.name}</div>,
                 key: m.key,
                 align: 'center' as const,
-                render: (_: any, r: any) => (
-                  <Checkbox checked={(rm[r.key] || []).includes(m.key)} onChange={() => toggleRm(r.key, m.key)} />
-                ),
+                render: (_: any, r: any) => {
+                  const locked = isLockedModule(r.key, m.key);
+                  return (
+                    <Tooltip title={locked ? '为防止误锁定后台管理入口，此项不可取消' : undefined}>
+                      <Checkbox
+                        checked={locked || (rm[r.key] || []).includes(m.key)}
+                        disabled={locked}
+                        onChange={() => toggleRm(r.key, m.key)}
+                      />
+                    </Tooltip>
+                  );
+                },
               })),
             ] as any
           }
@@ -1112,11 +1126,7 @@ function MarshalsAdmin() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Alert
-        type="info"
-        showIcon
-        message="编辑保存为草稿，点击「同步到前台」后对新的AI调用生效（PRD §12 配置同步机制）。"
-      />
+      <Alert type="info" showIcon message="编辑保存为草稿，点击「同步到前台」后对新的AI调用生效。" />
       <Row gutter={[12, 12]}>
         {list.map(m => (
           <Col xs={24} sm={12} xl={8} key={m.id}>
@@ -1265,7 +1275,7 @@ function MarshalsAdmin() {
           </Form.Item>
           <Form.Item
             label={`权威员工目录（只读 · ${(cur?.specialists || []).length}人）`}
-            extra="员工姓名、岗位、编号和分部归属由 restaurant.json 统一托管；如需调整目录，应走目录修订与校验流程。"
+            extra="员工姓名、岗位、编号和分部归属由平台标准目录统一维护；如需调整目录，请联系平台顾问。"
           >
             <div className="admin-catalog-grid">
               {(cur?.specialists || []).map((employee: any) => (
@@ -1558,7 +1568,7 @@ function LogsSecurity() {
               <div style={{ padding: 30, textAlign: 'center', color: 'var(--ui-muted)' }}>加载中…</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <FieldRow label="Token有效期（小时）">
+                <FieldRow label="登录会话有效期（小时）">
                   <InputNumber
                     min={1}
                     max={168}

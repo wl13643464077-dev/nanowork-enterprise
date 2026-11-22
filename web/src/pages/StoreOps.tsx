@@ -28,9 +28,12 @@ import {
   RocketOutlined,
   ScheduleOutlined,
   SoundOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { api, getUser } from '../api/client';
 import { useStoreVersion } from '../api/store-context';
+import { dispatchToEmployee } from '../utils/dispatchEmployee';
 import './StoreOps.css';
 
 // 门店日常操作台：日清检查 / 沽清板 / 排班考勤 / AI 晨会。
@@ -141,6 +144,7 @@ function DailyChecklists() {
 }
 
 function SoldoutBoard() {
+  const nav = useNavigate();
   const [data, setData] = useState<{
     date: string;
     dishes: any[];
@@ -165,7 +169,13 @@ function SoldoutBoard() {
   if (error) return <Alert type="error" showIcon message={error} />;
   if (!data) return <Skeleton active paragraph={{ rows: 5 }} />;
   if (!data.dishes.length)
-    return <Empty description="还没有菜品档案；先到「门店数据 → 菜品」建菜单，这里就能一键标沽清" />;
+    return (
+      <Empty description="还没有菜品档案；先到「门店数据 → 菜品」建菜单，这里就能一键标沽清">
+        <Button type="primary" onClick={() => nav('/store-data')}>
+          前往门店数据维护菜品
+        </Button>
+      </Empty>
+    );
 
   const groups = data.dishes.reduce<Record<string, any[]>>((acc, dish) => {
     const key = dish.category || '未分类';
@@ -203,14 +213,32 @@ function SoldoutBoard() {
           type="error"
           showIcon
           message="备货预警：这些菜近 7 天频繁卖断，备货量该上调了"
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={() =>
+                dispatchToEmployee(
+                  nav,
+                  108,
+                  `近 7 天以下菜品频繁卖断沽清：${(data.frequentSoldout || [])
+                    .map(item => `${item.name}（沽清 ${item.days} 天）`)
+                    .join('、')}。请分析备货量基数、高峰出品节奏与可替代引流菜组合方案，减少卖断导致的营收流失。`,
+                )
+              }
+            >
+              派给王菜单优化备货
+            </Button>
+          }
           description={
-            <span>
+            <span className="nw-alert-desc-row">
               {(data.frequentSoldout || []).map(item => (
                 <Tag color="volcano" key={item.name}>
                   {item.name} · 沽清 {item.days} 天
                 </Tag>
               ))}
-              <small style={{ color: 'var(--ui-muted)' }}>
+              <small className="nw-alert-muted-note">
                 频繁沽清 =
                 白丢的营业额；按行业做法：上调备货基数，并检查是不是原料供应问题（可到「库存订货」核对安全线）。
               </small>
@@ -428,6 +456,7 @@ function ShiftAttendance() {
 }
 
 function InventoryBoard() {
+  const nav = useNavigate();
   const [data, setData] = useState<{ items: any[]; lowCount: number } | null>(null);
   const [error, setError] = useState('');
   const [addOpen, setAddOpen] = useState(false);
@@ -486,6 +515,8 @@ function InventoryBoard() {
     }
   };
 
+  const lowItems = data.items.filter(item => Number(item.quantity) < Number(item.safe_line));
+
   return (
     <div className="sop-inventory">
       <div className="sop-inventory-toolbar">
@@ -494,6 +525,27 @@ function InventoryBoard() {
           showIcon
           message={
             data.lowCount ? `${data.lowCount} 项物料低于安全线——点「生成订货清单」按缺口订货` : '库存都在安全线以上'
+          }
+          action={
+            data.lowCount > 0 ? (
+              <Button
+                size="small"
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={() =>
+                  dispatchToEmployee(
+                    nav,
+                    108,
+                    `当前门店有 ${data.lowCount} 项物料低于安全库存线（${lowItems
+                      .slice(0, 6)
+                      .map(item => `${item.name} 剩 ${item.quantity}${item.unit}/安全线 ${item.safe_line}${item.unit}`)
+                      .join('；')}）。请结合菜品毛利与备货周转，给出优先采购清单与低损耗控制建议。`,
+                  )
+                }
+              >
+                派给王菜单排查备货
+              </Button>
+            ) : undefined
           }
           style={{ flex: 1 }}
         />
@@ -684,6 +736,7 @@ function InventoryBoard() {
 }
 
 function DeliveryDaily() {
+  const nav = useNavigate();
   const [data, setData] = useState<{ rows: any[]; summary: any } | null>(null);
   const [error, setError] = useState('');
   const [form] = Form.useForm();
@@ -743,6 +796,34 @@ function DeliveryDaily() {
           <span>近7天差评</span>
         </div>
       </div>
+
+      {Number(data.summary.weekBadReviews) > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`近 7 天外卖累计 ${data.summary.weekBadReviews} 条差评，建议及时联动外卖运营专员排查出餐时效与包装问题`}
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={() =>
+                dispatchToEmployee(
+                  nav,
+                  146,
+                  `门店近 7 天外卖累计单量 ${data.summary.weekOrders} 单、营收 ¥${Number(
+                    data.summary.weekRevenue || 0,
+                  ).toLocaleString()}、均分 ${data.summary.weekAvgRating ?? '未记录'}、出现 ${
+                    data.summary.weekBadReviews
+                  } 条差评。请排查美团/饿了么出餐时效、餐品打包与差评挽回动作，输出本周外卖提分方案。`,
+                )
+              }
+            >
+              派给外卖运营专员
+            </Button>
+          }
+        />
+      )}
 
       <Form form={form} layout="inline" className="sop-delivery-form" initialValues={{ platform: '美团' }}>
         <Form.Item name="platform" rules={[{ required: true }]}>
@@ -844,7 +925,7 @@ function MorningBrief() {
           <strong>
             <SoundOutlined /> AI 晨会要点
           </strong>
-          <span>按昨天的真实营收、日报、差评和今日排班生成，店长照着念就能开晨会</span>
+          <span>按昨天的真实营收、日报和差评生成，店长照着念就能开晨会</span>
         </div>
         <Button type="primary" icon={<AudioOutlined />} loading={loading} onClick={() => void run()}>
           {loading ? '正在读昨日数据…' : brief ? '重新生成' : '生成今日晨会要点'}
@@ -860,12 +941,13 @@ export default function StoreOps() {
   // 多门店：顶栏切换门店后各台账按新门店重拉（用 key 重挂子面板，保留当前页签）
   const storeVersion = useStoreVersion();
   const [activeTab, setActiveTab] = useState('checklists');
+  const showShifts = getUser()?.role === 'platform_super';
   return (
     <div className="sop-page" key={storeVersion}>
       <header className="sop-head">
         <div>
           <span className="sop-kicker">门店日常 · 每天开门要干的活</span>
-          <h1>日清 · 沽清 · 排班考勤</h1>
+          <h1>日清检查 · 沽清板 · 库存与外卖日报</h1>
           <p>勾一项留一条痕：谁做的、几点做的都有记录；完成率和漏检直接进老板驾驶舱。</p>
         </div>
       </header>
@@ -892,15 +974,19 @@ export default function StoreOps() {
             ),
             children: <SoldoutBoard />,
           },
-          {
-            key: 'shifts',
-            label: (
-              <span>
-                <ScheduleOutlined /> 排班考勤
-              </span>
-            ),
-            children: <ShiftAttendance />,
-          },
+          ...(showShifts
+            ? [
+                {
+                  key: 'shifts',
+                  label: (
+                    <span>
+                      <ScheduleOutlined /> 排班考勤
+                    </span>
+                  ),
+                  children: <ShiftAttendance />,
+                },
+              ]
+            : []),
           {
             key: 'inventory',
             label: (

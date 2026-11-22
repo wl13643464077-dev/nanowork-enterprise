@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Card, Skeleton, Tag } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import './Kit.css';
 
 // 数字滚动：KPI 数值变化时从旧值缓动到新值（尊重 prefers-reduced-motion）
 // format 用于让「¥1,234」「1.2万」这类格式化值也能滚动——此前 StatCard 只在 value 是
@@ -66,11 +67,26 @@ export function StatCard({
   trendLabel?: string;
   onClick?: () => void;
 }) {
+  const clickable = Boolean(onClick);
   return (
     <Card
       size="small"
-      hoverable={!!onClick}
+      hoverable={clickable}
+      className={clickable ? 'kit-stat-card kit-stat-card--clickable' : 'kit-stat-card'}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? `${label}，点击查看明细` : undefined}
       onClick={onClick}
+      onKeyDown={
+        onClick
+          ? event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       styles={{ body: { padding: 'var(--card-pad-tight) var(--card-pad)' } }}
       style={{ borderRadius: 'var(--radius-md)', height: '100%' }}
     >
@@ -92,7 +108,14 @@ export function StatCard({
           {icon}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ color: 'var(--ui-muted)', fontSize: 'var(--font-1)', whiteSpace: 'nowrap' }}>{label}</div>
+          <div className="kit-stat-card-head">
+            <span className="kit-stat-card-label">{label}</span>
+            {clickable && (
+              <span className="kit-stat-card-hint" aria-hidden="true">
+                查看明细 ›
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
             <span
               style={{ fontSize: 'var(--stat-value)', fontWeight: 700, color: 'var(--ui-text)', whiteSpace: 'nowrap' }}

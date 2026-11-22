@@ -39,6 +39,7 @@ function fixture(file, { user = {}, states = [], queryData = {}, extra = '' } = 
     './mobileRoutes': routes.exports,
     './employeeCatalog': { employeeDisplayName: employee => employee?.name || '', deptToneIndex: () => 1 },
     '../RestaurantDispatchAssist': { default: 'RestaurantDispatchAssist' },
+    '../personalApiBilling.js': { isPersonalApiUser: u => u?.accountType === 'tester' || u?.billingMode === 'personal_api' },
     '../EmployeeAvatar': { default: 'EmployeeAvatar' },
     '../UnifiedFilePicker': { UnifiedFilePicker: 'UnifiedFilePicker' },
     './mobile.css': {},

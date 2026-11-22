@@ -30,7 +30,7 @@ const REMEMBER_KEY = 'nanowork_industry_remember_user';
 // 平台真实事实
 const STATS = [
   { value: '61', label: '餐饮数字员工 · 8 大分部' },
-  { value: '10', label: '内容生产数字员工' },
+  { value: '12', label: '内容生产与种草带货数字员工' },
   { value: '10', label: '门店日常管理功能' },
   { value: '¥0.4起', label: '单次派活成本（两阶段计费）' },
 ];
@@ -53,8 +53,8 @@ const FEATURES = [
     icon: <EditOutlined />,
     title: '内容生产仓 · 10 工位流水线',
     points: [
-      '趋势选题、爆款拆解、撰稿、配图、封面、分发、复盘一条线',
-      '10 个 Paihuo 内容工位 + AI 带货员 + AI 小红书种草员，与 61 位餐饮员工合计 73 位',
+      '趋势选题、爆款拆解、撰稿、配图、封面、分发、复盘 10 工位一条线',
+      '10 个标准内容流水线工位 + AI 带货员 + AI 小红书种草员，与 61 位餐饮数字员工合计 73 位',
       '对标外包 300–1500 元/篇的内容，数字员工几毛钱一次',
       '普通内部产出通过质量与账务门禁后自动采用；外发、付费和不可逆动作仍需人工确认',
     ],
@@ -554,9 +554,6 @@ export default function Login() {
                 </button>
                 <button type="button" className="au-link" onClick={() => nav('/register?mode=apply')}>
                   申请开通
-                </button>
-                <button type="button" className="au-link" onClick={() => nav('/tester/apply')}>
-                  测试员申请
                 </button>
               </div>
               <div className="au-min-trust">

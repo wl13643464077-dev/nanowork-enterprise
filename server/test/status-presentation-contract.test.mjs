@@ -109,7 +109,7 @@ test('知识库页面区分资料入库与语义向量就绪，并提供显式�
   const source = read('web/src/pages/System.tsx');
   assert.match(source, /const kbVector = kbReadiness\.vector/u);
   assert.match(source, /回填缺失向量/u);
-  assert.match(source, /ENABLE_BACKGROUND_EMBEDDINGS=true/u);
+  assert.match(source, /请联系平台运维人员配置/u);
   assert.match(source, /语义向量/u);
   assert.doesNotMatch(source, /上传\/录入的文档自动向量化/u);
   assert.doesNotMatch(source, /AI 后续回答可随时抽取调度/u);

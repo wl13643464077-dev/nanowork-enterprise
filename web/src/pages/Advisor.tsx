@@ -51,7 +51,7 @@ import { UnifiedFilePicker, type UploadedFileRef } from '../components/UnifiedFi
 import { ArtifactActions } from '../components/ArtifactActions';
 import BusinessFlowTrace from '../components/BusinessFlowTrace';
 import { generatedArtifactStatusLabel } from '../components/statusPresentation.js';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const { TextArea } = Input;
 
@@ -129,9 +129,9 @@ function ToolChip({
         cursor: 'pointer',
         userSelect: 'none',
         transition: 'all .2s',
-        background: active ? 'var(--ui-surface)' : 'var(--ui-surface)',
-        color: active ? 'var(--ui-accent)' : 'var(--ui-muted)',
-        border: `1px solid ${active ? 'var(--ui-surface)' : 'transparent'}`,
+        background: active ? 'var(--ui-primary-soft)' : 'var(--ui-surface-2)',
+        color: active ? 'var(--ui-primary)' : 'var(--ui-text-2)',
+        border: `1px solid ${active ? 'var(--ui-primary)' : 'var(--ui-border)'}`,
       }}
     >
       {icon}
@@ -142,6 +142,7 @@ function ToolChip({
 
 export default function Advisor() {
   const nav = useNavigate();
+  const location = useLocation();
   const user = getUser();
   const [questions, setQuestions] = useState<string[]>(DEFAULT_QUESTIONS);
   const [diagType, setDiagType] = useState('经营诊断');
@@ -188,6 +189,18 @@ export default function Advisor() {
     refreshWorkspace();
     return clearTimers;
   }, []);
+
+  useEffect(() => {
+    const incoming = (location.state as { q?: string } | null)?.q;
+    const trimmed = typeof incoming === 'string' ? incoming.trim() : '';
+    if (!trimmed) return;
+    nav(location.pathname, { replace: true, state: null });
+    const timer = window.setTimeout(() => {
+      setInput(trimmed);
+      setDraftNotice('已带入经营问题到输入框，点击「开始诊断」后才会调用AI并按积分计费。');
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname, location.state, nav]);
 
   // 消息变化时自动滚到底部
   useEffect(() => {
@@ -446,41 +459,25 @@ export default function Advisor() {
               styles={{ body: { padding: 18 } }}
               style={{
                 borderRadius: 10,
-                border: '1px solid var(--ui-surface)',
-                background: 'linear-gradient(135deg,var(--ui-surface) 0%,var(--ui-surface) 55%,var(--ui-surface) 100%)',
+                border: '1px solid var(--ui-border)',
+                background:
+                  'linear-gradient(135deg,var(--ui-primary-soft) 0%,var(--ui-surface) 55%,var(--ui-surface) 100%)',
               }}
             >
               <div style={{ display: 'flex', gap: 14 }}>
                 <Avatar
                   size={54}
                   style={{
-                    background: 'linear-gradient(135deg,#26242f,var(--ui-surface-2))',
+                    background: 'linear-gradient(135deg,var(--ui-primary),var(--info))',
                     flexShrink: 0,
-                    border: '1px solid rgba(218,179,105,.5)',
-                    boxShadow: '0 4px 14px rgba(218,179,105,.22)',
+                    border: '1px solid color-mix(in srgb, var(--ui-primary) 35%, var(--ui-border))',
+                    boxShadow: '0 4px 14px color-mix(in srgb, var(--ui-primary) 22%, transparent)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  <svg width="26" height="33" viewBox="0 0 60 88" aria-hidden="true">
-                    <defs>
-                      <linearGradient id="advlogo" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0" stopColor="#fff6e0" />
-                        <stop offset="1" stopColor="var(--ui-primary)" />
-                      </linearGradient>
-                    </defs>
-                    <rect
-                      x="6"
-                      y="6"
-                      width="48"
-                      height="76"
-                      rx="3"
-                      fill="none"
-                      stroke="url(#advlogo)"
-                      strokeWidth="3"
-                    />
-                  </svg>
+                  <img src="/brand/nanowork-icon.svg" alt="纳米Work" className="nw-advisor-brand-icon" />
                 </Avatar>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -513,7 +510,7 @@ export default function Advisor() {
                         width: '100%',
                         textAlign: 'left',
                         background: 'var(--ui-surface)',
-                        border: '1px solid var(--ui-surface)',
+                        border: '1px solid var(--ui-border)',
                         borderRadius: 8,
                         padding: '9px 12px',
                         fontSize: 12.5,
@@ -528,7 +525,7 @@ export default function Advisor() {
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {q}
                       </span>
-                      <RightOutlined style={{ fontSize: 10, color: '#bcc7d6' }} />
+                      <RightOutlined style={{ fontSize: 10, color: 'var(--ui-muted)' }} />
                     </button>
                   </Col>
                 ))}
@@ -555,7 +552,7 @@ export default function Advisor() {
                       transition: 'all .2s',
                       background: active ? 'var(--ui-primary)' : 'var(--ui-surface)',
                       color: active ? 'var(--ui-on-primary)' : 'var(--ui-text-2)',
-                      border: `1px solid ${active ? 'var(--ui-primary)' : 'var(--ui-surface)'}`,
+                      border: `1px solid ${active ? 'var(--ui-primary)' : 'var(--ui-border)'}`,
                       boxShadow: active ? '0 2px 8px color-mix(in srgb, var(--ui-primary) 30%, transparent)' : 'none',
                     }}
                   >
@@ -695,8 +692,8 @@ export default function Advisor() {
                                 }}
                               >
                                 {m.deep && (
-                                  <Tag color="purple" style={{ fontSize: 10.5, lineHeight: '16px', margin: 0 }}>
-                                    🧠 深度思考·{'gpt-5.5'}
+                                  <Tag color="blue" style={{ fontSize: 10.5, lineHeight: '16px', margin: 0 }}>
+                                    🧠 深度思考·旗舰推演
                                   </Tag>
                                 )}
                                 {m.mode === 'template' && (
@@ -853,7 +850,7 @@ export default function Advisor() {
                       />
                     </span>
                   </Tooltip>
-                  <Tooltip title="开启后升级到老板级模型(gpt-5.5)做五视角推演+依据链+反方观点，耗时与积分更高">
+                  <Tooltip title="开启后升级到深度思考·旗舰推演，做五视角推演+依据链+反方观点，耗时与积分更高">
                     <span>
                       <ToolChip
                         icon={<ThunderboltOutlined />}
@@ -861,7 +858,7 @@ export default function Advisor() {
                         active={deepOn}
                         onClick={() => {
                           setDeepOn(v => !v);
-                          if (!deepOn) message.success('已开启深度思考：升级 gpt-5.5 深度推演（消耗积分较高）');
+                          if (!deepOn) message.success('已开启深度思考·旗舰推演（消耗积分较高）');
                         }}
                       />
                     </span>
@@ -1182,8 +1179,8 @@ export default function Advisor() {
                       radius: '64%',
                       axisName: { color: 'var(--ui-text-2)', fontSize: 11 },
                       splitArea: { areaStyle: { color: ['var(--ui-surface)', 'var(--ui-surface-2)'] } },
-                      splitLine: { lineStyle: { color: 'var(--ui-surface)' } },
-                      axisLine: { lineStyle: { color: 'var(--ui-surface)' } },
+                      splitLine: { lineStyle: { color: 'var(--ui-border)' } },
+                      axisLine: { lineStyle: { color: 'var(--ui-border)' } },
                     },
                     series: [
                       {
@@ -1229,7 +1226,8 @@ export default function Advisor() {
                       display: 'flex',
                       alignItems: 'center',
                       gap: 6,
-                      background: 'var(--ui-surface)',
+                      background: 'var(--ui-surface-2)',
+                      border: '1px solid var(--ui-border)',
                       borderRadius: 8,
                       padding: '6px 8px',
                     }}

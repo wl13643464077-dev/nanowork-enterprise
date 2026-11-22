@@ -7,8 +7,14 @@ import { AMAP_RESTAURANT_TYPECODE, searchText } from './amap.js';
 import { fetchPublicPageEvidence } from './controlled-web-evidence.js';
 
 export const BRAND_KB_CATEGORY = '品牌知识包';
+export const COMPETITOR_KB_CATEGORY = '竞品档案';
+export const COMPETITOR_PACK_LIMIT = 3;
 export const BRAND_PACK_SOURCE_TYPE = 'brand_pack';
 export const BRAND_PACK_WINDOW_DAYS = 90;
+
+function normalizePackRole(value) {
+  return String(value || '').trim().toLowerCase() === 'competitor' ? 'competitor' : 'own';
+}
 
 export const BRAND_KNOWLEDGE_DIMENSIONS = Object.freeze([
   Object.freeze({ key: 'identity', title: '品牌全称与别名' }),
@@ -261,9 +267,11 @@ function mergeDimensions(parsed) {
 export function compileBrandPackMarkdown(pack, dimensions) {
   const rows = (Array.isArray(dimensions) ? dimensions : []).filter(item => item.included !== false);
   const filled = rows.filter(item => item.status === 'filled' || item.status === 'edited').length;
+  const isCompetitor = normalizePackRole(pack.packRole || pack.pack_role) === 'competitor';
   return [
-    `# ${pack.brandName} 品牌知识包`,
+    isCompetitor ? `# 【竞品档案】${pack.brandName} 品牌知识包` : `# ${pack.brandName} 品牌知识包`,
     '',
+    ...(isCompetitor ? ['- 档案角色：竞品对照档案（仅供竞争分析与差异化定位对照，禁止与本企业自有品牌混淆）'] : []),
     `- 覆盖窗口：近 ${pack.windowDays || BRAND_PACK_WINDOW_DAYS} 天（${pack.windowLabel || nowWindowLabel()}）`,
     `- 版本：v${pack.version || 1}`,
     `- 已填写维度：${filled}/${BRAND_KNOWLEDGE_DIMENSIONS.length}`,
@@ -285,10 +293,48 @@ export function compileBrandPackMarkdown(pack, dimensions) {
 export function loadActiveBrandPack(tenantId = curTenant()) {
   return q.get(
     `SELECT * FROM brand_knowledge_packs
-     WHERE tenant_id=? AND status IN ('ready','review','collecting','failed')
+     WHERE tenant_id=? AND COALESCE(pack_role, 'own') = 'own'
+       AND status IN ('ready','review','collecting','failed')
      ORDER BY id DESC LIMIT 1`,
     tenantId,
   ) || null;
+}
+
+export function loadCompetitorBrandPacks(tenantId = curTenant()) {
+  return q.all(
+    `SELECT * FROM brand_knowledge_packs
+     WHERE tenant_id=? AND COALESCE(pack_role, 'own') = 'competitor'
+       AND status != 'archived'
+     ORDER BY id DESC LIMIT ?`,
+    tenantId,
+    COMPETITOR_PACK_LIMIT,
+  );
+}
+
+function loadBrandPackById(packId, tenantId = curTenant()) {
+  const id = Number(packId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw Object.assign(new Error('无效的品牌知识包 ID'), { status: 400, code: 'BRAND_PACK_INVALID_ID' });
+  }
+  return q.get(
+    `SELECT * FROM brand_knowledge_packs
+     WHERE tenant_id=? AND id=? AND status != 'archived'`,
+    tenantId,
+    id,
+  ) || null;
+}
+
+function resolveTargetPack(packId = null, tenantId = curTenant()) {
+  if (packId !== null && packId !== undefined && packId !== '') {
+    const found = loadBrandPackById(packId, tenantId);
+    if (!found) {
+      throw Object.assign(new Error('指定的品牌知识包不存在'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+    }
+    return found;
+  }
+  const pack = loadActiveBrandPack(tenantId);
+  if (!pack) throw Object.assign(new Error('还没有品牌知识包'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+  return pack;
 }
 
 export function loadBrandDimensions(packId, tenantId = curTenant()) {
@@ -417,7 +463,7 @@ export function withBrandKnowledgeCategories(categories = []) {
   const fallback = requested.length
     ? requested
     : ['品牌资料', '招商政策', '话术案例', '客户画像'];
-  return [...new Set([BRAND_KB_CATEGORY, ...fallback, '员工产出'])];
+  return [...new Set([BRAND_KB_CATEGORY, COMPETITOR_KB_CATEGORY, ...fallback, '员工产出'])];
 }
 
 export function brandMatchExcerpts(query, tenantId = curTenant()) {
@@ -493,6 +539,7 @@ export function projectBrandPack(pack, dimensions = loadBrandDimensions(pack?.id
   return {
     id: Number(pack.id),
     brandName: pack.brand_name,
+    packRole: normalizePackRole(pack.pack_role),
     status: pack.status,
     version: Number(pack.version || 1),
     windowDays: Number(pack.window_days || BRAND_PACK_WINDOW_DAYS),
@@ -530,7 +577,11 @@ function replacePackDimensions(packId, dimensions, tenantId = curTenant()) {
 }
 
 function upsertKbDoc(pack, markdown) {
-  const title = `${pack.brand_name}·品牌知识包`;
+  const isCompetitor = normalizePackRole(pack.pack_role) === 'competitor';
+  const category = isCompetitor ? COMPETITOR_KB_CATEGORY : BRAND_KB_CATEGORY;
+  const title = isCompetitor
+    ? `【竞品档案】${pack.brand_name} 品牌知识包`
+    : `${pack.brand_name}·品牌知识包`;
   const existing = pack.kb_doc_id
     ? q.get(`SELECT id FROM kb_docs WHERE tenant_id=? AND id=?`, curTenant(), pack.kb_doc_id)
     : q.get(
@@ -545,7 +596,7 @@ function upsertKbDoc(pack, markdown) {
        WHERE tenant_id=? AND id=?`,
       title,
       markdown,
-      BRAND_KB_CATEGORY,
+      category,
       curTenant(),
       existing.id,
     );
@@ -555,7 +606,7 @@ function upsertKbDoc(pack, markdown) {
   const inserted = q.run(
     `INSERT INTO kb_docs(category,title,body,source_type,source_id,enabled)
      VALUES(?,?,?,?,?,1)`,
-    BRAND_KB_CATEGORY,
+    category,
     title,
     markdown,
     BRAND_PACK_SOURCE_TYPE,
@@ -1031,6 +1082,8 @@ async function synthesizeDimensionBatches(brand, evidence, { chatFn = chat, sign
 
 export async function collectBrandKnowledgePack({
   brandName,
+  packRole,
+  packId: requestedPackId = null,
   userId,
   upgrade = false,
   webSearchFn = webSearch,
@@ -1041,7 +1094,32 @@ export async function collectBrandKnowledgePack({
 } = {}) {
   const brand = normalizeBrandName(brandName);
   const tenantId = curTenant();
-  const existing = loadActiveBrandPack(tenantId);
+  const hasPackId = requestedPackId !== null && requestedPackId !== undefined && requestedPackId !== '';
+  let existing = null;
+  let role = normalizePackRole(packRole);
+
+  if (hasPackId) {
+    existing = loadBrandPackById(requestedPackId, tenantId);
+    if (!existing) {
+      throw Object.assign(new Error('指定的品牌知识包不存在'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+    }
+    const existingRole = normalizePackRole(existing.pack_role);
+    if (packRole !== undefined && packRole !== null && packRole !== '' && role !== existingRole) {
+      throw Object.assign(new Error('指定的品牌知识包类型不匹配'), { status: 400, code: 'BRAND_PACK_ROLE_MISMATCH' });
+    }
+    role = existingRole;
+  } else if (role === 'competitor') {
+    const competitors = loadCompetitorBrandPacks(tenantId);
+    if (competitors.length >= COMPETITOR_PACK_LIMIT) {
+      throw Object.assign(
+        new Error(`最多同时维护 ${COMPETITOR_PACK_LIMIT} 个竞品品牌档案，请先删除旧竞品后再采集`),
+        { status: 409, code: 'COMPETITOR_PACK_LIMIT_REACHED' },
+      );
+    }
+  } else {
+    existing = loadActiveBrandPack(tenantId);
+  }
+
   if (existing?.status === 'collecting') {
     throw Object.assign(new Error('品牌知识包正在采集，请稍后再试'), {
       status: 409,
@@ -1055,7 +1133,7 @@ export async function collectBrandKnowledgePack({
     hold = holdCredits({
       userId,
       tenantId,
-      feature: '品牌知识包采集',
+      feature: role === 'competitor' ? '竞品品牌档案采集' : '品牌知识包采集',
       kind: 'text',
       model,
       credits,
@@ -1076,9 +1154,10 @@ export async function collectBrandKnowledgePack({
       );
     } else {
       const inserted = q.run(
-        `INSERT INTO brand_knowledge_packs(brand_name,status,version,window_days,source)
-         VALUES(?,'collecting',1,?, 'web_collect')`,
+        `INSERT INTO brand_knowledge_packs(brand_name,pack_role,status,version,window_days,source)
+         VALUES(?,?,'collecting',1,?, 'web_collect')`,
         brand,
+        role,
         BRAND_PACK_WINDOW_DAYS,
       );
       packId = Number(inserted.lastInsertRowid);
@@ -1245,10 +1324,9 @@ function snapshotPack(packId) {
   return projectBrandPack(q.get(`SELECT * FROM brand_knowledge_packs WHERE tenant_id=? AND id=?`, tenantId, packId));
 }
 
-export function confirmBrandPack() {
+export function confirmBrandPack(packId = null) {
   const tenantId = curTenant();
-  const pack = loadActiveBrandPack(tenantId);
-  if (!pack) throw Object.assign(new Error('还没有品牌知识包'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+  const pack = resolveTargetPack(packId, tenantId);
   if (pack.status === 'collecting') {
     throw Object.assign(new Error('正在采集，请稍后再确认入库'), { status: 409, code: 'BRAND_PACK_COLLECTING' });
   }
@@ -1262,6 +1340,7 @@ export function confirmBrandPack() {
     : Number(pack.version || 1);
   const markdown = compileBrandPackMarkdown({
     brandName: pack.brand_name,
+    packRole: normalizePackRole(pack.pack_role),
     version,
     windowDays: pack.window_days,
     windowLabel: nowWindowLabel(),
@@ -1281,6 +1360,7 @@ export function confirmBrandPack() {
 }
 
 export async function recollectBrandDimensions({
+  packId = null,
   keys = [],
   feedback = '',
   userId,
@@ -1291,8 +1371,7 @@ export async function recollectBrandDimensions({
   signal,
 } = {}) {
   const tenantId = curTenant();
-  const pack = loadActiveBrandPack(tenantId);
-  if (!pack) throw Object.assign(new Error('还没有品牌知识包'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+  const pack = resolveTargetPack(packId, tenantId);
   if (pack.status === 'collecting') {
     throw Object.assign(new Error('品牌知识包正在采集，请稍后再试'), { status: 409, code: 'BRAND_PACK_COLLECTING' });
   }
@@ -1385,14 +1464,13 @@ export async function recollectBrandDimensions({
   }
 }
 
-export function republishBrandPack(packId) {
-  return confirmBrandPack();
+export function republishBrandPack(packId = null) {
+  return confirmBrandPack(packId);
 }
 
-export function archiveBrandPack() {
+export function archiveBrandPack(packId = null) {
   const tenantId = curTenant();
-  const pack = loadActiveBrandPack(tenantId);
-  if (!pack) throw Object.assign(new Error('还没有品牌知识包'), { status: 404, code: 'BRAND_PACK_NOT_FOUND' });
+  const pack = resolveTargetPack(packId, tenantId);
   if (pack.kb_doc_id) {
     q.run(
       `UPDATE kb_docs SET enabled=0, updated_at=datetime('now','localtime') WHERE tenant_id=? AND id=?`,
@@ -1405,17 +1483,21 @@ export function archiveBrandPack() {
     tenantId,
     pack.id,
   );
-  return { ok: true, id: Number(pack.id) };
+  return { ok: true, id: Number(pack.id), packRole: normalizePackRole(pack.pack_role) };
 }
 
 export function brandKnowledgeOverview() {
   const pack = loadActiveBrandPack();
+  const competitors = loadCompetitorBrandPacks();
   return {
     category: BRAND_KB_CATEGORY,
+    competitorCategory: COMPETITOR_KB_CATEGORY,
     windowDays: BRAND_PACK_WINDOW_DAYS,
     windowLabel: nowWindowLabel(),
     dimensionCatalog: BRAND_KNOWLEDGE_DIMENSIONS,
     uploaded: uploadedKnowledgeSummary(),
     pack: pack ? projectBrandPack(pack) : null,
+    competitors: competitors.map(item => projectBrandPack(item)),
+    competitorLimit: COMPETITOR_PACK_LIMIT,
   };
 }

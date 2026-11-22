@@ -16,8 +16,14 @@ const COMMON_RULES = Object.freeze([
   "只写和这个问题有关的内容：手册里的其他交付物这次不用逐个交付，手册作为方法参考。",
   "不要在正文里写“方法覆盖”“输入完整性”“岗位执行完整性”“方法n执行记录”“contract”等过程术语，也不要列“输入核查/方法执行/质量复核/安全复核”章节。",
   "每个数字标清来自哪里：老板给的数据、联网证据、还是行业经验区间（经验区间写明“需用自家账校准”）。",
-  "老板没给、又必须用到的业务参数，用合理默认值并在文末“## 可改的假设”里用表格列出来（表头固定为：参数｜默认值｜改了会影响什么；默认值写数字加单位，如 8000元、3%、1.5km），不要停下来反问。",
+  "涉及可调经营参数（包括老板已在任务书/追问里给出的预算、客单价、天数、限量，以及你补的合理默认值）时，统一在文末单独一节列出，标题严格写“## 可改的假设”（不加一/二/七等中文序号），表格表头固定为：参数｜默认值｜改了会影响什么；老板已给的预算必须排第一行并写明确数字加单位（如 3000元、8000元、3%、1.5km），不要停下来反问。",
   "本次没有联网证据的事实，不要写成“据公开资料/平台显示/来自官网”，也不要补造链接；写明“未联网核实”即可。",
+]);
+
+const PRODUCE_ARTIFACT_COMMON_RULES = Object.freeze([
+  COMMON_RULES[1],
+  COMMON_RULES[2],
+  COMMON_RULES[5],
 ]);
 
 export const ANSWER_SHAPES = Object.freeze({
@@ -25,17 +31,18 @@ export const ANSWER_SHAPES = Object.freeze({
     title: "行情快查·市场扫描",
     maxChars: 2500,
     sections: [
-      "一句话结论（价格区间、主力档位、目标品类的位置）",
-      "价格分档表：档次｜人均区间｜典型场景｜代表店（每档 2–4 家）",
-      "目标品类清单：分“连锁主流 / 本地特色 / 新开或网红”，每行写店名、特色、人均、位置、来源",
+      "一句话结论（价格区间、主力档位、目标品类的位置；若去重总店数不足 15 家，第一段必须写清实际找到 N 家及原因）",
+      "价格分档表：档次｜人均区间｜典型场景｜代表店（至少 3 档，每档 2–4 家；严格按数值区间归类，代表店人均必须落在对应区间内，如 36 元/42 元只能归入 30–60 元档）",
+      "目标品类清单：分“连锁主流 / 本地特色 / 新开或网红”，每行写店名、特色、人均、位置、来源（缺失字段标“—”并在口径说明写清）",
       "相似竞品：抢同一预算、同一场景的替代品类，每类列代表店",
-      "竞争格局 3 条",
+      "竞争格局 3 条（严格区分未命中、未核实与实证结论，禁止把“检索范围内未查到”写成“竞争空白”）",
       "对你意味着什么：有自家店名/人均/品类时对比空位和风险；没有就一句“补充你的门店信息后可对比”",
-      "口径说明：人均来源（公开页/团购价/地图）、数据日期、本次没找到的部分",
+      "口径说明：人均来源（高德参考价/公开网页参考/推测）、数据日期、本次没找到或缺失的字段",
     ],
     rules: [
-      "区域级问题店铺清单尽量不少于 15 家、街道或商场级不少于 8 家；价格档不少于 3 档；找不到就如实写“本次只找到 N 家”和原因，不要用“待核验”填满表格。",
-      "店铺、人均等事实只用本次联网证据和地图数据；榜单、团购、聚合页可以作为线索并标“参考”。",
+      "区域级问题店铺清单尽量不少于 15 家、街道或商场级不少于 8 家；价格档不少于 3 档；正文首段报出的总店数必须与下文去重店铺清单严格一致，绝不把本企业品牌资料/自家门店算作周边竞品；找不到 15 家就在首段如实写“本次只找到 N 家”和原因，不要用“待核验”填满表格。",
+      "价格分档必须使用无重叠数值区间（如 ≤30元、30–60元、60–100元、100–150元、>150元），每家代表店标出的人均数值必须严格落在该行区间内，禁止跨档误放；检索范围内未查到某品类只写“本次检索范围内未查到已核验的 XX 店”，禁止写成“竞争空白”或“品类空白真实存在”。",
+      "店铺、人均等事实只用本次联网证据和地图数据；榜单、团购、聚合页可以作为线索并标“(参考)”，旧于 12 个月或单一来源标“(推测)”。",
       "不调用、不模拟美团/点评 App 端内接口；只用公开网页、高德开放数据和老板上传的文件。",
     ],
   },
@@ -73,19 +80,25 @@ export const ANSWER_SHAPES = Object.freeze({
       "预算与物料（金额没确认的标“待确认”）",
       "执行清单：事项｜负责岗位｜截止｜验收标准",
       "风险与合规提醒（只写和本方案相关的）",
-      "可改的假设：预算、客单、转化率、天数等，写成“参数｜默认值｜改了会影响什么”",
+      "## 可改的假设（标题不加中文序号）：把老板已给的预算（排第一行）及客单、转化率、限量、天数等写成“参数｜默认值｜改了会影响什么”",
     ],
-    rules: ["“负责岗位 + 截止”只用于执行清单，不要套到其他段落。"],
+    rules: [
+      "“负责岗位 + 截止”只用于执行清单，不要套到其他段落。",
+      "若任务书或追问里已有明确预算（如 3000元），必须把“活动预算”作为第一行写进文末“## 可改的假设”表格，方便后续一键重算。",
+    ],
   },
   "produce.artifact": {
     title: "产物",
-    maxChars: 3500,
+    maxChars: 2200,
     sections: [
-      "直接给成品（SOP、清单、表格、话术、考题、文案等），可以复制就用",
-      "使用说明不超过 3 行",
-      "可替换字段：店名、价格、日期、负责人等用【】标出",
+      "直接给成品（可直接复制的菜单精简表、价格梯度表、套餐组合表 / SOP / 清单 / 话术 / 考题 / 文案等）",
+      "表外/成品外使用与口径说明：全文合计严格不超过 3 行（不含主标题、分表短标题和表格本体）；缺少真实销量或成本时，用其中 1 行简短标明示例口径",
+      "可替换字段：店名、菜名、价格、日期、负责人等用【】标出",
     ],
-    rules: ["不附方法说明、不写背景分析；成品之外的话越少越好。"],
+    rules: [
+      "不附方法说明、不写背景分析；成品表格之外的说明文字全文严格不超过 3 行。",
+      "严禁写成分析报告：不要输出“先给结论”“四象限原理讲解”“堂食/外卖长规则”“验证指标与复盘”“下一步建议”“可改的假设”等报告章节。",
+    ],
   },
   "full_report.standard": {
     title: "完整报告",
@@ -137,7 +150,9 @@ export function answerShapePromptLines(intent) {
   shape.sections.forEach((section, index) => lines.push(`${index + 1}. ${section}`));
   if (shape.maxChars) lines.push(`- 正文控制在约 ${shape.maxChars} 字以内，信息密度优先。`);
   lines.push(...shape.rules.map((rule) => `- ${rule}`));
-  lines.push(...COMMON_RULES.map((rule) => `- ${rule}`));
+  const applicableCommonRules =
+    shape.key === "produce.artifact" ? PRODUCE_ARTIFACT_COMMON_RULES : COMMON_RULES;
+  lines.push(...applicableCommonRules.map((rule) => `- ${rule}`));
   const entities = intent.entities || {};
   const entityBits = [
     entities.city && `城市：${entities.city}`,
@@ -255,6 +270,72 @@ export function marketScanCoverage(markdown = "") {
   };
 }
 
+const ARTIFACT_FORBIDDEN_HEADING_RE =
+  /^#{1,4}\s*(?:[\d一二三四五六七八九十]+[.、．)\s]*)?(?:下一步建议|验证指标(?:与复盘)?|复盘(?:指标|计划|与验证)?|可改的假设|可行性诊断|背景分析|方法说明|先给结论)/u;
+
+/**
+ * 产物型交付（produce.artifact）结构审计：
+ * 对含表格的可复制成品，检查表外说明是否超过 3 行、是否混入“下一步建议/复盘/可改的假设”等报告章节。
+ */
+export function auditArtifactFormat(markdown = "", { maxNoteLines = 3 } = {}) {
+  const lines = String(markdown || "").split(/\r?\n/u);
+  let inFence = false;
+  let tableRowCount = 0;
+  let tableBlocks = 0;
+  let inTable = false;
+  const headings = [];
+  const forbiddenSections = [];
+  const noteLines = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (/^(?:`{3,}|~{3,})/u.test(trimmed)) {
+      inFence = !inFence;
+      inTable = false;
+      continue;
+    }
+    if (inFence) continue;
+    if (!trimmed || /^-{3,}$|^={3,}$|^\*{3,}$/u.test(trimmed)) {
+      inTable = false;
+      continue;
+    }
+    if (/^\|.*\|$/u.test(trimmed)) {
+      if (!inTable) {
+        tableBlocks += 1;
+        inTable = true;
+      }
+      if (!/^\|\s*:?-{2,}/u.test(trimmed)) tableRowCount += 1;
+      continue;
+    }
+    inTable = false;
+    if (/^#{1,4}\s+/u.test(trimmed)) {
+      headings.push(trimmed);
+      if (ARTIFACT_FORBIDDEN_HEADING_RE.test(trimmed)) {
+        forbiddenSections.push(trimmed.replace(/^#{1,4}\s+/u, "").trim());
+      }
+      continue;
+    }
+    // 独立的粗体小标题行（如 **套餐表**）不计入表外说明段落，但带冒号长句计入说明。
+    if (/^\*\*[^*]{1,28}\*\*$/u.test(trimmed) && !/[：:，。；！？]/u.test(trimmed)) {
+      continue;
+    }
+    noteLines.push(trimmed);
+  }
+  const hasTables = tableBlocks > 0 && tableRowCount >= 2;
+  const exceedsNoteLines = hasTables && noteLines.length > maxNoteLines;
+  const passed = (!hasTables || noteLines.length <= maxNoteLines) && forbiddenSections.length === 0;
+  return {
+    hasTables,
+    tableBlocks,
+    tableRows: tableRowCount,
+    headingCount: headings.length,
+    noteLineCount: noteLines.length,
+    maxNoteLines,
+    exceedsNoteLines,
+    forbiddenSections,
+    passed,
+  };
+}
+
 /**
  * 交付后的答题形态审计（写入任务执行证据，只做评测与看板，不阻断交付）。
  */
@@ -270,5 +351,6 @@ export function buildAnswerShapeAudit(markdown, intent, { ownFacts = [] } = {}) 
     overLength: Boolean(shape.maxChars && String(markdown || "").length > shape.maxChars * 1.5),
     antiFormula: formula,
     ...(shape.key === "lookup.market_scan" ? { coverage: marketScanCoverage(markdown) } : {}),
+    ...(shape.key === "produce.artifact" ? { artifact: auditArtifactFormat(markdown) } : {}),
   };
 }

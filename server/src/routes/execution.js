@@ -31,6 +31,11 @@ import { fileURLToPath } from "node:url";
 import { ALLOWED_EXTS } from "../engines/extract.js";
 import { decodeBase64File } from "../engines/filehub.js";
 import { publish } from "../engines/event-bus.js";
+import {
+  listInspectionsWithRectifications,
+  createInspectionRectification,
+  recheckInspectionRectification,
+} from "../engines/store-inspections.js";
 
 const r = Router();
 
@@ -2001,6 +2006,179 @@ r.post("/partners/:id/remind", (req, res) => {
     `${p.name}·${card.remindType}`,
   );
   res.json(card);
+});
+
+// ===== 督导巡店「查 → 改 → 复检」完整台账闭环（R-02）=====
+function inspectionScopeFor(user) {
+  const storeScope = storeScopeClause(user, "i.store_id");
+  if (isManager(user) && storeScope.storeId != null) {
+    return { sql: storeScope.sql, params: storeScope.params };
+  }
+  const userScope = userScopeClause(user, "t.created_by");
+  return {
+    sql: `${userScope.sql}${storeScope.sql}`,
+    params: [...userScope.params, ...storeScope.params],
+  };
+}
+
+r.get("/inspections", (req, res) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+  const scope = inspectionScopeFor(req.user);
+  res.set("Cache-Control", "private, no-store");
+  res.json(
+    listInspectionsWithRectifications(curTenant(), {
+      limit,
+      scopeSql: scope.sql,
+      scopeParams: scope.params,
+    }),
+  );
+});
+
+r.post("/inspections/:id/rectify", (req, res) => {
+  if (!isManager(req.user)) {
+    return res
+      .status(403)
+      .json({ error: "只有管理层、店长或督导可以将巡店问题转为整改任务" });
+  }
+  const inspectionId = Number(req.params.id);
+  if (!Number.isInteger(inspectionId) || inspectionId <= 0) {
+    return res.status(400).json({ error: "巡店记录编号格式不正确" });
+  }
+  const scope = inspectionScopeFor(req.user);
+  const visible = q.get(
+    `SELECT i.id FROM store_inspections i
+     JOIN agent_tasks t ON t.id = i.task_id AND t.tenant_id = i.tenant_id
+     WHERE i.tenant_id = ? AND i.id = ?${scope.sql}`,
+    curTenant(),
+    inspectionId,
+    ...scope.params,
+  );
+  if (!visible) {
+    return res.status(404).json({ error: "巡店记录不存在或无权操作" });
+  }
+  const b = req.body || {};
+  const rawIssueIndex = b.issueIndex ?? b.issue_index;
+  if (rawIssueIndex === undefined || rawIssueIndex === null || rawIssueIndex === "") {
+    return res.status(400).json({ error: "请指定巡店问题序号" });
+  }
+  const issueIndex = Number(rawIssueIndex);
+  const rawAssignee = b.assigneeId ?? b.assignee_id;
+  const assigneeId =
+    rawAssignee !== undefined && rawAssignee !== null && rawAssignee !== ""
+      ? Number(rawAssignee)
+      : null;
+  if (assigneeId !== null && !accessibleUserExists(req.user, assigneeId)) {
+    return res
+      .status(403)
+      .json({ error: "只能将整改任务分派给本人或管辖范围内的成员" });
+  }
+  try {
+    const rect = createInspectionRectification({
+      tenantId: curTenant(),
+      inspectionId,
+      issueIndex,
+      assigneeId,
+      assigneeName: b.assigneeName ?? b.assignee_name ?? "",
+      dueDate: b.dueDate ?? b.due_date ?? null,
+      actionPlan: b.actionPlan ?? b.action_plan ?? "",
+      actor: req.user,
+    });
+    if (rect.assigneeId && Number(rect.assigneeId) !== Number(req.user.id)) {
+      notify(
+        rect.assigneeId,
+        "task",
+        "巡店整改任务派发",
+        rect.taskTitle || rect.problem,
+      );
+    }
+    publishManualTaskStatus(rect.taskId, "进行中", {
+      assigneeId: rect.assigneeId,
+      title: rect.taskTitle || rect.problem,
+      actorId: req.user.id,
+    });
+    logOp(
+      req.user,
+      "经营执行",
+      "巡店问题转整改任务",
+      `${rect.storeName} · 问题#${issueIndex + 1} · 任务#${rect.taskId}`,
+    );
+    return res.status(201).json(rect);
+  } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        error: error.message,
+        ...(error.rectification ? { rectification: error.rectification } : {}),
+      });
+    }
+    throw error;
+  }
+});
+
+r.post("/inspections/rectifications/:rectId/recheck", (req, res) => {
+  if (!isManager(req.user)) {
+    return res
+      .status(403)
+      .json({ error: "只有管理层、店长或督导可以提交复检结果" });
+  }
+  const rectId = Number(req.params.rectId);
+  if (!Number.isInteger(rectId) || rectId <= 0) {
+    return res.status(400).json({ error: "整改单编号格式不正确" });
+  }
+  const storeScope = storeScopeClause(req.user, "r.store_id");
+  const visible = q.get(
+    `SELECT r.id FROM store_inspection_rectifications r
+     WHERE r.tenant_id = ? AND r.id = ?${storeScope.sql}`,
+    curTenant(),
+    rectId,
+    ...storeScope.params,
+  );
+  if (!visible) {
+    return res.status(404).json({ error: "整改记录不存在或无权操作" });
+  }
+  const b = req.body || {};
+  const passed = b.passed === undefined ? true : Boolean(b.passed);
+  const recheckNote = String(
+    b.recheckNote ?? b.recheck_note ?? b.note ?? "",
+  ).trim();
+  try {
+    const updated = recheckInspectionRectification({
+      tenantId: curTenant(),
+      rectId,
+      passed,
+      recheckNote,
+      actor: req.user,
+    });
+    if (updated.taskId) {
+      publishManualTaskStatus(updated.taskId, passed ? "已完成" : "进行中", {
+        assigneeId: updated.assigneeId,
+        title: updated.problem,
+        actorId: req.user.id,
+      });
+    }
+    if (
+      updated.assigneeId &&
+      Number(updated.assigneeId) !== Number(req.user.id)
+    ) {
+      notify(
+        updated.assigneeId,
+        "task",
+        passed ? "巡店整改复检通过" : "巡店整改退回重改",
+        `${updated.storeName}：${updated.problem.slice(0, 48)}${recheckNote ? `（${recheckNote.slice(0, 60)}）` : ""}`,
+      );
+    }
+    logOp(
+      req.user,
+      "经营执行",
+      passed ? "巡店整改复检闭环" : "巡店整改退回重改",
+      `${updated.storeName} · 整改单#${updated.id}`,
+    );
+    return res.json(updated);
+  } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    throw error;
+  }
 });
 
 export default r;
