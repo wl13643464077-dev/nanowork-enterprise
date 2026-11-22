@@ -2218,19 +2218,21 @@
   box-sizing: border-box;
   position: fixed;
   z-index: 12;
-  right: 28px;
-  bottom: 18px;
-  width: min(984px, calc(100vw - 56px));
+  right: 0;
+  bottom: 0;
+  width: min(1040px, 100vw);
   max-height: min(44vh, 340px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 28%, var(--ui-border));
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--ui-surface) 95%, transparent);
+  padding: var(--space-3) var(--space-6) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid color-mix(in srgb, var(--ewb-color, var(--ui-primary)) 26%, var(--ui-border));
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--ui-surface);
   box-shadow: var(--shadow-3);
-  backdrop-filter: blur(18px);
-  scroll-margin-bottom: 170px;
+  scroll-margin-bottom: 180px;
 }
 
 .ewb-chat-composer-row {

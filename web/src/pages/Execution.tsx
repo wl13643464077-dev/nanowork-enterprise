@@ -848,7 +848,7 @@ export default function Execution() {
       {/* 顶部 KPI（逐卡可点钻取） */}
       <Row gutter={[12, 12]}>
         {isManager && (
-          <Col xs={12} md={8} xl={4}>
+          <Col xs={12} md={8} xl={6}>
             <StatCard
               icon={<AimOutlined />}
               color="var(--ui-accent)"
@@ -861,7 +861,7 @@ export default function Execution() {
             />
           </Col>
         )}
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={6}>
           <StatCard
             icon={<CheckCircleOutlined />}
             color="var(--chart-2)"
@@ -871,7 +871,7 @@ export default function Execution() {
           />
         </Col>
         {canApprove && (
-          <Col xs={12} md={8} xl={4}>
+          <Col xs={12} md={8} xl={6}>
             <StatCard
               icon={<AuditOutlined />}
               color="var(--chart-3)"
@@ -882,17 +882,17 @@ export default function Execution() {
             />
           </Col>
         )}
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={6}>
           <StatCard
             icon={<AuditOutlined />}
             color="var(--ui-warning-text)"
-            label="我的提交待人工验收"
+            label="我的提交待验收"
             value={summary.mySubmittedWaitingReview ?? '-'}
             suffix="个"
             onClick={() => openExecDrill('waiting-review')}
           />
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={6}>
           <StatCard
             icon={<AlertOutlined />}
             color="var(--danger)"
@@ -902,7 +902,7 @@ export default function Execution() {
             onClick={() => openExecDrill('risk')}
           />
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={6}>
           <StatCard
             icon={<StarOutlined />}
             color="var(--warn)"
@@ -912,7 +912,7 @@ export default function Execution() {
             onClick={() => openExecDrill('key-follows')}
           />
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={6}>
           <StatCard
             icon={<ThunderboltOutlined />}
             color="var(--ui-muted)"
