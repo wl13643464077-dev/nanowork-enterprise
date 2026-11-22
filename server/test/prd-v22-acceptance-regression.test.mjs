@@ -43,6 +43,12 @@ test("T1 回归：望京商圈与望京SOHO T1底商均解析出地点候选，�
   assert.deepEqual(i3.centerCandidates, ["太原吾悦广场", "吾悦广场"]);
 
   assert.deepEqual(normalizeLocationIntent("如何分析目标商圈客流").centerCandidates, []);
+
+  // 口语裸地名（不带“北京/商圈”前后缀）与“帮我诊断+地标”同样应精准抽取
+  const i4 = normalizeLocationIntent("望京现在什么消费水平？周边的火锅店多吗？价格怎么样？");
+  assert.deepEqual(i4.centerCandidates, ["北京望京", "望京"]);
+  const i5 = normalizeLocationIntent("帮我诊断望京SOHO T1底商餐饮竞争格局");
+  assert.deepEqual(i5.centerCandidates, ["望京SOHO", "望京SOHO T1"]);
 });
 
 test("T1 回归：2字核心商圈名（望京）进入公开来源任务锚点，不误杀含望京的真实商户页", () => {

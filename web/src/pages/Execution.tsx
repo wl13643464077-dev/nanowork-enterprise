@@ -886,7 +886,7 @@ export default function Execution() {
           <StatCard
             icon={<AuditOutlined />}
             color="var(--ui-warning-text)"
-            label="我的提交待验收"
+            label="我的提交待人工验收"
             value={summary.mySubmittedWaitingReview ?? '-'}
             suffix="个"
             onClick={() => openExecDrill('waiting-review')}

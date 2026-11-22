@@ -46,8 +46,8 @@ const reportPath = path.join(reportDirectory, 'full-production.json');
 assert.ok(fs.existsSync(reportPath), `matrix report was not written: ${reportPath}`);
 const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 const rows = Array.isArray(report.rows) ? report.rows : [];
-const expectedRestaurant = new Set(Array.from({ length: 60 }, (_, index) => 101 + index));
-const expectedContent = new Set(Array.from({ length: 10 }, (_, index) => index));
+const expectedRestaurant = new Set(Array.from({ length: 61 }, (_, index) => 101 + index));
+const expectedContent = new Set(Array.from({ length: 11 }, (_, index) => index));
 const actualRestaurant = rows.filter(row => row.domain === 'restaurant');
 const actualContent = rows.filter(row => row.domain === 'content');
 
@@ -56,10 +56,10 @@ assert.equal(report.evidenceLevel, 'L4_FULL_PRODUCTION_HTTP');
 assert.equal(report.providerEvidence, 'deterministic_mock');
 assert.equal(report.verdict, 'PASS_OFFLINE_PIPELINE');
 assert.deepEqual(report.externalNetworkAttempts, []);
-assert.equal(rows.length, 70, 'matrix must contain exactly 70 employees');
-assert.equal(actualRestaurant.length, 60, 'restaurant matrix must contain 60 employees');
-assert.equal(actualContent.length, 10, 'content matrix must contain 10 employees');
-assert.equal(new Set(rows.map(row => row.employeeId)).size, 70, 'employee ids must be unique');
+assert.equal(rows.length, 72, 'matrix must contain exactly 72 employees');
+assert.equal(actualRestaurant.length, 61, 'restaurant matrix must contain 61 employees');
+assert.equal(actualContent.length, 11, 'content matrix must contain 11 employees');
+assert.equal(new Set(rows.map(row => row.employeeId)).size, 72, 'employee ids must be unique');
 
 for (const row of actualRestaurant) {
   assert.equal(expectedRestaurant.delete(Number(row.idx)), true,
@@ -90,8 +90,8 @@ assert.equal(report.middlewareEvidence?.moduleGuard, true);
 assert.equal(report.middlewareEvidence?.crossTenantReadDenied, true);
 
 process.stdout.write([
-  'PASS_OFFLINE_PIPELINE 70/70',
-  'restaurant=60/60 content=10/10',
+  'PASS_OFFLINE_PIPELINE 72/72',
+  'restaurant=61/61 content=11/11',
   `providerEvidence=${report.providerEvidence} externalNetworkAttempts=0`,
   `report=${reportPath}`,
   '',

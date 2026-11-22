@@ -277,6 +277,8 @@ export default function App() {
                   </ModuleOnly>
                 }
               />
+              <Route path="/content-factory" element={<Navigate to="/content" replace />} />
+              <Route path="/mobile" element={<Navigate to="/m" replace />} />
               <Route
                 path="/tasks"
                 element={
