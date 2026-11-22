@@ -42,6 +42,10 @@ function fixture(file, { user = {}, states = [], queryData = {}, extra = '' } = 
     '../personalApiBilling.js': { isPersonalApiUser: u => u?.accountType === 'tester' || u?.billingMode === 'personal_api' },
     '../EmployeeAvatar': { default: 'EmployeeAvatar' },
     '../UnifiedFilePicker': { UnifiedFilePicker: 'UnifiedFilePicker' },
+    '../useVoiceInput': {
+      useVoiceInput: () => ({ listening: false, toggleVoice() {} }),
+      refineVoiceIntent: async value => value,
+    },
     './mobile.css': {},
   };
   const module = { exports: {} };
@@ -146,4 +150,52 @@ test('数字员工目录和派活表单对测试员显示个人Key费用，企�
   assert.match(source, /让队长拆解分工/);
   assert.match(source, /\/employees\/team-plan/);
   assert.match(source, /\/employees\/team-summary/);
+});
+
+test('移动端派活支持语音输入与8位高频拳头岗位横滑栏直派', () => {
+  const featured = [
+    {
+      idx: 102,
+      person: '钱商圈',
+      name: '商圈竞争画像',
+      group: '开店选址',
+      expertKernel: { tools: [{ key: 'amap', label: '高德POI', shortLabel: '高德商圈POI', category: 'location' }] },
+    },
+    { idx: 160, person: '店小满', name: '活动策划', group: '门店营销' },
+  ];
+  const extra = 'export const dispatchScreens = { DispatchList, DispatchForm };';
+  const destinations = [];
+  const list = fixture('MobileDispatch.tsx', { user: { role: 'boss' }, states: [{ employees: featured }, false], extra });
+  const listTree = list.dispatchScreens.DispatchList({ nav: path => destinations.push(path) });
+  assert.match(text(listTree), /语音说/);
+  assert.match(text(listTree), /8 位高频拳头岗位/);
+  assert.match(text(listTree), /高德商圈POI/);
+  const featuredBtn = all(listTree, node => node.type === 'button' && node.props.className === 'm-featured-card')[0];
+  assert.ok(featuredBtn);
+  featuredBtn.props.onClick();
+  assert.deepEqual(destinations, ['/m/dispatch?employee=102']);
+
+  const profile = { identity: { person: '钱商圈', name: '商圈竞争画像' }, permissions: { canDispatch: true } };
+  const form = fixture('MobileDispatch.tsx', { user: { role: 'boss' }, states: [null, profile, featured[0], null, false], extra });
+  const formTree = form.dispatchScreens.DispatchForm({ idx: 102, nav() {} });
+  assert.match(text(formTree), /语音派活/);
+});
+
+test('老板手机首页顶部展示今日经营速报卡并支持1键直派数字员工', () => {
+  const destinations = [];
+  const home = fixture('MobileHome.tsx', {
+    queryData: { todaySales: 18600, pendingFollow: 5, overdue: 2, runningActivities: 1 },
+  });
+  const tree = home.default({
+    user: { role: 'boss' },
+    mods: ['dashboard', 'marshals', 'execution'],
+    inboxCount: 3,
+    nav: path => destinations.push(path),
+  });
+  assert.match(text(tree), /今日经营速报/);
+  assert.match(text(tree), /直派数字员工处理/);
+  const cta = all(tree, node => node.type === 'button' && node.props.className === 'm-pulse-cta')[0];
+  assert.ok(cta);
+  cta.props.onClick();
+  assert.deepEqual(destinations, ['/m/dispatch?employee=144']);
 });

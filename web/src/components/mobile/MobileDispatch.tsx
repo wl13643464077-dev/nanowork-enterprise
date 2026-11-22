@@ -3,7 +3,10 @@ import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message 
 import {
   AimOutlined,
   ArrowLeftOutlined,
+  AudioOutlined,
   CloseOutlined,
+  FireOutlined,
+  PictureOutlined,
   RightOutlined,
   RocketOutlined,
   SendOutlined,
@@ -12,10 +15,11 @@ import {
 import { api, getUser } from '../../api/client';
 import { isPersonalApiUser } from '../personalApiBilling.js';
 import RestaurantDispatchAssist from '../RestaurantDispatchAssist';
-import type { EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
+import type { EmployeeExpertKernelSummary, EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
 import EmployeeAvatar from '../EmployeeAvatar';
 import type { MatchedTeam, MatchedTeamMember } from '../EmployeeTeamMatch';
 import { UnifiedFilePicker, type UploadedFileRef } from '../UnifiedFilePicker';
+import { refineVoiceIntent, useVoiceInput } from '../useVoiceInput';
 import {
   deptToneIndex,
   employeeDisplayName,
@@ -33,6 +37,34 @@ import './mobile.css';
 
 const TEAM_MATCH_KEY = 'nw-mobile-team-match.v2';
 const PREFILL_KEY = 'nw-mobile-dispatch-prefill.v1';
+
+type FeaturedRoleSpec = {
+  idx: number;
+  person: string;
+  roleTitle: string;
+  painTag: string;
+};
+
+type MobileEmployeeWithKernel = MobileEmployee & {
+  expertKernel?: EmployeeExpertKernelSummary | null;
+};
+
+// 高频拳头岗位（与桌面端 8 位拳头岗位对齐：7 位核心数字员工 + 1 位内容种草直达）
+const FEATURED_MOBILE_ROLES: FeaturedRoleSpec[] = [
+  { idx: 102, person: '钱商圈', roleTitle: '商圈竞争画像', painTag: '摸清周边竞品与客流结构' },
+  { idx: 101, person: '赵先机', roleTitle: '开店选址机会调研', painTag: '新店选址排雷，算清回本账' },
+  { idx: 108, person: '王菜单', roleTitle: '菜单精简与定价', painTag: '砍滞销菜，拉高招牌毛利' },
+  { idx: 160, person: '店小满', roleTitle: '周末引流活动策划', painTag: '一键策划拉新促活与物料' },
+  { idx: 144, person: '葛会员', roleTitle: '会员分层与唤回', painTag: '分层唤醒沉睡老客提复购' },
+  { idx: 161, person: '查巡巡', roleTitle: '督导巡店整改', painTag: '管住多店出品、卫生与服务' },
+  { idx: 143, person: '评价运营', roleTitle: '差评归因与口碑', painTag: '差评定位止损，稳步升评分' },
+];
+
+function toolChipTone(category?: string) {
+  if (category === 'location' || category === 'compliance' || category === 'creative') return 'is-signature';
+  if (category === 'data' || category === 'research') return 'is-evidence';
+  return 'is-core';
+}
 
 type MemberBrief = {
   idx: number;
@@ -157,6 +189,20 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
   const [summaryError, setSummaryError] = useState('');
   const [dispatchingIdxs, setDispatchingIdxs] = useState<Set<number>>(new Set());
   const [bulkDispatching, setBulkDispatching] = useState(false);
+  const [voiceRefining, setVoiceRefining] = useState(false);
+  const matchVoice = useVoiceInput(() => text, setText, {
+    onFinish: finalText => {
+      setVoiceRefining(true);
+      void refineVoiceIntent(finalText)
+        .then(refined => {
+          if (refined && refined !== finalText) {
+            setText(refined);
+            message.success('已按经营语境整理好需求');
+          }
+        })
+        .finally(() => setVoiceRefining(false));
+    },
+  });
 
   useEffect(() => {
     let active = true;
@@ -311,6 +357,17 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
     }
   };
 
+  const featuredRoles = useMemo(() => {
+    const byIdx = new Map<number, MobileEmployeeWithKernel>();
+    for (const employee of (catalog?.employees || []) as MobileEmployeeWithKernel[]) {
+      byIdx.set(Number(employee.idx), employee);
+    }
+    return FEATURED_MOBILE_ROLES.map(spec => {
+      const employee = byIdx.get(spec.idx);
+      return employee ? { spec, employee } : null;
+    }).filter((item): item is { spec: FeaturedRoleSpec; employee: MobileEmployeeWithKernel } => Boolean(item));
+  }, [catalog]);
+
   const grouped = useMemo(() => {
     const q = keyword.trim().toLowerCase();
     const map = new Map<string, MobileEmployee[]>();
@@ -343,11 +400,38 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
         <Input.TextArea
           value={text}
           onChange={event => setText(event.target.value)}
-          placeholder="例：周年庆想做一场引流活动，怎么策划"
+          placeholder={
+            matchVoice.listening
+              ? '正在听你说，说完点「停止录音」…'
+              : voiceRefining
+                ? '正在按你的意思整理需求…'
+                : '例：周年庆想做一场引流活动，怎么策划（可点下方语音直接说）'
+          }
           autoSize={{ minRows: 2, maxRows: 4 }}
           maxLength={300}
         />
+        {(matchVoice.listening || voiceRefining) && (
+          <div className="m-voice-status" role="status" aria-live="polite">
+            <span className={matchVoice.listening ? 'm-voice-dot is-live' : 'm-voice-dot'} aria-hidden="true" />
+            <span>
+              {matchVoice.listening
+                ? '正在聆听中… 说完点击「停止录音」（浏览器本地识别）'
+                : '正在按餐饮经营语境整理语音意图…'}
+            </span>
+          </div>
+        )}
         <div className="m-match-actions">
+          <Button
+            className={matchVoice.listening ? 'm-voice-btn nw-voice-listening' : 'm-voice-btn'}
+            icon={<AudioOutlined />}
+            danger={matchVoice.listening}
+            loading={voiceRefining}
+            aria-pressed={matchVoice.listening}
+            aria-label={matchVoice.listening ? '停止语音输入' : '语音说需求'}
+            onClick={matchVoice.toggleVoice}
+          >
+            {matchVoice.listening ? '停止录音' : voiceRefining ? '整理中…' : '语音说'}
+          </Button>
           <Button type="primary" icon={<AimOutlined />} loading={matching} onClick={() => void runMatch()}>
             {matching ? 'AI 挑人中，通常 20~60 秒…' : '帮我选'}
           </Button>
@@ -501,6 +585,78 @@ function DispatchList({ nav }: { nav: (path: string) => void }) {
         )}
       </section>
 
+      {featuredRoles.length > 0 && !keyword.trim() && (
+        <section className="m-featured-section" aria-label="高频拳头岗位">
+          <div className="m-featured-head">
+            <span className="m-featured-title">
+              <FireOutlined aria-hidden="true" />
+              <strong>8 位高频拳头岗位</strong>
+            </span>
+            <small>左滑直派 · 一键开工</small>
+          </div>
+          <div className="m-featured-track">
+            {featuredRoles.map(({ spec, employee }) => {
+              const tools = employee.expertKernel?.tools?.slice(0, 3) || [];
+              const displayName = employeeDisplayName(employee) || spec.person;
+              return (
+                <button
+                  key={spec.idx}
+                  type="button"
+                  className="m-featured-card"
+                  onClick={() => nav(mobilePath('dispatch', { employee: employee.idx }))}
+                  aria-label={`给${displayName}派活`}
+                >
+                  <span className="m-featured-card-top">
+                    <EmployeeAvatar
+                      idx={employee.idx}
+                      name={displayName}
+                      color={deptTone(catalog, employee.group)}
+                      size={40}
+                    />
+                    <span className="m-featured-card-id">
+                      <strong>{displayName}</strong>
+                      <small>{spec.roleTitle}</small>
+                    </span>
+                  </span>
+                  <span className="m-featured-pain">{spec.painTag}</span>
+                  {tools.length > 0 && (
+                    <span className="m-featured-tools" aria-label="自动调用的真实工具">
+                      {tools.map(tool => (
+                        <span key={tool.key} className={`m-tool-chip ${toolChipTone(tool.category)}`}>
+                          {tool.shortLabel}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="m-featured-card m-featured-card--content"
+              onClick={() => nav('/content?task=ai-xhs-note')}
+              aria-label="进入AI小红书种草图文"
+            >
+              <span className="m-featured-card-top">
+                <span className="m-featured-content-avatar" aria-hidden="true">
+                  <PictureOutlined />
+                </span>
+                <span className="m-featured-card-id">
+                  <strong>AI小红书种草</strong>
+                  <small>爆款图文生产</small>
+                </span>
+              </span>
+              <span className="m-featured-pain">直达内容仓 · 爆款笔记一键出图</span>
+              <span className="m-featured-tools" aria-label="内容生成工具">
+                <span className="m-tool-chip is-signature">AI生图</span>
+                <span className="m-tool-chip is-evidence">爆款框架</span>
+                <span className="m-tool-chip is-core">品牌知识包</span>
+              </span>
+            </button>
+          </div>
+        </section>
+      )}
+
       <section aria-label="按分部选员工" className="m-stack">
         <Input.Search
           allowClear
@@ -604,6 +760,20 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
   // PRD v2.2：手机端与桌面同一套常用问法、题型预判与追问（FR-13 / FR-1 / FR-2）
   const [intentType, setIntentType] = useState<string | null>(null);
   const [followupAnswers, setFollowupAnswers] = useState<Record<string, string>>({});
+  const [voiceRefining, setVoiceRefining] = useState(false);
+  const formVoice = useVoiceInput(() => question, setQuestion, {
+    onFinish: finalText => {
+      setVoiceRefining(true);
+      void refineVoiceIntent(finalText)
+        .then(refined => {
+          if (refined && refined !== finalText) {
+            setQuestion(refined);
+            message.success('已按你的意思整理好任务目标');
+          }
+        })
+        .finally(() => setVoiceRefining(false));
+    },
+  });
 
   useEffect(() => {
     let active = true;
@@ -721,18 +891,50 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
           )}
           <div className="m-card m-dispatch-form">
             <div>
-              <div className="m-field-label">一句话说清目标</div>
+              <div className="m-field-head">
+                <div className="m-field-label">一句话说清目标</div>
+                <Button
+                  className={
+                    formVoice.listening
+                      ? 'm-voice-btn m-voice-btn--inline nw-voice-listening'
+                      : 'm-voice-btn m-voice-btn--inline'
+                  }
+                  icon={<AudioOutlined />}
+                  danger={formVoice.listening}
+                  loading={voiceRefining}
+                  disabled={!canDispatch}
+                  aria-pressed={formVoice.listening}
+                  aria-label={formVoice.listening ? '停止语音输入' : '语音说任务目标'}
+                  onClick={formVoice.toggleVoice}
+                >
+                  {formVoice.listening ? '停止录音' : voiceRefining ? '整理中…' : '语音派活'}
+                </Button>
+              </div>
               <Input.TextArea
                 value={question}
                 onChange={event => setQuestion(event.target.value)}
                 placeholder={
-                  String(guidance.titlePlaceholder || '').trim() ||
-                  (examples[0] ? `例：${examples[0]}` : '例：帮我做一份本周的会员复购提升方案')
+                  formVoice.listening
+                    ? '正在听你说，说完点「停止录音」…'
+                    : voiceRefining
+                      ? '正在按你的意思整理任务目标…'
+                      : String(guidance.titlePlaceholder || '').trim() ||
+                        (examples[0] ? `例：${examples[0]}` : '例：帮我做一份本周的会员复购提升方案')
                 }
                 autoSize={{ minRows: 3, maxRows: 8 }}
                 maxLength={8000}
                 disabled={!canDispatch}
               />
+              {(formVoice.listening || voiceRefining) && (
+                <div className="m-voice-status" role="status" aria-live="polite">
+                  <span className={formVoice.listening ? 'm-voice-dot is-live' : 'm-voice-dot'} aria-hidden="true" />
+                  <span>
+                    {formVoice.listening
+                      ? '正在聆听中… 说完点击「停止录音」自动填入'
+                      : '正在按餐饮经营语境整理任务目标…'}
+                  </span>
+                </div>
+              )}
               <RestaurantDispatchAssist
                 idx={idx}
                 question={question}

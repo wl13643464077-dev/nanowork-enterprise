@@ -52,9 +52,11 @@ function errorText(error: unknown, fallback: string) {
 
 export default function ReportRefinePanel({
   taskId,
+  embeddedUnderReport = false,
   onRevisionCreated,
 }: {
   taskId: number;
+  embeddedUnderReport?: boolean;
   onRevisionCreated?: (revision: Revision) => void;
 }) {
   const assumptionId = useId();
@@ -186,6 +188,8 @@ export default function ReportRefinePanel({
   const employeeLabel = state.task.employee.person
     ? `${state.task.employee.person}（${state.task.employee.name}）`
     : state.task.employee.name;
+  // 嵌入在完整原稿报告正下方且尚未生成任何修订版时，避免重复展示原稿折叠区和重复导出栏。
+  const hideRedundantOriginal = Boolean(embeddedUnderReport) && active?.version === 0 && state.revisions.length === 0;
 
   return (
     <section className="report-refine" aria-label="报告多轮对话优化">
@@ -326,8 +330,11 @@ export default function ReportRefinePanel({
 
       {sendError && <Alert type="error" showIcon message="本轮优化未完成" description={sendError} />}
 
-      {active && (
-        <article className="report-refine__version" data-version={active.version}>
+      {active && !hideRedundantOriginal && (
+        <article
+          className={`report-refine__version${active.version > 0 ? ' is-revision' : ''}`}
+          data-version={active.version}
+        >
           <header>
             <div className="report-refine__version-meta">
               <Tag color={active.version === 0 ? 'default' : 'blue'}>{active.label}</Tag>

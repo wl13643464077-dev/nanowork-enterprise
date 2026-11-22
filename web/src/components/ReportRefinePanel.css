@@ -256,3 +256,12 @@
   font-size: var(--font-1);
   font-weight: 500;
 }
+
+/* 修订版突出卡片层次，方便与输入区区分 */
+.report-refine__version.is-revision {
+  margin-top: var(--space-1);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 28%, var(--ui-border));
+  border-radius: var(--radius-md);
+  background: var(--ui-surface);
+}

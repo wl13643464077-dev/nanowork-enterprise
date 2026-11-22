@@ -52,6 +52,7 @@ import { Chart, CHART_COLORS, axisStyle } from '../components/Charts';
 import GrowthTodayFocus from '../components/GrowthTodayFocus';
 import BirthdayCare from '../components/BirthdayCare';
 import { GrowthInfoRow as InfoRow, GrowthSectionTitle as SectionTitle } from '../components/GrowthPrimitives';
+import './Growth.css';
 
 const { Paragraph } = Typography;
 
@@ -64,18 +65,6 @@ const BUDGETS = ['高', '中', '低', '未知'];
 const budgetColor: Record<string, string> = { 高: 'red', 中: 'orange', 低: 'default', 未知: 'default' };
 
 const fmtTime = (v: any) => (v ? String(v).replace('T', ' ').slice(0, 16) : '');
-const interactiveSurfaceStyle = {
-  appearance: 'none',
-  border: 0,
-  padding: 0,
-  margin: 0,
-  width: '100%',
-  background: 'transparent',
-  color: 'inherit',
-  cursor: 'pointer',
-  font: 'inherit',
-  textAlign: 'inherit',
-} as const;
 
 function leadBucketTags(lead: any) {
   if (!lead || ['已成交', '复购', '已流失'].includes(lead.stage)) return [];
@@ -102,7 +91,7 @@ function leadBucketTags(lead: any) {
     tags.push({
       key: 'bossList',
       label: '建议老板介入',
-      color: 'purple',
+      color: 'geekblue',
       reason: 'A类客户 + 高预算，适合老板/总监出面促成',
     });
   }
@@ -110,6 +99,7 @@ function leadBucketTags(lead: any) {
 }
 
 export default function Growth() {
+  const [activeTab, setActiveTab] = useState<'workspace' | 'ledger' | 'analytics'>('workspace');
   // ===== 顶部 / 图表数据 =====
   const [summary, setSummary] = useState<any>({});
   const [sources, setSources] = useState<any[]>([]);
@@ -152,7 +142,11 @@ export default function Growth() {
   const [sort, setSort] = useState('score');
   const [journey, setJourney] = useState<any>(null);
   const tableRef = useRef<HTMLDivElement>(null);
-  // KPI卡点击 → 台账联动筛选 + 滚动定位
+  const focusLeadInWorkspace = (id: any) => {
+    setSelectedId(id);
+    setActiveTab('workspace');
+  };
+  // KPI卡点击 → 切到客户台账并联动筛选 + 滚动定位
   const kpiFilter = (opts: { stage?: string; sort?: string; hint: string }) => {
     setFStage(opts.stage);
     setFGrade(undefined);
@@ -161,8 +155,9 @@ export default function Growth() {
     setKw('');
     setPage(1);
     setSort(opts.sort || 'score');
+    setActiveTab('ledger');
     message.info(opts.hint, 1.6);
-    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
   };
   const [tableLoading, setTableLoading] = useState(false);
 
@@ -677,10 +672,23 @@ export default function Growth() {
       .post(`/growth/leads/${targetId}/objection`, { text: objText.trim() })
       .then((d: any) => {
         setObjModal({ open: true, text: d.suggestion || '' });
+        if (d.billing) {
+          notifyCredits(d.billing.balance);
+          if (d.billing.credits > 0) message.success(`AI应对话术已生成，消耗 ${d.billing.credits} 积分`);
+        }
         setObjText('');
         loadDetail(targetId);
       })
       .finally(() => setObjLoading(false));
+  };
+  const requestObjectionAi = () => {
+    const targetId = detail?.id ?? selectedId;
+    if (targetId == null) return;
+    if (!objText.trim()) {
+      message.warning('请先填写客户顾虑');
+      return;
+    }
+    confirmAiCharge('记录客户顾虑并生成 AI 应对话术？', addObjection);
   };
   const resolveObjection = (i: number) => {
     const targetId = detail?.id ?? selectedId;
@@ -917,12 +925,7 @@ export default function Growth() {
       sorter: true,
       sortOrder: ledgerSortOrder('name', 'nameDesc'),
       render: (v: string, r: any) => (
-        <button
-          type="button"
-          className="ui-link-button"
-          onClick={() => setSelectedId(r.id)}
-          style={{ fontWeight: 600 }}
-        >
+        <button type="button" className="ui-link-button growth-strong" onClick={() => focusLeadInWorkspace(r.id)}>
           {v} {r.grade && <GradeTag grade={r.grade} />}
         </button>
       ),
@@ -946,7 +949,7 @@ export default function Growth() {
       sorter: true,
       sortOrder: ledgerSortOrder('budget', 'budgetLow'),
       render: (v: string) => (
-        <Tag color={budgetColor[v] || 'default'} style={{ margin: 0 }}>
+        <Tag color={budgetColor[v] || 'default'} className="growth-tag-flush">
           {v || '未知'}
         </Tag>
       ),
@@ -968,9 +971,7 @@ export default function Growth() {
       align: 'right',
       sorter: true,
       sortOrder: ledgerSortOrder('scoreAsc', 'score'),
-      render: (v: number) => (
-        <span style={{ fontWeight: 600, color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v ?? '-'}</span>
-      ),
+      render: (v: number) => <span className={v >= 70 ? 'growth-score-hot' : 'growth-score-norm'}>{v ?? '-'}</span>,
     },
     {
       title: '负责人',
@@ -991,28 +992,18 @@ export default function Growth() {
       render: (_: any, r: any) =>
         Number(r.follow_count) > 0 ? (
           <div>
-            <div style={{ fontSize: 12, color: 'var(--ui-text)' }}>
+            <div className="growth-cell-main">
               {r.last_follower_name || '-'}{' '}
-              <Tag color="blue" style={{ marginLeft: 4, fontSize: 10, lineHeight: '15px' }}>
+              <Tag color="blue" className="growth-tag-ml">
                 {r.follow_count}次
               </Tag>
             </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--ui-muted)',
-                maxWidth: 116,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-              title={r.follower_names || ''}
-            >
+            <div className="growth-cell-ellipsis" title={r.follower_names || ''}>
               {r.follower_names || '已备份'}
             </div>
           </div>
         ) : (
-          <Tag color="default" style={{ margin: 0 }}>
+          <Tag color="default" className="growth-tag-flush">
             未跟进
           </Tag>
         ),
@@ -1027,24 +1018,11 @@ export default function Growth() {
       render: (v: string, r: any) =>
         v ? (
           <div>
-            <div style={{ fontSize: 12 }}>{String(v).slice(0, 10)}</div>
-            {r.next_action && (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: 'var(--ui-muted)',
-                  maxWidth: 118,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {r.next_action}
-              </div>
-            )}
+            <div className="growth-cell-main">{String(v).slice(0, 10)}</div>
+            {r.next_action && <div className="growth-cell-ellipsis">{r.next_action}</div>}
           </div>
         ) : (
-          <span style={{ color: 'var(--ui-muted)' }}>-</span>
+          <span className="growth-muted">-</span>
         ),
     },
     {
@@ -1054,7 +1032,7 @@ export default function Growth() {
       fixed: 'right',
       render: (_: any, r: any) => (
         <Space size={6}>
-          <button type="button" className="ui-link-button" onClick={() => setSelectedId(r.id)}>
+          <button type="button" className="ui-link-button" onClick={() => focusLeadInWorkspace(r.id)}>
             跟进
           </button>
           <button type="button" className="ui-link-button" onClick={() => openAdvance(r)}>
@@ -1068,7 +1046,7 @@ export default function Growth() {
             okButtonProps={{ danger: true }}
             onConfirm={() => deleteLead(r)}
           >
-            <Button size="small" type="link" danger icon={<DeleteOutlined />} style={{ padding: 0 }}>
+            <Button size="small" type="link" danger icon={<DeleteOutlined />} className="growth-del-btn">
               删除
             </Button>
           </Popconfirm>
@@ -1084,7 +1062,7 @@ export default function Growth() {
       sorter: (a: any, b: any) => textRank(a.name).localeCompare(textRank(b.name), 'zh-Hans-CN'),
       render: (v: string, r: any) => (
         <>
-          <span style={{ fontWeight: 600 }}>{v}</span> <GradeTag grade={r.grade} />
+          <span className="growth-strong">{v}</span> <GradeTag grade={r.grade} />
         </>
       ),
     },
@@ -1101,9 +1079,7 @@ export default function Growth() {
       width: 60,
       align: 'right',
       sorter: (a: any, b: any) => numRank(a.score) - numRank(b.score),
-      render: (v: number) => (
-        <span style={{ fontWeight: 600, color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)' }}>{v}分</span>
-      ),
+      render: (v: number) => <span className={v >= 70 ? 'growth-score-hot' : 'growth-score-norm'}>{v}分</span>,
     },
     {
       title: '预算',
@@ -1111,21 +1087,21 @@ export default function Growth() {
       width: 60,
       sorter: (a: any, b: any) => budgetRank(a.budget_level) - budgetRank(b.budget_level),
       render: (v: string) => (
-        <Tag color={budgetColor[v] || 'default'} style={{ margin: 0 }}>
+        <Tag color={budgetColor[v] || 'default'} className="growth-tag-flush">
           {v || '未知'}
         </Tag>
       ),
     },
     {
-      title: '意向产品',
+      title: '意向菜品/套餐',
       dataIndex: 'interest',
       ellipsis: true,
-      render: (v: string) => <span style={{ color: 'var(--ui-text-2)' }}>{v || '-'}</span>,
+      render: (v: string) => <span className="growth-text-2">{v || '-'}</span>,
     },
   ];
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+  const workspaceContent = (
+    <div className="growth-tab-stack">
       {/* ===== 今日必跟：第一屏先回答「今天该跟谁」 ===== */}
       <GrowthTodayFocus
         onOpenLead={id => {
@@ -1133,12 +1109,682 @@ export default function Growth() {
             kpiFilter({ sort: 'follow', hint: '台账已按「下次跟进时间」排序，最上方为最急迫客户' });
             return;
           }
-          setSelectedId(id);
+          focusLeadInWorkspace(id);
         }}
       />
       {/* ===== 近期生日客户：低成本复购动作 ===== */}
       <BirthdayCare />
-      {/* ===== KPI 行（逐卡可点：台账联动筛选 + 自动滚动定位）===== */}
+      {/* ===== 私域跟进工作台（响应式三栏） ===== */}
+      <Panel
+        title={
+          <>
+            <MessageOutlined className="growth-icon-chart2" /> 私域跟进工作台
+          </>
+        }
+        extra={<span className="growth-muted-sm">左侧=最近跟进队列；台账页点击「跟进」可直达当前客户</span>}
+      >
+        <div className="growth-wb-grid">
+          {/* 左：最近跟进队列 */}
+          <div className="growth-wb-left">
+            <div className="growth-wb-left-head">
+              <Input
+                allowClear
+                size="small"
+                prefix={<SearchOutlined className="growth-muted" />}
+                placeholder="搜索客户"
+                value={convKw}
+                onChange={e => setConvKw(e.target.value)}
+              />
+              <div className="growth-wb-left-hint">按最近跟进时间排序，不等于重点客户来源</div>
+            </div>
+            <div className="growth-wb-left-list">
+              {filteredConvs.map((c: any) => {
+                const id = c.id ?? c.lead_id;
+                const active = id === selectedId;
+                return (
+                  <button
+                    type="button"
+                    key={id}
+                    onClick={() => setSelectedId(id)}
+                    className={`growth-conv-item${active ? ' growth-conv-item--active' : ''}`}
+                  >
+                    <Avatar className={`growth-conv-avatar${active ? ' growth-conv-avatar--active' : ''}`}>
+                      {String(c.name || '?').slice(0, 1)}
+                    </Avatar>
+                    <div className="growth-conv-body">
+                      <div className="growth-conv-top">
+                        <span className="growth-conv-name">{c.name}</span>
+                        <span className="growth-conv-time">
+                          {fmtTime(c.last_at || c.last_time || c.updated_at).slice(5)}
+                        </span>
+                      </div>
+                      <div className="growth-conv-mid">
+                        <StageTag stage={c.stage} />
+                        {Number(c.follow_count) > 0 && (
+                          <Tag color="blue" className="growth-tag-compact">
+                            {c.follow_count}次
+                          </Tag>
+                        )}
+                        <span className="growth-conv-preview">
+                          {c.last_msg || c.last_content || c.last_follow || c.summary || '暂无跟进记录'}
+                        </span>
+                      </div>
+                      <div className="growth-conv-sub">
+                        {c.last_user_name ? `最近跟进：${c.last_user_name}` : '尚未有人跟进'}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+              {filteredConvs.length === 0 && (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无客户记录" className="growth-wb-empty" />
+              )}
+            </div>
+          </div>
+
+          {/* 中：沟通详情（跟进时间线 + 摘要录入） */}
+          <div className="growth-wb-center">
+            {detail ? (
+              <>
+                <div className="growth-wb-center-head">
+                  <span className="growth-wb-center-name">{detail.name}</span>
+                  {detail.identity_tag && <span className="growth-muted-sm">（{detail.identity_tag}）</span>}
+                  <StageTag stage={detail.stage} />
+                  {detail.grade && <GradeTag grade={detail.grade} />}
+                  {selectedBuckets.map(b => (
+                    <Tag key={b.key} color={b.color} className="growth-tag-compact">
+                      {b.label}
+                    </Tag>
+                  ))}
+                  <span className="growth-wb-center-count">共 {follows.length} 条跟进记录</span>
+                </div>
+                <div className="growth-wb-timeline">
+                  <Spin spinning={detailLoading}>
+                    <div className="growth-wb-timeline-inner">
+                      {follows.map((f: any) => (
+                        <div key={f.id} className="growth-msg-row">
+                          <Avatar size={28} className="growth-msg-avatar">
+                            {String(f.user_name || '未').slice(0, 1)}
+                          </Avatar>
+                          <div className="growth-msg-body">
+                            <div className="growth-msg-meta">
+                              {f.user_name || '未知账号'} · {fmtTime(f.created_at)}
+                              {f.stage_after && (
+                                <Tag color="blue" className="growth-tag-ml">
+                                  推进至 {f.stage_after}
+                                </Tag>
+                              )}
+                            </div>
+                            <div className="growth-msg-bubble">{f.content}</div>
+                          </div>
+                        </div>
+                      ))}
+                      {follows.length === 0 && (
+                        <Empty
+                          image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description="暂无跟进记录，录入第一条吧"
+                          className="growth-wb-empty"
+                        />
+                      )}
+                    </div>
+                  </Spin>
+                </div>
+                {wbSugs.length > 0 && (
+                  <div className="growth-wb-sugs">
+                    <div className="growth-wb-sugs-head">
+                      <span>
+                        <RobotOutlined /> AI话术推荐（复制后发到微信/企微）
+                      </span>
+                      <button type="button" className="ui-link-button" onClick={() => setWbSugs([])}>
+                        收起
+                      </button>
+                    </div>
+                    {wbSugs.map((s, i) => (
+                      <Paragraph key={i} copyable className="growth-wb-sug-line">
+                        {i + 1}. {s}
+                      </Paragraph>
+                    ))}
+                  </div>
+                )}
+                <div className="growth-wb-composer">
+                  <Input.TextArea
+                    rows={2}
+                    value={followText}
+                    onChange={e => setFollowText(e.target.value)}
+                    placeholder="把微信/企微/电话沟通后的结果写在这里，例如：客户对价格有顾虑，约下周二到店试吃…"
+                    className="growth-wb-composer-input"
+                  />
+                  <Row gutter={8} className="growth-wb-composer-input">
+                    <Col xs={24} md={8}>
+                      <DatePicker
+                        size="small"
+                        value={followNextAt}
+                        onChange={setFollowNextAt}
+                        className="nw-full-width"
+                        placeholder="下次跟进日期"
+                      />
+                    </Col>
+                    <Col xs={24} md={16}>
+                      <Input
+                        size="small"
+                        value={followNextAction}
+                        onChange={e => setFollowNextAction(e.target.value)}
+                        placeholder="下次动作，如 发方案 / 约试吃 / 老板介入"
+                      />
+                    </Col>
+                  </Row>
+                  <div className="growth-wb-composer-actions">
+                    <Space size={8} wrap>
+                      <Button
+                        size="small"
+                        icon={<RobotOutlined />}
+                        loading={wbAiLoading}
+                        onClick={() =>
+                          confirmAiCharge('生成可复制私域话术？', () =>
+                            fetchWbSuggest('根据当前客户画像、分层标签和最近沟通记录，生成可复制的私域回复话术'),
+                          )
+                        }
+                      >
+                        生成可复制话术
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<CalendarOutlined />}
+                        loading={wbAiLoading}
+                        onClick={() =>
+                          confirmAiCharge('生成下月邀约话术？', () =>
+                            fetchWbSuggest(
+                              '根据客户画像、入选分层、最近聊天和活动记录，生成下个月主题试吃、会员活动或到店邀约话术，重点说明活动信息与预约方式，不制造名额紧张',
+                            ),
+                          )
+                        }
+                      >
+                        下月邀约话术
+                      </Button>
+                      <Button size="small" icon={<RightOutlined />} onClick={() => openAdvance(detail)}>
+                        推进阶段
+                      </Button>
+                    </Space>
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<SendOutlined />}
+                      loading={savingFollow}
+                      onClick={saveFollow}
+                    >
+                      保存跟进
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="请选择左侧客户"
+                className="growth-wb-empty--center"
+              />
+            )}
+          </div>
+
+          {/* 右：客户画像卡 */}
+          <div className="growth-wb-right">
+            {detail ? (
+              <Spin spinning={detailLoading}>
+                <div className="growth-profile-head">
+                  <Avatar size={42} className="growth-profile-avatar">
+                    {String(detail.name || '?').slice(0, 1)}
+                  </Avatar>
+                  <div>
+                    <div className="growth-profile-name">{detail.name}</div>
+                    <div className="growth-profile-tags">
+                      {detail.grade && <GradeTag grade={detail.grade} />}
+                      <StageTag stage={detail.stage} />
+                    </div>
+                  </div>
+                  <span className="growth-profile-score-wrap">
+                    <div
+                      className={`growth-profile-score${(detail.score ?? 0) >= 70 ? ' growth-profile-score--hot' : ''}`}
+                    >
+                      {detail.score ?? '-'}
+                    </div>
+                    <div className="growth-muted-sm">意向评分</div>
+                  </span>
+                </div>
+                <div className="growth-info-box">
+                  <InfoRow label="身份" value={detail.identity_tag} />
+                  <InfoRow
+                    label="预算"
+                    value={
+                      detail.budget_level && (
+                        <Tag color={budgetColor[detail.budget_level] || 'default'} className="growth-tag-flush">
+                          {detail.budget_level}
+                        </Tag>
+                      )
+                    }
+                  />
+                  <InfoRow label="意向菜品/套餐" value={detail.interest} />
+                  <InfoRow label="公司" value={detail.company} />
+                  <InfoRow label="来源" value={detail.source} />
+                  <InfoRow label="负责人" value={detail.owner_name} />
+                </div>
+
+                <SectionTitle>跟进备份</SectionTitle>
+                <div className="growth-backup-box">
+                  {detail.follow_stats?.total ? (
+                    <>
+                      <div className="growth-backup-head">
+                        <span className="growth-text-2">
+                          累计跟进 <b className="growth-backup-total">{detail.follow_stats.total}</b> 次
+                        </span>
+                        <span className="growth-text-2">{detail.follow_stats.user_count} 个账号参与</span>
+                      </div>
+                      {(detail.follow_stats.followers || []).map((u: any) => (
+                        <div key={`${u.user_id || 'x'}-${u.name}`} className="growth-backup-row">
+                          <span>{u.name}</span>
+                          <span>
+                            {u.follow_count}次 · 最近 {fmtTime(u.last_at).slice(5)}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="growth-muted">还没有跟进备份，保存第一条跟进后会记录当前账号。</div>
+                  )}
+                </div>
+
+                <SectionTitle>入选逻辑</SectionTitle>
+                {selectedBuckets.length > 0 ? (
+                  <div className="growth-bucket-list">
+                    {selectedBuckets.map(b => (
+                      <div key={b.key} className="growth-bucket-card">
+                        <Tag color={b.color} className="growth-bucket-tag">
+                          {b.label}
+                        </Tag>
+                        <div className="growth-bucket-reason">{b.reason}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="growth-bucket-empty">
+                    当前未命中 A类客户 / 即将成交 / 建议老板介入，可继续记录跟进或推进阶段后自动重算。
+                  </div>
+                )}
+
+                {journey && (
+                  <>
+                    <SectionTitle>
+                      客户生命周期（{journey.current} · 第{(journey.journey || []).filter((j: any) => j.reached).length}
+                      /11节点 · 已{journey.totalDays}天）
+                    </SectionTitle>
+                    <div className="growth-journey-box">
+                      {(journey.journey || []).map((j: any, i: number) => {
+                        const isCurrent = j.node === journey.current;
+                        const dotCls = `growth-journey-dot${isCurrent ? ' growth-journey-dot--current' : j.reached ? ' growth-journey-dot--reached' : ''}`;
+                        const nodeCls = `growth-journey-node${isCurrent ? ' growth-journey-node--current' : j.reached ? ' growth-journey-node--reached' : ''}`;
+                        return (
+                          <div key={j.node} className="growth-journey-row">
+                            <div className="growth-journey-rail">
+                              <span className={dotCls}>{j.reached ? '✓' : ''}</span>
+                              {i < 10 && (
+                                <span
+                                  className={`growth-journey-line${j.reached ? ' growth-journey-line--reached' : ''}`}
+                                />
+                              )}
+                            </div>
+                            <div className="growth-journey-content">
+                              <div className="growth-journey-head">
+                                <span className={nodeCls}>{j.node}</span>
+                                {isCurrent && (
+                                  <Tag color="blue" className="growth-tag-compact">
+                                    当前
+                                  </Tag>
+                                )}
+                                {j.at && <span className="growth-muted-sm">{String(j.at).slice(0, 10)}</span>}
+                                {j.reached && j.stayDays != null && j.stayDays > 0 && !isCurrent && (
+                                  <span className="growth-journey-stay">停留{j.stayDays}天</span>
+                                )}
+                                {j.inferred && <span className="growth-muted-sm">(推导)</span>}
+                              </div>
+                              {j.note && (
+                                <div
+                                  className="growth-journey-note"
+                                  title={`${j.note}${j.by ? `｜经办：${j.by}` : ''}`}
+                                >
+                                  {j.note}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {journey.nextHint && <div className="growth-journey-next">💡 下一步：{journey.nextHint}</div>}
+                  </>
+                )}
+
+                {scoreEntries.length > 0 && (
+                  <>
+                    <SectionTitle>评分构成</SectionTitle>
+                    {scoreEntries.map(([k, v]) => (
+                      <div key={k} className="growth-score-row">
+                        <span className="growth-score-label">{k}</span>
+                        <Progress
+                          percent={Math.round(((Number(v) || 0) / maxDim) * 100)}
+                          showInfo={false}
+                          size="small"
+                          strokeColor="var(--ui-accent)"
+                          className="growth-score-bar"
+                        />
+                        <span className="growth-score-val">{String(v)}分</span>
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                <SectionTitle>
+                  客户顾虑（{(detail.concerns || []).filter((c: any) => !c.resolved).length} 条未解决）
+                </SectionTitle>
+                {(detail.concerns || []).map((c: any, i: number) => (
+                  <div key={i} className={`growth-concern-row${c.resolved ? ' growth-concern-row--resolved' : ''}`}>
+                    <span className={`growth-concern-text${c.resolved ? ' growth-concern-text--resolved' : ''}`}>
+                      {c.text}
+                    </span>
+                    {c.resolved ? (
+                      <Tag color="green" className="growth-tag-compact">
+                        已解决
+                      </Tag>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ui-link-button growth-concern-action"
+                        onClick={() => resolveObjection(i)}
+                      >
+                        标记解决
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {(detail.concerns || []).length === 0 && <div className="growth-muted-sm">暂未记录顾虑</div>}
+                <Input.Search
+                  size="small"
+                  placeholder="记录新顾虑，确认后AI生成应对话术"
+                  value={objText}
+                  loading={objLoading}
+                  onChange={e => setObjText(e.target.value)}
+                  onSearch={requestObjectionAi}
+                  enterButton={
+                    <span>
+                      <RobotOutlined /> AI应对
+                    </span>
+                  }
+                  className="growth-obj-search"
+                />
+
+                {(detail.next_follow_at || detail.next_action) && (
+                  <div className="growth-next-box">
+                    <div className="growth-muted">
+                      <ClockCircleOutlined /> 下次跟进
+                    </div>
+                    <div className="growth-next-val">
+                      {detail.next_follow_at ? String(detail.next_follow_at).slice(0, 10) : ''}{' '}
+                      {detail.next_action || ''}
+                    </div>
+                  </div>
+                )}
+
+                <Button
+                  type="primary"
+                  block
+                  icon={<RightOutlined />}
+                  className="growth-advance-btn"
+                  onClick={() => openAdvance(detail)}
+                >
+                  阶段推进
+                </Button>
+              </Spin>
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="选择客户后查看画像"
+                className="growth-wb-empty--right"
+              />
+            )}
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+
+  const ledgerContent = (
+    <div className="growth-tab-stack">
+      {Number(summary.importedOps?.rows || 0) > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`经营日报已同步 ${summary.importedOps.rows} 天（${summary.importedOps.startDate} 至 ${summary.importedOps.endDate}）`}
+          description={`日报汇总：新增线索 ${summary.importedOps.newLeads}、邀约 ${summary.importedOps.invited}、到店 ${summary.importedOps.arrived}、成交 ${summary.importedOps.deals}。这里展示经营汇总；客户姓名、电话等明细需客户表成功导入后进入下方客户台账。`}
+        />
+      )}
+      <Row gutter={[12, 12]}>
+        <Col xs={24} lg={9}>
+          <Panel title="重点客户列表" bodyStyle={{ paddingTop: 8 }}>
+            <Tabs
+              size="small"
+              activeKey={kcTab}
+              onChange={setKcTab}
+              items={[
+                { key: 'aList', label: `A类客户 ${(keyCust.aList || []).length}` },
+                { key: 'closing', label: `即将成交 ${(keyCust.closing || []).length}` },
+                { key: 'bossList', label: `建议老板介入 ${(keyCust.bossList || []).length}` },
+              ]}
+            />
+            <div className="growth-kc-hint">
+              分层口径：A类=评分≥70；即将成交=评分≥80或已到店且预算高/中；老板介入=A类且高预算。点击行自动跳转跟进工作台。
+            </div>
+            <Space wrap size={8} className="growth-filter-bar--sm">
+              <Input.Search
+                allowClear
+                placeholder="搜客户/菜品"
+                size="small"
+                className="growth-input-132"
+                value={keyKw}
+                onChange={e => setKeyKw(e.target.value)}
+                onSearch={setKeyKw}
+              />
+              <Select
+                allowClear
+                placeholder="阶段"
+                size="small"
+                className="growth-input-104"
+                value={keyStage}
+                onChange={setKeyStage}
+                options={STAGES.map(s => ({ value: s, label: s }))}
+              />
+              <Select
+                allowClear
+                placeholder="预算"
+                size="small"
+                className="growth-input-82"
+                value={keyBudget}
+                onChange={setKeyBudget}
+                options={BUDGETS.map(b => ({ value: b, label: b }))}
+              />
+              <Select
+                size="small"
+                className="growth-input-122"
+                value={keySort}
+                onChange={setKeySort}
+                options={[
+                  { value: 'scoreDesc', label: '评分高到低' },
+                  { value: 'scoreAsc', label: '评分低到高' },
+                  { value: 'budget', label: '预算高优先' },
+                  { value: 'stage', label: '阶段排序' },
+                  { value: 'name', label: '客户名排序' },
+                ]}
+              />
+              <Button size="small" onClick={resetKeyFilters}>
+                清空
+              </Button>
+            </Space>
+            <Table
+              size="small"
+              rowKey="id"
+              columns={kcCols}
+              dataSource={filteredKeyRows}
+              pagination={{ pageSize: 8, size: 'small', showSizeChanger: false }}
+              onRow={(r: any) => ({
+                onClick: () => focusLeadInWorkspace(r.id),
+                className: 'growth-row-clickable',
+              })}
+            />
+          </Panel>
+        </Col>
+        <Col xs={24} lg={15}>
+          <Panel
+            title="客户线索台账"
+            extra={
+              <Space wrap>
+                <Button size="small" icon={<DownloadOutlined />} loading={exportingLeads} onClick={exportLeads}>
+                  导出 Excel
+                </Button>
+                <Button size="small" icon={<InboxOutlined />} onClick={openBatch}>
+                  批量导入线索
+                </Button>
+                <Button
+                  size="small"
+                  icon={<UploadOutlined />}
+                  onClick={() => {
+                    reportForm.resetFields();
+                    setReportOpen(true);
+                  }}
+                >
+                  今日数据上报
+                </Button>
+                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openAdd}>
+                  新增线索
+                </Button>
+              </Space>
+            }
+          >
+            <div ref={tableRef} />
+            <Space wrap size={8} className="growth-filter-bar">
+              <Select
+                allowClear
+                placeholder="阶段"
+                size="small"
+                className="growth-input-104"
+                value={fStage}
+                onChange={v => {
+                  setFStage(v);
+                  setPage(1);
+                }}
+                options={STAGES.map(s => ({ value: s, label: s }))}
+              />
+              <Select
+                allowClear
+                placeholder="等级"
+                size="small"
+                className="growth-input-90"
+                value={fGrade}
+                onChange={v => {
+                  setFGrade(v);
+                  setPage(1);
+                }}
+                options={GRADES.map(g => ({ value: g, label: `${g}级` }))}
+              />
+              <Select
+                allowClear
+                placeholder="来源"
+                size="small"
+                className="growth-input-104"
+                value={fSource}
+                onChange={v => {
+                  setFSource(v);
+                  setPage(1);
+                }}
+                options={SOURCES.map(s => ({ value: s, label: s }))}
+              />
+              <Select
+                allowClear
+                placeholder="跟进状态"
+                size="small"
+                className="growth-input-112"
+                value={fFollowStatus}
+                onChange={v => {
+                  setFFollowStatus(v);
+                  setPage(1);
+                }}
+                options={[
+                  { value: 'followed', label: '已跟进' },
+                  { value: 'unfollowed', label: '未跟进' },
+                  { value: 'next', label: '有下次跟进' },
+                  { value: 'overdue', label: '已超期' },
+                ]}
+              />
+              <Select
+                size="small"
+                className="growth-input-132"
+                value={sort}
+                onChange={v => {
+                  setSort(v);
+                  setPage(1);
+                }}
+                options={[
+                  { value: 'score', label: '评分高到低' },
+                  { value: 'scoreAsc', label: '评分低到高' },
+                  { value: 'created', label: '最新创建' },
+                  { value: 'follow', label: '下次跟进最近' },
+                  { value: 'followCount', label: '跟进次数最多' },
+                  { value: 'lastFollow', label: '最近沟通优先' },
+                  { value: 'budget', label: '预算高优先' },
+                  { value: 'source', label: '来源排序' },
+                  { value: 'stage', label: '阶段排序' },
+                  { value: 'name', label: '客户名排序' },
+                ]}
+              />
+              <Input.Search
+                allowClear
+                placeholder="姓名/电话/公司"
+                size="small"
+                className="growth-input-180"
+                value={kw}
+                onChange={e => setKw(e.target.value)}
+                onSearch={v => {
+                  setKw(v);
+                  setPage(1);
+                }}
+              />
+              <Button size="small" onClick={resetLedgerFilters}>
+                清空筛选
+              </Button>
+            </Space>
+            <Table
+              size="small"
+              rowKey="id"
+              loading={tableLoading}
+              columns={ledgerCols}
+              dataSource={rows}
+              scroll={{ x: 1060 }}
+              onChange={handleLedgerTableChange}
+              pagination={{
+                current: page,
+                pageSize: size,
+                total,
+                size: 'small',
+                showSizeChanger: false,
+                showTotal: t => `共 ${t} 条`,
+                onChange: p => setPage(p),
+              }}
+            />
+          </Panel>
+        </Col>
+      </Row>
+    </div>
+  );
+
+  const analyticsContent = (
+    <div className="growth-tab-stack">
+      {/* ===== KPI 行（逐卡可点：切到台账联动筛选）===== */}
       <Row gutter={[12, 12]}>
         <Col xs={12} md={8} xl={4}>
           <StatCard
@@ -1206,19 +1852,10 @@ export default function Growth() {
         </Col>
       </Row>
 
-      {Number(summary.importedOps?.rows || 0) > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          message={`经营日报已同步 ${summary.importedOps.rows} 天（${summary.importedOps.startDate} 至 ${summary.importedOps.endDate}）`}
-          description={`日报汇总：新增线索 ${summary.importedOps.newLeads}、邀约 ${summary.importedOps.invited}、到店 ${summary.importedOps.arrived}、成交 ${summary.importedOps.deals}。这里展示经营汇总；客户姓名、电话等明细需客户表成功导入后进入下方客户台账。`}
-        />
-      )}
-
-      {/* ===== 第二行：来源分析 + 转化漏斗 + AI跟进建议 ===== */}
+      {/* ===== 来源分析 + 转化漏斗 + AI跟进建议 ===== */}
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={6}>
-          <Panel title="线索来源分析" extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>线索数</span>}>
+          <Panel title="线索来源分析" extra={<span className="growth-muted-sm">线索数</span>}>
             <Chart
               height={262}
               option={{
@@ -1242,7 +1879,7 @@ export default function Growth() {
                       borderRadius: [0, 6, 6, 0],
                       color: (p: any) => CHART_COLORS[p.dataIndex % CHART_COLORS.length],
                     },
-                    label: { show: true, position: 'right', color: 'var(--ui-text-2)', fontSize: 11 },
+                    label: { show: true, position: 'right', color: 'var(--ui-text-2)', fontSize: 12 },
                   },
                 ],
               }}
@@ -1250,15 +1887,13 @@ export default function Growth() {
           </Panel>
         </Col>
         <Col xs={24} lg={11}>
-          <Panel
-            title="客户转化漏斗"
-            extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>点击层级可筛选下方台账</span>}
-          >
+          <Panel title="客户转化漏斗" extra={<span className="growth-muted-sm">点击层级可直达台账筛选</span>}>
             <Chart
               height={228}
               onClick={(p: any) => {
                 setFStage(p.name);
                 setPage(1);
+                setActiveTab('ledger');
                 message.info(`线索台账已筛选至「${p.name}」阶段`);
               }}
               option={{
@@ -1295,15 +1930,7 @@ export default function Growth() {
               }}
             />
             {funnel.bottleneck && (
-              <div
-                style={{
-                  background: 'var(--ui-surface)',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  fontSize: 12,
-                  color: 'var(--danger)',
-                }}
-              >
+              <div className="growth-bottleneck">
                 <AlertOutlined /> 当前卡点：「{funnel.bottleneck}」环节
                 {bottleneckItem ? ` 转化率 ${bottleneckItem.rate}%，低于基准 ${bottleneckItem.baseline}%` : ' 低于基准'}
                 ，建议优先安排跟进与邀约动作。
@@ -1315,7 +1942,7 @@ export default function Growth() {
           <Panel
             title={
               <>
-                <RobotOutlined style={{ color: 'var(--ui-accent)' }} /> AI跟进建议
+                <RobotOutlined className="growth-icon-accent" /> AI跟进建议
               </>
             }
             extra={
@@ -1330,33 +1957,13 @@ export default function Growth() {
             }
           >
             <Spin spinning={aiLoading}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 140 }}>
+              <div className="growth-ai-list">
                 {aiSugs.map((s, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 8,
-                      padding: '8px 12px',
-                      display: 'flex',
-                      gap: 8,
-                    }}
-                  >
-                    <Avatar
-                      size={20}
-                      style={{
-                        background: 'var(--ui-primary)',
-                        color: 'var(--ui-on-primary)',
-                        fontSize: 11,
-                        flexShrink: 0,
-                      }}
-                    >
+                  <div key={i} className="growth-ai-item">
+                    <Avatar size={20} className="growth-ai-badge">
                       {i + 1}
                     </Avatar>
-                    <Paragraph
-                      copyable
-                      style={{ margin: 0, fontSize: 12.5, color: 'var(--ui-text-2)', lineHeight: 1.7 }}
-                    >
+                    <Paragraph copyable className="growth-ai-paragraph">
                       {s}
                     </Paragraph>
                   </div>
@@ -1366,773 +1973,38 @@ export default function Growth() {
                 )}
               </div>
             </Spin>
-            <Divider style={{ margin: '10px 0' }} />
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 4 }}>
-              <BulbOutlined style={{ color: 'var(--warn)' }} /> 建议优先跟进
+            <Divider className="growth-divider" />
+            <div className="growth-priority-title">
+              <BulbOutlined className="growth-icon-warn" /> 建议优先跟进
             </div>
             {followUpList.map((c: any) => (
               <button
                 type="button"
                 key={c.id}
-                onClick={() => setSelectedId(c.id)}
-                style={{
-                  ...interactiveSurfaceStyle,
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '5px 0',
-                  cursor: 'pointer',
-                  fontSize: 12.5,
-                }}
+                onClick={() => focusLeadInWorkspace(c.id)}
+                className="growth-priority-btn"
               >
-                <span style={{ color: 'var(--ui-text-2)' }}>
-                  <span style={{ fontWeight: 600 }}>{c.name}</span> <GradeTag grade={c.grade} />
+                <span className="growth-text-2">
+                  <span className="growth-strong">{c.name}</span> <GradeTag grade={c.grade} />
                 </span>
-                <span style={{ color: 'var(--ui-muted)', fontSize: 12 }}>
+                <span className="growth-muted-sm">
                   {c.score}分 <RightOutlined />
                 </span>
               </button>
             ))}
-            {followUpList.length === 0 && <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>暂无 A 类客户</div>}
+            {followUpList.length === 0 && <div className="growth-muted-sm">暂无 A 类客户</div>}
           </Panel>
         </Col>
       </Row>
-
-      {/* ===== 第三行：私域跟进工作台 ===== */}
-      <Panel
-        title={
-          <>
-            <MessageOutlined style={{ color: 'var(--chart-2)' }} /> 私域跟进工作台
-          </>
-        }
-        extra={<span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>左侧=最近跟进队列；下方=自动分层客户池</span>}
-      >
-        <div
-          style={{
-            display: 'flex',
-            border: '1px solid var(--ui-border)',
-            borderRadius: 10,
-            overflow: 'hidden',
-            height: 520,
-          }}
-        >
-          {/* 左：最近跟进队列 */}
-          <div
-            style={{
-              width: 268,
-              flexShrink: 0,
-              borderRight: '1px solid var(--ui-border)',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            <div style={{ padding: 10, borderBottom: '1px solid var(--ui-border)' }}>
-              <Input
-                allowClear
-                size="small"
-                prefix={<SearchOutlined style={{ color: 'var(--ui-muted)' }} />}
-                placeholder="搜索客户"
-                value={convKw}
-                onChange={e => setConvKw(e.target.value)}
-              />
-              <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 6 }}>
-                按最近跟进时间排序，不等于重点客户来源
-              </div>
-            </div>
-            <div style={{ flex: 1, overflow: 'auto', padding: 6 }}>
-              {filteredConvs.map((c: any) => {
-                const id = c.id ?? c.lead_id;
-                const active = id === selectedId;
-                return (
-                  <button
-                    type="button"
-                    key={id}
-                    onClick={() => setSelectedId(id)}
-                    style={{
-                      ...interactiveSurfaceStyle,
-                      display: 'flex',
-                      gap: 10,
-                      padding: '10px 10px',
-                      cursor: 'pointer',
-                      borderRadius: 8,
-                      marginBottom: 2,
-                      background: active ? 'var(--ui-surface-2)' : 'transparent',
-                      borderLeft: active ? '3px solid var(--ui-primary)' : '3px solid transparent',
-                    }}
-                  >
-                    <Avatar
-                      style={{
-                        background: active ? 'var(--ui-primary)' : 'var(--ui-surface-2)',
-                        color: active ? 'var(--ui-on-primary)' : 'var(--ui-accent)',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {String(c.name || '?').slice(0, 1)}
-                    </Avatar>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span
-                          style={{
-                            fontWeight: 600,
-                            fontSize: 13,
-                            color: 'var(--ui-text)',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {c.name}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--ui-muted)', flexShrink: 0 }}>
-                          {fmtTime(c.last_at || c.last_time || c.updated_at).slice(5)}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', marginTop: 3 }}>
-                        <StageTag stage={c.stage} />
-                        {Number(c.follow_count) > 0 && (
-                          <Tag color="blue" style={{ fontSize: 10, lineHeight: '15px', marginLeft: 4 }}>
-                            {c.follow_count}次
-                          </Tag>
-                        )}
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: 'var(--ui-muted)',
-                            flex: 1,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {c.last_msg || c.last_content || c.last_follow || c.summary || '暂无跟进记录'}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 2 }}>
-                        {c.last_user_name ? `最近跟进：${c.last_user_name}` : '尚未有人跟进'}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-              {filteredConvs.length === 0 && (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无客户记录" style={{ marginTop: 60 }} />
-              )}
-            </div>
-          </div>
-
-          {/* 中：沟通详情（跟进时间线 + 摘要录入） */}
-          <div
-            style={{
-              flex: 1,
-              minWidth: 0,
-              borderRight: '1px solid var(--ui-border)',
-              display: 'flex',
-              flexDirection: 'column',
-              background: 'var(--ui-surface)',
-            }}
-          >
-            {detail ? (
-              <>
-                <div
-                  style={{
-                    padding: '10px 16px',
-                    borderBottom: '1px solid var(--ui-border)',
-                    background: 'var(--ui-surface)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    flexShrink: 0,
-                  }}
-                >
-                  <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--ui-text)' }}>{detail.name}</span>
-                  {detail.identity_tag && (
-                    <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>（{detail.identity_tag}）</span>
-                  )}
-                  <StageTag stage={detail.stage} />
-                  {detail.grade && <GradeTag grade={detail.grade} />}
-                  {selectedBuckets.map(b => (
-                    <Tag key={b.key} color={b.color} style={{ margin: 0, fontSize: 11 }}>
-                      {b.label}
-                    </Tag>
-                  ))}
-                  <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ui-muted)' }}>
-                    共 {follows.length} 条跟进记录
-                  </span>
-                </div>
-                <div
-                  style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}
-                >
-                  <Spin spinning={detailLoading}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                      {follows.map((f: any) => (
-                        <div key={f.id} style={{ display: 'flex', gap: 8 }}>
-                          <Avatar
-                            size={28}
-                            style={{
-                              background: 'var(--ui-surface-2)',
-                              color: 'var(--ui-accent)',
-                              fontSize: 12,
-                              flexShrink: 0,
-                            }}
-                          >
-                            {String(f.user_name || '未').slice(0, 1)}
-                          </Avatar>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginBottom: 3 }}>
-                              {f.user_name || '未知账号'} · {fmtTime(f.created_at)}
-                              {f.stage_after && (
-                                <Tag color="blue" style={{ fontSize: 10, lineHeight: '16px', marginLeft: 6 }}>
-                                  推进至 {f.stage_after}
-                                </Tag>
-                              )}
-                            </div>
-                            <div
-                              style={{
-                                background: 'var(--ui-surface)',
-                                border: '1px solid var(--ui-border)',
-                                borderRadius: '2px 10px 10px 10px',
-                                padding: '8px 12px',
-                                fontSize: 12.5,
-                                color: 'var(--ui-text-2)',
-                                lineHeight: 1.7,
-                                display: 'inline-block',
-                              }}
-                            >
-                              {f.content}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      {follows.length === 0 && (
-                        <Empty
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                          description="暂无跟进记录，录入第一条吧"
-                          style={{ marginTop: 60 }}
-                        />
-                      )}
-                    </div>
-                  </Spin>
-                </div>
-                {wbSugs.length > 0 && (
-                  <div
-                    style={{
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 8,
-                      padding: '8px 12px',
-                      margin: '8px 12px 0',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: 'var(--ui-accent)',
-                        marginBottom: 2,
-                      }}
-                    >
-                      <span>
-                        <RobotOutlined /> AI话术推荐（复制后发到微信/企微）
-                      </span>
-                      <button
-                        type="button"
-                        className="ui-link-button"
-                        style={{ fontSize: 11 }}
-                        onClick={() => setWbSugs([])}
-                      >
-                        收起
-                      </button>
-                    </div>
-                    {wbSugs.map((s, i) => (
-                      <Paragraph
-                        key={i}
-                        copyable
-                        style={{ margin: '4px 0', fontSize: 12, color: 'var(--ui-text-2)', lineHeight: 1.6 }}
-                      >
-                        {i + 1}. {s}
-                      </Paragraph>
-                    ))}
-                  </div>
-                )}
-                <div
-                  style={{
-                    borderTop: '1px solid var(--ui-border)',
-                    padding: 12,
-                    background: 'var(--ui-surface)',
-                    flexShrink: 0,
-                    marginTop: 8,
-                  }}
-                >
-                  <Input.TextArea
-                    rows={2}
-                    value={followText}
-                    onChange={e => setFollowText(e.target.value)}
-                    placeholder="把微信/企微/电话沟通后的结果写在这里，例如：客户对价格有顾虑，约下周二到店试吃…"
-                    style={{ marginBottom: 8 }}
-                  />
-                  <Row gutter={8} style={{ marginBottom: 8 }}>
-                    <Col xs={24} md={8}>
-                      <DatePicker
-                        size="small"
-                        value={followNextAt}
-                        onChange={setFollowNextAt}
-                        style={{ width: '100%' }}
-                        placeholder="下次跟进日期"
-                      />
-                    </Col>
-                    <Col xs={24} md={16}>
-                      <Input
-                        size="small"
-                        value={followNextAction}
-                        onChange={e => setFollowNextAction(e.target.value)}
-                        placeholder="下次动作，如 发方案 / 约试吃 / 老板介入"
-                      />
-                    </Col>
-                  </Row>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                    <Space size={8} wrap>
-                      <Button
-                        size="small"
-                        icon={<RobotOutlined />}
-                        loading={wbAiLoading}
-                        onClick={() =>
-                          confirmAiCharge('生成可复制私域话术？', () =>
-                            fetchWbSuggest('根据当前客户画像、分层标签和最近沟通记录，生成可复制的私域回复话术'),
-                          )
-                        }
-                      >
-                        生成可复制话术
-                      </Button>
-                      <Button
-                        size="small"
-                        icon={<CalendarOutlined />}
-                        loading={wbAiLoading}
-                        onClick={() =>
-                          confirmAiCharge('生成下月邀约话术？', () =>
-                            fetchWbSuggest(
-                              '根据客户画像、入选分层、最近聊天和活动记录，生成下个月主题试吃、会员活动或到店邀约话术，重点说明活动信息与预约方式，不制造名额紧张',
-                            ),
-                          )
-                        }
-                      >
-                        下月邀约话术
-                      </Button>
-                      <Button size="small" icon={<RightOutlined />} onClick={() => openAdvance(detail)}>
-                        推进阶段
-                      </Button>
-                    </Space>
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<SendOutlined />}
-                      loading={savingFollow}
-                      onClick={saveFollow}
-                    >
-                      保存跟进
-                    </Button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请选择左侧客户" style={{ margin: 'auto' }} />
-            )}
-          </div>
-
-          {/* 右：客户画像卡 */}
-          <div style={{ width: 312, flexShrink: 0, overflow: 'auto', padding: 14 }}>
-            {detail ? (
-              <Spin spinning={detailLoading}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <Avatar
-                    size={42}
-                    style={{ background: 'var(--ui-primary)', color: 'var(--ui-on-primary)', flexShrink: 0 }}
-                  >
-                    {String(detail.name || '?').slice(0, 1)}
-                  </Avatar>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--ui-text)' }}>{detail.name}</div>
-                    <div style={{ marginTop: 2 }}>
-                      {detail.grade && <GradeTag grade={detail.grade} />}
-                      <StageTag stage={detail.stage} />
-                    </div>
-                  </div>
-                  <span style={{ marginLeft: 'auto', textAlign: 'center' }}>
-                    <div
-                      style={{
-                        fontSize: 20,
-                        fontWeight: 700,
-                        color: (detail.score ?? 0) >= 70 ? 'var(--danger)' : 'var(--ui-accent)',
-                      }}
-                    >
-                      {detail.score ?? '-'}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>意向评分</div>
-                  </span>
-                </div>
-                <div style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 12px' }}>
-                  <InfoRow label="身份" value={detail.identity_tag} />
-                  <InfoRow
-                    label="预算"
-                    value={
-                      detail.budget_level && (
-                        <Tag color={budgetColor[detail.budget_level] || 'default'} style={{ margin: 0 }}>
-                          {detail.budget_level}
-                        </Tag>
-                      )
-                    }
-                  />
-                  <InfoRow label="意向产品" value={detail.interest} />
-                  <InfoRow label="公司" value={detail.company} />
-                  <InfoRow label="来源" value={detail.source} />
-                  <InfoRow label="负责人" value={detail.owner_name} />
-                </div>
-
-                <SectionTitle>跟进备份</SectionTitle>
-                <div
-                  style={{
-                    background: 'var(--ui-surface-2)',
-                    border: '1px solid var(--ui-border)',
-                    borderRadius: 8,
-                    padding: '8px 10px',
-                    fontSize: 12,
-                  }}
-                >
-                  {detail.follow_stats?.total ? (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                        <span style={{ color: 'var(--ui-text-2)' }}>
-                          累计跟进 <b style={{ color: 'var(--ui-text)' }}>{detail.follow_stats.total}</b> 次
-                        </span>
-                        <span style={{ color: 'var(--ui-text-2)' }}>{detail.follow_stats.user_count} 个账号参与</span>
-                      </div>
-                      {(detail.follow_stats.followers || []).map((u: any) => (
-                        <div
-                          key={`${u.user_id || 'x'}-${u.name}`}
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            padding: '3px 0',
-                            color: 'var(--ui-text-2)',
-                          }}
-                        >
-                          <span>{u.name}</span>
-                          <span>
-                            {u.follow_count}次 · 最近 {fmtTime(u.last_at).slice(5)}
-                          </span>
-                        </div>
-                      ))}
-                    </>
-                  ) : (
-                    <div style={{ color: 'var(--ui-muted)' }}>还没有跟进备份，保存第一条跟进后会记录当前账号。</div>
-                  )}
-                </div>
-
-                <SectionTitle>入选逻辑</SectionTitle>
-                {selectedBuckets.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {selectedBuckets.map(b => (
-                      <div
-                        key={b.key}
-                        style={{
-                          background: 'var(--ui-surface)',
-                          border: '1px solid var(--ui-border)',
-                          borderRadius: 6,
-                          padding: '6px 8px',
-                          fontSize: 12,
-                        }}
-                      >
-                        <Tag color={b.color} style={{ marginBottom: 4 }}>
-                          {b.label}
-                        </Tag>
-                        <div style={{ color: 'var(--ui-text-2)', lineHeight: 1.5 }}>{b.reason}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--ui-muted)',
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 6,
-                      padding: '6px 8px',
-                    }}
-                  >
-                    当前未命中 A类客户 / 即将成交 / 建议老板介入，可继续记录跟进或推进阶段后自动重算。
-                  </div>
-                )}
-
-                {journey && (
-                  <>
-                    <SectionTitle>
-                      客户生命周期（{journey.current} · 第{(journey.journey || []).filter((j: any) => j.reached).length}
-                      /11节点 · 已{journey.totalDays}天）
-                    </SectionTitle>
-                    <div
-                      style={{
-                        background: 'var(--ui-surface-2)',
-                        border: '1px solid var(--ui-border)',
-                        borderRadius: 8,
-                        padding: '10px 12px',
-                        maxHeight: 260,
-                        overflow: 'auto',
-                      }}
-                    >
-                      {(journey.journey || []).map((j: any, i: number) => {
-                        const isCurrent = j.node === journey.current;
-                        return (
-                          <div key={j.node} style={{ display: 'flex', gap: 8, position: 'relative' }}>
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                alignItems: 'center',
-                                width: 14,
-                                flexShrink: 0,
-                              }}
-                            >
-                              <span
-                                style={{
-                                  width: 12,
-                                  height: 12,
-                                  borderRadius: 7,
-                                  marginTop: 3,
-                                  flexShrink: 0,
-                                  fontSize: 8,
-                                  lineHeight: '12px',
-                                  textAlign: 'center',
-                                  color: isCurrent ? 'var(--ui-on-primary)' : '#fff',
-                                  background: j.reached
-                                    ? isCurrent
-                                      ? 'var(--ui-primary)'
-                                      : 'var(--chart-2)'
-                                    : 'var(--ui-surface)',
-                                  boxShadow: isCurrent ? '0 0 0 3px var(--ui-primary-soft)' : 'none',
-                                }}
-                              >
-                                {j.reached ? '✓' : ''}
-                              </span>
-                              {i < 10 && (
-                                <span
-                                  style={{
-                                    width: 2,
-                                    flex: 1,
-                                    minHeight: 10,
-                                    background: j.reached ? 'var(--ui-surface)' : 'var(--ui-border)',
-                                  }}
-                                />
-                              )}
-                            </div>
-                            <div style={{ flex: 1, paddingBottom: 8, minWidth: 0 }}>
-                              <div
-                                style={{
-                                  fontSize: 12,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 6,
-                                  flexWrap: 'wrap',
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    fontWeight: isCurrent ? 700 : j.reached ? 600 : 400,
-                                    color: isCurrent
-                                      ? 'var(--ui-accent)'
-                                      : j.reached
-                                        ? 'var(--ui-text)'
-                                        : 'var(--ui-muted)',
-                                  }}
-                                >
-                                  {j.node}
-                                </span>
-                                {isCurrent && (
-                                  <Tag
-                                    color="blue"
-                                    style={{ margin: 0, fontSize: 10, lineHeight: '15px', padding: '0 4px' }}
-                                  >
-                                    当前
-                                  </Tag>
-                                )}
-                                {j.at && (
-                                  <span style={{ fontSize: 10.5, color: 'var(--ui-muted)' }}>
-                                    {String(j.at).slice(0, 10)}
-                                  </span>
-                                )}
-                                {j.reached && j.stayDays != null && j.stayDays > 0 && !isCurrent && (
-                                  <span style={{ fontSize: 10.5, color: 'var(--ui-warning-text)' }}>
-                                    停留{j.stayDays}天
-                                  </span>
-                                )}
-                                {j.inferred && <span style={{ fontSize: 10, color: 'var(--ui-muted)' }}>(推导)</span>}
-                              </div>
-                              {j.note && (
-                                <div
-                                  style={{
-                                    fontSize: 11,
-                                    color: 'var(--ui-muted)',
-                                    marginTop: 1,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                  title={`${j.note}${j.by ? `｜经办：${j.by}` : ''}`}
-                                >
-                                  {j.note}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {journey.nextHint && (
-                      <div
-                        style={{
-                          marginTop: 6,
-                          fontSize: 11.5,
-                          color: 'var(--ui-accent)',
-                          background: 'var(--ui-surface)',
-                          borderRadius: 6,
-                          padding: '5px 8px',
-                        }}
-                      >
-                        💡 下一步：{journey.nextHint}
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {scoreEntries.length > 0 && (
-                  <>
-                    <SectionTitle>评分构成</SectionTitle>
-                    {scoreEntries.map(([k, v]) => (
-                      <div
-                        key={k}
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '3px 0' }}
-                      >
-                        <span style={{ color: 'var(--ui-muted)', width: 62, flexShrink: 0 }}>{k}</span>
-                        <Progress
-                          percent={Math.round(((Number(v) || 0) / maxDim) * 100)}
-                          showInfo={false}
-                          size="small"
-                          strokeColor="var(--ui-accent)"
-                          style={{ flex: 1 }}
-                        />
-                        <span style={{ color: 'var(--ui-text)', fontWeight: 600, width: 34, textAlign: 'right' }}>
-                          {String(v)}分
-                        </span>
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                <SectionTitle>
-                  客户顾虑（{(detail.concerns || []).filter((c: any) => !c.resolved).length} 条未解决）
-                </SectionTitle>
-                {(detail.concerns || []).map((c: any, i: number) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      fontSize: 12,
-                      padding: '5px 8px',
-                      marginBottom: 4,
-                      background: c.resolved ? 'var(--ui-surface)' : 'var(--ui-warning-surface)',
-                      borderRadius: 6,
-                    }}
-                  >
-                    <span
-                      style={{
-                        flex: 1,
-                        color: c.resolved ? 'var(--ui-muted)' : 'var(--ui-warning-text)',
-                        textDecoration: c.resolved ? 'line-through' : 'none',
-                      }}
-                    >
-                      {c.text}
-                    </span>
-                    {c.resolved ? (
-                      <Tag color="green" style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>
-                        已解决
-                      </Tag>
-                    ) : (
-                      <button
-                        type="button"
-                        className="ui-link-button"
-                        style={{ fontSize: 11, flexShrink: 0 }}
-                        onClick={() => resolveObjection(i)}
-                      >
-                        标记解决
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {(detail.concerns || []).length === 0 && (
-                  <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>暂未记录顾虑</div>
-                )}
-                <Input.Search
-                  size="small"
-                  placeholder="记录新顾虑，AI生成应对话术"
-                  value={objText}
-                  loading={objLoading}
-                  onChange={e => setObjText(e.target.value)}
-                  onSearch={addObjection}
-                  enterButton={
-                    <span>
-                      <RobotOutlined /> AI应对
-                    </span>
-                  }
-                  style={{ marginTop: 6 }}
-                />
-
-                {(detail.next_follow_at || detail.next_action) && (
-                  <div
-                    style={{
-                      background: 'var(--ui-surface-2)',
-                      borderRadius: 8,
-                      padding: '8px 12px',
-                      marginTop: 12,
-                      fontSize: 12,
-                    }}
-                  >
-                    <div style={{ color: 'var(--ui-muted)' }}>
-                      <ClockCircleOutlined /> 下次跟进
-                    </div>
-                    <div style={{ color: 'var(--ui-text)', fontWeight: 600, marginTop: 2 }}>
-                      {detail.next_follow_at ? String(detail.next_follow_at).slice(0, 10) : ''}{' '}
-                      {detail.next_action || ''}
-                    </div>
-                  </div>
-                )}
-
-                <Button
-                  type="primary"
-                  block
-                  icon={<RightOutlined />}
-                  style={{ marginTop: 14 }}
-                  onClick={() => openAdvance(detail)}
-                >
-                  阶段推进
-                </Button>
-              </Spin>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择客户后查看画像" style={{ marginTop: 120 }} />
-            )}
-          </div>
-        </div>
-      </Panel>
 
       {/* ===== 本月已沟通客户总表：老板/上级查看与导出 ===== */}
       <Panel
         title="本月已沟通客户"
         extra={
-          <Space size={8}>
+          <Space size={8} wrap>
             <Tag color="blue">客户 {followReport.summary?.communicatedCustomers || 0}</Tag>
             <Tag color="green">记录 {followReport.summary?.followRecords || 0}</Tag>
-            <Tag color="purple">账号 {followReport.summary?.activeStaff || 0}</Tag>
+            <Tag color="cyan">账号 {followReport.summary?.activeStaff || 0}</Tag>
             <Button size="small" icon={<ReloadOutlined />} onClick={loadFollowReport}>
               刷新
             </Button>
@@ -2150,41 +2022,29 @@ export default function Growth() {
           </Space>
         }
       >
-        <Row gutter={[12, 12]} style={{ marginBottom: 10 }}>
+        <Row gutter={[12, 12]} className="growth-staff-row">
           {(followReport.staff || []).slice(0, 4).map((s: any) => (
             <Col xs={12} md={6} key={s.name}>
-              <div
-                style={{
-                  background: 'var(--ui-surface)',
-                  border: '1px solid var(--ui-border)',
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                }}
-              >
-                <div style={{ fontSize: 12, color: 'var(--ui-text-2)' }}>{s.name}</div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ui-text)' }}>
-                  {s.follow_count}次{' '}
-                  <span style={{ fontSize: 11, color: 'var(--ui-muted)', fontWeight: 400 }}>
-                    覆盖{s.customer_count}人
-                  </span>
+              <div className="growth-staff-card">
+                <div className="growth-staff-name">{s.name}</div>
+                <div className="growth-staff-count">
+                  {s.follow_count}次 <span className="growth-staff-cover">覆盖{s.customer_count}人</span>
                 </div>
               </div>
             </Col>
           ))}
           {(followReport.staff || []).length === 0 && (
             <Col span={24}>
-              <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
-                本月暂无沟通记录，员工保存跟进后这里会自动出现。
-              </div>
+              <div className="growth-muted-sm">本月暂无沟通记录，员工保存跟进后这里会自动出现。</div>
             </Col>
           )}
         </Row>
-        <Space wrap size={8} style={{ marginBottom: 12 }}>
+        <Space wrap size={8} className="growth-filter-bar">
           <Input.Search
             allowClear
             placeholder="搜索客户/内容/建议"
             size="small"
-            style={{ width: 190 }}
+            className="growth-input-190"
             value={reportKw}
             onChange={e => setReportKw(e.target.value)}
             onSearch={setReportKw}
@@ -2193,7 +2053,7 @@ export default function Growth() {
             allowClear
             placeholder="阶段"
             size="small"
-            style={{ width: 112 }}
+            className="growth-input-112"
             value={reportStage}
             onChange={setReportStage}
             options={STAGES.map(s => ({ value: s, label: s }))}
@@ -2203,7 +2063,7 @@ export default function Growth() {
             showSearch
             placeholder="账号"
             size="small"
-            style={{ width: 112 }}
+            className="growth-input-112"
             value={reportOwner}
             onChange={setReportOwner}
             options={followReportOwnerOptions}
@@ -2213,7 +2073,7 @@ export default function Growth() {
             allowClear
             placeholder="下次跟进"
             size="small"
-            style={{ width: 126 }}
+            className="growth-input-126"
             value={reportNextStatus}
             onChange={setReportNextStatus}
             options={[
@@ -2224,7 +2084,7 @@ export default function Growth() {
           />
           <Select
             size="small"
-            style={{ width: 144 }}
+            className="growth-input-144"
             value={reportSort}
             onChange={setReportSort}
             options={[
@@ -2257,7 +2117,7 @@ export default function Growth() {
                 fixed: 'left',
                 sorter: (a: any, b: any) => textRank(a.name).localeCompare(textRank(b.name), 'zh-Hans-CN'),
                 render: (v: string, r: any) => (
-                  <button type="button" className="ui-link-button" onClick={() => setSelectedId(r.id)}>
+                  <button type="button" className="ui-link-button" onClick={() => focusLeadInWorkspace(r.id)}>
                     {v} <GradeTag grade={r.grade} />
                   </button>
                 ),
@@ -2284,7 +2144,7 @@ export default function Growth() {
                 render: (_: any, r: any) => (
                   <span>
                     {r.month_follow_count || 0}次{' '}
-                    <span style={{ color: 'var(--ui-muted)', fontSize: 11 }}>累计{r.total_follow_count || 0}</span>
+                    <span className="growth-muted-sm">累计{r.total_follow_count || 0}</span>
                   </span>
                 ),
               },
@@ -2295,20 +2155,10 @@ export default function Growth() {
                 sorter: (a: any, b: any) => dateRank(a.last_follow_at).localeCompare(dateRank(b.last_follow_at)),
                 render: (_: any, r: any) => (
                   <div>
-                    <div style={{ fontSize: 12 }}>
+                    <div className="growth-cell-main">
                       {r.last_follower_name || '-'} · {fmtTime(r.last_follow_at)}
                     </div>
-                    <div
-                      style={{
-                        color: 'var(--ui-muted)',
-                        fontSize: 11,
-                        maxWidth: 230,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                      title={r.last_content || ''}
-                    >
+                    <div className="growth-cell-ellipsis growth-cell-ellipsis--wide" title={r.last_content || ''}>
                       {r.last_content || '-'}
                     </div>
                   </div>
@@ -2326,7 +2176,7 @@ export default function Growth() {
                       {String(v).length > 38 ? '…' : ''}
                     </span>
                   ) : (
-                    <span style={{ color: 'var(--ui-muted)' }}>未生成</span>
+                    <span className="growth-muted">未生成</span>
                   ),
               },
               {
@@ -2338,11 +2188,11 @@ export default function Growth() {
                 render: (_: any, r: any) =>
                   r.next_follow_at || r.next_action ? (
                     <div>
-                      <div style={{ fontSize: 12 }}>{r.next_follow_at || '-'}</div>
-                      <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>{r.next_action || '-'}</div>
+                      <div className="growth-cell-main">{r.next_follow_at || '-'}</div>
+                      <div className="growth-muted-sm">{r.next_action || '-'}</div>
                     </div>
                   ) : (
-                    <span style={{ color: 'var(--ui-muted)' }}>未设置</span>
+                    <span className="growth-muted">未设置</span>
                   ),
               },
               {
@@ -2357,219 +2207,21 @@ export default function Growth() {
           }
         />
       </Panel>
+    </div>
+  );
 
-      {/* ===== 底部：重点客户列表 + 客户线索台账 ===== */}
-      <Row gutter={[12, 12]}>
-        <Col xs={24} lg={9}>
-          <Panel title="重点客户列表" bodyStyle={{ paddingTop: 8 }}>
-            <Tabs
-              size="small"
-              activeKey={kcTab}
-              onChange={setKcTab}
-              items={[
-                { key: 'aList', label: `A类客户 ${(keyCust.aList || []).length}` },
-                { key: 'closing', label: `即将成交 ${(keyCust.closing || []).length}` },
-                { key: 'bossList', label: `建议老板介入 ${(keyCust.bossList || []).length}` },
-              ]}
-            />
-            <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', margin: '-4px 0 8px', lineHeight: 1.6 }}>
-              分层口径：A类=评分≥70；即将成交=评分≥80或已到店且预算高/中；老板介入=A类且高预算。
-            </div>
-            <Space wrap size={8} style={{ marginBottom: 10 }}>
-              <Input.Search
-                allowClear
-                placeholder="搜客户/产品"
-                size="small"
-                style={{ width: 132 }}
-                value={keyKw}
-                onChange={e => setKeyKw(e.target.value)}
-                onSearch={setKeyKw}
-              />
-              <Select
-                allowClear
-                placeholder="阶段"
-                size="small"
-                style={{ width: 104 }}
-                value={keyStage}
-                onChange={setKeyStage}
-                options={STAGES.map(s => ({ value: s, label: s }))}
-              />
-              <Select
-                allowClear
-                placeholder="预算"
-                size="small"
-                style={{ width: 82 }}
-                value={keyBudget}
-                onChange={setKeyBudget}
-                options={BUDGETS.map(b => ({ value: b, label: b }))}
-              />
-              <Select
-                size="small"
-                style={{ width: 122 }}
-                value={keySort}
-                onChange={setKeySort}
-                options={[
-                  { value: 'scoreDesc', label: '评分高到低' },
-                  { value: 'scoreAsc', label: '评分低到高' },
-                  { value: 'budget', label: '预算高优先' },
-                  { value: 'stage', label: '阶段排序' },
-                  { value: 'name', label: '客户名排序' },
-                ]}
-              />
-              <Button size="small" onClick={resetKeyFilters}>
-                清空
-              </Button>
-            </Space>
-            <Table
-              size="small"
-              rowKey="id"
-              columns={kcCols}
-              dataSource={filteredKeyRows}
-              pagination={{ pageSize: 8, size: 'small', showSizeChanger: false }}
-              onRow={(r: any) => ({ onClick: () => setSelectedId(r.id), style: { cursor: 'pointer' } })}
-            />
-          </Panel>
-        </Col>
-        <Col xs={24} lg={15}>
-          <Panel
-            title="客户线索台账"
-            extra={
-              <Space>
-                <Button size="small" icon={<DownloadOutlined />} loading={exportingLeads} onClick={exportLeads}>
-                  导出 Excel
-                </Button>
-                <Button size="small" icon={<InboxOutlined />} onClick={openBatch}>
-                  批量导入线索
-                </Button>
-                <Button
-                  size="small"
-                  icon={<UploadOutlined />}
-                  onClick={() => {
-                    reportForm.resetFields();
-                    setReportOpen(true);
-                  }}
-                >
-                  今日数据上报
-                </Button>
-                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openAdd}>
-                  新增线索
-                </Button>
-              </Space>
-            }
-          >
-            <div ref={tableRef} />
-            <Space wrap size={8} style={{ marginBottom: 12 }}>
-              <Select
-                allowClear
-                placeholder="阶段"
-                size="small"
-                style={{ width: 104 }}
-                value={fStage}
-                onChange={v => {
-                  setFStage(v);
-                  setPage(1);
-                }}
-                options={STAGES.map(s => ({ value: s, label: s }))}
-              />
-              <Select
-                allowClear
-                placeholder="等级"
-                size="small"
-                style={{ width: 90 }}
-                value={fGrade}
-                onChange={v => {
-                  setFGrade(v);
-                  setPage(1);
-                }}
-                options={GRADES.map(g => ({ value: g, label: `${g}级` }))}
-              />
-              <Select
-                allowClear
-                placeholder="来源"
-                size="small"
-                style={{ width: 104 }}
-                value={fSource}
-                onChange={v => {
-                  setFSource(v);
-                  setPage(1);
-                }}
-                options={SOURCES.map(s => ({ value: s, label: s }))}
-              />
-              <Select
-                allowClear
-                placeholder="跟进状态"
-                size="small"
-                style={{ width: 112 }}
-                value={fFollowStatus}
-                onChange={v => {
-                  setFFollowStatus(v);
-                  setPage(1);
-                }}
-                options={[
-                  { value: 'followed', label: '已跟进' },
-                  { value: 'unfollowed', label: '未跟进' },
-                  { value: 'next', label: '有下次跟进' },
-                  { value: 'overdue', label: '已超期' },
-                ]}
-              />
-              <Select
-                size="small"
-                style={{ width: 132 }}
-                value={sort}
-                onChange={v => {
-                  setSort(v);
-                  setPage(1);
-                }}
-                options={[
-                  { value: 'score', label: '评分高到低' },
-                  { value: 'scoreAsc', label: '评分低到高' },
-                  { value: 'created', label: '最新创建' },
-                  { value: 'follow', label: '下次跟进最近' },
-                  { value: 'followCount', label: '跟进次数最多' },
-                  { value: 'lastFollow', label: '最近沟通优先' },
-                  { value: 'budget', label: '预算高优先' },
-                  { value: 'source', label: '来源排序' },
-                  { value: 'stage', label: '阶段排序' },
-                  { value: 'name', label: '客户名排序' },
-                ]}
-              />
-              <Input.Search
-                allowClear
-                placeholder="姓名/电话/公司"
-                size="small"
-                style={{ width: 180 }}
-                value={kw}
-                onChange={e => setKw(e.target.value)}
-                onSearch={v => {
-                  setKw(v);
-                  setPage(1);
-                }}
-              />
-              <Button size="small" onClick={resetLedgerFilters}>
-                清空筛选
-              </Button>
-            </Space>
-            <Table
-              size="small"
-              rowKey="id"
-              loading={tableLoading}
-              columns={ledgerCols}
-              dataSource={rows}
-              scroll={{ x: 1060 }}
-              onChange={handleLedgerTableChange}
-              pagination={{
-                current: page,
-                pageSize: size,
-                total,
-                size: 'small',
-                showSizeChanger: false,
-                showTotal: t => `共 ${t} 条`,
-                onChange: p => setPage(p),
-              }}
-            />
-          </Panel>
-        </Col>
-      </Row>
+  return (
+    <div className="growth-page">
+      <Tabs
+        className="growth-tabs"
+        activeKey={activeTab}
+        onChange={k => setActiveTab(k as 'workspace' | 'ledger' | 'analytics')}
+        items={[
+          { key: 'workspace', label: '今日跟进工作台', children: workspaceContent },
+          { key: 'ledger', label: `客户台账与导入${total ? ` (${total})` : ''}`, children: ledgerContent },
+          { key: 'analytics', label: '转化漏斗与月报', children: analyticsContent },
+        ]}
+      />
 
       {/* ===== Modal：阶段推进 ===== */}
       <Modal
@@ -2604,7 +2256,7 @@ export default function Growth() {
                         label="成交金额（元）"
                         rules={st === '已成交' ? [{ required: true, message: '成交必须填写成交金额' }] : []}
                       >
-                        <InputNumber style={{ width: '100%' }} min={0} placeholder="如 1280" />
+                        <InputNumber className="nw-full-width" min={0} placeholder="如 1280" />
                       </Form.Item>
                       <Form.Item name="deal_reason" label="成交原因">
                         <Input placeholder="如 主题试吃现场转化 / 老客转介绍" />
@@ -2657,29 +2309,29 @@ export default function Growth() {
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="growth-modal-alert"
           message="仅上报无明细来源的四项（线索/邀约/到店/内容数）；成交与复购金额随客户阶段推进自动归集，无需也不可二次上报"
         />
         <Form form={reportForm} layout="vertical">
           <Row gutter={12}>
             <Col span={8}>
               <Form.Item name="new_leads" label="新增线索数">
-                <InputNumber min={0} style={{ width: '100%' }} />
+                <InputNumber min={0} className="nw-full-width" />
               </Form.Item>
             </Col>
             <Col span={8}>
               <Form.Item name="invited" label="邀约人数">
-                <InputNumber min={0} style={{ width: '100%' }} />
+                <InputNumber min={0} className="nw-full-width" />
               </Form.Item>
             </Col>
             <Col span={8}>
               <Form.Item name="arrived" label="到店人数">
-                <InputNumber min={0} style={{ width: '100%' }} />
+                <InputNumber min={0} className="nw-full-width" />
               </Form.Item>
             </Col>
             <Col span={8}>
               <Form.Item name="content_count" label="内容发布数">
-                <InputNumber min={0} style={{ width: '100%' }} />
+                <InputNumber min={0} className="nw-full-width" />
               </Form.Item>
             </Col>
           </Row>
@@ -2699,11 +2351,11 @@ export default function Growth() {
         }}
         title={
           <>
-            <InboxOutlined style={{ color: 'var(--ui-accent)' }} /> 批量导入线索（文件 / 粘贴）
+            <InboxOutlined className="growth-icon-accent" /> 批量导入线索（文件 / 粘贴）
           </>
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="growth-batch-stack">
           <Alert
             type="info"
             showIcon
@@ -2714,31 +2366,15 @@ export default function Growth() {
               </span>
             }
           />
-          <label
-            htmlFor="growth-lead-batch-file"
-            style={{
-              display: 'block',
-              width: '100%',
-              border: '1.5px dashed #d1d1d1',
-              borderRadius: 8,
-              padding: '18px 12px',
-              textAlign: 'center',
-              cursor: 'pointer',
-              background: 'var(--ui-surface)',
-            }}
-          >
-            <InboxOutlined style={{ fontSize: 30, color: 'var(--ui-accent)' }} />
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ui-text)', marginTop: 6 }}>
-              选择 Excel(.xlsx/.xls) / CSV 文件
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 2 }}>
-              员工导入后默认归属本人；同手机号会自动更新原线索
-            </div>
+          <label htmlFor="growth-lead-batch-file" className="growth-dropzone">
+            <InboxOutlined className="growth-dropzone-icon" />
+            <div className="growth-dropzone-title">选择 Excel(.xlsx/.xls) / CSV 文件</div>
+            <div className="growth-dropzone-sub">员工导入后默认归属本人；同手机号会自动更新原线索</div>
             <input
               id="growth-lead-batch-file"
               type="file"
               accept=".xlsx,.xls,.csv"
-              style={{ display: 'none' }}
+              className="growth-hidden-input"
               onChange={e => {
                 const f = e.target.files?.[0];
                 if (f) parseLeadFile(f);
@@ -2747,9 +2383,7 @@ export default function Growth() {
             />
           </label>
           <div>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 6 }}>
-              或：从 Excel 直接复制粘贴（含表头）
-            </div>
+            <div className="growth-batch-label">或：从 Excel 直接复制粘贴（含表头）</div>
             <Input.TextArea
               rows={4}
               value={batchPaste}
@@ -2761,9 +2395,7 @@ export default function Growth() {
           </div>
           {batchRows.length > 0 && (
             <>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ui-text)' }}>
-                预览（{batchRows.length} 条）
-              </div>
+              <div className="growth-batch-label">预览（{batchRows.length} 条）</div>
               <Table
                 size="small"
                 rowKey={(_, i) => String(i)}
@@ -2778,7 +2410,7 @@ export default function Growth() {
                   { title: '预算', dataIndex: 'budget_level', width: 64 },
                   { title: '阶段', dataIndex: 'stage', width: 82, render: (v: any) => <StageTag stage={v} /> },
                   {
-                    title: '意向产品',
+                    title: '意向菜品/套餐',
                     dataIndex: 'interest',
                     width: 130,
                     ellipsis: true,
@@ -2864,7 +2496,7 @@ export default function Growth() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="interest" label="意向产品">
+              <Form.Item name="interest" label="意向菜品/套餐">
                 <Input placeholder="如 招牌菜预订 / 企业团餐" />
               </Form.Item>
             </Col>
@@ -2885,7 +2517,7 @@ export default function Growth() {
             </Col>
             <Col span={12}>
               <Form.Item name="next_follow_at" label="下次跟进日期">
-                <DatePicker style={{ width: '100%' }} placeholder="选择日期" />
+                <DatePicker className="nw-full-width" placeholder="选择日期" />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -2901,25 +2533,14 @@ export default function Growth() {
       <Modal
         title={
           <>
-            <RobotOutlined style={{ color: 'var(--ui-accent)' }} /> AI 顾虑应对话术
+            <RobotOutlined className="growth-icon-accent" /> AI 顾虑应对话术
           </>
         }
         open={objModal.open}
         footer={null}
         onCancel={() => setObjModal({ open: false, text: '' })}
       >
-        <Paragraph
-          copyable={{ text: objModal.text }}
-          style={{
-            whiteSpace: 'pre-wrap',
-            fontSize: 13,
-            color: 'var(--ui-text-2)',
-            lineHeight: 1.8,
-            background: 'var(--ui-surface-2)',
-            borderRadius: 8,
-            padding: '10px 12px',
-          }}
-        >
+        <Paragraph copyable={{ text: objModal.text }} className="growth-obj-modal-text">
           {objModal.text || '生成中…'}
         </Paragraph>
       </Modal>

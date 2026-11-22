@@ -25,9 +25,11 @@ import {
   ArrowUpOutlined,
   AudioOutlined,
   BookOutlined,
+  CheckCircleOutlined,
   CodeOutlined,
   ClockCircleOutlined,
   DownloadOutlined,
+  EditOutlined,
   ExperimentOutlined,
   EyeOutlined,
   FileTextOutlined,
@@ -41,6 +43,7 @@ import {
   SaveOutlined,
   SendOutlined,
   SettingOutlined,
+  TeamOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -1149,6 +1152,9 @@ function EmployeeWorkbenchInstance({
   const taskCenterId = `employee-task-center-${domain}-${idx ?? 'closed'}`;
   const contentResultId = `employee-content-result-${idx ?? 'closed'}`;
   const restaurantResultId = `employee-restaurant-result-${idx ?? 'closed'}`;
+  const restaurantRefineId = `employee-restaurant-refine-${idx ?? 'closed'}`;
+  const restaurantHandoffsId = `employee-restaurant-handoffs-${idx ?? 'closed'}`;
+  const restaurantFeedbackId = `employee-restaurant-feedback-${idx ?? 'closed'}`;
   const dispatchFormId = `employee-dispatch-form-${domain}-${idx ?? 'closed'}`;
 
   const applyProfile = useCallback(
@@ -2597,17 +2603,19 @@ function EmployeeWorkbenchInstance({
               }
               description={
                 <div className="ewb-task-progress">
-                  <div className="ewb-task-progress-actions">
-                    <Button
-                      size="small"
-                      icon={<ApartmentOutlined />}
-                      onClick={() =>
-                        setBusinessFlow({ sourceType: 'restaurant_task', sourceId: Number(restaurantTask.id) })
-                      }
-                    >
-                      查看业务流
-                    </Button>
-                  </div>
+                  {((isTaskRunning(restaurantTask.status) && !restaurantOutputBody) || !restaurantResultOpen) && (
+                    <div className="ewb-task-progress-actions">
+                      <Button
+                        size="small"
+                        icon={<ApartmentOutlined />}
+                        onClick={() =>
+                          setBusinessFlow({ sourceType: 'restaurant_task', sourceId: Number(restaurantTask.id) })
+                        }
+                      >
+                        查看业务流
+                      </Button>
+                    </div>
+                  )}
                   {activeRestaurantPollWarning && restaurantPollWarning && (
                     <div className="ewb-task-poll-warning" role="status" aria-live="polite">
                       <ReloadOutlined spin aria-hidden="true" />
@@ -2809,6 +2817,55 @@ function EmployeeWorkbenchInstance({
                           hasCampaignMaterials={restaurantReportView.campaignMaterials.length > 0}
                         />
                       )}
+                      {!isTaskRunning(restaurantTask.status) && (
+                        <nav className="ewb-result-jumpbar" aria-label="报告快捷操作跳转">
+                          <span className="ewb-jumpbar-label">快捷直达</span>
+                          <div className="ewb-jumpbar-actions">
+                            {!restaurantDraft && Number(restaurantTask.id) > 0 && (
+                              <button
+                                type="button"
+                                className="ewb-jumpbar-btn"
+                                onClick={() =>
+                                  document
+                                    .getElementById(restaurantRefineId)
+                                    ?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                                }
+                              >
+                                <EditOutlined aria-hidden="true" />
+                                <span>调参/优化报告</span>
+                              </button>
+                            )}
+                            {onHandoff &&
+                              Array.isArray(restaurantTask.handoffs) &&
+                              restaurantTask.handoffs.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="ewb-jumpbar-btn is-handoff"
+                                  onClick={() =>
+                                    document
+                                      .getElementById(restaurantHandoffsId)
+                                      ?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                                  }
+                                >
+                                  <TeamOutlined aria-hidden="true" />
+                                  <span>接棒给同事（{restaurantTask.handoffs.length}）</span>
+                                </button>
+                              )}
+                            <button
+                              type="button"
+                              className="ewb-jumpbar-btn"
+                              onClick={() =>
+                                document
+                                  .getElementById(restaurantFeedbackId)
+                                  ?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                              }
+                            >
+                              <CheckCircleOutlined aria-hidden="true" />
+                              <span>采纳/反馈</span>
+                            </button>
+                          </div>
+                        </nav>
+                      )}
                       <div className="ewb-report-view" aria-label="餐饮数字员工岗位报告">
                         <section className="ewb-run-output ewb-report-overview" aria-label="老板速览">
                           <div className="ewb-report-eyebrow">
@@ -2875,7 +2932,13 @@ function EmployeeWorkbenchInstance({
                         onRetry={retrySourceDeliverables}
                       />
                       {!isTaskRunning(restaurantTask.status) && !restaurantDraft && Number(restaurantTask.id) > 0 && (
-                        <ReportRefinePanel key={Number(restaurantTask.id)} taskId={Number(restaurantTask.id)} />
+                        <div id={restaurantRefineId} className="ewb-result-anchor">
+                          <ReportRefinePanel
+                            key={Number(restaurantTask.id)}
+                            taskId={Number(restaurantTask.id)}
+                            embeddedUnderReport
+                          />
+                        </div>
                       )}
                       <details className="ewb-report-details is-operational">
                         <summary>
@@ -2959,7 +3022,11 @@ function EmployeeWorkbenchInstance({
                       <DemoSampleSaver employeeIdx={idx} taskId={Number(restaurantTask.id)} />
                     )}
                   {onHandoff && Array.isArray(restaurantTask.handoffs) && restaurantTask.handoffs.length > 0 && (
-                    <section className="ewb-handoffs" aria-label="下一步协作接棒">
+                    <section
+                      id={restaurantHandoffsId}
+                      className="ewb-handoffs ewb-result-anchor"
+                      aria-label="下一步协作接棒"
+                    >
                       <div className="ewb-handoffs-head">
                         <strong className="ewb-handoffs-label">下一步协作接棒 · 建议派给</strong>
                         <small>点击自动带入本单结论并预填对方派活框</small>
@@ -2989,24 +3056,26 @@ function EmployeeWorkbenchInstance({
                       </div>
                     </section>
                   )}
-                  <ConversationTaskFeedback
-                    key={`restaurant-feedback-${restaurantTask.id}`}
-                    kind="restaurant"
-                    taskId={Number(restaurantTask.id)}
-                    businessReview={
-                      restaurantPublicStatus === '待人工审阅'
-                        ? {
-                            required: true,
-                            canReview:
-                              restaurantTask.reviewReady === true &&
-                              Boolean(restaurantTask.output_id) &&
-                              profile.permissions.canReviewRuns === true,
-                            blockedReason: restaurantTask.nextAction,
-                            onSubmit: reviewRestaurantOutput,
-                          }
-                        : undefined
-                    }
-                  />
+                  <div id={restaurantFeedbackId} className="ewb-result-anchor">
+                    <ConversationTaskFeedback
+                      key={`restaurant-feedback-${restaurantTask.id}`}
+                      kind="restaurant"
+                      taskId={Number(restaurantTask.id)}
+                      businessReview={
+                        restaurantPublicStatus === '待人工审阅'
+                          ? {
+                              required: true,
+                              canReview:
+                                restaurantTask.reviewReady === true &&
+                                Boolean(restaurantTask.output_id) &&
+                                profile.permissions.canReviewRuns === true,
+                              blockedReason: restaurantTask.nextAction,
+                              onSubmit: reviewRestaurantOutput,
+                            }
+                          : undefined
+                      }
+                    />
+                  </div>
                 </article>
               </details>
             )}

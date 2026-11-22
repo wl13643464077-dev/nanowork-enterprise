@@ -571,3 +571,63 @@
 .task-center-avatar-fold__body {
   padding: var(--space-4);
 }
+
+/* 餐饮任务详情：下一步协作接棒 / 继续派活闭环卡 */
+.task-center-handoffs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--ui-primary) 28%, var(--ui-border));
+  border-left: 3px solid var(--ui-primary);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ui-primary-soft) 45%, var(--ui-surface));
+}
+
+.task-center-handoffs.is-fallback {
+  border-color: var(--ui-border);
+  border-left: 3px solid color-mix(in srgb, var(--ui-primary) 70%, var(--ui-border));
+  background: var(--ui-surface-2);
+}
+
+.task-center-handoffs__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.task-center-handoffs__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-2);
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.task-center-handoffs__head small {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+}
+
+.task-center-handoffs__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.task-center-handoff-btn {
+  border-color: color-mix(in srgb, var(--ui-primary) 36%, var(--ui-border));
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+  font-weight: 600;
+}
+
+.task-center-handoff-btn:hover,
+.task-center-handoff-btn:focus-visible {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+}

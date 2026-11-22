@@ -15,6 +15,7 @@ import {
   Input,
   InputNumber,
   Alert,
+  Space,
   Spin,
 } from 'antd';
 import {
@@ -43,8 +44,8 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs, { Dayjs } from 'dayjs';
-import { api, fmtMoney, fmtWan } from '../api/client';
-import { useStoreVersion } from '../api/store-context';
+import { api, fmtMoney, fmtWan, getUser } from '../api/client';
+import { getCurrentStoreId, useStoreVersion } from '../api/store-context';
 import { StatCard, Panel } from '../components/Kit';
 import CustomerDrawer from '../components/CustomerDrawer';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
@@ -337,6 +338,40 @@ export default function Analysis() {
   };
 
   const rangeText = `${range[0].format('YYYY-MM-DD')} 至 ${range[1].format('YYYY-MM-DD')}`;
+  const currentUser = getUser();
+  const tenantStores: Array<{ id: number; name: string }> = Array.isArray(currentUser?.tenant?.stores)
+    ? currentUser.tenant.stores
+    : [];
+  const activeStoreId = currentUser?.storeId ?? getCurrentStoreId();
+  const storeScopeLabel = (() => {
+    if (activeStoreId) {
+      const matched = tenantStores.find(s => Number(s.id) === Number(activeStoreId));
+      return matched?.name || `门店 #${activeStoreId}`;
+    }
+    if (tenantStores.length > 1) return `全部门店（共 ${tenantStores.length} 家）`;
+    if (tenantStores.length === 1) return tenantStores[0].name;
+    return currentUser?.tenant?.name ? `${currentUser.tenant.name}（全部门店）` : '全部门店';
+  })();
+  const drillFilterBar = (
+    <Alert
+      type="info"
+      showIcon
+      className="nw-alert-banner"
+      message={
+        <Space size={[8, 4]} wrap>
+          <span>当前口径</span>
+          <Tag>统计周期：{rangeText}</Tag>
+          <Tag>门店范围：{storeScopeLabel}</Tag>
+        </Space>
+      }
+    />
+  );
+  const drillCardTitle = (label: string) => (
+    <Space size={6}>
+      <span>{label}</span>
+      <Tag>点击可看明细</Tag>
+    </Space>
+  );
   const customEntries = [
     {
       icon: <ExperimentOutlined />,
@@ -495,7 +530,7 @@ export default function Analysis() {
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={10}>
           <Panel
-            title="营业额趋势"
+            title={drillCardTitle('营业额趋势')}
             extra={
               trend.dailyTarget > 0 && (
                 <Tag color="orange" style={{ fontSize: 11 }}>
@@ -579,7 +614,7 @@ export default function Analysis() {
           </Panel>
         </Col>
         <Col xs={24} lg={7}>
-          <Panel title="渠道业绩占比">
+          <Panel title={drillCardTitle('渠道业绩占比')}>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <div style={{ flex: 1.1, minWidth: 0 }}>
                 <Chart
@@ -661,7 +696,7 @@ export default function Analysis() {
           </Panel>
         </Col>
         <Col xs={24} lg={7}>
-          <Panel title="客群结构分析">
+          <Panel title={drillCardTitle('客群结构分析')}>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <div style={{ flex: 1.1, minWidth: 0 }}>
                 <Chart
@@ -796,7 +831,7 @@ export default function Analysis() {
       {/* 第三行：菜品/套餐TOP10 + 区域分布 + 经营健康度 */}
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={9}>
-          <Panel title="菜品/套餐销售TOP10">
+          <Panel title={drillCardTitle('菜品/套餐销售TOP10')}>
             <Table
               size="small"
               rowKey="product"
@@ -884,7 +919,7 @@ export default function Analysis() {
           </Panel>
         </Col>
         <Col xs={24} lg={8}>
-          <Panel title="区域销售分布">
+          <Panel title={drillCardTitle('区域销售分布')}>
             <Chart
               height={386}
               onClick={(p: any) => p?.name && openVisualDetail('region', { region: p.name }, `${p.name}区域明细`)}
@@ -1002,7 +1037,7 @@ export default function Analysis() {
       {/* 第四行：关键指标趋势 + 增长机会洞察 + 经营周报 */}
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={8}>
-          <Panel title="关键指标趋势">
+          <Panel title={drillCardTitle('关键指标趋势')}>
             <Chart
               height={300}
               onClick={(p: any) => {
@@ -1395,6 +1430,7 @@ export default function Analysis() {
           </span>
         }
       >
+        {drillFilterBar}
         {sourceDetail.loading ? (
           <div style={{ textAlign: 'center', padding: 36 }}>
             <Spin />
@@ -1453,6 +1489,7 @@ export default function Analysis() {
         onCancel={() => setDrill({ open: false, kind: '', data: null })}
         title={drill.data?.title || '加载中…'}
       >
+        {drillFilterBar}
         {!drill.data ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
             <Spin />
@@ -1668,6 +1705,7 @@ export default function Analysis() {
           </span>
         }
       >
+        {drillFilterBar}
         {subDrill.loading ? (
           <div style={{ textAlign: 'center', padding: 28 }}>
             <Spin />

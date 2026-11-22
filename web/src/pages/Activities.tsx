@@ -25,6 +25,8 @@ import {
   Avatar,
   Popconfirm,
   Tooltip,
+  Segmented,
+  Descriptions,
 } from 'antd';
 import {
   CalendarOutlined,
@@ -83,18 +85,18 @@ const ACT_TYPE_LABEL = Object.fromEntries(ACT_TYPES.map(item => [item.value, ite
 const activityTypeLabel = (type?: string) => ACT_TYPE_LABEL[type || ''] || type || '-';
 const TYPE_COLOR: Record<string, string> = {
   品鉴会: 'var(--ui-accent)',
-  沙龙会: '#13c2c2',
-  回厂游: '#d4380d',
+  沙龙会: 'var(--chart-2)',
+  回厂游: 'var(--danger)',
   封坛仪式: 'var(--chart-3)',
   企业团购沙龙: 'var(--warn)',
-  招商说明会: '#52c41a',
+  招商说明会: 'var(--ok)',
   会员日: 'var(--chart-2)',
 };
 const TYPE_TAG: Record<string, string> = {
   品鉴会: 'blue',
   沙龙会: 'cyan',
   回厂游: 'volcano',
-  封坛仪式: 'purple',
+  封坛仪式: 'geekblue',
   企业团购沙龙: 'orange',
   招商说明会: 'green',
   会员日: 'cyan',
@@ -232,6 +234,7 @@ export default function Activities() {
   const [planData, setPlanData] = useState<any>(null);
   const [planDraft, setPlanDraft] = useState<any>(null);
   const [planOpen, setPlanOpen] = useState(false);
+  const [planMode, setPlanMode] = useState<'edit' | 'preview'>('edit');
   const [planSaving, setPlanSaving] = useState(false);
   const [planSubmitting, setPlanSubmitting] = useState(false);
   const [assignmentOpen, setAssignmentOpen] = useState(false);
@@ -617,6 +620,49 @@ export default function Activities() {
   };
 
   // ===== 复盘 =====
+  const renderFlowTable = (
+    items: any[],
+    onChangeRow: (i: number, patch: any) => void,
+    onRemoveRow?: (i: number) => void,
+  ) => (
+    <Table
+      size="small"
+      rowKey="_i"
+      pagination={false}
+      dataSource={(items || []).map((f: any, i: number) => ({ ...f, _i: i }))}
+      columns={[
+        {
+          title: '时间',
+          dataIndex: 'time',
+          width: 160,
+          render: (v: string, _r: any, i: number) => (
+            <Input size="small" value={v} onChange={e => onChangeRow(i, { time: e.target.value })} />
+          ),
+        },
+        {
+          title: '执行环节',
+          dataIndex: 'item',
+          render: (v: string, _r: any, i: number) => (
+            <Input size="small" value={v} onChange={e => onChangeRow(i, { item: e.target.value })} />
+          ),
+        },
+        ...(onRemoveRow
+          ? [
+              {
+                title: '',
+                width: 46,
+                render: (_: any, __: any, i: number) => (
+                  <button type="button" className="ui-link-button" onClick={() => onRemoveRow(i)}>
+                    删除
+                  </button>
+                ),
+              },
+            ]
+          : []),
+      ]}
+    />
+  );
+
   const updatePlanDraft = (patch: any) => setPlanDraft((p: any) => ({ ...(p || {}), ...patch }));
   const updateFlow = (idx: number, patch: any) =>
     setPlanDraft((p: any) => {
@@ -1498,7 +1544,7 @@ export default function Activities() {
                           <span style={{ fontSize: 10.5, color: 'var(--ui-accent)' }}>点击查看 / 处理</span>
                         </Space>
                       </div>
-                      <RightOutlined style={{ fontSize: 10, color: '#c3cad6' }} />
+                      <RightOutlined style={{ fontSize: 12, color: 'var(--ui-muted)' }} />
                     </button>
                   ))}
                 </div>
@@ -1701,7 +1747,7 @@ export default function Activities() {
             style={{
               display: 'block',
               width: '100%',
-              border: '1.5px dashed #d1d1d1',
+              border: '1.5px dashed var(--ui-border-strong)',
               borderRadius: 10,
               padding: '18px 12px',
               textAlign: 'center',
@@ -1956,23 +2002,21 @@ export default function Activities() {
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="nw-alert-banner"
           message="无需先建活动。先生成并修改策划草稿，确认后再转为正式活动，页面跳转或刷新不会丢失。"
         />
         {!!studioDrafts.length && (
-          <div style={{ marginBottom: 12 }}>
-            <Select
-              allowClear
-              placeholder="调取历史策划草稿"
-              style={{ width: '100%' }}
-              value={studioDraftId || undefined}
-              onChange={v => v && openStudioDraft(v)}
-              options={studioDrafts.map(d => ({
-                value: d.id,
-                label: `${d.title} · ${d.owner_name || '本人'} · ${d.status} · ${(d.updated_at || d.created_at || '').slice(0, 16)}`,
-              }))}
-            />
-          </div>
+          <Select
+            allowClear
+            placeholder="调取历史策划草稿"
+            className="nw-full-width nw-alert-banner"
+            value={studioDraftId || undefined}
+            onChange={v => v && openStudioDraft(v)}
+            options={studioDrafts.map(d => ({
+              value: d.id,
+              label: `${d.title} · ${d.owner_name || '本人'} · ${d.status} · ${(d.updated_at || d.created_at || '').slice(0, 16)}`,
+            }))}
+          />
         )}
         <Form
           form={studioForm}
@@ -1999,7 +2043,7 @@ export default function Activities() {
             </Col>
             <Col xs={12} md={6}>
               <Form.Item name="date" label="拟举办日期" rules={[{ required: true, message: '请选择日期' }]}>
-                <DatePicker style={{ width: '100%' }} />
+                <DatePicker className="nw-full-width" />
               </Form.Item>
             </Col>
           </Row>
@@ -2028,7 +2072,7 @@ export default function Activities() {
             </Col>
             <Col xs={24} md={4}>
               <Form.Item name="targetJoin" label="目标人数">
-                <InputNumber min={1} style={{ width: '100%' }} />
+                <InputNumber min={1} className="nw-full-width" />
               </Form.Item>
             </Col>
           </Row>
@@ -2045,69 +2089,32 @@ export default function Activities() {
         {studioPlan && (
           <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Panel title="可编辑策划结果">
-              <Input
-                value={studioPlan.theme || ''}
-                onChange={e => setStudioPlan((p: any) => ({ ...p, theme: e.target.value }))}
-                placeholder="活动主题"
-                style={{ marginBottom: 10 }}
-              />
-              <Table
-                size="small"
-                rowKey="_i"
-                pagination={false}
-                dataSource={normalizePlanView(studioPlan).flow.map((x: any, i: number) => ({ ...x, _i: i }))}
-                columns={[
-                  {
-                    title: '时间',
-                    dataIndex: 'time',
-                    width: 140,
-                    render: (v: string, _r: any, i: number) => (
-                      <Input
-                        size="small"
-                        value={v}
-                        onChange={e =>
-                          setStudioPlan((p: any) => ({
-                            ...p,
-                            flow: p.flow.map((x: any, j: number) => (j === i ? { ...x, time: e.target.value } : x)),
-                          }))
-                        }
-                      />
-                    ),
-                  },
-                  {
-                    title: '执行环节',
-                    dataIndex: 'item',
-                    render: (v: string, _r: any, i: number) => (
-                      <Input
-                        size="small"
-                        value={v}
-                        onChange={e =>
-                          setStudioPlan((p: any) => ({
-                            ...p,
-                            flow: p.flow.map((x: any, j: number) => (j === i ? { ...x, item: e.target.value } : x)),
-                          }))
-                        }
-                      />
-                    ),
-                  },
-                ]}
-              />
-              <div style={{ marginTop: 10 }}>
+              <Space direction="vertical" size={10} className="nw-full-width">
+                <Input
+                  value={studioPlan.theme || ''}
+                  onChange={e => setStudioPlan((p: any) => ({ ...p, theme: e.target.value }))}
+                  placeholder="活动主题"
+                />
+                {renderFlowTable(normalizePlanView(studioPlan).flow, (i, patch) =>
+                  setStudioPlan((p: any) => ({
+                    ...p,
+                    flow: p.flow.map((x: any, j: number) => (j === i ? { ...x, ...patch } : x)),
+                  })),
+                )}
                 <Select
                   mode="tags"
-                  style={{ width: '100%' }}
+                  className="nw-full-width"
                   value={asList(studioPlan.materials)}
                   onChange={v => setStudioPlan((p: any) => ({ ...p, materials: v }))}
                   placeholder="物料清单"
                 />
-              </div>
-              <Input.TextArea
-                rows={4}
-                style={{ marginTop: 10 }}
-                value={listText(studioPlan.sop)}
-                onChange={e => setStudioPlan((p: any) => ({ ...p, sop: textList(e.target.value) }))}
-                placeholder="执行SOP，每行一条"
-              />
+                <Input.TextArea
+                  rows={4}
+                  value={listText(studioPlan.sop)}
+                  onChange={e => setStudioPlan((p: any) => ({ ...p, sop: textList(e.target.value) }))}
+                  placeholder="执行SOP，每行一条"
+                />
+              </Space>
             </Panel>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Button loading={studioSaving} onClick={saveStudioPlan}>
@@ -2148,7 +2155,7 @@ export default function Activities() {
             </Col>
             <Col span={12}>
               <Form.Item name="date" label="活动日期" rules={[{ required: true, message: '请选择日期' }]}>
-                <DatePicker style={{ width: '100%' }} />
+                <DatePicker className="nw-full-width" />
               </Form.Item>
             </Col>
           </Row>
@@ -2156,21 +2163,17 @@ export default function Activities() {
             <Input placeholder="如：品牌餐厅·中心店" />
           </Form.Item>
           <Row gutter={12}>
-            <Col span={8}>
-              <Form.Item name="target_join" label="目标报名(人)">
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="target_deal" label="目标成交(单)">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="budget" label="预算(元)">
-                <InputNumber min={0} step={1000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
+            {[
+              { name: 'target_join', label: '目标报名(人)', min: 1 },
+              { name: 'target_deal', label: '目标成交(单)', min: 0 },
+              { name: 'budget', label: '预算(元)', min: 0, step: 1000 },
+            ].map(f => (
+              <Col span={8} key={f.name}>
+                <Form.Item name={f.name} label={f.label}>
+                  <InputNumber min={f.min} step={f.step} className="nw-full-width" />
+                </Form.Item>
+              </Col>
+            ))}
           </Row>
         </Form>
       </Modal>
@@ -2200,41 +2203,33 @@ export default function Activities() {
           }}
         >
           <Row gutter={12}>
-            <Col span={6}>
-              <Form.Item name="invited" label="邀约人数">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="signed_up" label="报名人数">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="arrived" label="到场人数">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item name="converted" label="成交数">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
+            {[
+              ['invited', '邀约人数'],
+              ['signed_up', '报名人数'],
+              ['arrived', '到场人数'],
+              ['converted', '成交数'],
+            ].map(([name, label]) => (
+              <Col span={6} key={name}>
+                <Form.Item name={name} label={label}>
+                  <InputNumber min={0} className="nw-full-width" />
+                </Form.Item>
+              </Col>
+            ))}
           </Row>
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item name="revenue" label="活动收入(元)">
-                <InputNumber min={0} step={1000} style={{ width: '100%' }} />
+                <InputNumber min={0} step={1000} className="nw-full-width" />
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item name="cost" label="实际成本(元)">
-                <InputNumber min={0} step={500} style={{ width: '100%' }} />
+                <InputNumber min={0} step={500} className="nw-full-width" />
               </Form.Item>
             </Col>
           </Row>
           <Form.Item name="satisfaction" label="客户满意度(0-5分)">
-            <InputNumber min={0} max={5} step={0.1} style={{ width: '100%' }} />
+            <InputNumber min={0} max={5} step={0.1} className="nw-full-width" />
           </Form.Item>
         </Form>
       </Modal>
@@ -2427,96 +2422,73 @@ export default function Activities() {
         )}
       </Modal>
 
-      {/* ===== AI 策划案 Modal ===== */}
+      {/* ===== AI 策划案 Modal（单视图切换：编辑策划案 / 预览成稿） ===== */}
       <Modal
         open={planOpen}
         onCancel={() => setPlanOpen(false)}
-        footer={null}
         width={920}
-        styles={{ body: { maxHeight: '74vh', overflowY: 'auto' } }}
+        styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
+        footer={
+          <div className="nw-delivery-alert-bar">
+            <Tag color={PLAN_STATUS_COLOR[selected?.plan_status || '未提交'] || 'default'}>
+              当前：{selected?.plan_status || '未提交'}
+            </Tag>
+            <Space size={8} wrap>
+              {canManageActivityAssignments && (
+                <Button icon={<TeamOutlined />} loading={assignmentLoading} onClick={openAssignments}>
+                  工作分配
+                </Button>
+              )}
+              <Button loading={planSaving} onClick={savePlanDraft}>
+                保存草稿
+              </Button>
+              <Button type="primary" loading={planSubmitting} onClick={submitPlanApproval}>
+                提交审批
+              </Button>
+            </Space>
+          </div>
+        }
         title={
-          <>
-            <BulbOutlined style={{ color: 'var(--ui-accent)' }} /> AI活动策划案
+          <Space size={8} wrap>
+            <BulbOutlined />
+            <span>AI活动策划案</span>
             {planData?.mode && (
-              <Tag color="blue" style={{ marginLeft: 8, fontSize: 11 }}>
-                {planData.mode === 'ai'
-                  ? 'AI生成'
-                  : planData.mode === 'fallback'
-                    ? '规则模板'
-                    : planData.mode === 'saved'
-                      ? '已保存方案'
-                      : String(planData.mode)}
+              <Tag color="blue">
+                {({ ai: 'AI生成', fallback: '规则模板', saved: '已保存方案' } as Record<string, string>)[
+                  planData.mode
+                ] || String(planData.mode)}
               </Tag>
             )}
-          </>
+            <Segmented
+              size="small"
+              value={planMode}
+              onChange={v => setPlanMode(v as 'edit' | 'preview')}
+              options={[
+                { label: '编辑策划案', value: 'edit' },
+                { label: '预览成稿', value: 'preview' },
+              ]}
+            />
+          </Space>
         }
       >
-        <div
-          style={{
-            background:
-              'linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 7%, transparent),color-mix(in srgb, var(--chart-3) 7%, transparent))',
-            border: '1px solid var(--ui-border)',
-            borderRadius: 10,
-            padding: '12px 14px',
-            marginBottom: 14,
-          }}
-        >
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)' }}>{plan.theme || '活动策划案'}</div>
-          <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginTop: 4 }}>
-            目标：{planGoal} · 人群：{planAudience} · 预算：{planBudget}
-          </div>
-        </div>
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
-          message="策划案可先修改为最终稿，再提交审批。运营总监初审、老板终审通过后，系统才会同步飞书日历并推送给管理层。"
+          className="nw-alert-banner"
+          message={`${plan.theme || '活动策划案'} · 目标：${planGoal} · 人群：${planAudience} · 预算：${planBudget}`}
+          description="策划案可先在「编辑策划案」修改为最终稿，再切到「预览成稿」核对并提交审批。运营总监初审、老板终审通过后同步飞书日历并推送管理层。"
         />
-        <Sect title="编辑策划案">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {planMode === 'edit' ? (
+          <Space direction="vertical" size={10} className="nw-full-width">
             <Input
               value={plan.theme || ''}
               onChange={e => updatePlanDraft({ theme: e.target.value })}
+              addonBefore="活动主题"
               placeholder="活动主题"
             />
-            <Table
-              size="small"
-              rowKey="_i"
-              pagination={false}
-              dataSource={(plan.flow || []).map((f: any, i: number) => ({ ...f, _i: i }))}
-              columns={[
-                {
-                  title: '时间',
-                  dataIndex: 'time',
-                  width: 190,
-                  render: (v: string, _r: any, i: number) => (
-                    <Input size="small" value={v} onChange={e => updateFlow(i, { time: e.target.value })} />
-                  ),
-                },
-                {
-                  title: '环节',
-                  dataIndex: 'item',
-                  render: (v: string, _r: any, i: number) => (
-                    <Input size="small" value={v} onChange={e => updateFlow(i, { item: e.target.value })} />
-                  ),
-                },
-                {
-                  title: '',
-                  width: 46,
-                  render: (_: any, __: any, i: number) => (
-                    <button
-                      type="button"
-                      className="ui-link-button"
-                      onClick={() =>
-                        updatePlanDraft({ flow: (plan.flow || []).filter((_x: any, j: number) => j !== i) })
-                      }
-                    >
-                      删除
-                    </button>
-                  ),
-                },
-              ]}
-            />
+            {renderFlowTable(plan.flow || [], updateFlow, i =>
+              updatePlanDraft({ flow: (plan.flow || []).filter((_x: any, j: number) => j !== i) }),
+            )}
             <Button
               size="small"
               onClick={() => updatePlanDraft({ flow: [...(plan.flow || []), { time: '', item: '' }] })}
@@ -2525,7 +2497,7 @@ export default function Activities() {
             </Button>
             <Select
               mode="tags"
-              style={{ width: '100%' }}
+              className="nw-full-width"
               value={asList(plan.materials)}
               onChange={v => updatePlanDraft({ materials: v })}
               placeholder="物料清单，回车新增"
@@ -2542,154 +2514,102 @@ export default function Activities() {
               onChange={e => updatePlanDraft({ sop: textList(e.target.value) })}
               placeholder="邀约SOP，每行一条"
             />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+            <Row gutter={[8, 8]}>
               {['inviteSign', 'signArrive', 'arriveDeal', 'roi'].map(k => (
-                <Input
-                  key={k}
-                  value={plan.kpi?.[k] ?? ''}
-                  addonBefore={KEY_ZH[k] || k}
-                  onChange={e => updatePlanDraft({ kpi: { ...(plan.kpi || {}), [k]: e.target.value } })}
-                />
+                <Col xs={12} md={6} key={k}>
+                  <Input
+                    value={plan.kpi?.[k] ?? ''}
+                    addonBefore={KEY_ZH[k] || k}
+                    onChange={e => updatePlanDraft({ kpi: { ...(plan.kpi || {}), [k]: e.target.value } })}
+                  />
+                </Col>
               ))}
-            </div>
+            </Row>
             <Input.TextArea
               rows={2}
               value={plan.budgetNote || ''}
               onChange={e => updatePlanDraft({ budgetNote: e.target.value })}
               placeholder="预算建议"
             />
-          </div>
-        </Sect>
-        <Sect title="活动流程">
-          <Table
-            size="small"
-            rowKey="_i"
-            pagination={false}
-            dataSource={(plan.flow || []).map((f: any, i: number) => ({ ...f, _i: i }))}
-            columns={[
-              {
-                title: '时间',
-                dataIndex: 'time',
-                width: 110,
-                render: (v: string) => (
-                  <Tag color="blue" style={{ fontSize: 11 }}>
-                    {v}
-                  </Tag>
-                ),
-              },
-              { title: '环节', dataIndex: 'item', render: (v: string) => <span style={{ fontSize: 12.5 }}>{v}</span> },
-            ]}
-          />
-        </Sect>
-        <Sect title="物料清单">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {(plan.materials || []).map((m: any, i: number) => (
-              <Tag key={i} color="geekblue" style={{ marginRight: 0 }}>
-                {typeof m === 'string' ? m : m?.name || m?.item || JSON.stringify(m)}
-              </Tag>
-            ))}
-            {(plan.materials || []).length === 0 && (
-              <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>暂无</span>
-            )}
-          </div>
-        </Sect>
-        {plan.invites != null && (
-          <Sect title="邀约安排">
-            <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)' }}>
-              {Array.isArray(plan.invites)
-                ? plan.invites.join('、')
-                : typeof plan.invites === 'number'
-                  ? `建议邀约 ${plan.invites} 人（按基准转化率倒推）`
-                  : String(plan.invites)}
-            </div>
-          </Sect>
+          </Space>
+        ) : (
+          <Space direction="vertical" size={12} className="nw-full-width">
+            <Table
+              size="small"
+              rowKey="_i"
+              pagination={false}
+              dataSource={(plan.flow || []).map((f: any, i: number) => ({ ...f, _i: i }))}
+              columns={[
+                { title: '时间', dataIndex: 'time', width: 120, render: (v: string) => <Tag color="blue">{v}</Tag> },
+                { title: '活动流程环节', dataIndex: 'item' },
+              ]}
+            />
+            <Descriptions
+              size="small"
+              bordered
+              column={1}
+              items={[
+                {
+                  key: 'materials',
+                  label: '物料清单',
+                  children: (plan.materials || []).length ? (
+                    <Space size={[6, 6]} wrap>
+                      {(plan.materials || []).map((m: any, i: number) => (
+                        <Tag key={i} color="geekblue">
+                          {typeof m === 'string' ? m : m?.name || m?.item || JSON.stringify(m)}
+                        </Tag>
+                      ))}
+                    </Space>
+                  ) : (
+                    '暂无'
+                  ),
+                },
+                {
+                  key: 'invites',
+                  label: '邀约安排',
+                  children:
+                    plan.invites == null
+                      ? '暂无'
+                      : Array.isArray(plan.invites)
+                        ? plan.invites.join('、')
+                        : typeof plan.invites === 'number'
+                          ? `建议邀约 ${plan.invites} 人（按基准转化率倒推）`
+                          : String(plan.invites),
+                },
+                {
+                  key: 'sop',
+                  label: '邀约SOP',
+                  children: asList(plan.sop).length
+                    ? asList(plan.sop).map((s, i) => (
+                        <div key={i}>
+                          {i + 1}. {s}
+                        </div>
+                      ))
+                    : '暂无',
+                },
+                {
+                  key: 'kpi',
+                  label: 'KPI基准',
+                  children: (
+                    <Space size={[8, 8]} wrap>
+                      {Object.entries(plan.kpi || {}).map(([k, v]: any) => (
+                        <Tag key={k} color="cyan">
+                          {KEY_ZH[k] || k}：
+                          {typeof v === 'number' && ['inviteSign', 'signArrive', 'arriveDeal', 'referral'].includes(k)
+                            ? `${v}%`
+                            : String(v)}
+                        </Tag>
+                      ))}
+                    </Space>
+                  ),
+                },
+                ...(plan.budgetNote
+                  ? [{ key: 'budget', label: '预算建议', children: displayText(plan.budgetNote) }]
+                  : []),
+              ]}
+            />
+          </Space>
         )}
-        <Sect title="邀约SOP">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {asList(plan.sop).map((s, i) => (
-              <div
-                key={i}
-                style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ui-text-2)', lineHeight: 1.7 }}
-              >
-                <span
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: 9,
-                    background: 'var(--ui-surface-2)',
-                    color: 'var(--ui-accent)',
-                    fontSize: 11,
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    marginTop: 2,
-                  }}
-                >
-                  {i + 1}
-                </span>
-                <span>{s}</span>
-              </div>
-            ))}
-            {asList(plan.sop).length === 0 && <span style={{ fontSize: 12, color: 'var(--ui-muted)' }}>暂无</span>}
-          </div>
-        </Sect>
-        <Sect title="KPI基准">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
-            {Object.entries(plan.kpi || {}).map(([k, v]: any) => (
-              <div key={k} style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 10px' }}>
-                <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>{KEY_ZH[k] || k}</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-accent)' }}>
-                  {typeof v === 'number' && ['inviteSign', 'signArrive', 'arriveDeal', 'referral'].includes(k)
-                    ? `${v}%`
-                    : String(v)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Sect>
-        {plan.budgetNote && (
-          <div
-            style={{
-              background: 'var(--ui-warning-surface)',
-              borderRadius: 8,
-              padding: '8px 12px',
-              fontSize: 12,
-              color: 'var(--ui-warning-text)',
-            }}
-          >
-            <DollarOutlined /> 预算建议：<span style={{ whiteSpace: 'pre-wrap' }}>{displayText(plan.budgetNote)}</span>
-          </div>
-        )}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: 8,
-            marginTop: 14,
-            paddingTop: 12,
-            borderTop: '1px solid var(--ui-border)',
-          }}
-        >
-          <Tag
-            color={PLAN_STATUS_COLOR[selected?.plan_status || '未提交'] || 'default'}
-            style={{ alignSelf: 'center' }}
-          >
-            当前：{selected?.plan_status || '未提交'}
-          </Tag>
-          {canManageActivityAssignments && (
-            <Button icon={<TeamOutlined />} loading={assignmentLoading} onClick={openAssignments}>
-              工作分配
-            </Button>
-          )}
-          <Button loading={planSaving} onClick={savePlanDraft}>
-            保存草稿
-          </Button>
-          <Button type="primary" loading={planSubmitting} onClick={submitPlanApproval}>
-            提交审批
-          </Button>
-        </div>
       </Modal>
 
       {/* ===== 活动策划工作分配 Modal ===== */}

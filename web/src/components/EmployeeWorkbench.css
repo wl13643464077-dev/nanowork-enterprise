@@ -2552,3 +2552,79 @@
 .ewb-run-detail .ekb-delivery-bar {
   margin-top: var(--space-2);
 }
+
+/* ===== R-05：餐饮结果页吸顶轻操作跳转条 ===== */
+.ewb-result-jumpbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-glass-strong);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-1);
+}
+
+.ewb-jumpbar-label {
+  font-size: var(--font-1);
+  font-weight: 600;
+  color: var(--ui-muted);
+  white-space: nowrap;
+}
+
+.ewb-jumpbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ewb-jumpbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  font-size: var(--font-1);
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.ewb-jumpbar-btn:hover,
+.ewb-jumpbar-btn:focus-visible {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+  outline: none;
+}
+
+.ewb-jumpbar-btn.is-handoff {
+  border-color: color-mix(in srgb, var(--ui-primary) 34%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-primary-soft) 55%, var(--ui-surface));
+  color: var(--ui-primary);
+}
+
+.ewb-jumpbar-btn.is-handoff:hover,
+.ewb-jumpbar-btn.is-handoff:focus-visible {
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+}
+
+.ewb-result-anchor {
+  scroll-margin-top: var(--space-8);
+}

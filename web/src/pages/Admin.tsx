@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Avatar,
@@ -96,13 +97,41 @@ function FieldRow({ label, children }: { label: React.ReactNode; children: React
     </div>
   );
 }
+export function formatUserAgent(ua?: string | null): string {
+  const raw = String(ua || '').trim();
+  if (!raw) return '未知设备';
+  const lower = raw.toLowerCase();
+
+  let os = '';
+  if (/iphone|ipod/.test(lower)) os = 'iPhone';
+  else if (/ipad/.test(lower)) os = 'iPad';
+  else if (/harmonyos|openharmony/.test(lower)) os = 'HarmonyOS';
+  else if (/android/.test(lower)) os = 'Android';
+  else if (/windows|win64|win32/.test(lower)) os = 'Windows';
+  else if (/mac os x|macintosh/.test(lower)) os = 'macOS';
+  else if (/linux|x11/.test(lower)) os = 'Linux';
+
+  let client = '';
+  if (/micromessenger/.test(lower)) client = '微信';
+  else if (/lark|feishu/.test(lower)) client = '飞书';
+  else if (/dingtalk/.test(lower)) client = '钉钉';
+  else if (/edg(?:e|a|ios)?\//.test(lower)) client = 'Edge';
+  else if (/opr\/|opera/.test(lower)) client = 'Opera';
+  else if (/firefox|fxios/.test(lower)) client = 'Firefox';
+  else if (/chrome|crios/.test(lower)) client = 'Chrome';
+  else if (/safari/.test(lower)) client = 'Safari';
+  else if (/curl|wget|postman|insomnia|python|node|okhttp|axios/.test(lower)) client = '接口客户端';
+
+  if (os && client) return `${os} · ${client}`;
+  if (os) return `${os} · 浏览器`;
+  if (client) return client;
+  return raw.length > 24 ? `${raw.slice(0, 24)}…` : raw;
+}
+
 const chip = (label: string, val: React.ReactNode) => (
-  <div
-    key={label}
-    style={{ background: 'var(--ui-surface-2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}
-  >
-    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ui-text)' }}>{val ?? 0}</div>
-    <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>{label}</div>
+  <div key={label} className="admin-overview-chip">
+    <div className="admin-overview-chip-value">{val ?? 0}</div>
+    <div className="admin-overview-chip-label">{label}</div>
   </div>
 );
 
@@ -119,6 +148,7 @@ const MENU = [
 
 // ===== 主组件：自带整页布局（深色侧边栏 + 白色顶栏 + 浅灰主区）=====
 export default function Admin() {
+  const navigate = useNavigate();
   const user = getUser();
   const [tab, setTab] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get('tab');
@@ -142,7 +172,7 @@ export default function Admin() {
             <div style={{ color: 'var(--ui-text-2)' }}>
               当前账号无权访问管理后台（仅限老板 / 系统管理员）
               <div style={{ marginTop: 14 }}>
-                <Button type="primary" icon={<RollbackOutlined />} onClick={() => (location.href = '/')}>
+                <Button type="primary" icon={<RollbackOutlined />} onClick={() => navigate('/')}>
                   返回前台
                 </Button>
               </div>
@@ -191,7 +221,7 @@ export default function Admin() {
             <Button size="small" icon={<QuestionCircleOutlined />} onClick={() => setFeatureGuideOpen(true)}>
               功能使用指引
             </Button>
-            <Button size="small" icon={<RollbackOutlined />} onClick={() => (location.href = '/')}>
+            <Button size="small" icon={<RollbackOutlined />} onClick={() => navigate('/')}>
               返回前台
             </Button>
             <span className="admin-current-user">
@@ -218,7 +248,7 @@ export default function Admin() {
         modules={Array.isArray(user.modules) ? user.modules : []}
         role={user.role}
         navigate={path => {
-          location.href = path;
+          navigate(path);
         }}
         contextKey={tab}
       />
@@ -346,7 +376,7 @@ function Overview({ onTab }: { onTab: (k: string) => void }) {
                   <div style={{ fontSize: 11, color: 'var(--ui-muted)', marginTop: 6 }}>{aiReadiness.nextAction}</div>
                 )}
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+              <div className="admin-overview-chip-grid">
                 {chip('文本调用', u.textCalls)}
                 {chip('生图', u.images)}
                 {chip('生视频', u.videos)}
@@ -600,6 +630,9 @@ function UsersOrg() {
   const [permUser, setPermUser] = useState<any>(null);
   const [permChecked, setPermChecked] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [permBusy, setPermBusy] = useState<'save' | 'restore' | null>(null);
+  const [savingAdd, setSavingAdd] = useState(false);
   const [editForm] = Form.useForm();
   const [addForm] = Form.useForm();
 
@@ -623,13 +656,19 @@ function UsersOrg() {
     editForm.setFieldsValue({ name, role, dept, status, password: '', storeId: store_id ?? undefined });
   };
   const saveEdit = async () => {
+    if (savingEdit) return;
     const v = await editForm.validateFields();
     const body: any = { name: v.name, role: v.role, dept: v.dept, status: v.status, storeId: v.storeId ?? null };
     if (v.password && v.password.trim()) body.password = v.password.trim();
-    await api.put(`/admin/users/${editing.id}`, body);
-    message.success(`已保存「${v.name}」${body.password ? '，密码已重置' : ''}`);
-    setEditing(null);
-    load(true);
+    setSavingEdit(true);
+    try {
+      await api.put(`/admin/users/${editing.id}`, body);
+      message.success(`已保存「${v.name}」${body.password ? '，密码已重置' : ''}`);
+      setEditing(null);
+      load(true);
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const openPerm = (r: any) => {
@@ -638,25 +677,43 @@ function UsersOrg() {
     setPermChecked(r.effectiveModules || []);
   };
   const savePerm = async () => {
-    await api.put(`/admin/users/${permUser.id}`, { modules: permChecked });
-    message.success('已保存用户级菜单权限（覆盖优先于角色默认）');
-    setPermUser(null);
-    load();
+    if (permBusy) return;
+    setPermBusy('save');
+    try {
+      await api.put(`/admin/users/${permUser.id}`, { modules: permChecked });
+      message.success('已保存用户级菜单权限（覆盖优先于角色默认）');
+      setPermUser(null);
+      load();
+    } finally {
+      setPermBusy(null);
+    }
   };
   const restorePerm = async () => {
-    await api.put(`/admin/users/${permUser.id}`, { modules: null });
-    message.success('已恢复继承角色默认菜单');
-    setPermUser(null);
-    load();
+    if (permBusy) return;
+    setPermBusy('restore');
+    try {
+      await api.put(`/admin/users/${permUser.id}`, { modules: null });
+      message.success('已恢复继承角色默认菜单');
+      setPermUser(null);
+      load();
+    } finally {
+      setPermBusy(null);
+    }
   };
 
   const addUser = async () => {
+    if (savingAdd) return;
     const v = await addForm.validateFields();
-    await api.post('/admin/users', v);
-    message.success(`用户「${v.name}」已创建`);
-    setAdding(false);
-    addForm.resetFields();
-    load(true);
+    setSavingAdd(true);
+    try {
+      await api.post('/admin/users', v);
+      message.success(`用户「${v.name}」已创建`);
+      setAdding(false);
+      addForm.resetFields();
+      load(true);
+    } finally {
+      setSavingAdd(false);
+    }
   };
 
   return (
@@ -782,6 +839,7 @@ function UsersOrg() {
         open={!!editing}
         onCancel={() => setEditing(null)}
         onOk={saveEdit}
+        confirmLoading={savingEdit}
         okText="保存"
         forceRender
       >
@@ -820,13 +878,25 @@ function UsersOrg() {
         open={!!permUser}
         onCancel={() => setPermUser(null)}
         footer={[
-          <Button key="restore" danger onClick={restorePerm}>
+          <Button
+            key="restore"
+            danger
+            loading={permBusy === 'restore'}
+            disabled={permBusy === 'save'}
+            onClick={restorePerm}
+          >
             恢复继承角色
           </Button>,
-          <Button key="cancel" onClick={() => setPermUser(null)}>
+          <Button key="cancel" disabled={!!permBusy} onClick={() => setPermUser(null)}>
             取消
           </Button>,
-          <Button key="ok" type="primary" onClick={savePerm}>
+          <Button
+            key="ok"
+            type="primary"
+            loading={permBusy === 'save'}
+            disabled={permBusy === 'restore'}
+            onClick={savePerm}
+          >
             保存覆盖
           </Button>,
         ]}
@@ -851,7 +921,15 @@ function UsersOrg() {
       </Modal>
 
       {/* 新增用户 */}
-      <Modal title="新增用户" open={adding} onCancel={() => setAdding(false)} onOk={addUser} okText="创建" forceRender>
+      <Modal
+        title="新增用户"
+        open={adding}
+        onCancel={() => setAdding(false)}
+        onOk={addUser}
+        confirmLoading={savingAdd}
+        okText="创建"
+        forceRender
+      >
         <Form form={addForm} layout="vertical" style={{ marginTop: 12 }} initialValues={{ role: 'sales' }}>
           <Row gutter={12}>
             <Col span={12}>
@@ -902,6 +980,8 @@ function Permissions() {
   const [ff, setFf] = useState<Record<string, string[]>>({});
   const [dm, setDm] = useState<Record<string, string[]>>({});
   const [dp, setDp] = useState<Record<string, string[]>>({}); // 员工派活权限（分部级角色白名单）
+  const [savingMatrix, setSavingMatrix] = useState(false);
+  const [savingFeatures, setSavingFeatures] = useState(false);
 
   const load = () =>
     api.get('/admin/permissions').then((d: any) => {
@@ -933,16 +1013,28 @@ function Permissions() {
       const list = prev[feat] || [];
       return { ...prev, [feat]: list.includes(role) ? list.filter(x => x !== role) : [...list, role] };
     });
-  const saveMatrix = () =>
-    api.put('/admin/permissions', { roleModules: rm }).then(() => {
-      message.success('权限矩阵已保存，立即生效');
-      load();
-    });
-  const saveFeatures = () =>
-    api.put('/admin/permissions', { featureFlags: ff }).then(() => {
-      message.success('功能级权限已保存，立即生效');
-      load();
-    });
+  const saveMatrix = () => {
+    if (savingMatrix) return;
+    setSavingMatrix(true);
+    api
+      .put('/admin/permissions', { roleModules: rm })
+      .then(() => {
+        message.success('权限矩阵已保存，立即生效');
+        load();
+      })
+      .finally(() => setSavingMatrix(false));
+  };
+  const saveFeatures = () => {
+    if (savingFeatures) return;
+    setSavingFeatures(true);
+    api
+      .put('/admin/permissions', { featureFlags: ff })
+      .then(() => {
+        message.success('功能级权限已保存，立即生效');
+        load();
+      })
+      .finally(() => setSavingFeatures(false));
+  };
 
   if (!meta) return <div style={{ padding: 60, textAlign: 'center', color: 'var(--ui-muted)' }}>加载中…</div>;
   const featKeys = Array.from(new Set([...Object.keys(FEATURE_NAME), ...Object.keys(ff)]));
@@ -959,7 +1051,7 @@ function Permissions() {
       <Panel
         title="角色 × 模块 权限矩阵"
         extra={
-          <Button type="primary" size="small" onClick={saveMatrix}>
+          <Button type="primary" size="small" loading={savingMatrix} onClick={saveMatrix}>
             保存矩阵
           </Button>
         }
@@ -1009,7 +1101,7 @@ function Permissions() {
       <Panel
         title="功能级权限"
         extra={
-          <Button type="primary" size="small" onClick={saveFeatures}>
+          <Button type="primary" size="small" loading={savingFeatures} onClick={saveFeatures}>
             保存功能权限
           </Button>
         }
@@ -1062,6 +1154,8 @@ function MarshalsAdmin() {
   const [cur, setCur] = useState<any>(null);
   const [kbCats, setKbCats] = useState<string[]>([]);
   const [kbStat, setKbStat] = useState<Record<string, number>>({});
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [form] = Form.useForm();
 
   const load = () => api.get('/admin/marshals').then(setList);
@@ -1110,18 +1204,30 @@ function MarshalsAdmin() {
     return p;
   };
   const save = async () => {
+    if (savingDraft || syncing) return;
     const v = await form.validateFields();
-    const res = await api.put(`/admin/marshals/${cur.id}`, buildPayload(v));
-    message.info(res.hint || '已保存');
-    load();
+    setSavingDraft(true);
+    try {
+      const res = await api.put(`/admin/marshals/${cur.id}`, buildPayload(v));
+      message.info(res.hint || '已保存');
+      load();
+    } finally {
+      setSavingDraft(false);
+    }
   };
   const sync = async () => {
+    if (savingDraft || syncing) return;
     const v = await form.validateFields();
-    const saved = await api.put(`/admin/marshals/${cur.id}`, buildPayload(v));
-    await api.post(`/admin/marshals/${cur.id}/sync`);
-    message.success(saved.hint || '分部配置已同步，前台新调用立即生效');
-    setCur(null);
-    load();
+    setSyncing(true);
+    try {
+      const saved = await api.put(`/admin/marshals/${cur.id}`, buildPayload(v));
+      await api.post(`/admin/marshals/${cur.id}/sync`);
+      message.success(saved.hint || '分部配置已同步，前台新调用立即生效');
+      setCur(null);
+      load();
+    } finally {
+      setSyncing(false);
+    }
   };
 
   return (
@@ -1239,8 +1345,16 @@ function MarshalsAdmin() {
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <Button onClick={() => setCur(null)}>取消</Button>
             <Space>
-              <Button onClick={save}>保存草稿</Button>
-              <Button type="primary" icon={<CloudSyncOutlined />} onClick={sync}>
+              <Button loading={savingDraft} disabled={syncing} onClick={save}>
+                保存草稿
+              </Button>
+              <Button
+                type="primary"
+                icon={<CloudSyncOutlined />}
+                loading={syncing}
+                disabled={savingDraft}
+                onClick={sync}
+              >
                 同步到前台
               </Button>
             </Space>
@@ -1324,6 +1438,7 @@ function CreditsAdmin() {
   const [kind, setKind] = useState<string | undefined>(undefined);
   const [range, setRange] = useState<string[]>([]);
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
 
   const qs = () => {
     const p = new URLSearchParams();
@@ -1356,26 +1471,32 @@ function CreditsAdmin() {
   }, [page, filterUid, kind, range]);
 
   const doExport = async () => {
-    const d = await api.get(`/admin/credits/logs?export=1&${qs()}`);
-    const rows = (d.rows || []).map((r: any) => [
-      r.created_at,
-      r.user_name || '',
-      r.feature || '',
-      KIND_LABEL[r.kind] || r.kind || '',
-      r.model || '',
-      `${r.input_tokens || 0}+${r.output_tokens || 0}`,
-      r.credits > 0 ? r.credits : 0,
-      r.credits < 0 ? -r.credits : 0,
-      r.spend_yuan ?? '',
-      r.balance_after,
-      MODE_TAG[r.ai_mode]?.t || r.ai_mode,
-    ]);
-    exportCsv(
-      `积分流水_${new Date().toISOString().slice(0, 10)}`,
-      ['时间', '用户', '功能', '类型', '模型', 'tokens(入+出)', '消耗积分', '充值积分', '折合人民币', '余额', '模式'],
-      rows,
-    );
-    message.success(`已导出 ${rows.length} 条流水`);
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const d = await api.get(`/admin/credits/logs?export=1&${qs()}`);
+      const rows = (d.rows || []).map((r: any) => [
+        r.created_at,
+        r.user_name || '',
+        r.feature || '',
+        KIND_LABEL[r.kind] || r.kind || '',
+        r.model || '',
+        `${r.input_tokens || 0}+${r.output_tokens || 0}`,
+        r.credits > 0 ? r.credits : 0,
+        r.credits < 0 ? -r.credits : 0,
+        r.spend_yuan ?? '',
+        r.balance_after,
+        MODE_TAG[r.ai_mode]?.t || r.ai_mode,
+      ]);
+      exportCsv(
+        `积分流水_${new Date().toISOString().slice(0, 10)}`,
+        ['时间', '用户', '功能', '类型', '模型', 'tokens(入+出)', '消耗积分', '充值积分', '折合人民币', '余额', '模式'],
+        rows,
+      );
+      message.success(`已导出 ${rows.length} 条流水`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -1459,7 +1580,7 @@ function CreditsAdmin() {
                     setPage(1);
                   }}
                 />
-                <Button size="small" type="primary" ghost onClick={doExport} disabled={!logs.total}>
+                <Button size="small" type="primary" ghost loading={exporting} onClick={doExport} disabled={!logs.total}>
                   导出CSV
                 </Button>
               </Space>
@@ -1546,6 +1667,7 @@ function CreditsAdmin() {
 // ===== ⑦ 日志与安全 =====
 function LogsSecurity() {
   const [sec, setSec] = useState<any>(null);
+  const [savingSec, setSavingSec] = useState(false);
   const [jobs, setJobs] = useState<any[]>([]);
   const [ops, setOps] = useState<any[]>([]);
   const [logins, setLogins] = useState<any[]>([]);
@@ -1557,7 +1679,14 @@ function LogsSecurity() {
     api.get('/sys/login-logs').then(setLogins);
   }, []);
 
-  const saveSec = () => api.put('/admin/security', sec).then(() => message.success('安全设置已保存'));
+  const saveSec = () => {
+    if (savingSec) return;
+    setSavingSec(true);
+    api
+      .put('/admin/security', sec)
+      .then(() => message.success('安全设置已保存'))
+      .finally(() => setSavingSec(false));
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1601,7 +1730,7 @@ function LogsSecurity() {
                     style={{ width: '100%' }}
                   />
                 </FieldRow>
-                <Button type="primary" block onClick={saveSec}>
+                <Button type="primary" block loading={savingSec} onClick={saveSec}>
                   保存安全设置
                 </Button>
               </div>
@@ -1734,7 +1863,14 @@ function LogsSecurity() {
                     title: '设备',
                     dataIndex: 'ua',
                     ellipsis: true,
-                    render: (v: string) => <span style={{ fontSize: 11, color: 'var(--ui-muted)' }}>{v || '-'}</span>,
+                    render: (v: string) =>
+                      v ? (
+                        <Tooltip title={v}>
+                          <span className="admin-ua-cell">{formatUserAgent(v)}</span>
+                        </Tooltip>
+                      ) : (
+                        <span className="admin-ua-cell">-</span>
+                      ),
                   },
                 ] as any
               }

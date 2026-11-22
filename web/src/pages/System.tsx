@@ -14,7 +14,9 @@ import {
   Alert,
   message,
   Popconfirm,
+  Avatar,
   Badge,
+  Card,
   Empty,
   Tooltip,
   Space,
@@ -46,7 +48,7 @@ import {
   DeleteOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { notifyCredits, api, getUser } from '../api/client';
 import { Panel } from '../components/Kit';
 import { readinessMeta } from '../components/RuntimeReadiness';
@@ -76,7 +78,31 @@ import {
 } from '../components/SystemPrimitives';
 import DataIntake from './DataIntake';
 
+const QUICK_ICON_STYLES: Record<'primary' | 'kb' | 'feishu' | 'admin', React.CSSProperties> = {
+  primary: {
+    background: 'color-mix(in srgb, var(--ui-primary) 12%, transparent)',
+    color: 'var(--ui-primary)',
+    fontSize: 'var(--font-4)',
+  },
+  kb: {
+    background: 'color-mix(in srgb, var(--chart-2) 12%, transparent)',
+    color: 'var(--chart-2)',
+    fontSize: 'var(--font-4)',
+  },
+  feishu: {
+    background: 'color-mix(in srgb, var(--ui-accent) 12%, transparent)',
+    color: 'var(--ui-accent)',
+    fontSize: 'var(--font-4)',
+  },
+  admin: {
+    background: 'color-mix(in srgb, var(--warn) 12%, transparent)',
+    color: 'var(--warn)',
+    fontSize: 'var(--font-4)',
+  },
+};
+
 export default function System() {
+  const navigate = useNavigate();
   const user = getUser() || {};
   const isAdminish = ['boss', 'ops_director', 'admin'].includes(user.role); // 查看用户/日志/配置
   const canDecide = ['boss', 'ops_director', 'manager', 'admin'].includes(user.role); // 审批权限；具体节点仍按行校验
@@ -92,9 +118,18 @@ export default function System() {
     const requested = new URLSearchParams(window.location.search).get('tab');
     const knownTab =
       requested &&
-      ['overview', 'data-intake', 'approvals', 'billing', 'kb', 'prompts', 'users', 'trash', 'config'].includes(
-        requested,
-      );
+      [
+        'overview',
+        'data-intake',
+        'approvals',
+        'billing',
+        'kb',
+        'feishu',
+        'prompts',
+        'users',
+        'trash',
+        'config',
+      ].includes(requested);
     if (!knownTab || (requested === 'prompts' && !canEditPrompt) || (requested === 'billing' && !isAdminish))
       return 'overview';
     return requested;
@@ -732,25 +767,52 @@ export default function System() {
           ),
       ),
   );
-  const QUICK: { label: string; icon: React.ReactNode; color: string; tab: string; badge?: number }[] = [
-    { label: '数据录入中枢', icon: <InboxOutlined />, color: 'var(--ui-primary)', tab: 'data-intake' },
-    { label: '用户管理', icon: <TeamOutlined />, color: 'var(--ui-accent)', tab: 'users' },
-    { label: '审批中心', icon: <AuditOutlined />, color: 'var(--danger)', tab: 'approvals', badge: pendingCount },
+  const quickItems: {
+    label: string;
+    desc: string;
+    icon: React.ReactNode;
+    tone: 'primary' | 'kb' | 'feishu' | 'admin';
+    tab?: string;
+    to?: string;
+    adminOnly?: boolean;
+  }[] = [
     {
-      label: 'AI积分与用量',
-      icon: <DatabaseOutlined />,
-      color: 'var(--warn)',
-      tab: 'billing',
-      badge: billingAttentionCount,
+      label: '数据接入',
+      desc: '导入账单、评价与经营原始数据',
+      icon: <InboxOutlined />,
+      tone: 'primary',
+      tab: 'data-intake',
     },
-    { label: '知识库', icon: <BookOutlined />, color: 'var(--chart-2)', tab: 'kb' },
-    { label: '提示词模板', icon: <FileTextOutlined />, color: 'var(--chart-3)', tab: 'prompts' },
-    { label: '风控规则', icon: <SafetyCertificateOutlined />, color: 'var(--warn)', tab: 'config' },
-    { label: '操作日志', icon: <HistoryOutlined />, color: 'var(--ui-muted)', tab: 'users' },
-    { label: '登录日志', icon: <LoginOutlined />, color: 'var(--ui-accent)', tab: 'users' },
-    { label: '删除留痕', icon: <DeleteOutlined />, color: 'var(--danger)', tab: 'trash' },
-    { label: '系统配置', icon: <SettingOutlined />, color: 'var(--chart-3)', tab: 'config' },
-  ].filter(item => (canEditPrompt || item.tab !== 'prompts') && (isAdminish || item.tab !== 'billing'));
+    {
+      label: '企业知识库',
+      desc: '维护品牌资料、SOP 与话术知识',
+      icon: <BookOutlined />,
+      tone: 'kb',
+      tab: 'kb',
+    },
+    {
+      label: '飞书协同',
+      desc: '管理层飞书推送、日报与日历同步',
+      icon: <LinkOutlined />,
+      tone: 'feishu',
+      tab: 'feishu',
+    },
+    {
+      label: '高级账号与权限管理',
+      desc: '前往 /admin 管理席位、权限矩阵与模型',
+      icon: <SafetyCertificateOutlined />,
+      tone: 'admin',
+      to: '/admin',
+      adminOnly: true,
+    },
+  ];
+  const QUICK = quickItems.filter(
+    item =>
+      (canEditPrompt || item.tab !== 'prompts') &&
+      (isAdminish || item.tab !== 'billing') &&
+      (!item.adminOnly || canManageUsers),
+  );
+  const quickColSpan = QUICK.length === 4 ? 6 : Math.floor(24 / Math.max(1, QUICK.length));
 
   const ai = status.ai || {};
   const aiReadiness =
@@ -2070,458 +2132,469 @@ export default function System() {
           <Panel
             title={
               <>
-                <LinkOutlined style={{ color: 'var(--ui-accent)' }} /> 飞书集成
+                <LinkOutlined style={{ color: 'var(--ui-accent)' }} /> 飞书协同
               </>
             }
             extra={
-              feishuCfg ? (
-                <Tag color={feishuState.color}>
-                  {feishuState.label}
-                  {feishuCfg.receiverName ? ` · ${feishuCfg.receiverName}` : ''}
-                </Tag>
-              ) : (
-                <Tag>状态未上报</Tag>
-              )
+              <Button size="small" type="primary" ghost onClick={() => changeTab('feishu')}>
+                前往配置
+              </Button>
             }
-            style={{ height: 'auto' }}
           >
-            {feishuCfg?.enabled ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Alert
-                  type={feishuReadiness?.effective === 'connected' ? 'success' : 'warning'}
-                  showIcon
-                  message={
-                    feishuReadiness?.effective === 'connected'
-                      ? `最近测试消息已发送成功；当前 ${feishuCfg.managerReceiverCount || 0} 人接收消息，${feishuCfg.managerCalendarCount || 0} 人可加入日历提醒`
-                      : `飞书配置已启用，但尚不能证明外部发送可用；请发送测试消息完成验证（当前 ${feishuCfg.managerReceiverCount || 0} 个管理层接收人）`
-                  }
-                  description={feishuReadiness?.nextAction}
-                />
-                {(feishuCfg.managerReceivers || []).length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {(feishuCfg.managerReceivers || []).map((r: any, i: number) => (
-                      <div
-                        key={`${r.receiveIdType}-${r.receiveId}-${i}`}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          background: 'var(--ui-surface)',
-                          border: '1px solid var(--ui-border)',
-                          borderRadius: 8,
-                          padding: '7px 9px',
-                          fontSize: 12,
-                        }}
-                      >
-                        <span style={{ color: 'var(--ui-text)', fontWeight: 600 }}>
-                          {r.receiverName || r.userName || '飞书用户'}{' '}
-                          <Tag color="blue" style={{ marginLeft: 6 }}>
-                            {r.roleLabel || '管理者'}
-                          </Tag>
-                        </span>
-                        <Space size={4}>
-                          <Tag color={r.calendarReady ? 'green' : 'default'}>
-                            {r.calendarReady ? '日历提醒' : '仅消息'}
-                          </Tag>
-                          {r.primary && <Tag color="gold">主接收人</Tag>}
-                        </Space>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="暂无老板/管理层接收人，请让老板、运营总监或管理员分别扫码绑定一次。"
-                  />
-                )}
-                <Space wrap>
-                  <Button
-                    size="small"
-                    type="primary"
-                    onClick={() => {
-                      api
-                        .post('/sys/feishu/test')
-                        .then((r: any) => {
-                          message.success(`测试卡片已发送：${r.sent || 0}/${r.total || 0}`);
-                          loadFeishu();
-                          loadStatus();
-                        })
-                        .catch(() => {
-                          loadFeishu();
-                          loadStatus();
-                        });
-                    }}
-                  >
-                    发送管理层测试消息
-                  </Button>
-                  <Button size="small" onClick={openFeishuBind}>
-                    扫码添加管理者
-                  </Button>
-                  <Button
-                    size="small"
-                    onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
-                  >
-                    手动绑定接收人
-                  </Button>
-                  <Button size="small" icon={<LinkOutlined />} onClick={openFeishuBot}>
-                    在飞书中打开机器人
-                  </Button>
-                  <Button
-                    size="small"
-                    danger
-                    onClick={() => {
-                      api.put('/sys/feishu', { enabled: false }).then(() => {
-                        message.success('已停用飞书同步');
-                        loadFeishu();
-                      });
-                    }}
-                  >
-                    停用
-                  </Button>
-                </Space>
-                <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>
-                  绑定后，经营提醒与每日经营日报会通过应用机器人推送给已绑定的老板/管理层。
-                </div>
-              </div>
-            ) : (
-              <div style={{ textAlign: 'center', padding: '6px 0 2px' }}>
-                <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 10 }}>
-                  绑定后：经营提醒与每日经营日报推送到管理层飞书 · 活动自动写入飞书日历 · 不需要群机器人
-                </div>
-                <Button type="primary" size="large" icon={<RobotOutlined />} block onClick={openFeishuBind}>
-                  扫码绑定飞书
-                </Button>
-                <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 10 }}>
-                  无法扫码？
-                  <button
-                    type="button"
-                    className="ui-link-button"
-                    onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
-                  >
-                    手动填写接收人 ID 绑定
-                  </button>
-                </div>
-              </div>
-            )}
-            <Modal open={feishuQr} footer={null} width={500} onCancel={() => setFeishuQr(false)} title="扫码绑定飞书">
-              <div
-                style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center', textAlign: 'center' }}
-              >
-                {feishuCfg && !feishuCfg.appReady ? (
-                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left' }}>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="还没有配置飞书企业自建应用"
-                      description={
-                        <span style={{ fontSize: 12 }}>
-                          老板/管理员填写一次 App ID 和 App Secret 后，系统会立即生成扫码二维码；普通员工不需要配置。
-                        </span>
-                      }
-                    />
-                    <div
-                      style={{
-                        background: 'var(--ui-surface-2)',
-                        border: '1px solid var(--ui-border)',
-                        borderRadius: 10,
-                        padding: '12px 14px',
-                      }}
-                    >
-                      <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 6 }}>飞书 App ID</div>
-                      <Input
-                        placeholder="cli_xxxxxxxxxxxxxxxx"
-                        value={feishuAppForm.appId}
-                        onChange={e => setFeishuAppForm({ ...feishuAppForm, appId: e.target.value })}
-                      />
-                      <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', margin: '12px 0 6px' }}>
-                        飞书 App Secret
-                      </div>
-                      <Input.Password
-                        placeholder="请输入飞书应用的 App Secret"
-                        value={feishuAppForm.appSecret}
-                        onChange={e => setFeishuAppForm({ ...feishuAppForm, appSecret: e.target.value })}
-                      />
-                      <Button
-                        type="primary"
-                        block
-                        loading={feishuAppSaving || feishuSaving}
-                        style={{ marginTop: 14 }}
-                        onClick={saveFeishuAppAndScan}
-                      >
-                        保存配置并生成二维码
-                      </Button>
-                    </div>
-                    <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', lineHeight: 1.7 }}>
-                      获取位置：飞书开放平台 → 企业自建应用 →
-                      凭证与基础信息。保存后会按当前企业单独存储，不会影响其他企业。
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Alert
-                      type="info"
-                      showIcon
-                      style={{ width: '100%', textAlign: 'left' }}
-                      message="用飞书扫一扫，授权后自动绑定"
-                      description={
-                        <span style={{ fontSize: 12 }}>
-                          不需要群机器人，不需要手填
-                          open_id。老板、运营总监、管理员分别扫码后，活动通知会推送给所有已绑定管理者，日历会自动加入参与人和提醒。
-                        </span>
-                      }
-                    />
-                    <div
-                      style={{
-                        width: 282,
-                        height: 282,
-                        border: '1px solid var(--ui-border)',
-                        borderRadius: 12,
-                        display: 'grid',
-                        placeItems: 'center',
-                        background: 'var(--ui-surface)',
-                      }}
-                    >
-                      {feishuBind?.qrDataUrl ? (
-                        <img src={feishuBind.qrDataUrl} alt="飞书扫码绑定二维码" style={{ width: 260, height: 260 }} />
-                      ) : (
-                        <span style={{ color: 'var(--ui-muted)' }}>
-                          {feishuSaving ? '正在生成二维码...' : '二维码生成失败'}
-                        </span>
-                      )}
-                    </div>
-                    {feishuBind?.appId && (
-                      <div
-                        style={{
-                          width: '100%',
-                          textAlign: 'left',
-                          border: '1px solid var(--ui-border)',
-                          background: 'var(--ui-surface)',
-                          borderRadius: 10,
-                          padding: '10px 12px',
-                        }}
-                      >
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-primary)', marginBottom: 6 }}>
-                          当前系统使用的飞书 App ID
-                        </div>
-                        <Input
-                          value={feishuBind.appId}
-                          readOnly
-                          style={{ fontSize: 12, fontFamily: 'Consolas, Menlo, monospace' }}
-                        />
-                        <Button
-                          size="small"
-                          icon={<CopyOutlined />}
-                          style={{ marginTop: 8 }}
-                          onClick={() => {
-                            navigator.clipboard?.writeText(feishuBind.appId);
-                            message.success('App ID 已复制');
-                          }}
-                        >
-                          复制 App ID
-                        </Button>
-                        <div style={{ fontSize: 11.5, color: 'var(--ui-text-2)', marginTop: 6, lineHeight: 1.6 }}>
-                          请确认飞书后台「凭证与基础信息」里的 App ID 与这里完全一致；如果不一致，重定向 URL
-                          加在另一个应用里也会报 20029。
-                        </div>
-                      </div>
-                    )}
-                    {feishuBind?.redirectUri && (
-                      <div
-                        style={{
-                          width: '100%',
-                          textAlign: 'left',
-                          border: '1px solid var(--ui-border)',
-                          background: 'var(--ui-surface)',
-                          borderRadius: 10,
-                          padding: '10px 12px',
-                        }}
-                      >
-                        <div
-                          style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-warning-text)', marginBottom: 6 }}
-                        >
-                          飞书提示 20029 时，复制这个重定向 URL 到飞书后台
-                        </div>
-                        <Input.TextArea
-                          value={feishuBind.redirectUri}
-                          autoSize={{ minRows: 2, maxRows: 3 }}
-                          readOnly
-                          style={{ fontSize: 12, fontFamily: 'Consolas, Menlo, monospace' }}
-                        />
-                        <Button
-                          size="small"
-                          icon={<CopyOutlined />}
-                          style={{ marginTop: 8 }}
-                          onClick={() => {
-                            navigator.clipboard?.writeText(feishuBind.redirectUri);
-                            message.success('重定向 URL 已复制');
-                          }}
-                        >
-                          复制重定向 URL
-                        </Button>
-                        <div style={{ fontSize: 11.5, color: 'var(--ui-warning-text)', marginTop: 6, lineHeight: 1.6 }}>
-                          位置：飞书开发者后台 → 当前应用 → 开发配置 → 安全设置 → 重定向 URL。
-                        </div>
-                      </div>
-                    )}
-                    {feishuBind?.localMode && (
-                      <Alert
-                        type="warning"
-                        showIcon
-                        style={{ width: '100%', textAlign: 'left' }}
-                        message="当前是本地 localhost"
-                        description={
-                          <span style={{ fontSize: 12 }}>
-                            手机扫码无法回调到电脑的 localhost。请先把上面的 URL
-                            加到飞书后台；本地测试时点下方按钮在电脑打开授权页，再用飞书扫码确认。
-                          </span>
-                        }
-                      />
-                    )}
-                    <Space wrap style={{ justifyContent: 'center' }}>
-                      <Button
-                        type="primary"
-                        icon={<RobotOutlined />}
-                        disabled={!feishuBind?.authorizeUrl}
-                        onClick={() => window.open(feishuBind.authorizeUrl, '_blank')}
-                      >
-                        打开飞书授权页
-                      </Button>
-                      <Button loading={feishuSaving} onClick={startFeishuScan}>
-                        重新生成二维码
-                      </Button>
-                    </Space>
-                    <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
-                      {feishuBindStatus === 'pending' && '等待扫码授权，成功后这里会自动关闭。'}
-                      {feishuBindStatus === 'expired' && '二维码已过期，请重新生成。'}
-                      {feishuBindStatus === 'error' && '绑定失败，请重新生成二维码再试。'}
-                      {feishuBindStatus === 'missing' && '二维码会话不存在，请重新生成。'}
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
-                      扫码走不通？
-                      <button
-                        type="button"
-                        className="ui-link-button"
-                        onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
-                      >
-                        手动填写接收人 ID 绑定
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </Modal>
-            {/* 手动绑定应用机器人接收人（扫码兜底：直接填 receive_id） */}
-            <Modal
-              open={!!feishuManual}
-              width={480}
-              title="手动绑定飞书接收人"
-              okText="确认绑定"
-              confirmLoading={feishuManualSaving}
-              onOk={submitFeishuManual}
-              onCancel={() => setFeishuManual(null)}
-            >
-              {feishuManual && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="扫码授权走不通时的兜底方式"
-                    description={
-                      <span style={{ fontSize: 12 }}>
-                        在飞书开放平台或通讯录 API 中查到接收人的 open_id / user_id / union_id /
-                        邮箱后填入即可。绑定成功会立即发送一张确认卡片；之后经营提醒与每日经营日报会推送给该接收人及已绑定管理层。
-                      </span>
-                    }
-                  />
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>ID 类型</div>
-                    <Select
-                      style={{ width: '100%' }}
-                      value={feishuManual.receiveIdType}
-                      options={FEISHU_ID_TYPES}
-                      onChange={v => setFeishuManual({ ...feishuManual, receiveIdType: v })}
-                    />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
-                      接收人 ID <span style={{ color: 'var(--danger)' }}>*</span>
-                    </div>
-                    <Input
-                      placeholder={feishuManual.receiveIdType === 'email' ? 'name@company.com' : 'ou_xxxxxxxxxxxxxxxx'}
-                      value={feishuManual.receiveId}
-                      onChange={e => setFeishuManual({ ...feishuManual, receiveId: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>接收人姓名（选填）</div>
-                    <Input
-                      placeholder="便于识别当前绑定对象"
-                      maxLength={30}
-                      value={feishuManual.receiverName}
-                      onChange={e => setFeishuManual({ ...feishuManual, receiverName: e.target.value })}
-                    />
-                  </div>
-                </div>
-              )}
-            </Modal>
+            <div className="nw-alert-muted-note">
+              飞书企业自建应用绑定、管理层扫码授权、经营日报推送与活动日历同步已独立归集至「飞书协同」标签页。
+            </div>
           </Panel>
         </div>
       </Col>
     </Row>
   );
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* 顶部快捷入口（图标按钮格，点击切换对应Tab） */}
-      <Panel title="快捷入口">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: 10 }}>
-          {QUICK.map(q => (
-            <button
-              type="button"
-              key={q.label}
-              onClick={() => changeTab(q.tab)}
-              style={{
-                ...interactiveSurfaceStyle,
-                border: '1px solid var(--ui-border)',
-                borderRadius: 8,
-                padding: '12px 8px',
-                textAlign: 'center',
-                cursor: 'pointer',
-                background: 'var(--ui-surface)',
-                transition: 'box-shadow .2s',
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.boxShadow = '0 4px 12px rgba(43,109,239,.12)';
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.boxShadow = 'none';
-              }}
-            >
-              <Badge count={q.badge || 0} size="small" offset={[2, 2]}>
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 9,
-                    margin: '0 auto',
-                    background: `color-mix(in srgb, ${q.color} 12%, transparent)`,
-                    color: q.color,
-                    fontSize: 17,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+  // ===== ⑦ 飞书协同 Tab =====
+  const feishuTab = !isAdminish ? (
+    noPermTip
+  ) : (
+    <Row gutter={[12, 12]}>
+      <Col xs={24} lg={16}>
+        <Panel
+          title={
+            <>
+              <LinkOutlined style={{ color: 'var(--ui-accent)' }} /> 飞书集成
+            </>
+          }
+          extra={
+            feishuCfg ? (
+              <Tag color={feishuState.color}>
+                {feishuState.label}
+                {feishuCfg.receiverName ? ` · ${feishuCfg.receiverName}` : ''}
+              </Tag>
+            ) : (
+              <Tag>状态未上报</Tag>
+            )
+          }
+        >
+          {feishuCfg?.enabled ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <Alert
+                type={feishuReadiness?.effective === 'connected' ? 'success' : 'warning'}
+                showIcon
+                message={
+                  feishuReadiness?.effective === 'connected'
+                    ? `最近测试消息已发送成功；当前 ${feishuCfg.managerReceiverCount || 0} 人接收消息，${feishuCfg.managerCalendarCount || 0} 人可加入日历提醒`
+                    : `飞书配置已启用，但尚不能证明外部发送可用；请发送测试消息完成验证（当前 ${feishuCfg.managerReceiverCount || 0} 个管理层接收人）`
+                }
+                description={feishuReadiness?.nextAction}
+              />
+              {(feishuCfg.managerReceivers || []).length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {(feishuCfg.managerReceivers || []).map((r: any, i: number) => (
+                    <div
+                      key={`${r.receiveIdType}-${r.receiveId}-${i}`}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        background: 'var(--ui-surface)',
+                        border: '1px solid var(--ui-border)',
+                        borderRadius: 8,
+                        padding: '7px 9px',
+                        fontSize: 12,
+                      }}
+                    >
+                      <span style={{ color: 'var(--ui-text)', fontWeight: 600 }}>
+                        {r.receiverName || r.userName || '飞书用户'}{' '}
+                        <Tag color="blue" style={{ marginLeft: 6 }}>
+                          {r.roleLabel || '管理者'}
+                        </Tag>
+                      </span>
+                      <Space size={4}>
+                        <Tag color={r.calendarReady ? 'green' : 'default'}>
+                          {r.calendarReady ? '日历提醒' : '仅消息'}
+                        </Tag>
+                        {r.primary && <Tag color="gold">主接收人</Tag>}
+                      </Space>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="暂无老板/管理层接收人，请让老板、运营总监或管理员分别扫码绑定一次。"
+                />
+              )}
+              <Space wrap>
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => {
+                    api
+                      .post('/sys/feishu/test')
+                      .then((r: any) => {
+                        message.success(`测试卡片已发送：${r.sent || 0}/${r.total || 0}`);
+                        loadFeishu();
+                        loadStatus();
+                      })
+                      .catch(() => {
+                        loadFeishu();
+                        loadStatus();
+                      });
                   }}
                 >
-                  {q.icon}
-                </div>
-              </Badge>
-              <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginTop: 6, whiteSpace: 'nowrap' }}>
-                {q.label}
+                  发送管理层测试消息
+                </Button>
+                <Button size="small" onClick={openFeishuBind}>
+                  扫码添加管理者
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
+                >
+                  手动绑定接收人
+                </Button>
+                <Button size="small" icon={<LinkOutlined />} onClick={openFeishuBot}>
+                  在飞书中打开机器人
+                </Button>
+                <Button
+                  size="small"
+                  danger
+                  onClick={() => {
+                    api.put('/sys/feishu', { enabled: false }).then(() => {
+                      message.success('已停用飞书同步');
+                      loadFeishu();
+                    });
+                  }}
+                >
+                  停用
+                </Button>
+              </Space>
+              <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>
+                绑定后，经营提醒与每日经营日报会通过应用机器人推送给已绑定的老板/管理层。
               </div>
-            </button>
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '6px 0 2px' }}>
+              <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 10 }}>
+                绑定后：经营提醒与每日经营日报推送到管理层飞书 · 活动自动写入飞书日历 · 不需要群机器人
+              </div>
+              <Button type="primary" size="large" icon={<RobotOutlined />} block onClick={openFeishuBind}>
+                扫码绑定飞书
+              </Button>
+              <div style={{ fontSize: 12, color: 'var(--ui-muted)', marginTop: 10 }}>
+                无法扫码？
+                <button
+                  type="button"
+                  className="ui-link-button"
+                  onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
+                >
+                  手动填写接收人 ID 绑定
+                </button>
+              </div>
+            </div>
+          )}
+          <Modal open={feishuQr} footer={null} width={500} onCancel={() => setFeishuQr(false)} title="扫码绑定飞书">
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center', textAlign: 'center' }}
+            >
+              {feishuCfg && !feishuCfg.appReady ? (
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left' }}>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="还没有配置飞书企业自建应用"
+                    description={
+                      <span style={{ fontSize: 12 }}>
+                        老板/管理员填写一次 App ID 和 App Secret 后，系统会立即生成扫码二维码；普通员工不需要配置。
+                      </span>
+                    }
+                  />
+                  <div
+                    style={{
+                      background: 'var(--ui-surface-2)',
+                      border: '1px solid var(--ui-border)',
+                      borderRadius: 10,
+                      padding: '12px 14px',
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', marginBottom: 6 }}>飞书 App ID</div>
+                    <Input
+                      placeholder="cli_xxxxxxxxxxxxxxxx"
+                      value={feishuAppForm.appId}
+                      onChange={e => setFeishuAppForm({ ...feishuAppForm, appId: e.target.value })}
+                    />
+                    <div style={{ fontSize: 12.5, color: 'var(--ui-text-2)', margin: '12px 0 6px' }}>
+                      飞书 App Secret
+                    </div>
+                    <Input.Password
+                      placeholder="请输入飞书应用的 App Secret"
+                      value={feishuAppForm.appSecret}
+                      onChange={e => setFeishuAppForm({ ...feishuAppForm, appSecret: e.target.value })}
+                    />
+                    <Button
+                      type="primary"
+                      block
+                      loading={feishuAppSaving || feishuSaving}
+                      style={{ marginTop: 14 }}
+                      onClick={saveFeishuAppAndScan}
+                    >
+                      保存配置并生成二维码
+                    </Button>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', lineHeight: 1.7 }}>
+                    获取位置：飞书开放平台 → 企业自建应用 →
+                    凭证与基础信息。保存后会按当前企业单独存储，不会影响其他企业。
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ width: '100%', textAlign: 'left' }}
+                    message="用飞书扫一扫，授权后自动绑定"
+                    description={
+                      <span style={{ fontSize: 12 }}>
+                        不需要群机器人，不需要手填
+                        open_id。老板、运营总监、管理员分别扫码后，活动通知会推送给所有已绑定管理者，日历会自动加入参与人和提醒。
+                      </span>
+                    }
+                  />
+                  <div
+                    style={{
+                      width: 282,
+                      height: 282,
+                      border: '1px solid var(--ui-border)',
+                      borderRadius: 12,
+                      display: 'grid',
+                      placeItems: 'center',
+                      background: 'var(--ui-surface)',
+                    }}
+                  >
+                    {feishuBind?.qrDataUrl ? (
+                      <img src={feishuBind.qrDataUrl} alt="飞书扫码绑定二维码" style={{ width: 260, height: 260 }} />
+                    ) : (
+                      <span style={{ color: 'var(--ui-muted)' }}>
+                        {feishuSaving ? '正在生成二维码...' : '二维码生成失败'}
+                      </span>
+                    )}
+                  </div>
+                  {feishuBind?.appId && (
+                    <div
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        border: '1px solid var(--ui-border)',
+                        background: 'var(--ui-surface)',
+                        borderRadius: 10,
+                        padding: '10px 12px',
+                      }}
+                    >
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-primary)', marginBottom: 6 }}>
+                        当前系统使用的飞书 App ID
+                      </div>
+                      <Input
+                        value={feishuBind.appId}
+                        readOnly
+                        style={{ fontSize: 12, fontFamily: 'Consolas, Menlo, monospace' }}
+                      />
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        style={{ marginTop: 8 }}
+                        onClick={() => {
+                          navigator.clipboard?.writeText(feishuBind.appId);
+                          message.success('App ID 已复制');
+                        }}
+                      >
+                        复制 App ID
+                      </Button>
+                      <div style={{ fontSize: 11.5, color: 'var(--ui-text-2)', marginTop: 6, lineHeight: 1.6 }}>
+                        请确认飞书后台「凭证与基础信息」里的 App ID 与这里完全一致；如果不一致，重定向 URL
+                        加在另一个应用里也会报 20029。
+                      </div>
+                    </div>
+                  )}
+                  {feishuBind?.redirectUri && (
+                    <div
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        border: '1px solid var(--ui-border)',
+                        background: 'var(--ui-surface)',
+                        borderRadius: 10,
+                        padding: '10px 12px',
+                      }}
+                    >
+                      <div
+                        style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-warning-text)', marginBottom: 6 }}
+                      >
+                        飞书提示 20029 时，复制这个重定向 URL 到飞书后台
+                      </div>
+                      <Input.TextArea
+                        value={feishuBind.redirectUri}
+                        autoSize={{ minRows: 2, maxRows: 3 }}
+                        readOnly
+                        style={{ fontSize: 12, fontFamily: 'Consolas, Menlo, monospace' }}
+                      />
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        style={{ marginTop: 8 }}
+                        onClick={() => {
+                          navigator.clipboard?.writeText(feishuBind.redirectUri);
+                          message.success('重定向 URL 已复制');
+                        }}
+                      >
+                        复制重定向 URL
+                      </Button>
+                      <div style={{ fontSize: 11.5, color: 'var(--ui-warning-text)', marginTop: 6, lineHeight: 1.6 }}>
+                        位置：飞书开发者后台 → 当前应用 → 开发配置 → 安全设置 → 重定向 URL。
+                      </div>
+                    </div>
+                  )}
+                  {feishuBind?.localMode && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ width: '100%', textAlign: 'left' }}
+                      message="当前是本地 localhost"
+                      description={
+                        <span style={{ fontSize: 12 }}>
+                          手机扫码无法回调到电脑的 localhost。请先把上面的 URL
+                          加到飞书后台；本地测试时点下方按钮在电脑打开授权页，再用飞书扫码确认。
+                        </span>
+                      }
+                    />
+                  )}
+                  <Space wrap style={{ justifyContent: 'center' }}>
+                    <Button
+                      type="primary"
+                      icon={<RobotOutlined />}
+                      disabled={!feishuBind?.authorizeUrl}
+                      onClick={() => window.open(feishuBind.authorizeUrl, '_blank')}
+                    >
+                      打开飞书授权页
+                    </Button>
+                    <Button loading={feishuSaving} onClick={startFeishuScan}>
+                      重新生成二维码
+                    </Button>
+                  </Space>
+                  <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
+                    {feishuBindStatus === 'pending' && '等待扫码授权，成功后这里会自动关闭。'}
+                    {feishuBindStatus === 'expired' && '二维码已过期，请重新生成。'}
+                    {feishuBindStatus === 'error' && '绑定失败，请重新生成二维码再试。'}
+                    {feishuBindStatus === 'missing' && '二维码会话不存在，请重新生成。'}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
+                    扫码走不通？
+                    <button
+                      type="button"
+                      className="ui-link-button"
+                      onClick={() => setFeishuManual({ receiveIdType: 'open_id', receiveId: '', receiverName: '' })}
+                    >
+                      手动填写接收人 ID 绑定
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </Modal>
+          {/* 手动绑定应用机器人接收人（扫码兜底：直接填 receive_id） */}
+          <Modal
+            open={!!feishuManual}
+            width={480}
+            title="手动绑定飞书接收人"
+            okText="确认绑定"
+            confirmLoading={feishuManualSaving}
+            onOk={submitFeishuManual}
+            onCancel={() => setFeishuManual(null)}
+          >
+            {feishuManual && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="扫码授权走不通时的兜底方式"
+                  description={
+                    <span style={{ fontSize: 12 }}>
+                      在飞书开放平台或通讯录 API 中查到接收人的 open_id / user_id / union_id /
+                      邮箱后填入即可。绑定成功会立即发送一张确认卡片；之后经营提醒与每日经营日报会推送给该接收人及已绑定管理层。
+                    </span>
+                  }
+                />
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>ID 类型</div>
+                  <Select
+                    style={{ width: '100%' }}
+                    value={feishuManual.receiveIdType}
+                    options={FEISHU_ID_TYPES}
+                    onChange={v => setFeishuManual({ ...feishuManual, receiveIdType: v })}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>
+                    接收人 ID <span style={{ color: 'var(--danger)' }}>*</span>
+                  </div>
+                  <Input
+                    placeholder={feishuManual.receiveIdType === 'email' ? 'name@company.com' : 'ou_xxxxxxxxxxxxxxxx'}
+                    value={feishuManual.receiveId}
+                    onChange={e => setFeishuManual({ ...feishuManual, receiveId: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginBottom: 4 }}>接收人姓名（选填）</div>
+                  <Input
+                    placeholder="便于识别当前绑定对象"
+                    maxLength={30}
+                    value={feishuManual.receiverName}
+                    onChange={e => setFeishuManual({ ...feishuManual, receiverName: e.target.value })}
+                  />
+                </div>
+              </div>
+            )}
+          </Modal>
+        </Panel>
+      </Col>
+    </Row>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* 顶部高频快捷入口：4 格直达，明确 /system 做日常业务配置、/admin 做高级治理 */}
+      <Panel
+        title="快捷入口"
+        extra={
+          <span className="nw-alert-muted-note">
+            日常业务配置在本页完成；账号席位、角色权限与模型路由治理请前往高级管理后台
+          </span>
+        }
+      >
+        <Row gutter={[12, 12]}>
+          {QUICK.map(q => (
+            <Col xs={24} sm={12} lg={quickColSpan} key={q.label}>
+              <Card
+                size="small"
+                hoverable
+                role="button"
+                tabIndex={0}
+                onClick={() => (q.to ? navigate(q.to) : q.tab && changeTab(q.tab))}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    if (q.to) navigate(q.to);
+                    else if (q.tab) changeTab(q.tab);
+                  }
+                }}
+              >
+                <Card.Meta
+                  avatar={<Avatar shape="square" size={38} icon={q.icon} style={QUICK_ICON_STYLES[q.tone]} />}
+                  title={q.label}
+                  description={q.desc}
+                />
+              </Card>
+            </Col>
           ))}
-        </div>
+        </Row>
       </Panel>
 
       {/* 六大区块 Tabs（核心数据全部加载失败时给明确错误态 + 重试，不展示空壳数据） */}
@@ -2564,6 +2637,7 @@ export default function System() {
                 ]
               : []),
             { key: 'kb', label: '知识库', children: kbTab },
+            { key: 'feishu', label: '飞书协同', children: feishuTab },
             ...(canEditPrompt ? [{ key: 'prompts', label: '提示词模板', children: promptsTab }] : []),
             { key: 'users', label: '用户与日志', children: usersTab },
             { key: 'trash', label: '删除留痕', children: trashTab },

@@ -43,6 +43,7 @@ import {
   AppstoreOutlined,
   PayCircleOutlined,
   FundOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -63,6 +64,8 @@ import { dashboardRankMeta } from '../components/DashboardRankingMeta';
 import { dashboardFeishuPresentation } from '../components/statusPresentation.js';
 import { useStreamingTask, type StreamStage } from '../hooks/useStreamingTask';
 import { useDashboardFeishu } from '../hooks/useDashboardFeishu';
+import { dispatchToEmployee, resolveEmployeeForIssue } from '../utils/dispatchEmployee';
+import './Dashboard.css';
 
 // 数字员工协同分析的阶段轴：与后端事件对齐，不编造中间态
 const AI_ANALYSIS_STAGES: StreamStage[] = [
@@ -437,7 +440,7 @@ export default function Dashboard() {
           allowClear={false}
           value={scopeValue}
           onChange={v => v && setScopeValue(v)}
-          style={{ width: 150 }}
+          className="dash-scope-picker"
         />
       );
     }
@@ -448,7 +451,7 @@ export default function Dashboard() {
           allowClear={false}
           value={scopeValue}
           onChange={v => v && setScopeValue(v)}
-          style={{ width: 150 }}
+          className="dash-scope-picker"
         />
       );
     }
@@ -459,7 +462,7 @@ export default function Dashboard() {
           allowClear={false}
           value={scopeValue}
           onChange={v => v && setScopeValue(v)}
-          style={{ width: 150 }}
+          className="dash-scope-picker"
         />
       );
     }
@@ -467,7 +470,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="dash-page">
       <DashboardRoleHeader
         role={role}
         userName={currentUser?.name}
@@ -498,7 +501,7 @@ export default function Dashboard() {
             summary.timeScope?.note ||
             `当前为 ${summary.timeScope.today} 实时口径：今日销售额为当天实时数据；下方图表/活动按已有历史记录展示（经营数据最近 ${summary.timeScope.latestOps || '-'}，活动最近 ${summary.timeScope.latestActivity || '-'}）。`
           }
-          style={{ borderColor: 'var(--ui-border-strong)', background: 'var(--ui-surface-2)' }}
+          className="dash-alert-soft"
         />
       )}
       {loadError && (
@@ -508,7 +511,7 @@ export default function Dashboard() {
         <Panel
           title={
             <>
-              <AlertOutlined style={{ color: 'var(--warn)' }} /> 今日经营诊断
+              <AlertOutlined className="dash-icon-warn" /> 今日经营诊断
             </>
           }
           extra={
@@ -526,7 +529,7 @@ export default function Dashboard() {
                   onClick: ({ key }) => dismissDiagnosis(key),
                 }}
               >
-                <Button size="small" type="text" style={{ color: 'var(--ui-muted)' }}>
+                <Button size="small" type="text" className="dash-muted-btn">
                   今日不再显示
                 </Button>
               </Dropdown>
@@ -534,95 +537,74 @@ export default function Dashboard() {
           }
         >
           {digest && (
-            <div
-              style={{
-                marginBottom: diagnosis?.length ? 'var(--space-3)' : 0,
-                padding: 'var(--space-3) var(--space-4)',
-                background: 'var(--ui-surface-2)',
-                border: '1px solid var(--ui-border)',
-                borderRadius: 'var(--radius-md)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 'var(--space-1)',
-              }}
-            >
-              <div style={{ fontWeight: 650, color: 'var(--ui-text)', fontSize: 'var(--font-3)' }}>
+            <div className={`dash-digest-box${diagnosis?.length ? ' dash-digest-box--spaced' : ''}`}>
+              <div className="dash-digest-headline">
                 {digest.headline}
                 {digest.deltaPct !== null && digest.deltaPct !== undefined && (
-                  <Tag style={{ marginLeft: 8 }} color={digest.deltaPct >= 0 ? 'green' : 'red'}>
+                  <Tag className="dash-digest-delta" color={digest.deltaPct >= 0 ? 'green' : 'red'}>
                     {digest.deltaPct >= 0 ? '+' : ''}
                     {digest.deltaPct}%
                   </Tag>
                 )}
               </div>
-              <div style={{ color: 'var(--ui-text-2)', fontSize: 'var(--font-2)', lineHeight: 1.7 }}>
+              <div className="dash-digest-line">
                 <b>归因</b> · {digest.attribution}
               </div>
-              <div style={{ color: 'var(--ui-text-2)', fontSize: 'var(--font-2)', lineHeight: 1.7 }}>
+              <div className="dash-digest-line">
                 <b>建议</b> · {digest.suggestion}
               </div>
-              <div style={{ color: 'var(--ui-muted)', fontSize: 'var(--font-1)' }}>
+              <div className="dash-digest-meta">
                 每日 08:00 同步推送到站内通知{'、'}已绑定的飞书群 · 口径：
                 {digest.source === 'orders' ? '订单记录' : '手填日报'}
               </div>
             </div>
           )}
           {diagnosis !== null && diagnosis.length > 0 && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-                gap: 'var(--space-3)',
-              }}
-            >
-              {diagnosis.slice(0, 3).map((item: any, index: number) => (
-                <button
-                  key={index}
-                  type="button"
-                  onClick={() =>
-                    hasModule('advisor')
-                      ? nav('/advisor', {
-                          state: {
-                            q: `请针对这条今日经营诊断给出原因拆解与可执行方案：${item.dimension ? `【${item.dimension}】` : ''}${item.issue}${item.suggestion ? `（当前建议：${item.suggestion}）` : ''}`,
-                          },
-                        })
-                      : nav('/analysis')
-                  }
-                  style={{
-                    appearance: 'none',
-                    textAlign: 'left',
-                    font: 'inherit',
-                    cursor: 'pointer',
-                    background: 'var(--ui-surface-2)',
-                    border: '1px solid var(--ui-border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    color: 'inherit',
-                  }}
-                  aria-label={`经营诊断：${item.issue}，${hasModule('advisor') ? '点击问老板参谋怎么办' : '点击查看完整分析'}`}
-                >
-                  <Tag color="blue" style={{ marginBottom: 'var(--space-1)' }}>
-                    {item.dimension}
-                  </Tag>
-                  <div style={{ fontWeight: 600, color: 'var(--ui-text)', fontSize: 'var(--font-2)', lineHeight: 1.6 }}>
-                    {item.issue}
+            <div className="dash-diag-grid">
+              {diagnosis.slice(0, 3).map((item: any, index: number) => {
+                const targetEmp = resolveEmployeeForIssue(item.dimension, item.issue);
+                return (
+                  <div key={index} className="dash-diag-card">
+                    <Tag color="blue" className="dash-diag-tag">
+                      {item.dimension}
+                    </Tag>
+                    <div className="dash-diag-issue">{item.issue}</div>
+                    <div className="dash-diag-suggestion">{item.suggestion}</div>
+                    <div className="nw-glance-issue-actions">
+                      {canViewMarshals && (
+                        <button
+                          type="button"
+                          className="nw-glance-issue-btn nw-glance-issue-btn--primary"
+                          onClick={() =>
+                            dispatchToEmployee(
+                              nav,
+                              targetEmp.idx,
+                              `请针对今日经营诊断制定整改执行方案：${item.dimension ? `【${item.dimension}】` : ''}${item.issue}${item.suggestion ? `（建议方向：${item.suggestion}）` : ''}。请给出具体落地步骤、负责人分工与验收标准。`,
+                            )
+                          }
+                        >
+                          <ThunderboltOutlined /> 派给{targetEmp.person}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="nw-glance-issue-btn"
+                        onClick={() =>
+                          hasModule('advisor')
+                            ? nav('/advisor', {
+                                state: {
+                                  q: `请针对这条今日经营诊断给出原因拆解与可执行方案：${item.dimension ? `【${item.dimension}】` : ''}${item.issue}${item.suggestion ? `（当前建议：${item.suggestion}）` : ''}`,
+                                },
+                              })
+                            : nav('/analysis')
+                        }
+                      >
+                        {hasModule('advisor') ? '问老板参谋' : '查看完整分析'} <RightOutlined />
+                      </button>
+                    </div>
                   </div>
-                  <div
-                    style={{
-                      color: 'var(--ui-muted)',
-                      fontSize: 'var(--font-1)',
-                      marginTop: 'var(--space-1)',
-                      lineHeight: 1.7,
-                    }}
-                  >
-                    {item.suggestion}
-                  </div>
-                  <div style={{ color: 'var(--ui-primary)', fontSize: 'var(--font-1)', marginTop: 'var(--space-2)' }}>
-                    {hasModule('advisor') ? '问老板参谋怎么办' : '查看完整分析'}{' '}
-                    <RightOutlined style={{ fontSize: 10 }} />
-                  </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </Panel>
@@ -642,9 +624,7 @@ export default function Dashboard() {
           </Space>
         }
       >
-        <div
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}
-        >
+        <div className="dash-scope-bar">
           <Space size={8} wrap>
             <Segmented
               size="small"
@@ -747,7 +727,7 @@ export default function Dashboard() {
             <Col xs={12} md={8} xl={4}>
               <StatCard
                 icon={<PayCircleOutlined />}
-                color="#0ea5a4"
+                color="var(--chart-2)"
                 label="本月真实客单价"
                 value={fmtMoney(storeKpi.avgTicket)}
                 suffix="按订单明细"
@@ -759,7 +739,7 @@ export default function Dashboard() {
             <Col xs={12} md={8} xl={4}>
               <StatCard
                 icon={<FundOutlined />}
-                color="#7c5cd6"
+                color="var(--ui-primary)"
                 label="本月毛利率"
                 value={`${storeKpi.grossMargin}%`}
                 suffix="扣食材直接成本"
@@ -786,15 +766,15 @@ export default function Dashboard() {
         <Panel
           title={
             <>
-              <MessageOutlined style={{ color: 'var(--chart-2)' }} /> {scopeLabel}沟通跟进看板
+              <MessageOutlined className="dash-icon-chart2" /> {scopeLabel}沟通跟进看板
             </>
           }
           extra={
             <Space size={8}>
               <Tag color="blue">已沟通客户 {followOverview.summary?.communicatedCustomers || 0}</Tag>
               <Tag color="green">沟通记录 {followOverview.summary?.followRecords || 0}</Tag>
-              <Tag color="purple">跟进账号 {followOverview.summary?.activeStaff || 0}</Tag>
-              <Link style={{ fontSize: 12 }} to="/growth">
+              <Tag color="cyan">跟进账号 {followOverview.summary?.activeStaff || 0}</Tag>
+              <Link className="dash-link-sm" to="/growth">
                 查看明细/导出 <RightOutlined />
               </Link>
             </Space>
@@ -835,26 +815,15 @@ export default function Dashboard() {
               />
             </Col>
             <Col xs={24} lg={6}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ui-text)' }}>
-                  {showTeamRanking ? '员工竞赛榜' : '我的工作表现'}
-                </div>
+              <div className="dash-rank-head">
+                <div className="dash-rank-title">{showTeamRanking ? '员工竞赛榜' : '我的工作表现'}</div>
                 <Tooltip title="综合分 = 跟进、客户、线索、已验收终态任务、已人工采纳内容、成交与荣誉调控">
-                  <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>
+                  <Tag color="blue" className="dash-tag-compact">
                     评分透明
                   </Tag>
                 </Tooltip>
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 8,
-                  maxHeight: 420,
-                  overflowY: 'auto',
-                  paddingRight: 2,
-                }}
-              >
+              <div className="dash-rank-list">
                 {(followOverview.staff || []).map((s: any, i: number) => {
                   const meta = showTeamRanking
                     ? dashboardRankMeta(Number(s.rank || i + 1))
@@ -872,71 +841,34 @@ export default function Dashboard() {
                       key={s.user_id || s.name}
                       onClick={() => openEmployee(s.user_id)}
                       aria-label={`${canOpen ? '查看' : ''}${s.name || '员工'}${showTeamRanking ? '竞赛档案' : '个人表现'}，综合分 ${s.score || 0}`}
-                      style={{
-                        appearance: 'none',
-                        display: 'block',
-                        width: '100%',
-                        textAlign: 'left',
-                        font: 'inherit',
-                        color: 'inherit',
-                        cursor: canOpen ? 'pointer' : 'default',
-                        border: `1px solid ${meta.border}`,
-                        background: meta.bg,
-                        borderRadius: 10,
-                        padding: '8px 10px',
-                        boxShadow: i < 3 ? '0 6px 16px rgba(43,109,239,.08)' : 'none',
-                      }}
+                      className={`dash-rank-card${canOpen ? ' dash-rank-card--clickable' : ''}${i < 3 ? ' dash-rank-card--top' : ''}`}
+                      style={{ borderColor: meta.border, background: meta.bg }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div
-                          style={{
-                            width: 28,
-                            height: 28,
-                            borderRadius: 8,
-                            display: 'grid',
-                            placeItems: 'center',
-                            color: meta.color,
-                            background: 'rgba(255,255,255,.72)',
-                            fontSize: 15,
-                          }}
-                        >
+                      <div className="dash-rank-row">
+                        <div className="dash-rank-medal" style={{ color: meta.color }}>
                           {meta.icon}
                         </div>
-                        <Avatar
-                          size={26}
-                          src={s.avatar || undefined}
-                          style={{ background: 'var(--ui-surface)', color: 'var(--ui-accent)', fontSize: 12 }}
-                        >
+                        <Avatar size={26} src={s.avatar || undefined} className="dash-rank-avatar">
                           {String(s.name || '?').slice(0, 1)}
                         </Avatar>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                            <span
-                              style={{
-                                color: 'var(--ui-text)',
-                                fontWeight: 700,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {s.name}
-                            </span>
+                        <div className="dash-rank-info">
+                          <div className="dash-rank-name-row">
+                            <span className="dash-rank-name">{s.name}</span>
                             {s.award_type && (
-                              <Tag color="gold" style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>
+                              <Tag color="gold" className="dash-tag-compact">
                                 <GiftOutlined /> {s.award_type}
                               </Tag>
                             )}
                           </div>
-                          <div style={{ fontSize: 10.5, color: '#6b7280' }}>
+                          <div className="dash-rank-sub">
                             {meta.label} · {roleName[s.role] || s.role || '员工'} · {s.dept || '未设岗位'}
                           </div>
                         </div>
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: 16, lineHeight: 1.1, fontWeight: 800, color: meta.color }}>
+                        <div className="dash-rank-score-wrap">
+                          <div className="dash-rank-score" style={{ color: meta.color }}>
                             {s.score || 0}
                           </div>
-                          <div style={{ fontSize: 10.5, color: '#64748b' }}>综合分</div>
+                          <div className="dash-rank-sub">综合分</div>
                         </div>
                       </div>
                       <Progress
@@ -944,18 +876,17 @@ export default function Dashboard() {
                         showInfo={false}
                         size="small"
                         strokeColor={
-                          i === 0 ? '#f59e0b' : i === 1 ? '#64748b' : i === 2 ? '#f97316' : 'var(--ui-accent)'
+                          i === 0
+                            ? 'var(--warn)'
+                            : i === 1
+                              ? 'var(--ui-muted)'
+                              : i === 2
+                                ? 'var(--chart-3)'
+                                : 'var(--ui-accent)'
                         }
-                        style={{ margin: '7px 0 3px' }}
+                        className="dash-rank-progress"
                       />
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          fontSize: 10.5,
-                          color: 'var(--ui-text-2)',
-                        }}
-                      >
+                      <div className="dash-rank-stats">
                         <span>跟进 {s.follow_count || 0}次</span>
                         <span>客户 {s.customer_count || 0}人</span>
                         <span>已验收任务 {s.completed_tasks || 0}个</span>
@@ -985,7 +916,7 @@ export default function Dashboard() {
                     dataIndex: 'name',
                     width: 92,
                     render: (v: string, r: any) => (
-                      <span style={{ color: 'var(--ui-accent)' }}>
+                      <span className="dash-accent-text">
                         {v} <GradeTag grade={r.grade} />
                       </span>
                     ),
@@ -996,19 +927,8 @@ export default function Dashboard() {
                     key: 'memo',
                     render: (_: any, r: any) => (
                       <div>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: 'var(--ui-text-2)',
-                            maxWidth: 180,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {r.last_content || '-'}
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--ui-muted)' }}>
+                        <div className="dash-follow-content">{r.last_content || '-'}</div>
+                        <div className="dash-muted-sm">
                           {r.next_follow_at ? `${r.next_follow_at} ${r.next_action || ''}` : '未设置下次跟进'}
                         </div>
                       </div>
@@ -1029,10 +949,7 @@ export default function Dashboard() {
               <Panel
                 title={
                   <>
-                    {scopeLabel}销售趋势{' '}
-                    <span style={{ fontSize: 11, color: 'var(--ui-muted)', fontWeight: 400 }}>
-                      点击数据点看当日来源
-                    </span>
+                    {scopeLabel}销售趋势 <span className="dash-panel-sub">点击数据点看当日来源</span>
                   </>
                 }
                 extra={
@@ -1123,7 +1040,7 @@ export default function Dashboard() {
                         AI分析
                       </Button>
                     )}
-                    <Link style={{ fontSize: 12 }} to="/growth">
+                    <Link className="dash-link-sm" to="/growth">
                       查看明细 <RightOutlined />
                     </Link>
                   </Space>
@@ -1167,7 +1084,7 @@ export default function Dashboard() {
                   }}
                 />
                 {funnel.bottleneck && (
-                  <div style={{ fontSize: 12, color: 'var(--danger)' }}>
+                  <div className="dash-bottleneck">
                     <AlertOutlined /> 当前卡点：「{funnel.bottleneck}」环节低于基准
                   </div>
                 )}
@@ -1179,16 +1096,16 @@ export default function Dashboard() {
               <Panel
                 title={
                   <>
-                    <BulbOutlined style={{ color: 'var(--ui-accent)' }} /> AI经营简报
+                    <BulbOutlined className="dash-icon-accent" /> AI经营简报
                   </>
                 }
                 extra={
-                  <Tag color="blue" style={{ fontSize: 11 }}>
+                  <Tag color="blue" className="dash-tag-compact">
                     {briefing?.theme}
                   </Tag>
                 }
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 250, overflow: 'auto' }}>
+                <div className="dash-briefing-list">
                   {(briefing?.briefing || []).map((b: any, i: number) => {
                     const item = typeof b === 'string' ? { text: b } : b;
                     const content = (
@@ -1196,20 +1113,7 @@ export default function Dashboard() {
                         <Badge color={CHART_COLORS[i % CHART_COLORS.length]} />
                         <span>
                           {item.text}
-                          {item.source && (
-                            <Tag
-                              style={{
-                                fontSize: 10,
-                                marginLeft: 6,
-                                color: 'var(--ui-accent)',
-                                background: 'var(--ui-surface-2)',
-                                border: 'none',
-                                lineHeight: '16px',
-                              }}
-                            >
-                              来源:{item.source} ›
-                            </Tag>
-                          )}
+                          {item.source && <Tag className="dash-briefing-source">来源:{item.source} ›</Tag>}
                         </span>
                       </>
                     );
@@ -1224,65 +1128,18 @@ export default function Dashboard() {
                             type="button"
                             onClick={() => nav(item.link)}
                             aria-label={`${item.text}${item.source ? `，来源：${item.source}` : ''}`}
-                            style={{
-                              appearance: 'none',
-                              width: '100%',
-                              border: 0,
-                              background: 'transparent',
-                              display: 'flex',
-                              gap: 8,
-                              font: 'inherit',
-                              textAlign: 'left',
-                              fontSize: 12.5,
-                              color: 'var(--ui-text-2)',
-                              lineHeight: 1.7,
-                              cursor: 'pointer',
-                              borderRadius: 6,
-                              padding: '2px 4px',
-                            }}
-                            onMouseEnter={e => {
-                              e.currentTarget.style.background = 'var(--ui-surface-2)';
-                            }}
-                            onMouseLeave={e => {
-                              e.currentTarget.style.background = 'transparent';
-                            }}
-                            onFocus={e => {
-                              e.currentTarget.style.background = 'var(--ui-surface-2)';
-                            }}
-                            onBlur={e => {
-                              e.currentTarget.style.background = 'transparent';
-                            }}
+                            className="dash-briefing-item dash-briefing-btn"
                           >
                             {content}
                           </button>
                         ) : (
-                          <div
-                            style={{
-                              display: 'flex',
-                              gap: 8,
-                              fontSize: 12.5,
-                              color: 'var(--ui-text-2)',
-                              lineHeight: 1.7,
-                              borderRadius: 6,
-                              padding: '2px 4px',
-                            }}
-                          >
-                            {content}
-                          </div>
+                          <div className="dash-briefing-item">{content}</div>
                         )}
                       </Tooltip>
                     );
                   })}
                   {briefing?.bossItems?.length > 0 && (
-                    <div
-                      style={{
-                        background: 'var(--ui-warning-surface)',
-                        borderRadius: 8,
-                        padding: '8px 10px',
-                        fontSize: 12,
-                        color: '#e0a253',
-                      }}
-                    >
+                    <div className="dash-briefing-warn">
                       <b>待负责人确认：</b>
                       {briefing.bossItems.slice(0, 2).map((x: string, i: number) => (
                         <div key={i}>· {x}</div>
@@ -1305,7 +1162,7 @@ export default function Dashboard() {
                 title={`${scopeLabel}渠道效果分析`}
                 extra={
                   hasModule('analysis') ? (
-                    <Link style={{ fontSize: 12 }} to="/analysis">
+                    <Link className="dash-link-sm" to="/analysis">
                       查看全部 <RightOutlined />
                     </Link>
                   ) : undefined
@@ -1321,7 +1178,7 @@ export default function Dashboard() {
                     {
                       title: '渠道',
                       dataIndex: 'channel',
-                      render: (v: string) => <span style={{ color: 'var(--ui-accent)' }}>{v}</span>,
+                      render: (v: string) => <span className="dash-accent-text">{v}</span>,
                     },
                     { title: '线索数', dataIndex: 'leads', align: 'right' },
                     { title: '成交数', dataIndex: 'deals', align: 'right' },
@@ -1331,15 +1188,15 @@ export default function Dashboard() {
                       align: 'right',
                       width: 120,
                       render: (v: number) => (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                        <div className="dash-rate-cell">
                           <Progress
                             percent={Math.min(v * 2, 100)}
                             showInfo={false}
                             size="small"
-                            style={{ width: 56 }}
+                            className="dash-rate-bar"
                             strokeColor="var(--ui-accent)"
                           />
-                          <span style={{ fontSize: 12 }}>{v}%</span>
+                          <span className="dash-rate-val">{v}%</span>
                         </div>
                       ),
                     },
@@ -1353,7 +1210,7 @@ export default function Dashboard() {
               <Panel
                 title="重点客户 TOP5"
                 extra={
-                  <Link style={{ fontSize: 12 }} to="/growth">
+                  <Link className="dash-link-sm" to="/growth">
                     进入跟进 <RightOutlined />
                   </Link>
                 }
@@ -1370,7 +1227,7 @@ export default function Dashboard() {
                       dataIndex: 'name',
                       render: (v: string, r: any) => (
                         <>
-                          <span style={{ fontWeight: 600 }}>{v}</span> <GradeTag grade={r.grade} />
+                          <span className="dash-strong">{v}</span> <GradeTag grade={r.grade} />
                         </>
                       ),
                     },
@@ -1380,9 +1237,7 @@ export default function Dashboard() {
                       dataIndex: 'score',
                       align: 'right',
                       render: (v: number) => (
-                        <span style={{ color: v >= 70 ? 'var(--danger)' : 'var(--ui-text-2)', fontWeight: 600 }}>
-                          {v}分
-                        </span>
+                        <span className={v >= 70 ? 'dash-score-hot' : 'dash-score-norm'}>{v}分</span>
                       ),
                     },
                     { title: '负责人', dataIndex: 'owner', width: 70 },
@@ -1396,65 +1251,38 @@ export default function Dashboard() {
               <Panel
                 title="数字员工分部快捷入口"
                 extra={
-                  <Link style={{ fontSize: 12 }} to="/employees">
+                  <Link className="dash-link-sm" to="/employees">
                     61名餐饮员工 <RightOutlined />
                   </Link>
                 }
               >
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(54px, 1fr))', gap: 8 }}>
+                <div className="dash-marshal-grid">
                   {marshals.map(m => (
                     <Tooltip key={m.id} title={`${m.name}（今日已验收产出 ${m.today_outputs}）`}>
                       <button
                         type="button"
                         onClick={() => nav(`/employees?group=${encodeURIComponent(m.name)}`)}
                         aria-label={`进入${m.name}，今日已验收产出 ${m.today_outputs || 0}`}
-                        style={{
-                          appearance: 'none',
-                          width: '100%',
-                          border: 0,
-                          padding: 0,
-                          background: 'transparent',
-                          textAlign: 'center',
-                          cursor: 'pointer',
-                          font: 'inherit',
-                          color: 'inherit',
-                        }}
+                        className="dash-marshal-btn"
                       >
                         <Badge count={m.today_outputs} size="small" offset={[-2, 2]}>
-                          <Avatar
-                            size={40}
-                            src={m.avatar || undefined}
-                            style={{ background: 'var(--ui-surface-2)', fontSize: 19 }}
-                          >
+                          <Avatar size={40} src={m.avatar || undefined} className="dash-marshal-avatar">
                             {m.emoji}
                           </Avatar>
                         </Badge>
-                        <div
-                          style={{
-                            fontSize: 10.5,
-                            color: 'var(--ui-text-2)',
-                            marginTop: 4,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {m.name}
-                        </div>
+                        <div className="dash-marshal-name">{m.name}</div>
                       </button>
                     </Tooltip>
                   ))}
                 </div>
-                <div
-                  style={{ marginTop: 14, background: 'var(--ui-surface-2)', borderRadius: 8, padding: '10px 12px' }}
-                >
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ui-text)', marginBottom: 6 }}>
+                <div className="dash-todo-box">
+                  <div className="dash-todo-title">
                     待办与进度 <Badge count={totalTodos} size="small" />
                   </div>
                   {[
                     ['待审批事项', todos.approvals, '/system?tab=approvals'],
                     ['超期未跟进', todos.overdueLeads, '/growth'],
-                    ['沉默合伙人', todos.silentPartners, '/execution'],
+                    ['沉睡会员', todos.silentPartners, '/execution'],
                     ['待我人工验收任务', todos.actionableReviewTasks ?? todos.reviewTasks, '/execution#task-board'],
                     ['我的提交待人工验收', todos.mySubmittedWaitingReview, '/execution#task-board'],
                     [
@@ -1469,25 +1297,10 @@ export default function Dashboard() {
                       key={label}
                       onClick={() => nav(to)}
                       aria-label={`${label} ${n ?? 0}`}
-                      style={{
-                        appearance: 'none',
-                        width: '100%',
-                        border: 0,
-                        background: 'transparent',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        font: 'inherit',
-                        textAlign: 'left',
-                        fontSize: 12,
-                        color: 'var(--ui-text-2)',
-                        padding: '3px 0',
-                        cursor: 'pointer',
-                      }}
+                      className="dash-todo-row"
                     >
                       <span>{label}</span>
-                      <span style={{ color: n > 0 ? 'var(--danger)' : 'var(--ui-muted)', fontWeight: 600 }}>
-                        {n ?? 0}
-                      </span>
+                      <span className={n > 0 ? 'dash-todo-count--active' : 'dash-todo-count--idle'}>{n ?? 0}</span>
                     </button>
                   ))}
                 </div>
@@ -1506,7 +1319,7 @@ export default function Dashboard() {
               {canViewFeishuConfig && (
                 <Tooltip title={`${feishuStatus.description} 到“系统管理 → 配置与备份 → 飞书集成”处理。`}>
                   <Link to="/system" aria-label={`${feishuStatus.label}，前往系统管理`}>
-                    <Tag color={feishuStatus.color} style={{ cursor: 'pointer', fontSize: 11 }}>
+                    <Tag color={feishuStatus.color} className="dash-feishu-tag">
                       {feishuStatus.label}
                     </Tag>
                   </Link>
@@ -1528,25 +1341,14 @@ export default function Dashboard() {
                     type="button"
                     onClick={() => nav('/activities')}
                     aria-label={`查看活动：${a.title}`}
-                    style={{
-                      appearance: 'none',
-                      width: '100%',
-                      border: '1px solid var(--ui-border)',
-                      background: 'transparent',
-                      borderRadius: 10,
-                      padding: 14,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      font: 'inherit',
-                      color: 'inherit',
-                    }}
+                    className="dash-act-card"
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="dash-act-head">
                       <Tag
                         color={
                           {
                             品鉴会: 'blue',
-                            封坛仪式: 'purple',
+                            封坛仪式: 'geekblue',
                             企业团购沙龙: 'orange',
                             招商说明会: 'green',
                             会员日: 'cyan',
@@ -1557,20 +1359,18 @@ export default function Dashboard() {
                       </Tag>
                       <Badge
                         status={a.status === '报名中' ? 'processing' : 'default'}
-                        text={<span style={{ fontSize: 12 }}>{a.status}</span>}
+                        text={<span className="dash-rate-val">{a.status}</span>}
                       />
                     </div>
-                    <div style={{ fontWeight: 600, fontSize: 13.5, margin: '8px 0 4px', color: 'var(--ui-text)' }}>
-                      {a.title}
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--ui-muted)' }}>
+                    <div className="dash-act-title">{a.title}</div>
+                    <div className="dash-muted-sm">
                       {a.date} · {a.location}
                     </div>
                     <Progress
                       percent={a.target_join > 0 ? Math.min(Math.round((a.signed_up / a.target_join) * 100), 100) : 0}
                       size="small"
                       format={() => `${a.signed_up}/${a.target_join || 0}人`}
-                      style={{ marginTop: 8 }}
+                      className="dash-act-progress"
                     />
                   </button>
                 </Col>
@@ -1599,10 +1399,10 @@ export default function Dashboard() {
         <Alert
           type="info"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="dash-widget-alert"
           message={`老板或管理员可自由选择${dashboardName}呈现内容；关闭模块不会删除任何经营数据。`}
         />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="dash-widget-list">
           {(widgetPrefs.available || []).map((item: any) => {
             const active = shown(item.key);
             return (
@@ -1617,38 +1417,14 @@ export default function Dashboard() {
                     selected: active ? p.selected.filter((x: string) => x !== item.key) : [...p.selected, item.key],
                   }))
                 }
-                style={{
-                  appearance: 'none',
-                  width: '100%',
-                  cursor: 'pointer',
-                  border: `1px solid ${active ? 'var(--ui-accent)' : 'var(--ui-border)'}`,
-                  background: active ? 'var(--ui-surface-2)' : 'var(--ui-surface)',
-                  borderRadius: 8,
-                  padding: '10px 12px',
-                  display: 'flex',
-                  gap: 10,
-                  alignItems: 'center',
-                  textAlign: 'left',
-                  font: 'inherit',
-                  color: 'inherit',
-                }}
+                className={`dash-widget-btn${active ? ' dash-widget-btn--active' : ''}`}
               >
-                <div
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: 5,
-                    display: 'grid',
-                    placeItems: 'center',
-                    background: active ? 'var(--ui-primary)' : 'var(--ui-border)',
-                    color: 'var(--ui-on-primary)',
-                  }}
-                >
+                <div className={`dash-widget-check${active ? ' dash-widget-check--active' : ''}`}>
                   {active ? '✓' : ''}
                 </div>
                 <div>
-                  <div style={{ fontWeight: 700 }}>{item.label}</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 2 }}>{item.description}</div>
+                  <div className="dash-widget-label">{item.label}</div>
+                  <div className="dash-widget-desc">{item.description}</div>
                 </div>
               </button>
             );
@@ -1665,7 +1441,7 @@ export default function Dashboard() {
         title={`数据来源明细 · ${dayDetail?.date || ''}`}
       >
         {dayDetail?.loading ? (
-          <div style={{ textAlign: 'center', padding: 32 }}>
+          <div className="dash-spin-wrap">
             <Spin />
           </div>
         ) : (
@@ -1675,7 +1451,7 @@ export default function Dashboard() {
                 size="small"
                 column={4}
                 bordered
-                style={{ marginBottom: 12 }}
+                className="dash-desc-mb"
                 items={
                   [
                     { key: '1', label: '新增线索', children: dayDetail.ops?.new_leads ?? 0 },
@@ -1685,7 +1461,7 @@ export default function Dashboard() {
                   ] as any
                 }
               />
-              <div style={{ fontWeight: 600, fontSize: 13, margin: '10px 0 6px' }}>当日订单（成交金额构成）</div>
+              <div className="dash-modal-sub">当日订单（成交金额构成）</div>
               <Table
                 size="small"
                 rowKey="id"
@@ -1694,7 +1470,7 @@ export default function Dashboard() {
                 locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当日无订单" /> }}
                 columns={[
                   { title: '客户', dataIndex: 'customer', render: (v: string) => v || '-' },
-                  { title: '产品', dataIndex: 'product' },
+                  { title: '菜品/套餐', dataIndex: 'product' },
                   { title: '类型', dataIndex: 'type', width: 70, render: (v: string) => <Tag>{v}</Tag> },
                   { title: '渠道', dataIndex: 'channel', width: 90 },
                   { title: '金额', dataIndex: 'amount', align: 'right', render: (v: number) => <b>{fmtMoney(v)}</b> },
@@ -1702,7 +1478,7 @@ export default function Dashboard() {
               />
               {(dayDetail.newLeads || []).length > 0 && (
                 <>
-                  <div style={{ fontWeight: 600, fontSize: 13, margin: '12px 0 6px' }}>当日新增线索来源</div>
+                  <div className="dash-modal-sub--lg">当日新增线索来源</div>
                   <Space size={[6, 6]} wrap>
                     {dayDetail.newLeads.map((l: any) => (
                       <Tag key={l.id} color="blue">
@@ -1731,7 +1507,7 @@ export default function Dashboard() {
         }
       >
         {channelDetail?.loading ? (
-          <div style={{ textAlign: 'center', padding: 32 }}>
+          <div className="dash-spin-wrap">
             <Spin />
           </div>
         ) : (
@@ -1753,7 +1529,7 @@ export default function Dashboard() {
                   dataIndex: 'name',
                   render: (v: string, r: any) => (
                     <Space size={4}>
-                      <span style={{ color: 'var(--ui-accent)' }}>{v}</span>
+                      <span className="dash-accent-text">{v}</span>
                       <GradeTag grade={r.grade} />
                     </Space>
                   ),
@@ -1764,7 +1540,7 @@ export default function Dashboard() {
                 { title: '负责人', dataIndex: 'owner_name', width: 76 },
               ]}
             />
-            <div style={{ textAlign: 'right', marginTop: 10 }}>
+            <div className="dash-modal-footer-right">
               <Button size="small" type="primary" ghost onClick={() => nav('/growth')}>
                 到增长中心查看全部 ›
               </Button>
@@ -1781,10 +1557,7 @@ export default function Dashboard() {
         title={
           employeeDetail?.profile?.name ? (
             <Space>
-              <Avatar
-                src={employeeDetail.profile.avatar || undefined}
-                style={{ background: 'var(--ui-surface-2)', color: 'var(--ui-accent)' }}
-              >
+              <Avatar src={employeeDetail.profile.avatar || undefined} className="dash-rank-avatar">
                 {String(employeeDetail.profile.name || '?').slice(0, 1)}
               </Avatar>
               <span>{employeeDetail.profile.name}</span>
@@ -1813,36 +1586,22 @@ export default function Dashboard() {
         }
       >
         {employeeLoading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}>
+          <div className="dash-spin-wrap">
             <Spin />
           </div>
         ) : (
           employeeDetail?.profile && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div
-                style={{
-                  background: 'linear-gradient(135deg,var(--ui-surface-2),var(--ui-warning-surface))',
-                  border: '1px solid var(--ui-surface)',
-                  borderRadius: 12,
-                  padding: 14,
-                }}
-              >
+            <div className="dash-drawer-stack">
+              <div className="dash-emp-hero">
                 <Row gutter={[12, 12]} align="middle">
                   <Col flex="auto">
-                    <div style={{ fontSize: 13, color: '#64748b' }}>
-                      {employeeDetail.scope?.label || scopeLabel}竞赛排名
-                    </div>
-                    <Space size={10} wrap style={{ marginTop: 6 }}>
-                      <Tag
-                        color={employeeDetail.score?.rank === 1 ? 'gold' : 'blue'}
-                        style={{ fontSize: 13, padding: '2px 10px' }}
-                      >
+                    <div className="dash-emp-scope">{employeeDetail.scope?.label || scopeLabel}竞赛排名</div>
+                    <Space size={10} wrap className="dash-emp-score-row">
+                      <Tag color={employeeDetail.score?.rank === 1 ? 'gold' : 'blue'} className="dash-emp-rank-tag">
                         第 {employeeDetail.score?.rank || '-'} 名
                       </Tag>
-                      <span style={{ fontSize: 28, fontWeight: 800, color: 'var(--ui-accent)', lineHeight: 1 }}>
-                        {employeeDetail.score?.score || 0}
-                      </span>
-                      <span style={{ color: '#64748b' }}>综合分</span>
+                      <span className="dash-emp-score-num">{employeeDetail.score?.score || 0}</span>
+                      <span className="dash-emp-score-label">综合分</span>
                     </Space>
                   </Col>
                   <Col>
@@ -1850,7 +1609,7 @@ export default function Dashboard() {
                       <Tag color="cyan">跟进 {employeeDetail.score?.follow_count || 0}次</Tag>
                       <Tag color="green">客户 {employeeDetail.score?.customer_count || 0}人</Tag>
                       <Tag color="orange">成交 {employeeDetail.score?.deal_count || 0}单</Tag>
-                      <Tag color="purple">
+                      <Tag color="geekblue">
                         荣誉 {Number(employeeDetail.score?.bonus_points || 0) >= 0 ? '+' : ''}
                         {employeeDetail.score?.bonus_points || 0}
                       </Tag>
@@ -1887,25 +1646,17 @@ export default function Dashboard() {
                   </Tooltip>
                 }
               >
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 8 }}>
+                <div className="dash-score-grid">
                   {(employeeDetail.score?.score_detail || []).map((item: any) => (
-                    <div
-                      key={item.key}
-                      style={{
-                        border: '1px solid var(--ui-border)',
-                        borderRadius: 8,
-                        padding: '8px 10px',
-                        background: 'var(--ui-surface)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700, color: 'var(--ui-text)' }}>{item.label}</span>
-                        <span style={{ fontWeight: 800, color: Number(item.points) >= 0 ? '#16a34a' : '#ef4444' }}>
+                    <div key={item.key} className="dash-score-card">
+                      <div className="dash-score-card-head">
+                        <span className="dash-score-card-label">{item.label}</span>
+                        <span className={Number(item.points) >= 0 ? 'dash-delta-pos' : 'dash-delta-neg'}>
                           {Number(item.points) >= 0 ? '+' : ''}
                           {item.points}
                         </span>
                       </div>
-                      <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 4 }}>
+                      <div className="dash-score-card-rule">
                         {item.value} · {item.rule}
                       </div>
                     </div>
@@ -1918,10 +1669,11 @@ export default function Dashboard() {
                     <Timeline
                       items={(employeeDetail.recentFollows || []).slice(0, 8).map((f: any) => ({
                         children: (
-                          <div style={{ fontSize: 12.5 }}>
-                            <b>{f.lead_name || '客户'}</b> <Tag style={{ marginLeft: 4 }}>{f.lead_stage || '-'}</Tag>
-                            <div style={{ color: '#94a3b8', fontSize: 11 }}>{fmtDate(f.created_at)}</div>
-                            <div style={{ color: 'var(--ui-text-2)', lineHeight: 1.6 }}>{f.content || '-'}</div>
+                          <div className="dash-timeline-item">
+                            <b>{f.lead_name || '客户'}</b>{' '}
+                            <Tag className="dash-timeline-tag">{f.lead_stage || '-'}</Tag>
+                            <div className="dash-muted-sm">{fmtDate(f.created_at)}</div>
+                            <div className="dash-timeline-body">{f.content || '-'}</div>
                           </div>
                         ),
                       }))}
@@ -1950,7 +1702,7 @@ export default function Dashboard() {
               <Panel title="客户与内容证据">
                 <Row gutter={[12, 12]}>
                   <Col xs={24} md={12}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>负责客户 TOP</div>
+                    <div className="dash-sub-heading">负责客户 TOP</div>
                     <Table
                       size="small"
                       rowKey="id"
@@ -1974,7 +1726,7 @@ export default function Dashboard() {
                     />
                   </Col>
                   <Col xs={24} md={12}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>内容产出</div>
+                    <div className="dash-sub-heading">内容产出</div>
                     <Table
                       size="small"
                       rowKey="id"
@@ -2004,13 +1756,13 @@ export default function Dashboard() {
                         items={(employeeDetail.pointLogs || []).slice(0, 6).map((p: any) => ({
                           color: p.delta >= 0 ? 'green' : 'red',
                           children: (
-                            <div style={{ fontSize: 12.5 }}>
+                            <div className="dash-timeline-item">
                               <b>
                                 {p.delta >= 0 ? '+' : ''}
                                 {p.delta}分
                               </b>{' '}
                               · {p.reason}
-                              <div style={{ color: '#94a3b8', fontSize: 11 }}>
+                              <div className="dash-muted-sm">
                                 {fmtDate(p.created_at)} · {p.operator_name || '系统'}
                               </div>
                             </div>
@@ -2029,15 +1781,15 @@ export default function Dashboard() {
                         items={(employeeDetail.awards || []).slice(0, 6).map((a: any) => ({
                           color: 'gold',
                           children: (
-                            <div style={{ fontSize: 12.5 }}>
+                            <div className="dash-timeline-item">
                               <b>
                                 {a.period} · {a.award_type}
                               </b>
-                              <Tag color="gold" style={{ marginLeft: 6 }}>
+                              <Tag color="gold" className="dash-timeline-tag">
                                 {a.score}分
                               </Tag>
-                              <div style={{ color: 'var(--ui-text-2)' }}>{a.comment}</div>
-                              <div style={{ color: '#94a3b8', fontSize: 11 }}>
+                              <div className="dash-timeline-body">{a.comment}</div>
+                              <div className="dash-muted-sm">
                                 {fmtDate(a.created_at)} · {a.operator_name || '系统'}
                               </div>
                             </div>
@@ -2061,13 +1813,13 @@ export default function Dashboard() {
         onOk={submitHonorPoints}
         onCancel={() => setPointModalOpen(false)}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size={10}>
+        <Space direction="vertical" className="nw-full-width" size={10}>
           <InputNumber
             min={-500}
             max={500}
             value={pointDelta}
             onChange={v => setPointDelta(Number(v) || 0)}
-            style={{ width: '100%' }}
+            className="nw-full-width"
             addonAfter="分"
             placeholder="正数增加，负数扣减"
           />
@@ -2118,12 +1870,12 @@ export default function Dashboard() {
         }
       >
         {custLoading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}>
+          <div className="dash-spin-wrap">
             <Spin />
           </div>
         ) : (
           custDetail?.name && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="dash-drawer-stack">
               <Descriptions
                 size="small"
                 column={2}
@@ -2155,12 +1907,12 @@ export default function Dashboard() {
                 <Panel
                   title={`生命周期 · 当前「${custJourney.current}」（${(custJourney.journey || []).filter((j: any) => j.reached).length}/11节点 · ${custJourney.totalDays}天）`}
                 >
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  <div className="dash-journey-tags">
                     {(custJourney.journey || []).map((j: any) => (
                       <Tag
                         key={j.node}
                         color={j.node === custJourney.current ? 'blue' : j.reached ? 'green' : 'default'}
-                        style={{ margin: 0, fontSize: 11, opacity: j.reached ? 1 : 0.55 }}
+                        className={`dash-journey-tag${j.reached ? '' : ' dash-journey-tag--unreached'}`}
                         title={j.at ? `${j.at}${j.note ? ' · ' + j.note : ''}` : '未到达'}
                       >
                         {j.reached ? '✓' : '·'} {j.node}
@@ -2170,27 +1922,14 @@ export default function Dashboard() {
                       </Tag>
                     ))}
                   </div>
-                  {custJourney.nextHint && (
-                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ui-accent)' }}>
-                      💡 下一步：{custJourney.nextHint}
-                    </div>
-                  )}
+                  {custJourney.nextHint && <div className="dash-journey-hint">💡 下一步：{custJourney.nextHint}</div>}
                 </Panel>
               )}
               <Panel title={`成交概率 ${custDetail.score} 分（可解释构成）`}>
                 {Object.entries(custDetail.score_detail || {}).map(([k, v]: any) => (
-                  <div
-                    key={k}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      fontSize: 12.5,
-                      padding: '3px 0',
-                      color: 'var(--ui-text-2)',
-                    }}
-                  >
+                  <div key={k} className="dash-score-row">
                     <span>{k}</span>
-                    <b style={{ color: v >= 0 ? '#16a34a' : '#ef4444' }}>
+                    <b className={v >= 0 ? 'dash-delta-pos' : 'dash-delta-neg'}>
                       {v >= 0 ? '+' : ''}
                       {v}
                     </b>
@@ -2213,12 +1952,10 @@ export default function Dashboard() {
                 <Timeline
                   items={(custDetail.follows || []).slice(0, 8).map((f: any) => ({
                     children: (
-                      <div style={{ fontSize: 12.5 }}>
+                      <div className="dash-timeline-item">
                         <b>{f.user_name || '系统'}</b>{' '}
-                        <span style={{ color: 'var(--ui-muted)', fontSize: 11 }}>
-                          {(f.created_at || '').slice(5, 16)}
-                        </span>
-                        <div style={{ color: 'var(--ui-text-2)' }}>{f.content}</div>
+                        <span className="dash-muted-sm">{(f.created_at || '').slice(5, 16)}</span>
+                        <div className="dash-timeline-body">{f.content}</div>
                       </div>
                     ),
                   }))}
@@ -2243,14 +1980,10 @@ export default function Dashboard() {
         }}
         title={
           <Space>
-            <RobotOutlined style={{ color: 'var(--ui-accent)' }} />
+            <RobotOutlined className="dash-icon-accent" />
             {ai.title}
             <Tag color="blue">
-              <Avatar
-                size={16}
-                src={dataMarshal?.avatar || undefined}
-                style={{ background: 'var(--ui-surface-2)', fontSize: 9, marginRight: 4 }}
-              >
+              <Avatar size={16} src={dataMarshal?.avatar || undefined} className="dash-ai-avatar">
                 {dataMarshal?.emoji}
               </Avatar>
               {dataMarshal?.name || '财务与数据部'}
@@ -2278,7 +2011,7 @@ export default function Dashboard() {
           />
         )}
         {!stream.running && stream.text && (
-          <Space style={{ marginTop: 'var(--space-3)' }}>
+          <Space className="dash-ai-actions">
             <Button
               size="small"
               onClick={() => {

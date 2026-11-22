@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Card } from 'antd';
 import {
   AppstoreOutlined,
+  ArrowRightOutlined,
   BarChartOutlined,
   CalendarOutlined,
   ClockCircleOutlined,
@@ -11,6 +12,7 @@ import {
   RightOutlined,
   RiseOutlined,
   TeamOutlined,
+  ThunderboltOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
 import { fmtMoney } from '../../api/client';
@@ -189,6 +191,18 @@ function Stat({
   );
 }
 
+type DashboardSummaryExt = DashboardSummary & {
+  overdue?: number;
+  salesWow?: number;
+  health?: { score?: number; level?: string } | null;
+};
+
+type PulseSignal = {
+  level: 'danger' | 'warn' | 'info' | 'ok';
+  text: string;
+  employeeIdx?: number;
+};
+
 export default function MobileHome({
   nav,
   user,
@@ -203,6 +217,7 @@ export default function MobileHome({
   const role = String(user.role || '');
   const isTester = user.accountType === 'tester';
   const hasDashboard = mods.includes('dashboard');
+  const canDispatch = mods.includes('marshals');
   const canViewManagementBriefing = hasDashboard && ['boss', 'ops_director', 'manager', 'admin'].includes(role);
   const workspaces = isTester
     ? testerMobileWorkspaces(mods)
@@ -214,7 +229,58 @@ export default function MobileHome({
   });
   const s = summaryQ.data;
   if (hasDashboard && !s && !isTester) return <QueryStatus q={summaryQ} height={200} />;
+  const summary = hasDashboard && s && typeof s.todaySales === 'number' ? (s as DashboardSummaryExt) : null;
   const briefing = briefQ.data?.briefing || [];
+  const overdue = Number(summary?.overdue || 0);
+  const pendingFollow = Number(summary?.pendingFollow || 0);
+  const salesWow = typeof summary?.salesWow === 'number' ? summary.salesWow : null;
+  const healthScore = typeof summary?.health?.score === 'number' ? summary.health.score : null;
+  const firstBriefText = briefing.length
+    ? typeof briefing[0] === 'string'
+      ? briefing[0]
+      : briefing[0]?.text || ''
+    : '';
+  const pulseSignals: PulseSignal[] = [];
+  if (overdue > 0) {
+    pulseSignals.push({
+      level: 'danger',
+      text: `有 ${overdue} 位客户跟进已超期，建议立即唤醒防止流失`,
+      employeeIdx: 144,
+    });
+  }
+  if (salesWow !== null && salesWow <= -10) {
+    pulseSignals.push({
+      level: 'warn',
+      text: `今日销售较昨日波动 ${salesWow}%，建议速查客流原因并策划引流`,
+      employeeIdx: 160,
+    });
+  }
+  if (inboxCount > 0 && pulseSignals.length < 2) {
+    pulseSignals.push({
+      level: 'warn',
+      text: `当前有 ${inboxCount} 项待审阅/审批事项等你拍板`,
+    });
+  }
+  if (firstBriefText && pulseSignals.length < 2) {
+    pulseSignals.push({ level: 'info', text: firstBriefText });
+  }
+  if (!pulseSignals.length && summary) {
+    pulseSignals.push(
+      pendingFollow > 0
+        ? {
+            level: 'info',
+            text: `今日有 ${pendingFollow} 位待跟进客户，可直派数字员工生成跟进话术与唤醒方案`,
+            employeeIdx: 144,
+          }
+        : {
+            level: 'ok',
+            text: `今日销售 ${fmtMoney(summary.todaySales)}，进行中活动 ${summary.runningActivities ?? 0} 场，经营态势平稳`,
+          },
+    );
+  }
+  const hasUrgentSignal = overdue > 0 || inboxCount > 0 || (salesWow !== null && salesWow <= -10);
+  const showPulseCard = Boolean(summary || briefing.length > 0 || inboxCount > 0);
+  const suggestedEmployeeIdx = pulseSignals.find(item => item.employeeIdx)?.employeeIdx;
   const secondary = [
     mods.includes('growth') && { key: 'customers', title: '客户', desc: '跟进记录、AI 话术', icon: <TeamOutlined /> },
     mods.includes('content') && {
@@ -227,6 +293,64 @@ export default function MobileHome({
 
   return (
     <div className="m-stack">
+      {showPulseCard && (
+        <section className={`m-pulse-card${hasUrgentSignal ? ' is-urgent' : ''}`} aria-label="今日经营速报">
+          <div className="m-pulse-head">
+            <span className="m-pulse-title">
+              <ThunderboltOutlined aria-hidden="true" />
+              <strong>今日经营速报</strong>
+            </span>
+            <span className={`m-pulse-badge${hasUrgentSignal ? ' is-warn' : ' is-ok'}`}>
+              {hasUrgentSignal ? '需优先关注' : healthScore !== null ? `健康分 ${healthScore}` : '态势平稳'}
+            </span>
+          </div>
+          {summary && (
+            <div className="m-pulse-metrics">
+              <div className="m-pulse-metric">
+                <small>今日营收</small>
+                <strong>{fmtMoney(summary.todaySales)}</strong>
+              </div>
+              <div className="m-pulse-metric">
+                <small>{overdue > 0 ? '超期未跟进' : '待跟进客户'}</small>
+                <strong className={overdue > 0 ? 'is-danger' : undefined}>
+                  {overdue > 0 ? `${overdue} 人` : `${pendingFollow} 人`}
+                </strong>
+              </div>
+              <div className="m-pulse-metric">
+                <small>待拍板事项</small>
+                <strong className={inboxCount > 0 ? 'is-warn' : undefined}>{inboxCount} 件</strong>
+              </div>
+            </div>
+          )}
+          {pulseSignals.length > 0 && (
+            <ul className="m-pulse-signals">
+              {pulseSignals.slice(0, 2).map((signal, index) => (
+                <li key={index} className={`m-pulse-signal is-${signal.level}`}>
+                  <span className="m-pulse-dot" aria-hidden="true" />
+                  <span>{signal.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {canDispatch ? (
+            <button
+              type="button"
+              className="m-pulse-cta"
+              onClick={() =>
+                nav(mobilePath('dispatch', suggestedEmployeeIdx ? { employee: suggestedEmployeeIdx } : {}))
+              }
+            >
+              <span>直派数字员工处理</span>
+              <ArrowRightOutlined aria-hidden="true" />
+            </button>
+          ) : inboxCount > 0 ? (
+            <button type="button" className="m-pulse-cta" onClick={() => nav(mobilePath('inbox'))}>
+              <span>立即处理待办事项</span>
+              <ArrowRightOutlined aria-hidden="true" />
+            </button>
+          ) : null}
+        </section>
+      )}
       <button type="button" className="m-inbox-entry" onClick={() => nav(mobilePath('inbox'))}>
         <InboxOutlined className="m-stat-icon" data-tone={1} />
         <div className="m-row-main">

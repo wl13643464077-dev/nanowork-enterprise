@@ -14,6 +14,7 @@ import {
   ReloadOutlined,
   RightOutlined,
   RobotOutlined,
+  TeamOutlined,
   ThunderboltOutlined,
   ToolOutlined,
   VideoCameraOutlined,
@@ -37,6 +38,7 @@ import TaskDocumentDownloads from '../components/TaskDocumentDownloads';
 import ReportRefinePanel from '../components/ReportRefinePanel';
 import CampaignMaterialsGallery from '../components/CampaignMaterialsGallery';
 import { restaurantOutputPresentation } from '../components/restaurantOutputPresentation.js';
+import { dispatchToEmployee } from '../utils/dispatchEmployee';
 import { cleanReportBody } from '../../../shared/report-body.mjs';
 import './TaskCenter.css';
 
@@ -222,6 +224,42 @@ function restaurantResultView(detail: any) {
   };
 }
 
+type TaskHandoffItem = {
+  employeeIdx: number;
+  person: string;
+  duty: string;
+  reason: string;
+};
+
+function extractRestaurantEmployeeIdx(detail: any): number | null {
+  const raw =
+    detail?.employeeIdx ?? detail?.employee_idx ?? detail?.draft?.employeeIdx ?? detail?.researchEvidence?.employeeIdx;
+  if (raw != null && Number.isSafeInteger(Number(raw)) && Number(raw) >= 0) {
+    return Number(raw);
+  }
+  const deepLink = String(detail?.conversationDeepLink || '');
+  const match = /[?&]employee=(\d+)/u.exec(deepLink);
+  return match ? Number(match[1]) : null;
+}
+
+function normalizeTaskHandoffs(detail: any): TaskHandoffItem[] {
+  if (!Array.isArray(detail?.handoffs)) return [];
+  const list: TaskHandoffItem[] = [];
+  for (const item of detail.handoffs) {
+    const employeeIdx = Number(item?.employeeIdx ?? item?.idx);
+    if (!Number.isSafeInteger(employeeIdx) || employeeIdx < 0) continue;
+    const person = String(item?.person || item?.name || '').trim();
+    if (!person) continue;
+    list.push({
+      employeeIdx,
+      person,
+      duty: String(item?.duty || item?.role || '').trim(),
+      reason: String(item?.reason || '').trim(),
+    });
+  }
+  return list;
+}
+
 function TaskMediaPreview({ media }: { media: any }) {
   if (!media.url || !/^(https?:\/\/|\/uploads\/)/i.test(media.url)) return null;
   if (media.kind === 'image') return <img src={media.url} alt={media.label || '生成配图'} loading="lazy" />;
@@ -274,6 +312,8 @@ export default function TaskCenter() {
   const [pipelineLifecycleMutation, setPipelineLifecycleMutation] = useState('');
   const [wechatMutation, setWechatMutation] = useState('');
   const resultView = restaurantResultView(detail);
+  const restaurantHandoffs = detail?.kind === 'restaurant' ? normalizeTaskHandoffs(detail) : [];
+  const restaurantEmployeeIdx = detail?.kind === 'restaurant' ? extractRestaurantEmployeeIdx(detail) : null;
 
   const load = useCallback(
     (background = false) => {
@@ -868,6 +908,72 @@ export default function TaskCenter() {
                 cleanReportBody(detail.report?.markdown || detail.output || '') && (
                   <ReportRefinePanel key={`refine:${detail.id}`} taskId={Number(detail.id)} />
                 )}
+              {detail.kind === 'restaurant' &&
+                detail.state !== 'running' &&
+                detail.conversationAvailability?.available !== false &&
+                (restaurantHandoffs.length > 0 ? (
+                  <section className="task-center-handoffs" aria-label="下一步协作接棒">
+                    <div className="task-center-handoffs__head">
+                      <strong className="task-center-handoffs__title">
+                        <TeamOutlined aria-hidden="true" /> 下一步协作接棒 · 建议接手的同事
+                      </strong>
+                      <small>点击自动带入本单结论并预填对方任务书</small>
+                    </div>
+                    <div className="task-center-handoffs__actions">
+                      {restaurantHandoffs.map(handoff => (
+                        <Button
+                          key={`task-handoff-${handoff.employeeIdx}`}
+                          className="task-center-handoff-btn"
+                          size="small"
+                          title={handoff.reason || undefined}
+                          onClick={() =>
+                            dispatchToEmployee(
+                              nav,
+                              handoff.employeeIdx,
+                              [
+                                `${detail.employee || '同事'}在《${detail.title || '上一单'}》里建议由你接手：`,
+                                handoff.reason || '请按上一单结论跟进执行。',
+                                '请给出可直接执行的做法。',
+                              ].join('\n'),
+                            )
+                          }
+                        >
+                          派给{handoff.person}
+                          {handoff.duty ? `（${handoff.duty}）` : ''} →
+                        </Button>
+                      ))}
+                    </div>
+                  </section>
+                ) : (
+                  <section className="task-center-handoffs is-fallback" aria-label="继续派活快捷入口">
+                    <div className="task-center-handoffs__head">
+                      <strong className="task-center-handoffs__title">
+                        <TeamOutlined aria-hidden="true" /> 下一步继续派活
+                      </strong>
+                      <small>基于本单结论，直接去数字员工工作台继续跟进或让同事接棒</small>
+                    </div>
+                    <div className="task-center-handoffs__actions">
+                      {restaurantEmployeeIdx !== null && (
+                        <Button
+                          className="task-center-handoff-btn"
+                          size="small"
+                          onClick={() =>
+                            dispatchToEmployee(
+                              nav,
+                              restaurantEmployeeIdx,
+                              `基于上一单《${detail.title || '本任务'}》的结论，请继续推进下一步可直接落地的执行方案。`,
+                            )
+                          }
+                        >
+                          继续派给{detail.employee || '这位员工'} →
+                        </Button>
+                      )}
+                      <Button size="small" onClick={() => nav('/employees')}>
+                        去数字员工工作台继续派活
+                      </Button>
+                    </div>
+                  </section>
+                ))}
               {Array.isArray(detail.media) && detail.media.length > 0 && (
                 <section className="task-center-media" aria-label="图片与媒体结果">
                   {detail.media.map((media: any, index: number) => (

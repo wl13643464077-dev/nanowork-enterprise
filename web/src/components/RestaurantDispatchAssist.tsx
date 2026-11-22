@@ -5,7 +5,7 @@
 // - 我的版本（FR-7.2）：保存城市/商圈/店名/品类等常用值，常用问法自动填好；
 // - 追问（FR-2）：方案/产物/完整报告缺关键参数时最多问 3 个，每个可选、可用默认、可整体跳过。
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AutoComplete, Button, Input, Popover, Select, Space, Switch, Tag, Tooltip, Typography, message } from 'antd';
+import { AutoComplete, Button, Drawer, Input, Select, Space, Switch, Tag, Tooltip, Typography, message } from 'antd';
 import { api } from '../api/client';
 import './RestaurantDispatchAssist.css';
 
@@ -264,74 +264,83 @@ export default function RestaurantDispatchAssist({
                 常用问法（点一下填入，把花括号里的词换成你的）：
               </Typography.Text>
             )}
-            <Popover
-              trigger="click"
-              open={prefOpen}
-              onOpenChange={openPreferences}
-              title="我的版本：保存后常用问法自动填好"
-              content={
-                <div className="ewb-pref-editor">
-                  {PREFERENCE_FIELDS.map(field => (
-                    <div key={field.key} className="ewb-pref-row">
-                      <span className="ewb-pref-key">{field.key}</span>
-                      <Input
-                        size="small"
-                        maxLength={40}
-                        value={prefDraft[field.key] || ''}
-                        placeholder={field.placeholder}
-                        disabled={!canEditPreferences}
-                        onChange={event => setPrefDraft(draft => ({ ...draft, [field.key]: event.target.value }))}
-                      />
-                    </div>
-                  ))}
-                  {(prefs?.outputPrefs || []).length > 0 && (
-                    <div className="ewb-pref-output">
-                      <span className="ewb-pref-key">固定要求</span>
-                      <div>
-                        {(prefs?.outputPrefs || []).map(item => (
-                          <Tag
-                            key={item}
-                            closable={canEditPreferences}
-                            onClose={async event => {
-                              event.preventDefault();
-                              try {
-                                const saved = (await api.put('/employee-workbench/restaurant-preferences/slots', {
-                                  outputPrefs: (prefs?.outputPrefs || []).filter(pref => pref !== item),
-                                })) as SlotPreferences;
-                                setPrefs(saved);
-                              } catch (error: any) {
-                                message.error(error?.message || '删除失败');
-                              }
-                            }}
-                          >
-                            {item}
-                          </Tag>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="ewb-pref-row">
-                    <span className="ewb-pref-key">不再追问</span>
-                    <Switch size="small" checked={prefSkip} disabled={!canEditPreferences} onChange={setPrefSkip} />
-                  </div>
-                  {canEditPreferences ? (
-                    <Button type="primary" size="small" loading={prefSaving} onClick={savePreferences} block>
-                      保存
-                    </Button>
-                  ) : (
-                    <Typography.Text type="secondary">仅老板或管理员可修改</Typography.Text>
-                  )}
-                </div>
-              }
-            >
-              <Button size="small" type="link" className="ewb-pref-trigger">
-                我的版本
-                {prefs && Object.keys(prefs.values || {}).length
-                  ? `（已存 ${Object.keys(prefs.values).length} 项）`
-                  : ''}
-              </Button>
-            </Popover>
+            <Button size="small" type="link" className="ewb-pref-trigger" onClick={() => openPreferences(true)}>
+              我的版本
+              {prefs && Object.keys(prefs.values || {}).length ? `（已存 ${Object.keys(prefs.values).length} 项）` : ''}
+            </Button>
           </div>
+          <Drawer
+            open={prefOpen}
+            onClose={() => openPreferences(false)}
+            placement="right"
+            width={400}
+            className="ewb-pref-drawer"
+            title="我的版本：保存后常用问法自动填好"
+            footer={
+              canEditPreferences ? (
+                <div className="ewb-pref-drawer-footer">
+                  <Button onClick={() => openPreferences(false)}>取消</Button>
+                  <Button type="primary" loading={prefSaving} onClick={savePreferences}>
+                    保存我的版本
+                  </Button>
+                </div>
+              ) : (
+                <Typography.Text type="secondary">仅老板或管理员可修改</Typography.Text>
+              )
+            }
+          >
+            <div className="ewb-pref-editor">
+              <Typography.Text type="secondary" className="ewb-pref-intro">
+                保存常用门店信息后，所有数字员工的「常用问法」会自动填入你的信息，省去重复打字。
+              </Typography.Text>
+              {PREFERENCE_FIELDS.map(field => (
+                <div key={field.key} className="ewb-pref-row">
+                  <span className="ewb-pref-key">{field.key}</span>
+                  <Input
+                    aria-label={field.key}
+                    maxLength={40}
+                    value={prefDraft[field.key] || ''}
+                    placeholder={field.placeholder}
+                    disabled={!canEditPreferences}
+                    onChange={event => setPrefDraft(draft => ({ ...draft, [field.key]: event.target.value }))}
+                  />
+                </div>
+              ))}
+              {(prefs?.outputPrefs || []).length > 0 && (
+                <div className="ewb-pref-output">
+                  <span className="ewb-pref-key">固定要求</span>
+                  <div>
+                    {(prefs?.outputPrefs || []).map(item => (
+                      <Tag
+                        key={item}
+                        closable={canEditPreferences}
+                        onClose={async event => {
+                          event.preventDefault();
+                          try {
+                            const saved = (await api.put('/employee-workbench/restaurant-preferences/slots', {
+                              outputPrefs: (prefs?.outputPrefs || []).filter(pref => pref !== item),
+                            })) as SlotPreferences;
+                            setPrefs(saved);
+                          } catch (error: any) {
+                            message.error(error?.message || '删除失败');
+                          }
+                        }}
+                      >
+                        {item}
+                      </Tag>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="ewb-pref-row ewb-pref-switch-row">
+                <span className="ewb-pref-key">不再追问</span>
+                <Switch checked={prefSkip} disabled={!canEditPreferences} onChange={setPrefSkip} />
+                <Typography.Text type="secondary" className="ewb-pref-switch-hint">
+                  开启后派活时跳过补充提问，直接按默认执行
+                </Typography.Text>
+              </div>
+            </div>
+          </Drawer>
           {showChips && (
             <Space size={[6, 6]} wrap>
               {templates.map(item => (
