@@ -16,10 +16,11 @@
 
 .execution-command-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 26px;
-  padding: 24px 4px 20px;
+  gap: 18px 24px;
+  padding: 24px 8px 20px;
   border-bottom: 1px solid var(--ui-border);
 }
 
@@ -47,9 +48,11 @@
 
 .execution-command-actions {
   display: flex;
-  align-items: stretch;
-  gap: 3px;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 4px;
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .execution-command-actions > button:not(.ant-btn) {

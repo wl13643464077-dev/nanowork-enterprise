@@ -4159,7 +4159,14 @@ export async function marshalWork(marshal, task, role, options = {}) {
       ? assessMarketScanCoverage({ webSources: web.results || [], tradeAreaFacts })
       : null;
   const marketScanCoverageRule = marketScanCoverage
-    ? marketScanCoveragePromptLines(marketScanCoverage).join("\n")
+    ? [
+        ...marketScanCoveragePromptLines(marketScanCoverage),
+        ...(Number(marketScanCoverage.amapStores || 0) >= 5
+          ? [
+              `【同品类清单展开要求】高德地图已核验到 ${marketScanCoverage.amapStores} 家可追溯周边门店；正文“目标品类清单”表格须直接逐行展开高德已核验的前 ${Math.min(Number(marketScanCoverage.amapStores), 10)}–${Math.min(Number(marketScanCoverage.amapStores), 15)} 家同品类/直接竞品门店（不足则全部列出），每行保留真实店名、距中心距离与参考人均，不要只挑 3–4 家代表店代替清单。`,
+            ]
+          : []),
+      ].join("\n")
     : "";
   const locationEvidenceBoundaryRule = locationIntelligenceRequired
     ? [

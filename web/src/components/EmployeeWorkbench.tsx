@@ -2554,7 +2554,8 @@ function EmployeeWorkbenchInstance({
                       </span>
                       <strong>{task.title || `任务 #${task.id}`}</strong>
                       <small>
-                        {task.type || '岗位交付'} · {runTime(task.createdAt || task.created_at)} · #{task.id}
+                        {task.intent?.label || task.type || '岗位交付'} · {runTime(task.createdAt || task.created_at)} ·
+                        #{task.id}
                       </small>
                       <span className="ewb-run-list-action">
                         <EyeOutlined />{' '}
@@ -2757,7 +2758,9 @@ function EmployeeWorkbenchInstance({
                         <Tag color={RUN_STATUS_COLOR[restaurantPublicStatus] || 'default'}>
                           {restaurantPublicStatus}
                         </Tag>
-                        {restaurantTask.type && <Tag>{restaurantTask.type}</Tag>}
+                        {(restaurantTask.intent?.label || restaurantTask.type) && (
+                          <Tag>{restaurantTask.intent?.label || restaurantTask.type}</Tag>
+                        )}
                       </Space>
                       <h4>{restaurantTask.title || `任务 #${restaurantTask.id}`}</h4>
                       <span>
