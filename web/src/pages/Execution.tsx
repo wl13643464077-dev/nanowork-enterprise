@@ -76,7 +76,7 @@ const TYPE_COLOR: Record<string, string> = {
 };
 const typeColor = (t: string) => TYPE_COLOR[t] || 'geekblue';
 const TASK_TYPES = ['跟进', '邀约', '内容', '活动', '培训', '督导', '其他'];
-const LEVEL_COLOR: Record<string, string> = { 区域运营商: 'purple', 城市合伙人: 'blue', 馆主: 'cyan' };
+const LEVEL_COLOR: Record<string, string> = { 区域运营商: 'purple', 城市合伙人: 'blue', 门店负责人: 'cyan' };
 const MEDAL = ['var(--warn)', 'var(--ui-muted)', '#cd8a4d'];
 const resultColor = (v: string) =>
   (v || '').includes('驳') ? 'red' : /通过|合格|完成/.test(v || '') ? 'green' : 'orange';

@@ -792,7 +792,7 @@ export default function MainLayout() {
                       <div style={{ width: '100%' }}>
                         <div
                           style={{
-                            fontSize: 13,
+                            fontSize: 'var(--font-2)',
                             fontWeight: n.read ? 400 : 600,
                             display: 'flex',
                             justifyContent: 'space-between',
@@ -803,13 +803,13 @@ export default function MainLayout() {
                             {!n.read && <Badge status="processing" />} {n.title}
                           </span>
                           {notificationTarget(n) && (
-                            <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0 }}>
+                            <Tag color="blue" style={{ fontSize: 'var(--font-1)', marginInlineEnd: 0 }}>
                               {notificationTarget(n)?.name} ›
                             </Tag>
                           )}
                         </div>
-                        <div style={{ fontSize: 12, color: 'var(--ui-text-2)' }}>{n.body}</div>
-                        <div style={{ fontSize: 10.5, color: 'var(--ui-muted)' }}>
+                        <div style={{ fontSize: 'var(--font-1)', color: 'var(--ui-text-2)' }}>{n.body}</div>
+                        <div style={{ fontSize: 'var(--font-1)', color: 'var(--ui-muted)' }}>
                           {(n.created_at || '').slice(5, 16)}
                         </div>
                       </div>
@@ -1115,17 +1115,17 @@ export default function MainLayout() {
             >
               <div style={{ width: '100%' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: n.read ? 400 : 600 }}>
+                  <span style={{ fontSize: 'var(--font-2)', fontWeight: n.read ? 400 : 600 }}>
                     {!n.read && <Badge status="processing" />} {n.title}
                   </span>
                   {notificationTarget(n) && (
-                    <Tag color="blue" style={{ fontSize: 10, marginInlineEnd: 0, flexShrink: 0 }}>
+                    <Tag color="blue" style={{ fontSize: 'var(--font-1)', marginInlineEnd: 0, flexShrink: 0 }}>
                       来源：{notificationTarget(n)?.name} ›
                     </Tag>
                   )}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--ui-text-2)', marginTop: 2 }}>{n.body}</div>
-                <div style={{ fontSize: 10.5, color: 'var(--ui-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: 'var(--font-1)', color: 'var(--ui-text-2)', marginTop: 2 }}>{n.body}</div>
+                <div style={{ fontSize: 'var(--font-1)', color: 'var(--ui-muted)', marginTop: 2 }}>
                   {(n.created_at || '').slice(0, 16)}
                 </div>
               </div>
@@ -1288,7 +1288,7 @@ export default function MainLayout() {
             <div
               style={{
                 marginTop: 10,
-                fontSize: 12,
+                fontSize: 'var(--font-1)',
                 color: personalFeishuStatus === 'error' ? '#c24141' : 'var(--ui-muted)',
               }}
             >

@@ -75,11 +75,37 @@ const AI_ANALYSIS_STAGES: StreamStage[] = [
 ];
 
 const ACTIVITY_LABELS: Record<string, string> = {
-  品鉴会: '主题试吃',
-  封坛仪式: '新品发布',
+  主题试吃: '主题试吃',
+  门店主题活动: '门店主题活动',
+  门店沙龙: '门店沙龙',
+  后厨开放日: '后厨开放日',
+  门店参访活动: '门店参访活动',
+  新品发布: '新品发布',
+  企业团餐洽谈: '企业团餐洽谈',
   企业团购沙龙: '企业团餐洽谈',
+  合作说明会: '合作说明会',
+  渠道合作活动: '渠道合作活动',
   招商说明会: '合作说明会',
-  会员日: '会员活动',
+  会员专享: '会员专享',
+  会员活动: '会员专享',
+  会员日: '会员专享',
+};
+
+const ACTIVITY_TAG_COLORS: Record<string, string> = {
+  主题试吃: 'blue',
+  门店主题活动: 'blue',
+  门店沙龙: 'cyan',
+  后厨开放日: 'volcano',
+  门店参访活动: 'volcano',
+  新品发布: 'geekblue',
+  企业团餐洽谈: 'orange',
+  企业团购沙龙: 'orange',
+  合作说明会: 'green',
+  渠道合作活动: 'green',
+  招商说明会: 'green',
+  会员专享: 'cyan',
+  会员活动: 'cyan',
+  会员日: 'cyan',
 };
 
 const interactiveRow = (onActivate: () => void) => ({
@@ -1344,18 +1370,8 @@ export default function Dashboard() {
                     className="dash-act-card"
                   >
                     <div className="dash-act-head">
-                      <Tag
-                        color={
-                          {
-                            品鉴会: 'blue',
-                            封坛仪式: 'geekblue',
-                            企业团购沙龙: 'orange',
-                            招商说明会: 'green',
-                            会员日: 'cyan',
-                          }[a.type] || 'blue'
-                        }
-                      >
-                        {ACTIVITY_LABELS[a.type] || a.type}
+                      <Tag color={ACTIVITY_TAG_COLORS[a.type] || 'blue'}>
+                        {ACTIVITY_LABELS[a.type] || a.type || '门店主题活动'}
                       </Tag>
                       <Badge
                         status={a.status === '报名中' ? 'processing' : 'default'}

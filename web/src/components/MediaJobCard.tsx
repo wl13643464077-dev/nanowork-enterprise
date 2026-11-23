@@ -2,6 +2,7 @@ import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE }
 import { getUser } from '../api/client';
 import { Button, Checkbox, Tag, Tooltip } from 'antd';
 import { DeleteOutlined, FolderOpenOutlined, LinkOutlined } from '@ant-design/icons';
+import './MediaJobCard.css';
 
 export type MediaBilling = {
   state?: 'held' | 'settled' | 'released' | 'pending_reconciliation' | 'missing' | 'not_required' | string;
@@ -136,25 +137,28 @@ export function MediaReviewTags({ job }: { job: MediaJobView }) {
     job.businessStatus || job.reviewStatus || (technical === '成功' ? '可验收（待管理层审阅）' : '尚未形成可验收产物');
   const billing = mediaBillingPresentation(job.billing, isPersonalApiUser(getUser()));
   return (
-    <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-      <Tag color={technical === '成功' ? 'blue' : technical === '失败' ? 'error' : 'processing'} style={{ margin: 0 }}>
+    <div className="media-job-tags">
+      <Tag
+        color={technical === '成功' ? 'blue' : technical === '失败' ? 'error' : 'processing'}
+        className="media-job-tag"
+      >
         技术：{technical}
       </Tag>
       <Tag
         color={job.businessUsable ? 'success' : job.reviewRequired || technical === '成功' ? 'gold' : 'default'}
-        style={{ margin: 0 }}
+        className="media-job-tag"
       >
         业务：{business}
       </Tag>
       {job.mediaType && (
-        <Tag color="purple" style={{ margin: 0 }}>
+        <Tag color="purple" className="media-job-tag">
           {job.mediaType}
           {job.mimeType ? ` · ${job.mimeType}` : ''}
         </Tag>
       )}
       {billing && (
         <Tooltip title={billing.detail}>
-          <Tag color={billing.color} style={{ margin: 0 }}>
+          <Tag color={billing.color} className="media-job-tag">
             {billing.label}
           </Tag>
         </Tooltip>
@@ -200,7 +204,7 @@ export function MediaImportAction({
     : job.canImportReason || (job.businessUsable ? '该媒体已完成人工验收并入库' : '当前任务尚不满足人工验收条件');
   return (
     <Tooltip title={reason}>
-      <span style={{ display: block ? 'block' : 'inline-block', width: block ? '100%' : undefined }}>
+      <span className={block ? 'media-job-import-wrap media-job-import-wrap--block' : 'media-job-import-wrap'}>
         <Button
           size={size}
           block={block}
@@ -235,16 +239,8 @@ export default function MediaJobCard({
   const exportUrl = safeExportUrl(job);
   const kind = job.kind;
   return (
-    <div
-      style={{
-        border: selected ? '1px solid var(--ui-accent)' : '1px solid var(--ui-border)',
-        borderRadius: 10,
-        padding: 10,
-        position: 'relative',
-        background: selected ? 'var(--ui-surface-2)' : 'var(--ui-surface)',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+    <div className={selected ? 'media-job-card media-job-card--selected' : 'media-job-card'}>
+      <div className="media-job-card-header">
         <Tooltip
           title={
             job.canDelete === false
@@ -275,36 +271,14 @@ export default function MediaJobCard({
       </div>
 
       {kind === 'image' && previewUrl ? (
-        <img
-          src={previewUrl}
-          alt={job.prompt || '生成图片预览'}
-          style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 6 }}
-        />
+        <img src={previewUrl} alt={job.prompt || '生成图片预览'} className="media-job-preview-img" />
       ) : kind === 'video' && previewUrl ? (
         // Generated provider videos do not include a verified captions asset; do not attach a fake track.
         // eslint-disable-next-line jsx-a11y/media-has-caption
-        <video
-          src={previewUrl}
-          controls
-          preload="metadata"
-          style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 6, background: '#000' }}
-        />
+        <video src={previewUrl} controls preload="metadata" className="media-job-preview-video" />
       ) : (
-        <div
-          style={{
-            height: 110,
-            background: 'var(--ui-surface-2)',
-            borderRadius: 6,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexDirection: 'column',
-            gap: 5,
-            color: 'var(--ui-muted)',
-            fontSize: 11,
-          }}
-        >
-          <span style={{ fontSize: 24 }}>{kind === 'video' ? '🎬' : '🖼️'}</span>
+        <div className="media-job-preview-empty">
+          <span className="media-job-preview-icon">{kind === 'video' ? '🎬' : '🖼️'}</span>
           {job.urlAvailable
             ? job.billing?.state !== 'settled' && job.billing?.state !== 'not_required'
               ? '账务确认后开放审核预览'
@@ -313,36 +287,20 @@ export default function MediaJobCard({
         </div>
       )}
 
-      <div
-        style={{
-          fontSize: 11.5,
-          color: 'var(--ui-text-2)',
-          marginTop: 7,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {job.prompt || '未填写提示词'}
-      </div>
-      <div style={{ marginTop: 6 }}>
+      <div className="media-job-prompt">{job.prompt || '未填写提示词'}</div>
+      <div className="media-job-tags-wrap">
         <MediaReviewTags job={job} />
       </div>
-      <div style={{ fontSize: 10.5, color: 'var(--ui-muted)', marginTop: 6, lineHeight: 1.6 }}>
+      <div className="media-job-meta">
         {job.model || '未记录模型'}
         {job.reviewedBy ? ` · ${job.reviewedBy} 验收于 ${formatReviewTime(job.reviewedAt)}` : ''}
       </div>
       {exportUrl && (
-        <a
-          href={exportUrl}
-          target="_blank"
-          rel="noreferrer"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, marginTop: 5 }}
-        >
+        <a href={exportUrl} target="_blank" rel="noreferrer" className="media-job-export-link">
           <LinkOutlined /> {job.downloadAvailable === true ? '下载文件' : '打开源文件'}
         </a>
       )}
-      <div style={{ marginTop: 8 }}>
+      <div className="media-job-actions">
         <MediaImportAction job={job} loading={importing} block onImport={onImport} />
       </div>
     </div>

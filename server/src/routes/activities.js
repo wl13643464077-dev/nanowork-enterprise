@@ -54,6 +54,13 @@ const LEGACY_ACTIVITY_TYPE_MAP = {
   '沙龙会': DEFAULT_ACTIVITY_TYPE,
   '招商说明会': '渠道合作活动',
   '回厂游': '门店参访活动',
+  '封坛仪式': '新品发布',
+};
+const LEGACY_ACTIVITY_TYPE_READ_MAP = {
+  '品鉴会': '主题试吃',
+  '沙龙会': '门店沙龙',
+  '回厂游': '后厨开放日',
+  '封坛仪式': '新品发布',
 };
 const ACTIVITY_BASELINE_FIELDS = [
   ['inviteSign', '邀约到报名基准'],
@@ -109,6 +116,11 @@ function activityAiMeta(output, billing) {
 function normalizeActivityType(value) {
   const type = String(value || '').trim();
   return LEGACY_ACTIVITY_TYPE_MAP[type] || type || DEFAULT_ACTIVITY_TYPE;
+}
+
+function normalizeActivityTypeForRead(value) {
+  const type = String(value || '').trim();
+  return LEGACY_ACTIVITY_TYPE_READ_MAP[type] || type || DEFAULT_ACTIVITY_TYPE;
 }
 
 function configuredActivityBaseline() {
@@ -309,7 +321,7 @@ function reviewKbBody(act, review, actor) {
   const lines = [
     `# 活动复盘：${act.title}`,
     '',
-    `- 活动类型：${act.type || '-'}`,
+    `- 活动类型：${normalizeActivityTypeForRead(act.type) || '-'}`,
     `- 活动日期：${act.date || '-'}`,
     `- 负责人：${actor?.name || '-'}`,
     `- 活动状态：已复盘`,
@@ -472,7 +484,7 @@ function syncActivityStatuses() {
 
 async function buildActivityPlan(act, { goal = '提升到店体验与成交', audience = '已授权触达的目标顾客', budget = '待确认' }, role) {
   // 前台同步生成必须有明确期限；上游异常时快速转热度召回和本地模板。
-  const activityType = normalizeActivityType(act.type);
+  const activityType = normalizeActivityTypeForRead(act.type);
   const baseline = configuredActivityBaseline();
   const baselineRule = Object.keys(baseline).length
     ? `本企业已配置活动基准：${JSON.stringify(baseline)}。仅可将这些企业配置值用于目标参照。`
@@ -531,6 +543,7 @@ r.get('/stats-drill', (req, res) => {
     FROM activities a LEFT JOIN users u ON u.id = a.owner_id
     WHERE a.tenant_id = ${curTenant()} AND a.date >= date('now','-90 day')${scope.sql} ORDER BY a.date DESC`, ...scope.params).map(x => ({
     ...x,
+    type: normalizeActivityTypeForRead(x.type),
     arriveRate: pct(x.arrived, x.signed_up),
     convRate: pct(x.converted, x.arrived),
     roi: x.cost > 0 ? Math.round((x.revenue || 0) / x.cost * 10) / 10 : null,
@@ -549,6 +562,7 @@ r.get('/', (req, res) => {
   const rows = q.all(`SELECT a.*, u.name owner FROM activities a LEFT JOIN users u ON u.id = a.owner_id ${where} ORDER BY a.date DESC`, ...params);
   res.json(rows.map(x => ({
     ...x,
+    type: normalizeActivityTypeForRead(x.type),
     checklist: safeChecklist(x.checklist),
     plan: x.plan ? normalizeActivityPlan(parseMaybeJson(x.plan, {}), x.title) : null,
     review: parseMaybeJson(x.review, null),
@@ -765,6 +779,7 @@ r.put('/:id', (req, res) => {
     const updated = q.get(`SELECT * FROM activities WHERE tenant_id = ${curTenant()} AND id = ?`, req.params.id);
     res.json({
       ...updated,
+      type: normalizeActivityTypeForRead(updated.type),
       checklist: safeChecklist(updated.checklist),
       plan: updated.plan ? normalizeActivityPlan(parseMaybeJson(updated.plan, {}), updated.title) : null,
       review: parseMaybeJson(updated.review, null),
@@ -812,7 +827,7 @@ r.delete('/:id', (req, res) => {
     children,
     module: '活动中心',
     title: act.title,
-    summary: `${act.type || '-'}；状态=${act.status || '-'}；邀约${policy.inviteCount}条；审批${policy.approvalCount}条`,
+    summary: `${normalizeActivityTypeForRead(act.type) || '-'}；状态=${act.status || '-'}；邀约${policy.inviteCount}条；审批${policy.approvalCount}条`,
     requiredRole: policy.requiredRole,
     reason: req.body?.reason || policy.reason,
   }, () => {
@@ -1030,15 +1045,20 @@ r.post('/:id/plan', async (req, res) => {
 // 独立AI活动策划室：不要求先建活动，生成结果持久化，刷新/跳转后仍可找回。
 r.get('/plan-drafts/list', (req, res) => {
   const scope = userScopeClause(req.user, 'd.user_id');
-  res.json(q.all(`SELECT d.id,d.user_id,d.activity_id,d.title,d.type,d.date,d.goal,d.audience,d.budget,d.target_join,d.status,d.created_at,d.updated_at,u.name owner_name
+  const rows = q.all(`SELECT d.id,d.user_id,d.activity_id,d.title,d.type,d.date,d.goal,d.audience,d.budget,d.target_join,d.status,d.created_at,d.updated_at,u.name owner_name
     FROM activity_plan_drafts d LEFT JOIN users u ON u.id=d.user_id
-    WHERE d.tenant_id=?${scope.sql} ORDER BY d.updated_at DESC,d.id DESC LIMIT 50`, curTenant(), ...scope.params));
+    WHERE d.tenant_id=?${scope.sql} ORDER BY d.updated_at DESC,d.id DESC LIMIT 50`, curTenant(), ...scope.params);
+  res.json(rows.map(row => ({ ...row, type: normalizeActivityTypeForRead(row.type) })));
 });
 
 r.get('/plan-drafts/:draftId', (req, res) => {
   const row = planDraftForUser(req.params.draftId, req.user);
   if (!row) return res.status(404).json({ error: '策划草稿不存在' });
-  res.json({ ...row, plan: normalizeActivityPlan(parseMaybeJson(row.plan, {}), row.title) });
+  res.json({
+    ...row,
+    type: normalizeActivityTypeForRead(row.type),
+    plan: normalizeActivityPlan(parseMaybeJson(row.plan, {}), row.title),
+  });
 });
 
 r.post('/plan-drafts/generate', async (req, res) => {
@@ -1502,7 +1522,7 @@ r.post('/:id/review', async (req, res) => {
     const baselineSummary = Object.keys(base).length
       ? ACTIVITY_BASELINE_FIELDS.filter(([key]) => Number.isFinite(base[key])).map(([key, label]) => `${label}=${base[key]}`).join('、')
       : '企业未配置活动对照基准，本次不得引用通用行业均值';
-    const reviewRequirement = `请对这场活动做深度复盘。活动数据：类型${act.type}，日期${act.date}，目标${act.target_join}人/成交${act.target_deal}单；实际：邀约${act.invited}、报名${act.signed_up}、到场${act.arrived}、成交${act.converted}、收入¥${act.revenue || 0}、成本¥${act.cost || 0}、满意度${act.satisfaction || '-'}。
+    const reviewRequirement = `请对这场活动做深度复盘。活动数据：类型${normalizeActivityTypeForRead(act.type)}，日期${act.date}，目标${act.target_join}人/成交${act.target_deal}单；实际：邀约${act.invited}、报名${act.signed_up}、到场${act.arrived}、成交${act.converted}、收入¥${act.revenue || 0}、成本¥${act.cost || 0}、满意度${act.satisfaction || '-'}。
 实际指标：邀约→报名 ${rates.inviteSign}%、报名→到场 ${rates.signArrive}%、到场→成交 ${rates.arriveDeal}%、ROI ${rates.roi ?? '因缺少有效成本而不可计算'}。
 对照口径：${baselineSummary}。规则诊断已发现的差距：${gaps.join('；') || (Object.keys(base).length ? '已配置指标未发现低于基准项' : '缺少企业基准，暂不判断达标')}。
 请按五段式输出：①这场活动的本质结论 ②最大卡点及证据/未知项 ③下一场活动的3条关键改进（每条带检查标准） ④经顾客授权的会后跟进动作清单（负责人+时限） ⑤食安、隐私、价格与履约风险。不得编造优惠、稀缺名额、顾客证言、行业均值或未发生的转化结果。`;

@@ -19,6 +19,7 @@ import { AuditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api, safeUrl } from '../api/client';
 import { Panel } from './Kit';
 import { Markdown } from './Markdown';
+import './EmployeeOutputInsights.css';
 
 type Props = { start: string; end: string };
 
@@ -274,19 +275,19 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
   const hasData = Boolean(data) && !error;
   const options = data?.options || { domains: [], groups: [], employees: [], statuses: [], sources: [] };
   const summaryCards = [
-    { label: '运行记录', value: hasData ? summary.total || 0 : '—', color: 'var(--ui-accent)' },
-    { label: '已有产出', value: hasData ? summary.withOutput || 0 : '—', color: 'var(--ui-primary)' },
-    { label: '完成 / 采纳', value: hasData ? summary.completed || 0 : '—', color: '#16a34a' },
-    { label: '待处理', value: hasData ? summary.pending || 0 : '—', color: '#d97706' },
-    { label: '执行或质检失败', value: hasData ? summary.failed || 0 : '—', color: '#dc2626' },
-    { label: '未采纳', value: hasData ? summary.rejected || 0 : '—', color: 'var(--ui-text-2)' },
+    { label: '运行记录', value: hasData ? summary.total || 0 : '—', toneClass: 'eoi-stat-value--accent' },
+    { label: '已有产出', value: hasData ? summary.withOutput || 0 : '—', toneClass: 'eoi-stat-value--primary' },
+    { label: '完成 / 采纳', value: hasData ? summary.completed || 0 : '—', toneClass: 'eoi-stat-value--ok' },
+    { label: '待处理', value: hasData ? summary.pending || 0 : '—', toneClass: 'eoi-stat-value--warn' },
+    { label: '执行或质检失败', value: hasData ? summary.failed || 0 : '—', toneClass: 'eoi-stat-value--danger' },
+    { label: '未采纳', value: hasData ? summary.rejected || 0 : '—', toneClass: 'eoi-stat-value--muted' },
   ];
 
   return (
     <Panel
       title={
         <Space size={8}>
-          <AuditOutlined style={{ color: 'var(--ui-accent)' }} />
+          <AuditOutlined className="eoi-title-icon" />
           数字员工产出透视
         </Space>
       }
@@ -308,7 +309,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
         <Alert
           type="error"
           showIcon
-          style={{ marginBottom: 12 }}
+          className="eoi-section-gap"
           message={error}
           action={
             <Button size="small" onClick={load}>
@@ -318,30 +319,23 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
         />
       )}
 
-      <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
+      <Row gutter={[8, 8]} className="eoi-section-gap">
         {summaryCards.map(card => (
           <Col xs={12} sm={8} lg={4} key={card.label}>
-            <div
-              style={{
-                border: '1px solid var(--ui-border)',
-                borderRadius: 8,
-                padding: '10px 12px',
-                background: 'var(--ui-surface-2)',
-              }}
-            >
-              <div style={{ fontSize: 11.5, color: 'var(--ui-muted)' }}>{card.label}</div>
-              <div style={{ color: card.color, fontWeight: 750, fontSize: 20, marginTop: 2 }}>{card.value}</div>
+            <div className="eoi-stat-card">
+              <div className="eoi-stat-label">{card.label}</div>
+              <div className={`eoi-stat-value ${card.toneClass}`}>{card.value}</div>
             </div>
           </Col>
         ))}
       </Row>
 
-      <Space wrap size={[8, 8]} style={{ marginBottom: 12 }}>
+      <Space wrap size={[8, 8]} className="eoi-section-gap">
         <Tooltip title="门店数据由当前登录企业的租户边界固定，不能跨店查看">
           <Select
             value={data?.dataset?.store?.name || '当前门店'}
             disabled
-            style={{ width: 170 }}
+            className="eoi-select-md"
             options={[
               {
                 value: data?.dataset?.store?.name || '当前门店',
@@ -352,7 +346,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
         </Tooltip>
         <Select
           value={filters.domain}
-          style={{ width: 170 }}
+          className="eoi-select-md"
           options={[{ value: 'all', label: '全部能力域' }, ...(options.domains || [])]}
           onChange={value => update('domain', value)}
         />
@@ -360,7 +354,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
           allowClear
           placeholder="全部分部"
           value={filters.group || undefined}
-          style={{ width: 150 }}
+          className="eoi-select-sm"
           options={(options.groups || []).map((value: string) => ({ value, label: value }))}
           onChange={value => update('group', value || '')}
         />
@@ -370,13 +364,13 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
           optionFilterProp="label"
           placeholder="全部员工"
           value={filters.employee || undefined}
-          style={{ width: 190 }}
+          className="eoi-select-lg"
           options={options.employees || []}
           onChange={value => update('employee', value || '')}
         />
         <Select
           value={filters.source}
-          style={{ width: 130 }}
+          className="eoi-select-xs"
           options={[{ value: 'all', label: '全部来源' }, ...(options.sources || [])]}
           onChange={value => update('source', value)}
         />
@@ -384,17 +378,17 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
           allowClear
           placeholder="全部状态"
           value={filters.status || undefined}
-          style={{ width: 130 }}
+          className="eoi-select-xs"
           options={(options.statuses || []).map((value: string) => ({
             value,
             label: localizeOperationalStatus(value),
           }))}
           onChange={value => update('status', value || '')}
         />
-        <span style={{ fontSize: 12, color: 'var(--ui-muted)', marginLeft: 4 }}>透视维度</span>
+        <span className="eoi-filter-label">透视维度</span>
         <Select
           value={filters.dimension}
-          style={{ width: 130 }}
+          className="eoi-select-xs"
           options={[
             { value: 'employee', label: '按员工' },
             { value: 'domain', label: '按能力域' },
@@ -427,9 +421,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
         ) : (
           <Row gutter={[12, 12]}>
             <Col xs={24} xl={9}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ui-text-2)', marginBottom: 6 }}>
-                透视汇总 · 点击行可继续筛选
-              </div>
+              <div className="eoi-table-heading">透视汇总 · 点击行可继续筛选</div>
               <Table
                 size="small"
                 rowKey="key"
@@ -438,7 +430,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                 locale={{
                   emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前范围暂无运行记录" />,
                 }}
-                onRow={row => ({ onClick: () => applyPivot(row), style: { cursor: 'pointer' } })}
+                onRow={row => ({ onClick: () => applyPivot(row), className: 'eoi-clickable-row' })}
                 columns={[
                   {
                     title: '维度',
@@ -457,9 +449,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
               />
             </Col>
             <Col xs={24} xl={15}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ui-text-2)', marginBottom: 6 }}>
-                运行明细 · 点击查看输入、结果与来源
-              </div>
+              <div className="eoi-table-heading">运行明细 · 点击查看输入、结果与来源</div>
               <Table
                 size="small"
                 rowKey="ref"
@@ -468,7 +458,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                 locale={{
                   emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选暂无运行记录" />,
                 }}
-                onRow={row => ({ onClick: () => openDetail(row), style: { cursor: 'pointer' } })}
+                onRow={row => ({ onClick: () => openDetail(row), className: 'eoi-clickable-row' })}
                 pagination={{
                   current: data?.pagination?.page || page,
                   pageSize: data?.pagination?.pageSize || 20,
@@ -547,11 +537,11 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
         }
       >
         {detail.loading ? (
-          <div style={{ padding: 42, textAlign: 'center' }}>
+          <div className="eoi-modal-loading">
             <Spin />
           </div>
         ) : detail.data ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="eoi-modal-body">
             <Panel title="本次穿刺的筛选快照与计算口径">
               <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}>
                 <Descriptions.Item label="日期范围">{detail.context?.range}</Descriptions.Item>
@@ -564,7 +554,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
                   {detail.context?.source} / {localizeOperationalStatus(detail.context?.status)}
                 </Descriptions.Item>
               </Descriptions>
-              <div style={{ marginTop: 8, color: 'var(--ui-text-2)', fontSize: 12, lineHeight: 1.7 }}>
+              <div className="eoi-calc-note">
                 统计单位：{detail.context?.calculation?.unit || '一条持久化运行记录'}； 产出率：
                 {detail.context?.calculation?.outputRate || '已有产出的记录数 ÷ 当前筛选后的运行记录数'}。
                 {detail.context?.calculation?.effectBoundary || '本透视不做营业额、利润、订单或顾客转化归因。'}
@@ -600,23 +590,12 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
             {(detail.data.record?.requirement || detail.data.record?.inputSummary || detail.data.record?.inputs) && (
               <Panel title="输入与要求">
                 {detail.data.record?.requirement || detail.data.record?.inputSummary ? (
-                  <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ui-text-2)', lineHeight: 1.7 }}>
+                  <div className="eoi-requirement-text">
                     {detail.data.record.requirement || detail.data.record.inputSummary}
                   </div>
                 ) : null}
                 {detail.data.record?.inputs && Object.keys(detail.data.record.inputs).length > 0 && (
-                  <pre
-                    style={{
-                      margin: '10px 0 0',
-                      padding: 10,
-                      borderRadius: 8,
-                      background: 'var(--ui-surface-2)',
-                      overflow: 'auto',
-                      whiteSpace: 'pre-wrap',
-                    }}
-                  >
-                    {jsonPreview(detail.data.record.inputs)}
-                  </pre>
+                  <pre className="eoi-json-pre eoi-json-pre--spaced">{jsonPreview(detail.data.record.inputs)}</pre>
                 )}
               </Panel>
             )}
@@ -629,7 +608,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
               {detail.data.output?.artifactUrl && safeUrl(detail.data.output.artifactUrl) !== '#' && (
                 <Button
                   type="link"
-                  style={{ paddingInline: 0 }}
+                  className="eoi-artifact-link"
                   href={safeUrl(detail.data.output.artifactUrl)}
                   target="_blank"
                   rel="noreferrer"
@@ -641,16 +620,7 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
             {detail.data.output &&
               (detail.data.output.assumptions || detail.data.output.evidence || detail.data.output.provenance) && (
                 <Panel title="假设、证据与来源">
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: 10,
-                      borderRadius: 8,
-                      background: 'var(--ui-surface-2)',
-                      overflow: 'auto',
-                      whiteSpace: 'pre-wrap',
-                    }}
-                  >
+                  <pre className="eoi-json-pre">
                     {jsonPreview({
                       assumptions: detail.data.output.assumptions,
                       evidence: detail.data.output.evidence,
@@ -661,22 +631,13 @@ export default function EmployeeOutputInsights({ start, end }: Props) {
               )}
             {detail.data.execution?.snapshot && (
               <Panel title="完整执行快照">
-                <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }} style={{ marginBottom: 10 }}>
+                <Descriptions size="small" bordered column={{ xs: 1, sm: 2 }} className="eoi-snapshot-desc">
                   <Descriptions.Item label="岗位档案快照">
                     {detail.data.execution.profileVersion ? '已保存' : '未记录'}
                   </Descriptions.Item>
                   <Descriptions.Item label="提示词哈希">{detail.data.execution.promptHash || '-'}</Descriptions.Item>
                 </Descriptions>
-                <pre
-                  style={{
-                    margin: 0,
-                    padding: 10,
-                    borderRadius: 8,
-                    background: 'var(--ui-surface-2)',
-                    overflow: 'auto',
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
+                <pre className="eoi-json-pre">
                   {jsonPreview(auditSnapshotForDisplay(detail.data.execution.snapshot))}
                 </pre>
               </Panel>

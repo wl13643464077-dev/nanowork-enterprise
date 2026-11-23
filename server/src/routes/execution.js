@@ -1448,6 +1448,15 @@ r.get("/battle-plan/rollup", (req, res) => {
 });
 
 // ===== 合作伙伴体系（内部表名 partners 保持接口兼容）=====
+const LEGACY_PARTNER_LEVEL_MAP = {
+  馆主: "门店负责人",
+};
+
+function normalizePartnerLevel(level) {
+  const value = String(level || "").trim();
+  return LEGACY_PARTNER_LEVEL_MAP[value] || value;
+}
+
 r.get("/partners", (req, res) => {
   if (!requirePartnerManager(req, res)) return;
   const rows = q.all(`SELECT p.*,
@@ -1455,7 +1464,7 @@ r.get("/partners", (req, res) => {
     (SELECT COUNT(*) FROM partner_actions a WHERE a.partner_id = p.id AND a.date = date('now','localtime')
       AND (a.studied + (a.posted_moments>0) + (a.posted_videos>0) + a.invited) >= 2) active_today
     FROM partners p WHERE p.tenant_id = ${curTenant()} ORDER BY week_score DESC NULLS LAST`);
-  res.json(rows);
+  res.json(rows.map((p) => ({ ...p, level: normalizePartnerLevel(p.level) })));
 });
 
 r.post("/partner-actions", (req, res) => {
@@ -1506,24 +1515,28 @@ r.get("/partners/leaderboard", (req, res) => {
   // 「本月」用自然月起始（与目标/营收口径一致），周榜用近 7 天；杜绝"本月"实为"近30天"跨上月
   const since = req.query.period === "month" ? monthStart() : daysAgo(6);
   res.json(
-    q.all(
-      `SELECT p.id, p.name, p.level, p.region, SUM(a.score) total,
+    q
+      .all(
+        `SELECT p.id, p.name, p.level, p.region, SUM(a.score) total,
     SUM(a.invite_count) invites, SUM(a.arrive_count) arrives, SUM(a.deal_count) deals
     FROM partner_actions a JOIN partners p ON p.id = a.partner_id
     WHERE a.tenant_id = ${curTenant()} AND a.date >= ? GROUP BY p.id ORDER BY total DESC LIMIT 10`,
-      since,
-    ),
+        since,
+      )
+      .map((p) => ({ ...p, level: normalizePartnerLevel(p.level) })),
   );
 });
 
 r.get("/partners/silent", (req, res) => {
   if (!requirePartnerManager(req, res)) return;
   res.json(
-    q.all(`SELECT p.id, p.name, p.level, p.region,
+    q
+      .all(`SELECT p.id, p.name, p.level, p.region,
     (SELECT MAX(date) FROM partner_actions a WHERE a.partner_id = p.id AND a.score > 0) last_active
     FROM partners p WHERE p.tenant_id = ${curTenant()} AND p.status != '退出' AND p.id NOT IN (
       SELECT partner_id FROM partner_actions WHERE tenant_id = ${curTenant()} AND date >= date('now','-2 day')
-      AND (studied + (posted_moments>0) + (posted_videos>0) + invited) >= 2) ORDER BY last_active`),
+      AND (studied + (posted_moments>0) + (posted_videos>0) + invited) >= 2) ORDER BY last_active`)
+      .map((p) => ({ ...p, level: normalizePartnerLevel(p.level) })),
   );
 });
 
@@ -1907,7 +1920,11 @@ r.get("/partners/tiers", (req, res) => {
   const partners = q.all(
     `SELECT id, name, level, region, status FROM partners WHERE tenant_id = ${curTenant()} AND status != '退出'`,
   );
-  const rows = partners.map((p) => ({ ...p, ...partnerWeekChecks(p.id) }));
+  const rows = partners.map((p) => ({
+    ...p,
+    level: normalizePartnerLevel(p.level),
+    ...partnerWeekChecks(p.id),
+  }));
   const groups = {};
   for (const t of ["高活跃", "中活跃", "低活跃", "沉睡"])
     groups[t] = {
@@ -1936,7 +1953,13 @@ r.get("/partners/:id/detail", (req, res) => {
     FROM partner_actions WHERE tenant_id = ${curTenant()} AND partner_id = ? AND date >= date('now','-29 day')`,
       p.id,
     ) || {};
-  res.json({ ...p, ...partnerWeekChecks(p.id), actions: acts, month: agg });
+  res.json({
+    ...p,
+    level: normalizePartnerLevel(p.level),
+    ...partnerWeekChecks(p.id),
+    actions: acts,
+    month: agg,
+  });
 });
 
 // ===== 未行动提醒卡（PAR-06 口径：提醒类型/优先级/下一步动作/管理话术/截止）=====
@@ -1980,7 +2003,7 @@ r.post("/partners/:id/remind", (req, res) => {
   };
   const card = {
     partner: p.name,
-    level: p.level,
+    level: normalizePartnerLevel(p.level),
     region: p.region,
     tier,
     hit,

@@ -27,16 +27,9 @@ const files = walk(SRC).map((f) => ({
 }));
 const violations = [];
 
-// 存量豁免（技术债台账，非永久许可）：
-// 这些文件的旧行业枚举值仍在数据库里，清理需配套读时映射与数据迁移，排在 P4。
-// 台账的作用是「增量当场拦、存量不遗忘」——新文件出现同类问题会立刻失败。
-const LEGACY_ALLOW = {
-  酒水行业术语残留: new Set([
-    "web/src/pages/Activities.tsx", // 活动类型枚举 value 仍是旧值，label 已改餐饮口径
-    "web/src/pages/Dashboard.tsx", // 引用同一份枚举做标签与配色映射
-    "web/src/pages/Execution.tsx", // 合伙人等级「馆主」
-  ]),
-};
+// 存量豁免台账已清零（原 21 处旧酒水行业术语已全面迁至餐饮口径并配后端读时映射）。
+// 任何文件若再次出现同类术语，将直接触发契约违约失败。
+const LEGACY_ALLOW = {};
 
 let waived = 0;
 

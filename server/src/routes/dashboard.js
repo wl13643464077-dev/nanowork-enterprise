@@ -20,7 +20,8 @@ const DAILY_CHECKLIST_TOTAL = CHECKLIST_TEMPLATES.reduce(
   0,
 );
 import { healthScore } from "../engines/health.js";
-import { buildDailyDigest } from "../engines/daily-digest.js";
+import { buildDailyDigest, sendDailyDigest } from "../engines/daily-digest.js";
+import { appBotReady } from "../engines/feishu.js";
 import {
   BATTLE_PLAN_VERSION,
   buildBattlePlan,
@@ -1590,6 +1591,42 @@ r.get(
   (req, res) => {
     const digest = buildDailyDigest(daysAgo(1), { user: req.user });
     res.json(digest || { empty: true });
+  },
+);
+
+// 老板/管理层每日经营简报预览（支持 ?date=YYYY-MM-DD，默认昨日）
+r.get(
+  "/daily-digest/preview",
+  requireRole("boss", "ops_director", "admin", "platform_super"),
+  (req, res) => {
+    const targetDate = isValidDateStr(req.query?.date)
+      ? String(req.query.date)
+      : daysAgo(1);
+    const digest = buildDailyDigest(targetDate, { user: req.user });
+    res.json({
+      date: targetDate,
+      digest: digest || null,
+      feishuReady: appBotReady(),
+    });
+  },
+);
+
+// 老板/管理层一键立即推送每日经营简报（站内通知 + 飞书就绪时同步推飞书）
+r.post(
+  "/daily-digest/send",
+  requireRole("boss", "ops_director", "admin", "platform_super"),
+  (req, res) => {
+    const targetDate = isValidDateStr(req.body?.date)
+      ? String(req.body.date)
+      : daysAgo(1);
+    const result = sendDailyDigest(targetDate);
+    logOp(
+      req.user,
+      "经营日报",
+      "手动推送每日经营简报",
+      `${targetDate} · ${result.skipped ? "无数据跳过" : `已通知 ${result.notified} 位管理者`}`,
+    );
+    res.json({ ok: true, date: targetDate, ...result });
   },
 );
 

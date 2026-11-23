@@ -26,3 +26,64 @@
   color: var(--ui-text-2);
   margin-top: var(--space-1);
 }
+
+.drh-guide-card {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+}
+
+.drh-guide-title {
+  font-size: var(--font-4);
+  font-weight: 700;
+  color: var(--ui-text);
+  margin-bottom: var(--space-1);
+}
+
+.drh-guide-subtitle {
+  font-size: var(--font-2);
+  color: var(--ui-muted);
+  margin-bottom: var(--space-4);
+}
+
+.drh-guide-step {
+  appearance: none;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  height: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.drh-guide-step:hover {
+  border-color: var(--ui-primary);
+  background: var(--ui-surface-2);
+}
+
+.drh-guide-step-icon {
+  font-size: var(--font-6);
+  margin-bottom: var(--space-2);
+}
+
+.drh-guide-step-title {
+  font-size: var(--font-3);
+  font-weight: 600;
+  color: var(--ui-accent);
+}
+
+.drh-guide-step-desc {
+  font-size: var(--font-1);
+  color: var(--ui-muted);
+  margin-top: var(--space-1);
+  line-height: 1.6;
+}

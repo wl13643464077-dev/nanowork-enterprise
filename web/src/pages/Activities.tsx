@@ -70,44 +70,74 @@ import {
 } from '../components/ActivitiesPlanHelpers';
 import { activityCalendarSyncPresentation } from '../components/statusPresentation.js';
 
-// 后端沿用既有活动类型值，前端只替换用户可见名称，避免影响历史数据与日历联动。
+// 餐饮口径活动类型枚举（历史库旧值由后端读时规范化映射）。
 const ACT_TYPES = [
-  { value: '品鉴会', label: '主题试吃' },
-  { value: '沙龙会', label: '门店沙龙' },
-  { value: '招商说明会', label: '合作说明会' },
-  { value: '回厂游', label: '后厨开放日' },
-  { value: '封坛仪式', label: '新品发布' },
-  { value: '企业团购沙龙', label: '企业团餐洽谈' },
-  { value: '会员日', label: '会员活动' },
+  { value: '主题试吃', label: '主题试吃' },
+  { value: '门店沙龙', label: '门店沙龙' },
+  { value: '合作说明会', label: '合作说明会' },
+  { value: '后厨开放日', label: '后厨开放日' },
+  { value: '新品发布', label: '新品发布' },
+  { value: '企业团餐洽谈', label: '企业团餐洽谈' },
+  { value: '会员专享', label: '会员专享' },
 ];
 const DEFAULT_ACTIVITY_TYPE = ACT_TYPES[0].value;
-const ACT_TYPE_LABEL = Object.fromEntries(ACT_TYPES.map(item => [item.value, item.label])) as Record<string, string>;
+const ACT_TYPE_LABEL: Record<string, string> = {
+  ...Object.fromEntries(ACT_TYPES.map(item => [item.value, item.label])),
+  门店主题活动: '门店主题活动',
+  渠道合作活动: '渠道合作活动',
+  门店参访活动: '门店参访活动',
+  企业团购沙龙: '企业团餐洽谈',
+  招商说明会: '合作说明会',
+  会员活动: '会员专享',
+  会员日: '会员专享',
+};
 const activityTypeLabel = (type?: string) => ACT_TYPE_LABEL[type || ''] || type || '-';
 const TYPE_COLOR: Record<string, string> = {
-  品鉴会: 'var(--ui-accent)',
-  沙龙会: 'var(--chart-2)',
-  回厂游: 'var(--danger)',
-  封坛仪式: 'var(--chart-3)',
+  主题试吃: 'var(--ui-accent)',
+  门店主题活动: 'var(--ui-accent)',
+  门店沙龙: 'var(--chart-2)',
+  后厨开放日: 'var(--danger)',
+  门店参访活动: 'var(--danger)',
+  新品发布: 'var(--chart-3)',
+  企业团餐洽谈: 'var(--warn)',
   企业团购沙龙: 'var(--warn)',
+  合作说明会: 'var(--ok)',
+  渠道合作活动: 'var(--ok)',
   招商说明会: 'var(--ok)',
+  会员专享: 'var(--chart-2)',
+  会员活动: 'var(--chart-2)',
   会员日: 'var(--chart-2)',
 };
 const TYPE_TAG: Record<string, string> = {
-  品鉴会: 'blue',
-  沙龙会: 'cyan',
-  回厂游: 'volcano',
-  封坛仪式: 'geekblue',
+  主题试吃: 'blue',
+  门店主题活动: 'blue',
+  门店沙龙: 'cyan',
+  后厨开放日: 'volcano',
+  门店参访活动: 'volcano',
+  新品发布: 'geekblue',
+  企业团餐洽谈: 'orange',
   企业团购沙龙: 'orange',
+  合作说明会: 'green',
+  渠道合作活动: 'green',
   招商说明会: 'green',
+  会员专享: 'cyan',
+  会员活动: 'cyan',
   会员日: 'cyan',
 };
 const TYPE_EMOJI: Record<string, string> = {
-  品鉴会: '🍽️',
-  沙龙会: '💬',
-  回厂游: '👨‍🍳',
-  封坛仪式: '✨',
+  主题试吃: '🍽️',
+  门店主题活动: '🍽️',
+  门店沙龙: '💬',
+  后厨开放日: '👨‍🍳',
+  门店参访活动: '👨‍🍳',
+  新品发布: '✨',
+  企业团餐洽谈: '🧾',
   企业团购沙龙: '🧾',
+  合作说明会: '🤝',
+  渠道合作活动: '🤝',
   招商说明会: '🤝',
+  会员专享: '🎁',
+  会员活动: '🎁',
   会员日: '🎁',
 };
 const STATUS_BADGE: Record<string, any> = {

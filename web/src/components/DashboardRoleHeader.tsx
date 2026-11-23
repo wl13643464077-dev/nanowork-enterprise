@@ -91,18 +91,9 @@ export default function DashboardRoleHeader({
         <div className="drh-banner-summary">{summary}</div>
       </div>
       {isEmpty && guide.length > 0 && (
-        <div
-          style={{
-            background: 'var(--ui-surface)',
-            border: '1px solid var(--ui-border-strong)',
-            borderRadius: 14,
-            padding: '16px 18px',
-          }}
-        >
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ui-text)', marginBottom: 4 }}>先完成一件事</div>
-          <div style={{ fontSize: 12.5, color: 'var(--ui-muted)', marginBottom: 14 }}>
-            选择这次要拿到的结果，准备好问题或照片就可以开始。
-          </div>
+        <div className="drh-guide-card">
+          <div className="drh-guide-title">先完成一件事</div>
+          <div className="drh-guide-subtitle">选择这次要拿到的结果，准备好问题或照片就可以开始。</div>
           <Row gutter={[12, 12]}>
             {guide.map(step => (
               <Col xs={24} md={8} key={step.title}>
@@ -110,26 +101,11 @@ export default function DashboardRoleHeader({
                   type="button"
                   onClick={() => onNavigate(step.to)}
                   aria-label={`${step.title}：${step.desc}`}
-                  style={{
-                    appearance: 'none',
-                    display: 'block',
-                    width: '100%',
-                    cursor: 'pointer',
-                    background: 'var(--ui-surface)',
-                    border: '1px solid var(--ui-border)',
-                    borderRadius: 10,
-                    padding: '12px 14px',
-                    height: '100%',
-                    textAlign: 'left',
-                    font: 'inherit',
-                    color: 'inherit',
-                  }}
+                  className="drh-guide-step"
                 >
-                  <div style={{ fontSize: 22, marginBottom: 6 }}>{step.icon}</div>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ui-accent)' }}>{step.title}</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--ui-muted)', marginTop: 4, lineHeight: 1.6 }}>
-                    {step.desc}
-                  </div>
+                  <div className="drh-guide-step-icon">{step.icon}</div>
+                  <div className="drh-guide-step-title">{step.title}</div>
+                  <div className="drh-guide-step-desc">{step.desc}</div>
                 </button>
               </Col>
             ))}

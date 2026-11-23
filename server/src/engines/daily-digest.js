@@ -34,6 +34,88 @@ function overdueFollowCount() {
       AND next_follow_at IS NOT NULL AND next_follow_at < datetime('now','localtime')`, curTenant())?.n || 0;
 }
 
+function tableExists(name) {
+  try {
+    return Boolean(q.get(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name));
+  } catch {
+    return false;
+  }
+}
+
+// 近 7 日待复差评数（严格 tenant_id + 可选 storeScope 隔离）
+function pendingBadReviewCount(storeScope = { sql: '', params: [] }) {
+  if (!tableExists('store_reviews')) return 0;
+  try {
+    return q.get(
+      `SELECT COUNT(*) n FROM store_reviews
+       WHERE tenant_id=? AND rating <= 2
+         AND (reply IS NULL OR trim(reply) = '')
+         AND created_at >= datetime('now','localtime','-7 days')${storeScope.sql}`,
+      curTenant(),
+      ...storeScope.params,
+    )?.n || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// 未闭环巡店整改数（兼容中文 '已通过' 与系统终态 'closed'/'completed'，严格 tenant_id + storeScope 隔离）
+function openRectificationCount(storeScope = { sql: '', params: [] }) {
+  if (!tableExists('store_inspection_rectifications')) return 0;
+  try {
+    return q.get(
+      `SELECT COUNT(*) n FROM store_inspection_rectifications
+       WHERE tenant_id=?
+         AND COALESCE(status, '') NOT IN ('已通过', 'closed', 'completed')${storeScope.sql}`,
+      curTenant(),
+      ...storeScope.params,
+    )?.n || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function buildRecommendedEmployees({ pendingBadReviews, openRectifications, overdueFollows, deltaPct }) {
+  const list = [];
+  if (pendingBadReviews > 0) {
+    list.push({
+      id: 143,
+      code: '#143',
+      name: '潘口碑',
+      label: '#143 潘口碑',
+      reason: `近 7 日有 ${pendingBadReviews} 条差评待回复`,
+    });
+  }
+  if (openRectifications > 0) {
+    list.push({
+      id: 161,
+      code: '#161',
+      name: '查巡巡',
+      label: '#161 查巡巡',
+      reason: `当前有 ${openRectifications} 项巡店整改未闭环`,
+    });
+  }
+  if (overdueFollows > 0) {
+    list.push({
+      id: 144,
+      code: '#144',
+      name: '葛会员',
+      label: '#144 葛会员',
+      reason: `有 ${overdueFollows} 位客户跟进已超期`,
+    });
+  }
+  if (deltaPct !== null && deltaPct < 0) {
+    list.push({
+      id: 160,
+      code: '#160',
+      name: '店小满',
+      label: '#160 店小满',
+      reason: `昨日营收较前 7 日均值下降 ${Math.abs(deltaPct)}%`,
+    });
+  }
+  return list;
+}
+
 const BOTTLENECK_ADVICE = {
   已沟通: '沟通后推进邀约的转化偏低：让「会员增长」里的高意向客户今天收到一条明确的到店邀约（时间+权益），可用内容生产仓的私聊邀约话术。',
   已邀约: '邀约后实际到店偏低：对已邀约客户做一轮到店前确认（提醒+加一个到店理由），并检查邀约权益是否可兑现。',
@@ -50,31 +132,61 @@ export function buildDailyDigest(forDate, { user = null } = {}) {
     const row = revenueOf(shiftDate(forDate, -i), storeScope);
     if (row) history.push(row.amount);
   }
-  if (!yesterday && !history.length) return null; // 完全无数据，不硬生成
+  const pendingBadReviews = pendingBadReviewCount(storeScope);
+  const openRectifications = openRectificationCount(storeScope);
+  const overdueFollows = overdueFollowCount();
+
+  // 仅当营收/历史经营、待复差评、未闭环整改全部为空时返回 null
+  if (!yesterday && !history.length && pendingBadReviews === 0 && openRectifications === 0) return null;
 
   const avg = history.length ? history.reduce((sum, v) => sum + v, 0) / history.length : null;
   const amount = yesterday?.amount || 0;
   const deltaPct = avg && avg > 0 ? Math.round(((amount - avg) / avg) * 100) : null;
 
-  // 【涨跌】
+  // 【昨日】
   let headline;
   if (!yesterday) headline = `昨日（${forDate}）没有经营数据回流。`;
   else if (deltaPct === null) headline = `昨日营收 ${fmtYuan(amount)}（暂无前 7 日数据可对比）。`;
   else headline = `昨日营收 ${fmtYuan(amount)}，较前 7 日均值${deltaPct >= 0 ? '增长' : '下降'} ${Math.abs(deltaPct)}%。`;
 
-  // 【归因】规则版：优先解释缺数据，其次漏斗卡点，再看跟进积压
+  // 【门店异常】
+  const anomalyParts = [];
+  if (pendingBadReviews > 0) anomalyParts.push(`近 7 日待复差评 ${pendingBadReviews} 条`);
+  if (openRectifications > 0) anomalyParts.push(`未闭环巡店整改 ${openRectifications} 项`);
+  if (overdueFollows > 0) anomalyParts.push(`超期跟进客户 ${overdueFollows} 位`);
+  const anomalyLine = anomalyParts.length
+    ? anomalyParts.join('；')
+    : '暂无待复差评、未闭环巡店整改或超期跟进。';
+
+  // 【归因】与【建议】
   const { bottleneck } = funnel();
-  const overdue = overdueFollowCount();
+  const recommendedEmployees = buildRecommendedEmployees({
+    pendingBadReviews,
+    openRectifications,
+    overdueFollows,
+    deltaPct,
+  });
   let attribution;
   let suggestion;
   if (!yesterday) {
-    attribution = '未录入订单或日报，系统无法判断昨日经营好坏。';
-    suggestion = '在「系统管理 → 数据录入」补录昨日数据；长期建议接入收银/平台数据源，摆脱手工回填。';
+    if (pendingBadReviews > 0 || openRectifications > 0) {
+      attribution = '昨日未录入订单或日报，但门店仍有待处理差评或未闭环巡店整改。';
+      suggestion = '优先安排店长闭环口碑差评与巡店整改项，并在「系统管理 → 数据录入」补录昨日经营数据。';
+    } else {
+      attribution = '未录入订单或日报，系统无法判断昨日经营好坏。';
+      suggestion = '在「系统管理 → 数据录入」补录昨日数据；长期建议接入收银/平台数据源，摆脱手工回填。';
+    }
   } else if (bottleneck) {
     attribution = `转化漏斗当前卡在「${bottleneck}」环节（低于基准）。`;
     suggestion = BOTTLENECK_ADVICE[bottleneck] || '在「经营洞察」查看该环节明细并安排今日跟进动作。';
-  } else if (overdue > 0) {
-    attribution = `漏斗各环节未见明显异常，但有 ${overdue} 位客户跟进已超期。`;
+  } else if (pendingBadReviews > 0 || openRectifications > 0) {
+    const issues = [];
+    if (pendingBadReviews > 0) issues.push(`近 7 日尚有 ${pendingBadReviews} 条差评未回复`);
+    if (openRectifications > 0) issues.push(`${openRectifications} 项巡店整改未闭环`);
+    attribution = `门店存在待处理异常：${issues.join('，')}。`;
+    suggestion = '先在「评价中心 / 门店运营」逐项清零差评回复与巡店整改，再同步复盘当日营收波动。';
+  } else if (overdueFollows > 0) {
+    attribution = `漏斗各环节未见明显异常，但有 ${overdueFollows} 位客户跟进已超期。`;
     suggestion = '先清超期跟进：按 A 级优先逐个联系，避免高意向客户流失。';
   } else {
     attribution = '漏斗各环节均在基准内，暂无明显异常。';
@@ -82,6 +194,10 @@ export function buildDailyDigest(forDate, { user = null } = {}) {
       ? '营收回落但转化正常，多半是流量侧波动：今天安排一条获客内容（今日必发）并检查平台曝光。'
       : '保持节奏：把昨日有效的动作（内容/活动/邀约）沉淀为模板，继续执行。';
   }
+
+  const recommendSuffix = recommendedEmployees.length
+    ? `\n【建议协办】${recommendedEmployees.map((emp) => emp.label).join('、')}`
+    : '';
 
   return {
     date: forDate,
@@ -93,22 +209,27 @@ export function buildDailyDigest(forDate, { user = null } = {}) {
     headline,
     attribution,
     suggestion,
-    text: `【昨日】${headline}\n【归因】${attribution}\n【建议】${suggestion}`,
+    pendingBadReviews,
+    openRectifications,
+    overdueFollows,
+    recommendedEmployees,
+    text: `【昨日】${headline}\n【门店异常】${anomalyLine}\n【归因】${attribution}\n【建议】${suggestion}${recommendSuffix}`,
   };
 }
 
 // 发送给老板与运营负责人（站内通知），并尽力推送到飞书群（异步、失败不影响主流程）
-export function sendDailyDigest(forDate) {
-  const digest = buildDailyDigest(forDate);
-  if (!digest) return { skipped: true, reason: 'no-data' };
+export function sendDailyDigest(forDate, { user = null } = {}) {
+  const feishuReady = appBotReady();
+  const digest = buildDailyDigest(forDate, { user });
+  if (!digest) return { skipped: true, reason: 'no-data', feishuReady };
   const managers = q.all(`SELECT id FROM users
-    WHERE tenant_id=? AND status='启用' AND role IN ('boss','ops_director')`, curTenant());
-  for (const user of managers) {
-    notify(user.id, 'task', `每日经营日报 · ${forDate}`, digest.text);
+    WHERE tenant_id=? AND status='启用' AND role IN ('boss','ops_director','admin')`, curTenant());
+  for (const mgr of managers) {
+    notify(mgr.id, 'task', `每日经营日报 · ${forDate}`, digest.text);
   }
-  if (appBotReady()) {
+  if (feishuReady) {
     pushFeishuToManagers(`【纳米Work 每日经营日报 · ${forDate}】\n${digest.text}`)
       .catch((error) => console.error('[daily-digest] 飞书推送失败：', error?.message));
   }
-  return { skipped: false, notified: managers.length, digest };
+  return { skipped: false, notified: managers.length, feishuReady, digest };
 }

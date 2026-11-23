@@ -299,6 +299,21 @@ export default function System() {
   const [feishuSaving, setFeishuSaving] = useState(false);
   const [feishuAppForm, setFeishuAppForm] = useState({ appId: '', appSecret: '' });
   const [feishuAppSaving, setFeishuAppSaving] = useState(false);
+  const [digestPreview, setDigestPreview] = useState<{
+    date?: string;
+    feishuReady?: boolean;
+    digest?: {
+      date: string;
+      headline: string;
+      text: string;
+      pendingBadReviews?: number;
+      openRectifications?: number;
+      overdueFollows?: number;
+      recommendedEmployees?: Array<{ code?: string; name: string; label?: string; reason?: string }>;
+    } | null;
+  } | null>(null);
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [digestSending, setDigestSending] = useState(false);
   const loadFeishu = () =>
     api
       .get('/sys/feishu')
@@ -306,6 +321,31 @@ export default function System() {
         setFeishuCfg(d);
       })
       .catch(() => {});
+  const refreshDigestPreview = () => {
+    if (!isAdminish) return;
+    setDigestLoading(true);
+    api
+      .get('/dashboard/daily-digest/preview')
+      .then((d: any) => setDigestPreview(d || null))
+      .catch(() => setDigestPreview(null))
+      .finally(() => setDigestLoading(false));
+  };
+  const sendDigestNow = () => {
+    setDigestSending(true);
+    api
+      .post('/dashboard/daily-digest/send', {})
+      .then((res: any) => {
+        if (res?.skipped) {
+          message.info('昨日暂无经营数据或门店异常，未发送空简报');
+        } else {
+          const channelTip = res?.feishuReady ? '站内通知 + 飞书' : '站内通知（飞书未就绪）';
+          message.success(`已向 ${res?.notified || 0} 位管理者推送每日经营简报（${channelTip}）`);
+        }
+        refreshDigestPreview();
+      })
+      .catch(() => {})
+      .finally(() => setDigestSending(false));
+  };
   const startFeishuScan = () => {
     setFeishuBind(null);
     setFeishuBindStatus('pending');
@@ -422,6 +462,21 @@ export default function System() {
   useEffect(() => {
     loadFeishu();
   }, []);
+  useEffect(() => {
+    if (!isAdminish || tab !== 'feishu') return;
+    let cancelled = false;
+    api
+      .get('/dashboard/daily-digest/preview')
+      .then((d: any) => {
+        if (!cancelled) setDigestPreview(d || null);
+      })
+      .catch(() => {
+        if (!cancelled) setDigestPreview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminish, tab]);
   useEffect(() => {
     if (!feishuQr || !feishuBind?.state || feishuBindStatus !== 'pending') return;
     const timer = window.setInterval(() => {
@@ -2554,6 +2609,91 @@ export default function System() {
             )}
           </Modal>
         </Panel>
+      </Col>
+      <Col xs={24} lg={16}>
+        <Card
+          size="small"
+          loading={digestLoading}
+          title={
+            <Space size={6}>
+              <FileTextOutlined />
+              <span>每日经营简报（08:30 自动推送）实时预览与一键测试推送</span>
+            </Space>
+          }
+          extra={
+            <Tag color={digestPreview?.feishuReady ? 'green' : 'default'}>
+              {digestPreview?.feishuReady ? '站内 + 飞书就绪' : '仅站内通知'}
+            </Tag>
+          }
+        >
+          <Space direction="vertical" size={12} className="nw-full-width">
+            {digestPreview?.digest ? (
+              <>
+                <Space wrap>
+                  <Tag color="blue">统计日：{digestPreview.digest.date}</Tag>
+                  <Tag color={(digestPreview.digest.pendingBadReviews || 0) > 0 ? 'red' : 'green'}>
+                    近 7 日待复差评：{digestPreview.digest.pendingBadReviews || 0} 条
+                  </Tag>
+                  <Tag color={(digestPreview.digest.openRectifications || 0) > 0 ? 'orange' : 'green'}>
+                    未闭环巡店整改：{digestPreview.digest.openRectifications || 0} 项
+                  </Tag>
+                  <Tag color={(digestPreview.digest.overdueFollows || 0) > 0 ? 'gold' : 'green'}>
+                    超期跟进：{digestPreview.digest.overdueFollows || 0} 位
+                  </Tag>
+                </Space>
+                <Alert
+                  type="info"
+                  showIcon
+                  message={digestPreview.digest.headline}
+                  description={
+                    <Space direction="vertical" size={4} className="nw-full-width">
+                      {String(digestPreview.digest.text || '')
+                        .split('\n')
+                        .filter(Boolean)
+                        .map((line, idx) => (
+                          <div key={`${idx}-${line.slice(0, 12)}`}>{line}</div>
+                        ))}
+                    </Space>
+                  }
+                />
+                {(digestPreview.digest.recommendedEmployees || []).length > 0 && (
+                  <Space wrap>
+                    <span className="nw-alert-muted-note">建议协办数字员工：</span>
+                    {(digestPreview.digest.recommendedEmployees || []).map(emp => (
+                      <Tag key={emp.code || emp.name} color="purple">
+                        {emp.label || emp.name}
+                      </Tag>
+                    ))}
+                  </Space>
+                )}
+              </>
+            ) : (
+              <Alert
+                type="warning"
+                showIcon
+                message="昨日暂无经营数据与门店异常"
+                description="系统遵循宁缺毋滥原则：当昨日无营收/订单记录且无待复差评、未闭环巡店整改时不会推送空简报。补录数据或产生门店异常后即可实时预览与推送。"
+              />
+            )}
+            <Space wrap>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                loading={digestSending}
+                disabled={digestLoading}
+                onClick={sendDigestNow}
+              >
+                立即推送今日简报
+              </Button>
+              <Button loading={digestLoading} onClick={refreshDigestPreview}>
+                刷新预览
+              </Button>
+              <span className="nw-alert-muted-note">
+                系统每日 08:30 自动推送给本企业老板与管理层；点击按钮可随时手动发送测试。
+              </span>
+            </Space>
+          </Space>
+        </Card>
       </Col>
     </Row>
   );

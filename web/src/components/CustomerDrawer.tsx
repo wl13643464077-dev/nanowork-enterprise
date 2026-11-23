@@ -5,6 +5,7 @@ import { Drawer, Tag, Space, Spin, Empty, Timeline, Table, Button } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { api, fmtMoney } from '../api/client';
 import { Panel, StageTag, GradeTag } from './Kit';
+import './CustomerDrawer.css';
 
 type CustomerDrawerProps = { leadId: number | null; open: boolean; onClose: () => void };
 
@@ -64,27 +65,16 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
       {denied ? (
         <Empty description="您没有增长中心数据权限，请联系管理员开通" />
       ) : !detail ? (
-        <div style={{ textAlign: 'center', padding: 48 }}>
+        <div className="customer-drawer-loading">
           <Spin tip="档案加载中…">
-            <div style={{ height: 32 }} />
+            <div className="customer-drawer-spin-spacer" />
           </Spin>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div
-            style={{
-              display: 'flex',
-              gap: 16,
-              flexWrap: 'wrap',
-              fontSize: 12.5,
-              color: 'var(--ui-text-2)',
-              background: 'var(--ui-surface-2)',
-              borderRadius: 8,
-              padding: '10px 12px',
-            }}
-          >
+        <div className="customer-drawer-body">
+          <div className="customer-drawer-summary">
             <span>
-              成交概率 <b style={{ color: 'var(--danger)', fontSize: 16 }}>{detail.score}</b> 分
+              成交概率 <b className="customer-drawer-score">{detail.score}</b> 分
             </span>
             <span>
               预算 <b>{detail.budget_level || '-'}</b>
@@ -98,12 +88,16 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
             <Panel
               title={`生命周期 · 当前「${journey.current}」（${(journey.journey || []).filter((j: any) => j.reached).length}/11节点 · ${journey.totalDays}天）`}
             >
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              <div className="customer-drawer-journey-tags">
                 {(journey.journey || []).map((j: any) => (
                   <Tag
                     key={j.node}
                     color={j.node === journey.current ? 'blue' : j.reached ? 'green' : 'default'}
-                    style={{ margin: 0, fontSize: 11, opacity: j.reached ? 1 : 0.55 }}
+                    className={
+                      j.reached
+                        ? 'customer-drawer-journey-tag'
+                        : 'customer-drawer-journey-tag customer-drawer-journey-tag--unreached'
+                    }
                     title={j.at ? `${j.at}${j.note ? ' · ' + j.note : ''}` : '未到达'}
                   >
                     {j.reached ? '✓' : '·'} {j.node}
@@ -111,11 +105,7 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
                   </Tag>
                 ))}
               </div>
-              {journey.nextHint && (
-                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ui-accent)' }}>
-                  💡 下一步：{journey.nextHint}
-                </div>
-              )}
+              {journey.nextHint && <div className="customer-drawer-next-hint">💡 下一步：{journey.nextHint}</div>}
             </Panel>
           )}
 
@@ -142,7 +132,7 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
                     dataIndex: 'type',
                     width: 62,
                     render: (v: any) => (
-                      <Tag color={v === '复购' ? 'purple' : 'blue'} style={{ margin: 0, fontSize: 10.5 }}>
+                      <Tag color={v === '复购' ? 'purple' : 'blue'} className="customer-drawer-order-tag">
                         {v}
                       </Tag>
                     ),
@@ -156,18 +146,9 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
           {Object.keys(detail.score_detail || {}).length > 0 && (
             <Panel title={`评分构成（共${detail.score}分，可解释）`}>
               {Object.entries(detail.score_detail).map(([k, v]: any) => (
-                <div
-                  key={k}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: 12.5,
-                    padding: '3px 0',
-                    color: 'var(--ui-text-2)',
-                  }}
-                >
+                <div key={k} className="customer-drawer-score-row">
                   <span>{k}</span>
-                  <b style={{ color: Number(v) >= 0 ? '#16a34a' : '#ef4444' }}>
+                  <b className={Number(v) >= 0 ? 'customer-drawer-delta-pos' : 'customer-drawer-delta-neg'}>
                     {Number(v) >= 0 ? '+' : ''}
                     {v}
                   </b>
@@ -183,13 +164,11 @@ function CustomerDrawerInstance({ leadId, open, onClose }: CustomerDrawerProps) 
               <Timeline
                 items={(detail.follows || []).slice(0, 8).map((f: any) => ({
                   children: (
-                    <div style={{ fontSize: 12.5 }}>
+                    <div className="customer-drawer-follow-item">
                       <b>{f.user_name || '系统'}</b>{' '}
-                      <span style={{ color: 'var(--ui-muted)', fontSize: 11 }}>
-                        {(f.created_at || '').slice(5, 16)}
-                      </span>
-                      {f.stage_after && <Tag style={{ marginLeft: 6, fontSize: 10 }}>{f.stage_after}</Tag>}
-                      <div style={{ color: 'var(--ui-text-2)' }}>{f.content}</div>
+                      <span className="customer-drawer-follow-time">{(f.created_at || '').slice(5, 16)}</span>
+                      {f.stage_after && <Tag className="customer-drawer-follow-stage">{f.stage_after}</Tag>}
+                      <div className="customer-drawer-follow-content">{f.content}</div>
                     </div>
                   ),
                 }))}
