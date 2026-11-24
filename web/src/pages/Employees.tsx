@@ -79,6 +79,20 @@ const plainCatalogText = (value: unknown) =>
     .replace(/\*\*|__|[*`]/gu, '')
     .trim();
 
+// 目录里没有加粗小标题的流程步骤，服务端会把能力名回退成「第1步」「步骤 2」这类序号占位。
+// 卡片上只显示真实步骤名：占位时取该步骤描述的首个短语；仍取不到就整行不显示。
+const STEP_PLACEHOLDER_NAME = /^(?:第\s*\d+\s*步|步骤\s*\d+)$/u;
+const STEP_NAME_MAX_LENGTH = 18;
+const firstStepDisplayName = (employee: Pick<Employee, 'capabilityNames' | 'steps'>) => {
+  const name = plainCatalogText(employee.capabilityNames?.[0]);
+  if (name && !STEP_PLACEHOLDER_NAME.test(name)) return name;
+  const phrase = plainCatalogText(employee.steps?.[0])
+    .split(/[，,。；;：:（(]/u)[0]
+    .trim();
+  if (phrase.length < 2 || STEP_PLACEHOLDER_NAME.test(phrase)) return '';
+  return phrase.length > STEP_NAME_MAX_LENGTH ? `${phrase.slice(0, STEP_NAME_MAX_LENGTH)}…` : phrase;
+};
+
 const fmtYuan = (value: number) =>
   value >= 10000 ? `${(value / 10000).toFixed(value % 10000 === 0 ? 0 : 1)}万` : value.toLocaleString();
 
@@ -771,9 +785,7 @@ export default function Employees() {
                             ? `${employee.expertKernel.skillCount} 项真人技能 · ${employee.expertKernel.stepCount} 步专家流程`
                             : `${employee.skillCount || 0} 项真人技能 · ${employee.capabilityCount || 0} 步专家流程`}
                         </span>
-                        {(employee.capabilityNames || []).slice(0, 1).map(name => (
-                          <em key={name}>{name}</em>
-                        ))}
+                        {firstStepDisplayName(employee) && <em>{firstStepDisplayName(employee)}</em>}
                       </button>
                     )}
                     {employee.expertKernel && employee.expertKernel.topDeliverables.length > 0 && (

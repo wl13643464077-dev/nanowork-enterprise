@@ -48,7 +48,14 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, getUser } from '../api/client';
+import { useNavigate } from 'react-router-dom';
+import { api, BUDGET_EXCEEDED_CODE, getUser, type ApiRequestError } from '../api/client';
+import {
+  creditShortfallText,
+  findDispatchPlaceholders,
+  parseCreditShortfall,
+  type CreditShortfall,
+} from '../utils/dispatchGuards';
 import { isPersonalApiUser, personalApiBillingLabel, PERSONAL_API_PRICING_NOTE } from './personalApiBilling.js';
 import { refineVoiceIntent, useVoiceInput } from './useVoiceInput';
 import type {
@@ -360,8 +367,55 @@ function billingStateLabel(billing?: EmployeeRunBilling | null, runStatus?: stri
   return state ? localizeOperationalStatus(state) : '';
 }
 
+// 服务端 SQLite 时间统一是上海本地时间字符串（datetime('now','localtime')），原样截到分钟即可；
+// 带时区标记的 ISO 串（如派活后前端乐观写入的 toISOString()，是 UTC）必须先换算成上海时间，
+// 否则同一张结果卡里会出现相差 8 小时的两个时间。
+const SHANGHAI_MINUTE_FORMAT = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
 function runTime(value?: string | null) {
-  return text(value).replace('T', ' ').slice(0, 16) || '时间未记录';
+  const raw = text(value);
+  if (!raw) return '时间未记录';
+  if (/T.*(?:Z|[+-]\d{2}:?\d{2})$/iu.test(raw)) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) return SHANGHAI_MINUTE_FORMAT.format(parsed).replace(',', '');
+  }
+  return raw.replace('T', ' ').slice(0, 16);
+}
+
+// 失败原因按错误码换成老板能看懂的说法；没有映射的错误码回退为服务端原文。
+const RESTAURANT_FAILURE_REASON: Record<string, string> = {
+  EMPLOYEE_TEMPLATE_ONLY: 'AI 服务这次没有给出可用的回答。为了不拿套话充数，这次任务已停止。',
+  EMPLOYEE_TASK_TIMEOUT: '这次处理超时了，没能在限定时间内写完。',
+  RESTAURANT_OUTPUT_HARD_GATE_FAILED: '写出来的内容没有通过质量检查，为避免误导经营判断，没有交付。',
+  RESTAURANT_OUTPUT_QUALITY_FAILED: '写出来的内容没有通过质量检查，为避免误导经营判断，没有交付。',
+  EMPLOYEE_PROVIDER_USAGE_MISSING: '这次的用量记录没有对上，为保证不多扣积分，结果没有交付。',
+  EMPLOYEE_HOLD_UNDERESTIMATED: '这次的用量记录没有对上，为保证不多扣积分，结果没有交付。',
+  INSUFFICIENT_CREDITS: '积分余额不足，任务没有开始。',
+};
+function restaurantFailureReason(task: EmployeeRuntimeTask) {
+  const mapped = RESTAURANT_FAILURE_REASON[text(task.failure?.code)];
+  if (mapped) return mapped;
+  return text(task.failure?.message) || '任务在写出可用内容前就停止了。';
+}
+function restaurantBillingRefunded(task: EmployeeRuntimeTask) {
+  return ['refunded', 'released'].includes(text(task.billing?.state));
+}
+// 「已退回 N 积分，实扣 0 积分」这类账务口径改成不吓人的说法；其它状态沿用服务端文案。
+function restaurantBillingText(task: EmployeeRuntimeTask) {
+  const billing = task.billing;
+  if (!billing) return '';
+  if (restaurantBillingRefunded(task)) {
+    const returned = Number(billing.refundedCredits ?? billing.heldCredits);
+    return Number.isFinite(returned) && returned > 0 ? `本次未扣积分（预占的 ${returned} 积分已退回）` : '本次未扣积分';
+  }
+  return billing.label || '账务状态未记录';
 }
 
 function stringList(value: unknown) {
@@ -1121,6 +1175,10 @@ function EmployeeWorkbenchInstance({
   // PRD v2.2 FR-2：派活前追问的答案（key → 值；"__default__" 表示用默认）
   const [dispatchFollowupAnswers, setDispatchFollowupAnswers] = useState<Record<string, string>>({});
   const watchedDispatchQuestion = Form.useWatch('question', dispatchForm);
+  const dispatchPlaceholders = useMemo(
+    () => findDispatchPlaceholders(watchedDispatchQuestion),
+    [watchedDispatchQuestion],
+  );
   // 派活输入语音化（全部数字员工共用）：识别在本机浏览器完成，不扣积分；
   // 说完后由 AI 按经营语境整理意图（轻量真实调用），纠正同音错字。
   const [dispatchVoiceRefining, setDispatchVoiceRefining] = useState(false);
@@ -1146,6 +1204,11 @@ function EmployeeWorkbenchInstance({
 
   const currentUser = getUser();
   const personalApi = isPersonalApiUser(currentUser);
+  const navigate = useNavigate();
+  // 余额不足：输入框上方常驻提示（不自动消失），充值到账或再次发送成功后才收起。
+  const [creditShortfall, setCreditShortfall] = useState<CreditShortfall | null>(null);
+  // 模板占位符未替换就点了发送：拦截并常驻提示，直到占位符全部换掉。
+  const [placeholderBlocked, setPlaceholderBlocked] = useState(false);
   const canViewDiagnostics = currentUser?.role === 'platform_super';
   const canManageContentProfile =
     domain === 'content' && ['boss', 'admin', 'platform_super'].includes(currentUser?.role || '');
@@ -1826,6 +1889,20 @@ function EmployeeWorkbenchInstance({
   const submitDispatch = async () => {
     if (idx === null || !profile) return;
     const values = await dispatchForm.validateFields();
+    if (domain === 'restaurant') {
+      const placeholders = findDispatchPlaceholders(values.question);
+      if (placeholders.length) {
+        setPlaceholderBlocked(true);
+        const input = document.getElementById(dispatchFormId)?.querySelector('textarea');
+        if (input) {
+          const first = input.value.indexOf(placeholders[0].token);
+          input.focus();
+          if (first >= 0) input.setSelectionRange(first, first + placeholders[0].token.length);
+        }
+        return;
+      }
+    }
+    setPlaceholderBlocked(false);
     let dispatchPayload: Record<string, unknown> & { brief?: ReturnType<typeof buildPaihuoContentBrief> };
     try {
       dispatchPayload =
@@ -1860,10 +1937,16 @@ function EmployeeWorkbenchInstance({
     }
     setSaving('dispatch');
     try {
-      const result = await api.post(`/employee-workbench/${domain}/${idx}/dispatch`, {
-        ...dispatchPayload,
-        ...(dispatchFiles.length ? { fileIds: dispatchFiles.map(file => file.id) } : {}),
-      });
+      // silent：余额不足要显示常驻提示条而不是一闪而过的 toast；其它错误在 catch 里照常提示。
+      const result = await api.post(
+        `/employee-workbench/${domain}/${idx}/dispatch`,
+        {
+          ...dispatchPayload,
+          ...(dispatchFiles.length ? { fileIds: dispatchFiles.map(file => file.id) } : {}),
+        },
+        { silent: true },
+      );
+      setCreditShortfall(null);
       const payload = result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
       const billing =
         payload.billing && typeof payload.billing === 'object'
@@ -1929,12 +2012,56 @@ function EmployeeWorkbenchInstance({
           : {}),
       });
       setDispatchFiles([]);
-    } catch {
-      // api 客户端已经显示了服务端错误；保留表单，方便修正后重试。
+    } catch (error) {
+      // 保留表单内容，方便充值或修正后直接重试。
+      const shortfall = parseCreditShortfall(error);
+      if (shortfall) {
+        setCreditShortfall(shortfall);
+      } else if ((error as ApiRequestError)?.code !== BUDGET_EXCEEDED_CODE) {
+        // 月度预算拦截已由 api 客户端统一提示，这里不重复弹。
+        message.error((error as Error)?.message || '派活没有发出去，请稍后重试');
+      }
     } finally {
       setSaving('');
     }
   };
+
+  // 去充值会离开工作台：先把没发出去的内容存到本标签页，充值回来重新打开这名员工时自动填回。
+  const dispatchDraftKey = `nw:ewb:dispatch-draft:${domain}:${idx ?? 'closed'}`;
+  const goRecharge = () => {
+    try {
+      const draft = String(dispatchForm.getFieldValue('question') || '');
+      if (draft.trim()) window.sessionStorage.setItem(dispatchDraftKey, draft);
+    } catch {
+      // 隐私模式下存不了草稿不影响去充值。
+    }
+    navigate('/recharge');
+  };
+  const profileReady = Boolean(profile);
+  useEffect(() => {
+    if (!open || !profileReady || idx === null) return;
+    try {
+      const draft = window.sessionStorage.getItem(dispatchDraftKey);
+      if (!draft) return;
+      window.sessionStorage.removeItem(dispatchDraftKey);
+      if (!String(dispatchForm.getFieldValue('question') || '').trim()) {
+        dispatchForm.setFieldValue('question', draft);
+      }
+    } catch {
+      // 读不到草稿时保持输入框原样。
+    }
+  }, [dispatchDraftKey, dispatchForm, idx, open, profileReady]);
+
+  // 充值到账（顶栏同款 credits-updated 事件）且余额已够本次用量时，自动收起余额不足提示。
+  useEffect(() => {
+    if (!creditShortfall) return;
+    const onCredits = (event: Event) => {
+      const balance = Number((event as CustomEvent<{ balance?: number }>).detail?.balance);
+      if (Number.isFinite(balance) && balance >= (creditShortfall.need ?? 1)) setCreditShortfall(null);
+    };
+    window.addEventListener('credits-updated', onCredits);
+    return () => window.removeEventListener('credits-updated', onCredits);
+  }, [creditShortfall]);
 
   const reviewContentOutput = async (
     decision: 'adopt' | 'reject',
@@ -2646,7 +2773,11 @@ function EmployeeWorkbenchInstance({
                     ) : restaurantContractInvalid ? (
                       <span>本次未形成可验收产物，不会进入业务可用状态；请补充或调整材料后重新派活。</span>
                     ) : restaurantTask.failed ? (
-                      `${restaurantTask.failure?.message || '生成失败'}。${restaurantTask.nextAction || '查看失败原因，补充或调整输入后重新派活'}。未形成业务产物；${personalApi ? '已发生的调用费用以供应商账单为准。' : '计费结果请以业务流中的积分账务节点为准。'}`
+                      <span>
+                        {restaurantOutputBody
+                          ? '这次任务没有顺利完成，已有内容和处理办法见下方「员工结果」。'
+                          : '这次没出结果，原因和重新派活的入口见下方「员工结果」。'}
+                      </span>
                     ) : restaurantPublicStatus === '待派活' ? (
                       <>
                         <span>这是旧任务记录，还没有绑定具体数字员工执行档案。</span>
@@ -2713,14 +2844,14 @@ function EmployeeWorkbenchInstance({
                         : '已接受的未达标草稿（内部参考）'
                       : restaurantOutputBody
                         ? '岗位交付报告'
-                        : '任务结果与失败诊断'
+                        : '任务结果'
                   }
                   description={
                     restaurantDraft
                       ? '这份结果没有通过质量门，但正文已原样保留；先看未通过的检查，再决定重新派活还是就用这份草稿。'
                       : restaurantOutputBody
                         ? '点击上方任意任务后，在这里直接查看完整产物，不再需要绕到其他页面。'
-                        : '本次没有生成业务产物；原因、账务结果和下一步都在这里。'
+                        : '这次没有可查看的内容，原因和下一步都在这里。'
                   }
                 />
                 {restaurantDraft && (
@@ -2801,9 +2932,10 @@ function EmployeeWorkbenchInstance({
                     <div className={`ewb-billing-result state-${restaurantTask.billing.state || 'unknown'}`}>
                       <strong>本次费用</strong>
                       <span>
+                        {/* 服务端原文 restaurantTask.billing.label 仍是兜底，退回类状态换成老板好懂的说法 */}
                         {personalApi
                           ? personalApiBillingLabel(restaurantTask.billing)
-                          : restaurantTask.billing.label || '账务状态未记录'}
+                          : restaurantBillingText(restaurantTask)}
                       </span>
                       {canViewDiagnostics && restaurantTask.billing.costYuan != null && (
                         <small>供应商成本 ¥{Number(restaurantTask.billing.costYuan).toFixed(4)}</small>
@@ -2971,36 +3103,46 @@ function EmployeeWorkbenchInstance({
                       </details>
                     </>
                   ) : (
-                    <>
-                      <Alert
-                        type="error"
-                        showIcon
-                        message="未形成业务产物"
-                        description={`${restaurantTask.failure?.message || '执行过程发生异常'}。${restaurantTask.nextAction || '补充或调整要求后重新派活'}。`}
-                      />
-                      <div className="ewb-no-output">
-                        <strong>为什么没有输出</strong>
-                        <p>
-                          {restaurantTask.failure?.message ||
-                            '任务在形成可交付正文前已终止，因此不展示伪造或未通过门禁的结果。'}
-                        </p>
-                        {restaurantTask.failure?.code && <Tag>错误码：{restaurantTask.failure.code}</Tag>}
-                        <Button
-                          type="primary"
-                          onClick={() => {
-                            dispatchForm.setFieldsValue({
-                              question: restaurantTask.title || '',
-                              requirement: restaurantTask.requirement || '',
-                            });
-                            document
-                              .getElementById(dispatchFormId)
-                              ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-                          }}
-                        >
-                          带回原要求重新派活
-                        </Button>
-                      </div>
-                    </>
+                    <div className="ewb-no-output" role="status">
+                      <strong>
+                        {restaurantTask.failed
+                          ? !personalApi && restaurantBillingRefunded(restaurantTask)
+                            ? '这次没出结果，积分已全部退回'
+                            : '这次没出结果'
+                          : '这次还没有可查看的结果'}
+                      </strong>
+                      <p>
+                        {restaurantTask.failed
+                          ? restaurantFailureReason(restaurantTask)
+                          : restaurantTask.nextAction || '任务没有留下可阅读的内容，可以带回原要求重新派活。'}
+                      </p>
+                      <Button type="primary" onClick={() => redispatchFromTask(restaurantTask)}>
+                        带回原要求重新派活
+                      </Button>
+                      {(restaurantTask.failure?.code || restaurantTask.failure?.message) && (
+                        <details className="ewb-raw-details ewb-no-output-tech">
+                          <summary>技术详情</summary>
+                          <dl>
+                            <dt>任务编号</dt>
+                            <dd>#{restaurantTask.id}</dd>
+                            {restaurantTask.failure?.code && (
+                              <>
+                                <dt>错误码</dt>
+                                <dd>{restaurantTask.failure.code}</dd>
+                              </>
+                            )}
+                            {restaurantTask.failure?.message && (
+                              <>
+                                <dt>系统原始说明</dt>
+                                <dd>{restaurantTask.failure.message}</dd>
+                              </>
+                            )}
+                            <dt>交付状态</dt>
+                            <dd>未形成业务产物</dd>
+                          </dl>
+                        </details>
+                      )}
+                    </div>
                   )}
                   {(restaurantTask.requirement || restaurantTask.output_status) && (
                     <details className="ewb-raw-details">
@@ -3059,9 +3201,11 @@ function EmployeeWorkbenchInstance({
                       </div>
                     </section>
                   )}
+                  {/* 失败且没有可读结果时没有东西可采纳，不渲染「是否采纳」块 */}
                   <div id={restaurantFeedbackId} className="ewb-result-anchor">
                     <ConversationTaskFeedback
                       key={`restaurant-feedback-${restaurantTask.id}`}
+                      hideWhenNothingToReview={!restaurantOutputBody}
                       kind="restaurant"
                       taskId={Number(restaurantTask.id)}
                       businessReview={
@@ -3092,6 +3236,54 @@ function EmployeeWorkbenchInstance({
                 >
                   <ContentRetroSourceSelect />
                 </Form.Item>
+              )}
+              {creditShortfall && (
+                <Alert
+                  className="ewb-composer-notice"
+                  type="warning"
+                  showIcon
+                  role="alert"
+                  message="积分不够，这次派活还没发出"
+                  description={
+                    <>
+                      <span>{creditShortfallText(creditShortfall)}</span>
+                      <span>
+                        {currentUser?.role === 'boss'
+                          ? '你写的内容已保留在输入框里，充值后回来直接点发送。'
+                          : '你写的内容已保留在输入框里。充值需要老板操作，可以把下面这句话发给老板。'}
+                      </span>
+                      {currentUser?.role !== 'boss' && (
+                        <Typography.Text
+                          className="ewb-composer-notice-copy"
+                          copyable={{ tooltips: ['复制提示语', '已复制'] }}
+                        >
+                          {`老板，我给数字员工派活时积分不够了：${creditShortfallText(creditShortfall)}麻烦充值一下，到账后我再继续。`}
+                        </Typography.Text>
+                      )}
+                    </>
+                  }
+                  action={
+                    currentUser?.role === 'boss' ? (
+                      <Button type="primary" onClick={goRecharge}>
+                        去充值
+                      </Button>
+                    ) : (
+                      <Tag>请老板充值</Tag>
+                    )
+                  }
+                />
+              )}
+              {placeholderBlocked && dispatchPlaceholders.length > 0 && (
+                <Alert
+                  className="ewb-composer-notice"
+                  type="warning"
+                  showIcon
+                  role="alert"
+                  message={`还有 ${dispatchPlaceholders.length} 处需要换成你自己的信息：${Array.from(
+                    new Set(dispatchPlaceholders.map(item => item.token)),
+                  ).join('、')}`}
+                  description="把花括号里的词连同花括号一起换掉再发送，这样不会白花积分。"
+                />
               )}
               <div className="ewb-chat-composer-row">
                 <Form.Item

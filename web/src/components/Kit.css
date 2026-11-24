@@ -10,32 +10,53 @@
   border-color: color-mix(in srgb, var(--ui-primary) 42%, var(--ui-border));
 }
 
-.kit-stat-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+.kit-stat-card {
+  position: relative;
 }
 
+/* 标题优先完整显示：允许折成两行，超过两行才省略（完整文案在 title / aria-label 上） */
 .kit-stat-card-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   color: var(--ui-muted);
   font-size: var(--font-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
+/* 「查看明细」入口降级为右上角小箭头：放在卡片内边距里，不占标题行宽度 */
 .kit-stat-card-hint {
-  flex: 0 0 auto;
-  color: var(--ui-primary);
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-2);
+  color: var(--ui-muted);
   font-size: var(--font-1);
-  font-weight: 500;
-  white-space: nowrap;
-  opacity: 0.85;
-  transition: opacity var(--dur-fast) var(--ease-out);
+  line-height: 1;
+  opacity: 0.55;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 .kit-stat-card--clickable:hover .kit-stat-card-hint,
 .kit-stat-card--clickable:focus-visible .kit-stat-card-hint {
+  color: var(--ui-primary);
   opacity: 1;
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kit-stat-card-hint {
+    transition: none;
+  }
+
+  .kit-stat-card--clickable:hover .kit-stat-card-hint,
+  .kit-stat-card--clickable:focus-visible .kit-stat-card-hint {
+    transform: none;
+  }
 }

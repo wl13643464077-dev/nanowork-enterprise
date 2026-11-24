@@ -357,6 +357,12 @@
     bottom: calc(72px + env(safe-area-inset-bottom, 0px));
   }
 
+  /* 手机派活表单底部有固定的「派给TA / 看任务」按钮栏，屏幕窄，悬浮入口放哪都会盖住表单或按钮；
+     正在填单时先收起，回到列表页再出现。 */
+  body:has(.m-action-bar) .role-onboarding-fab.is-mobile-surface {
+    display: none;
+  }
+
   .role-onboarding-drawer .ant-drawer-body {
     padding: var(--space-3);
   }

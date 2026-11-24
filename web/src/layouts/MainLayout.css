@@ -30,10 +30,16 @@
   z-index: 6;
 }
 .os-brand {
+  /* 顶栏收缩优先级：只有品牌区可以让出宽度，且只从副标题、门店文字两段让（见下方 flex-shrink）；
+     搜索入口与右侧操作区不参与收缩，避免互相压叠或把按钮文字挤成两行。 */
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 9px;
-  min-width: 0;
+  min-width: auto;
+}
+.os-brand > * {
+  flex-shrink: 0;
 }
 .os-brand-mark {
   width: 34px;
@@ -58,6 +64,11 @@
   font-weight: 600;
 }
 .os-brand-sub {
+  /* 断点之间的余量由副标题先让（shrink 权重远大于门店文字），让不出再轮到门店文字 */
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--font-1);
   color: var(--muted);
   white-space: nowrap;
@@ -66,11 +77,16 @@
   color: var(--ui-border);
 }
 .os-brand-tenant {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--font-1);
   color: var(--ui-text-2);
   white-space: nowrap;
 }
 .os-status {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -80,10 +96,14 @@
   white-space: nowrap;
 }
 .os-top-actions {
+  flex: 0 0 auto;
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+.os-top-actions > * {
+  flex-shrink: 0;
 }
 .os-credit {
   cursor: pointer;
@@ -152,6 +172,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
   box-shadow: none;
   transition:
     background var(--dur-fast) var(--ease-out),
@@ -646,7 +668,16 @@
   color: var(--ui-muted);
 }
 
-@media (max-width: 1320px) {
+/* 顶栏收缩阶梯（1024–1440 无重叠、无换行）：
+   ≤1500 隐藏副标题（搜索比口号有用，先让口号） → ≤1360 搜索框收成图标 → ≤1280 隐藏「当前门店：xxx」文字（有门店切换器时）
+   → ≤1200 积分胶囊只留数字 → ≤1180 助手按钮只留图标 → ≤1100 隐藏用户名/版本角标、提示 Tag 限宽。 */
+@media (max-width: 1500px) {
+  .os-brand-sub,
+  .os-brand-div {
+    display: none;
+  }
+}
+@media (max-width: 1360px) {
   .os-status {
     display: flex;
     flex: 0 0 auto;
@@ -663,6 +694,19 @@
     display: none;
   }
 }
+
+@media (max-width: 1280px) {
+  /* 连锁租户有门店切换器时，「当前门店：xxx」与切换器信息重复，直接隐藏；
+     单店租户没有切换器，这行是唯一的门店标识，保留并靠 ellipsis 收缩（宽度足够）。 */
+  .os-brand:has(.store-switcher) .os-brand-tenant {
+    display: none;
+  }
+}
+@media (max-width: 1200px) {
+  .os-credit-unit {
+    display: none;
+  }
+}
 @media (max-width: 1180px) {
   .os-ask-brain {
     width: 32px;
@@ -675,10 +719,18 @@
     display: none;
   }
 }
-@media (max-width: 1000px) {
-  .os-brand-sub {
+@media (max-width: 1100px) {
+  .os-brand-name span,
+  .os-user-name {
     display: none;
   }
+  .os-plan-tag {
+    max-width: 8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+@media (max-width: 1000px) {
   .os-page-body {
     padding: var(--space-5);
   }

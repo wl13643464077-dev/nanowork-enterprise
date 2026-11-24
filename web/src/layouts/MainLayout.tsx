@@ -698,7 +698,8 @@ export default function MainLayout() {
                 aria-label={user?.role === 'boss' ? '企业积分余额，点击进入充值中心' : '企业积分余额'}
                 {...(user?.role === 'boss' ? pressable(() => nav('/recharge')) : {})}
               >
-                ◆ {Number(credits).toLocaleString()} 积分
+                ◆ {Number(credits).toLocaleString()}
+                <span className="os-credit-unit"> 积分</span>
               </span>
             </Tooltip>
           )}

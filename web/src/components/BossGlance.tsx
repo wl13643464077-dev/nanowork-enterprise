@@ -1,6 +1,7 @@
 import { RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { fmtMoney } from '../api/client';
 import { dispatchToEmployee, resolveEmployeeForIssue } from '../utils/dispatchEmployee';
+import { describeDashboardTrend, pickGlanceIssue } from './dashboardGlance';
 import './BossGlance.css';
 
 // 老板「今日一眼」：驾驶舱首屏锚点。
@@ -36,7 +37,8 @@ export default function BossGlance({
   canViewExecution: boolean;
   onNavigate: (path: string, options?: { state?: unknown }) => void;
 }) {
-  const topIssue = diagnosis?.[0] || null;
+  const topIssue = pickGlanceIssue(diagnosis);
+  const trendOptions = { compareLabel: summary.scope?.compareLabel, noBaseline: Boolean(summary.scope?.allData) };
   const issueTarget = topIssue?.issue ? resolveEmployeeForIssue(topIssue.dimension, topIssue.issue) : null;
   const slaOverdue = Number(todos.slaOverdueReviews) || 0;
   const todoChips = [
@@ -91,23 +93,26 @@ export default function BossGlance({
   return (
     <section className="bg-glance" aria-label="今日经营一眼">
       <div className="bg-glance-metrics">
-        {metrics.map(metric => (
-          <button type="button" key={metric.key} className="bg-glance-metric" onClick={() => onNavigate(metric.path)}>
-            <span className="bg-glance-metric-label">{metric.label}</span>
-            <strong>{metric.value}</strong>
-            <small>
-              {metric.alert ? (
-                <em className="bg-glance-alert">{metric.alert}</em>
-              ) : typeof metric.trend === 'number' ? (
-                <em className={metric.trend >= 0 ? 'bg-glance-up' : 'bg-glance-down'}>
-                  {metric.trend >= 0 ? '↑' : '↓'} {Math.abs(metric.trend)}%
-                </em>
-              ) : (
-                ' '
-              )}
-            </small>
-          </button>
-        ))}
+        {metrics.map(metric => {
+          const trend = describeDashboardTrend(metric.trend, trendOptions);
+          return (
+            <button type="button" key={metric.key} className="bg-glance-metric" onClick={() => onNavigate(metric.path)}>
+              <span className="bg-glance-metric-label">{metric.label}</span>
+              <strong>{metric.value}</strong>
+              <small>
+                {metric.alert ? (
+                  <em className="bg-glance-alert">{metric.alert}</em>
+                ) : trend.tone !== 'none' ? (
+                  <em className={`bg-glance-${trend.tone}`} title={trend.hint}>
+                    {trend.text}
+                  </em>
+                ) : (
+                  ' '
+                )}
+              </small>
+            </button>
+          );
+        })}
       </div>
 
       <div className="bg-glance-side">

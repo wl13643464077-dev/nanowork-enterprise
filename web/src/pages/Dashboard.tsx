@@ -54,6 +54,7 @@ import DashboardInspectionCard from '../components/DashboardInspectionCard';
 import { Chart, CHART_COLORS, baseGrid, axisStyle } from '../components/Charts';
 import StreamingOutput from '../components/StreamingOutput';
 import BossGlance from '../components/BossGlance';
+import { describeDashboardTrend, isSameDiagnosis, pickGlanceIssue } from '../components/dashboardGlance';
 import StaffDailyGuide from '../components/StaffDailyGuide';
 import DashboardRoleHeader, {
   buildDashboardGuide,
@@ -445,6 +446,22 @@ export default function Dashboard() {
     (widgetPrefs.selected || []).includes(key) &&
     (key !== 'briefing' || canViewManagementBriefing) &&
     (!widgetModules[key] || hasModule(widgetModules[key]));
+  // 首屏「今日一眼」与下方 KPI 行读的是同一份 summary、同一个时间范围。
+  const glanceVisible = ['boss', 'admin', 'ops_director', 'manager'].includes(String(role)) && !isEmpty;
+  // 「最要紧的一件事」已在首屏给出唯一主动作，「今日经营诊断」里不再重复同一条。
+  const glanceIssue = glanceVisible ? pickGlanceIssue(diagnosis) : null;
+  const diagnosisRest = (diagnosis || []).filter((item: any) => !isSameDiagnosis(item, glanceIssue));
+  // 默认「全部」范围下，首屏已有 销售额/新增客户/待跟进/任务完成率，KPI 行只保留首屏没有的指标；
+  // 选了具体时间范围时，用户正在范围选择器旁看数，保留完整一行就近反馈。
+  const kpiDedup = glanceVisible && scopeMode === 'all';
+  // KPI 行环比：与首屏共用 describeDashboardTrend。持平/无同期可比走中性灰 suffix，不带箭头和红绿。
+  const kpiTrendProps = (value: unknown, suffix = '') => {
+    const compareLabel = summary.scope?.compareLabel || '较上期';
+    const trend = describeDashboardTrend(value, { compareLabel, noBaseline: Boolean(summary.scope?.allData) });
+    if (trend.tone === 'up' || trend.tone === 'down')
+      return { suffix, trend: value as number, trendLabel: compareLabel };
+    return { suffix: [suffix, trend.text].filter(Boolean).join(' · ') };
+  };
   const secondVisible = Math.max(1, ['trend', 'funnel', 'briefing'].filter(shown).length);
   const thirdVisible = Math.max(1, ['channels', 'customers', 'marshals'].filter(shown).length);
   const saveWidgets = async () => {
@@ -508,7 +525,7 @@ export default function Dashboard() {
       {/* 员工/店长层级是驾驶舱数据的填报责任人：登录第一屏给填报引导卡 */}
       {['sales', 'manager', 'ops_director'].includes(String(role)) && <StaffDailyGuide />}
       {/* 老板/管理层首屏锚点：4 个关键数 + 最要紧的事 + 堵着的待办，3 秒看完 */}
-      {['boss', 'admin', 'ops_director', 'manager'].includes(String(role)) && !isEmpty && (
+      {glanceVisible && (
         <BossGlance
           summary={summary}
           todos={todos}
@@ -533,7 +550,7 @@ export default function Dashboard() {
       {loadError && (
         <ErrorState description="经营概览拉取失败，页面数字可能过期。" onRetry={() => setReloadKey(k => k + 1)} />
       )}
-      {hasModule('analysis') && !diagDismissed && (digest || (diagnosis !== null && diagnosis.length > 0)) && (
+      {hasModule('analysis') && !diagDismissed && (digest || diagnosisRest.length > 0) && (
         <Panel
           title={
             <>
@@ -563,7 +580,7 @@ export default function Dashboard() {
           }
         >
           {digest && (
-            <div className={`dash-digest-box${diagnosis?.length ? ' dash-digest-box--spaced' : ''}`}>
+            <div className={`dash-digest-box${diagnosisRest.length ? ' dash-digest-box--spaced' : ''}`}>
               <div className="dash-digest-headline">
                 {digest.headline}
                 {digest.deltaPct !== null && digest.deltaPct !== undefined && (
@@ -585,9 +602,9 @@ export default function Dashboard() {
               </div>
             </div>
           )}
-          {diagnosis !== null && diagnosis.length > 0 && (
+          {diagnosisRest.length > 0 && (
             <div className="dash-diag-grid">
-              {diagnosis.slice(0, 3).map((item: any, index: number) => {
+              {diagnosisRest.slice(0, 3).map((item: any, index: number) => {
                 const targetEmp = resolveEmployeeForIssue(item.dimension, item.issue);
                 return (
                   <div key={index} className="dash-diag-card">
@@ -677,18 +694,19 @@ export default function Dashboard() {
       {/* KPI 行 */}
       {shown('kpi') && (
         <Row gutter={[12, 12]}>
-          <Col xs={12} md={8} xl={4}>
-            <StatCard
-              icon={<DollarOutlined />}
-              color="var(--ui-accent)"
-              label={`${scopeLabel}销售额`}
-              value={fmtMoney(summary.todaySales)}
-              trend={summary.salesWow}
-              trendLabel={summary.scope?.compareLabel || '较上期'}
-              onClick={hasModule('analysis') ? () => nav('/analysis') : undefined}
-            />
-          </Col>
-          {canViewGrowth && (
+          {!kpiDedup && (
+            <Col xs={12} md={8} xl={4}>
+              <StatCard
+                icon={<DollarOutlined />}
+                color="var(--ui-accent)"
+                label={`${scopeLabel}销售额`}
+                value={fmtMoney(summary.todaySales)}
+                {...kpiTrendProps(summary.salesWow)}
+                onClick={hasModule('analysis') ? () => nav('/analysis') : undefined}
+              />
+            </Col>
+          )}
+          {canViewGrowth && !kpiDedup && (
             <>
               <Col xs={12} md={8} xl={4}>
                 <StatCard
@@ -696,8 +714,7 @@ export default function Dashboard() {
                   color="var(--chart-2)"
                   label={`${scopeLabel}新增客户`}
                   value={summary.monthLeads ?? '-'}
-                  trend={summary.leadsWow}
-                  trendLabel={summary.scope?.compareLabel || '较上期'}
+                  {...kpiTrendProps(summary.leadsWow)}
                   onClick={() => nav('/growth')}
                 />
               </Col>
@@ -725,16 +742,20 @@ export default function Dashboard() {
               />
             </Col>
           )}
-          {hasModule('execution') && (
-            <Col xs={12} md={8} xl={4}>
-              <StatCard
-                icon={<CheckCircleOutlined />}
-                color="var(--ui-muted)"
-                label={`${scopeLabel}任务完成率`}
-                value={`${summary.taskRate ?? '-'}%`}
-                onClick={() => nav('/execution')}
-              />
-            </Col>
+          {!kpiDedup && (
+            <>
+              {hasModule('execution') && (
+                <Col xs={12} md={8} xl={4}>
+                  <StatCard
+                    icon={<CheckCircleOutlined />}
+                    color="var(--ui-muted)"
+                    label={`${scopeLabel}任务完成率`}
+                    value={`${summary.taskRate ?? '-'}%`}
+                    onClick={() => nav('/execution')}
+                  />
+                </Col>
+              )}
+            </>
           )}
           {summary.health && (
             <Col xs={12} md={8} xl={4}>

@@ -640,6 +640,13 @@ export default function RoleOnboarding({
     }
   };
 
+  // 抽屉的所有「关掉」路径（右上角 X / 点遮罩 / Esc / 底部按钮）统一走这里：
+  // 未完成时等同「稍后再说」写入 dismissed，否则下次进页面还会自动弹出遮住半屏。
+  const closeDrawer = () => {
+    if (serverComplete) setDrawerOpen(false);
+    else void markOutcome('dismissed');
+  };
+
   const openTask = (task: OnboardingTask) => {
     const next = completedIds.includes(task.id) ? completedIds : [...completedIds, task.id];
     setCompletedIds(next);
@@ -751,22 +758,27 @@ export default function RoleOnboarding({
 
   return (
     <>
-      {ready && !suspended && (!serverComplete || replayMode) && !drawerOpen && !tourOpen && (
-        <button
-          type="button"
-          className={`role-onboarding-fab ${isCompact ? 'is-compact' : ''} ${compact ? 'is-mobile-surface' : ''}`}
-          onClick={() => setDrawerOpen(true)}
-        >
-          <span className="role-onboarding-fab-count">
-            {done}/{tasks.length}
-          </span>
-          <span>
-            <strong>快速上手</strong>
-            <small>{done ? `还剩 ${Math.max(0, tasks.length - done)} 步` : '从第一步开始'}</small>
-          </span>
-          <RocketOutlined />
-        </button>
-      )}
+      {/* 「稍后再说」（含 X / 遮罩 / Esc 关闭）只是不再自动弹出，悬浮入口保留到真正完成为止 */}
+      {ready &&
+        !suspended &&
+        (!serverComplete || terminalOutcome !== 'completed' || replayMode) &&
+        !drawerOpen &&
+        !tourOpen && (
+          <button
+            type="button"
+            className={`role-onboarding-fab ${isCompact ? 'is-compact' : ''} ${compact ? 'is-mobile-surface' : ''}`}
+            onClick={() => setDrawerOpen(true)}
+          >
+            <span className="role-onboarding-fab-count">
+              {done}/{tasks.length}
+            </span>
+            <span>
+              <strong>快速上手</strong>
+              <small>{done ? `还剩 ${Math.max(0, tasks.length - done)} 步` : '从第一步开始'}</small>
+            </span>
+            <RocketOutlined />
+          </button>
+        )}
 
       <Drawer
         className="role-onboarding-drawer"
@@ -775,7 +787,7 @@ export default function RoleOnboarding({
         height={isCompact ? '88%' : undefined}
         placement={isCompact ? 'bottom' : 'right'}
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={closeDrawer}
         title={
           <span className="role-onboarding-drawer-title">
             <RocketOutlined /> 角色上手清单
@@ -859,9 +871,7 @@ export default function RoleOnboarding({
               本次重新浏览
             </Button>
           )}
-          <Button onClick={() => (serverComplete ? setDrawerOpen(false) : void markOutcome('dismissed'))}>
-            {serverComplete ? '关闭' : '稍后再说'}
-          </Button>
+          <Button onClick={closeDrawer}>{serverComplete ? '关闭' : '稍后再说'}</Button>
           <Button type="primary" onClick={() => void markOutcome('completed')}>
             我已经会用了
           </Button>

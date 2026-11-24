@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Card, Skeleton, Tag } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, RightOutlined, WarningOutlined } from '@ant-design/icons';
 import './Kit.css';
 
 // 数字滚动：KPI 数值变化时从旧值缓动到新值（尊重 prefers-reduced-motion）
@@ -108,13 +108,11 @@ export function StatCard({
           {icon}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div className="kit-stat-card-head">
-            <span className="kit-stat-card-label">{label}</span>
-            {clickable && (
-              <span className="kit-stat-card-hint" aria-hidden="true">
-                查看明细 ›
-              </span>
-            )}
+          {/* 标题优先：最多两行完整显示。「查看明细」降级为卡片右上角的小箭头（见 Kit.css），
+              不再和标题抢同一行宽度——6 列布局下原文字链接会把标题挤成「本…」。
+              整卡仍是 role=button，可 Tab 聚焦、Enter/空格触发，读屏文案在 aria-label 上。 */}
+          <div className="kit-stat-card-label" title={clickable ? `${label} · 点击查看明细` : label}>
+            {label}
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
             <span
@@ -144,6 +142,11 @@ export function StatCard({
           </div>
         </div>
       </div>
+      {clickable && (
+        <span className="kit-stat-card-hint" aria-hidden="true">
+          <RightOutlined />
+        </span>
+      )}
     </Card>
   );
 }
