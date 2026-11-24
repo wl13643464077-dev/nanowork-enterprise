@@ -617,6 +617,17 @@ export function usageReport({ tenantId, from, to, groupBy = 'day', now = new Dat
 }
 
 // 调用前预检：余额 < 单次上限估算 → 402拦截（不发起外部API调用，从源头杜绝坏账）
+// 余额不足（402）：文案不假设「谁来充值」（老板自己就是付费人），由前端按角色给出充值入口；
+// 结构化字段 code/balance/need 供调用方直接读取，不必解析文案。
+function insufficientCreditsError(messageText, balance, need) {
+  return Object.assign(new Error(messageText), {
+    status: 402,
+    code: 'INSUFFICIENT_CREDITS',
+    balance: Number(balance) || 0,
+    need: Number(need) || 0,
+  });
+}
+
 // 返回值保持为余额数字（兼容既有调用方）；需要预算/配额明细请用 precheckDetailed。
 export function precheck(userId, kind, model) {
   return precheckDetailed(userId, kind, model).balance;
@@ -633,9 +644,9 @@ export function precheckDetailed(userId, kind, model) {
   const need = Math.max(floor, model ? estimateMaxCredits(kind, model, b) : floor);
   const bal = balanceOf(userId);
   if (bal < need) {
-    const err = new Error(`积分余额不足：当前 ${bal} 分，本次${kind === 'text' ? '文本生成' : kind === 'image' ? '图片生成' : '视频生成'}预估最高需 ${need} 分。请联系管理员充值。`);
-    err.status = 402;
-    throw err;
+    throw insufficientCreditsError(
+      `积分余额不足：当前 ${bal} 积分，本次${kind === 'text' ? '文本生成' : kind === 'image' ? '图片生成' : '视频生成'}预估最高需 ${need} 积分。`,
+      bal, need);
   }
   const tid = tenantOf(userId);
   const budget = tid ? assertWithinBudget({ tenantId: tid, userId, estimate: model ? estimateMaxCredits(kind, model, b) : 0 }) : null;
@@ -708,7 +719,7 @@ export function charge({ userId, feature, kind, model, usage = {}, aiMode = 'api
     const changed = q.run('UPDATE tenants SET credits = credits - ? WHERE id = ? AND credits >= ?', credits, tid, credits);
     if (!changed.changes) {
       const balance = balanceOfTenant(tid);
-      throw Object.assign(new Error(`积分余额不足：当前 ${balance} 分，本次实际需 ${credits} 分。请联系管理员充值。`), { status: 402 });
+      throw insufficientCreditsError(`积分余额不足：当前 ${balance} 积分，本次实际需 ${credits} 积分。`, balance, credits);
     }
     after = q.get('SELECT credits FROM tenants WHERE id = ?', tid)?.credits ?? 0;
     const log = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)
@@ -1068,7 +1079,7 @@ export function holdCredits({
     const changed = q.run('UPDATE tenants SET credits = credits - ? WHERE id = ? AND credits >= ?', amount, tid, amount);
     if (!changed.changes) {
       const balance = balanceOfTenant(tid);
-      throw Object.assign(new Error(`积分余额不足：当前 ${balance} 分，本次按实际内容预估最高需 ${amount} 分。请联系管理员充值。`), { status: 402 });
+      throw insufficientCreditsError(`积分余额不足：当前 ${balance} 积分，本次按实际内容预估最高需 ${amount} 积分。`, balance, amount);
     }
     const after = q.get('SELECT credits FROM tenants WHERE id = ?', tid)?.credits ?? 0;
     const logR = q.run(`INSERT INTO credit_logs(tenant_id,user_id,feature,kind,model,input_tokens,output_tokens,cost_yuan,credits,balance_after,ai_mode,note)

@@ -79,6 +79,12 @@
   color: var(--danger);
 }
 
+/* 持平 / 无同期可比：中性灰、常规字重，不传递正向或负向信号 */
+.bg-glance-metric em.bg-glance-flat {
+  color: var(--ui-muted);
+  font-weight: 400;
+}
+
 .bg-glance-alert {
   color: var(--danger);
 }

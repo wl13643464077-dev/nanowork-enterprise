@@ -16,6 +16,9 @@ type Props = {
   kind: 'content' | 'restaurant';
   taskId: number;
   businessReview?: BusinessReview;
+  // 任务没有可阅读的结果（如失败且无正文）时传 true：没有已存的采纳记录就整块不渲染，
+  // 避免在失败卡下面再出现「这份结果是否采纳？…尚无可阅读或预览的结果」。
+  hideWhenNothingToReview?: boolean;
 };
 
 const requestKey = (kind: string, taskId: number, decision: Decision) => {
@@ -32,7 +35,7 @@ const requestKey = (kind: string, taskId: number, decision: Decision) => {
  * pending result has already been approved. If stage two fails, the confirmed
  * business decision remains visible and the user can retry only the learning write.
  */
-export default function ConversationTaskFeedback({ kind, taskId, businessReview }: Props) {
+export default function ConversationTaskFeedback({ kind, taskId, businessReview, hideWhenNothingToReview }: Props) {
   const [task, setTask] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -161,6 +164,7 @@ export default function ConversationTaskFeedback({ kind, taskId, businessReview 
     }
   };
 
+  if (hideWhenNothingToReview && !feedback && !feedbackAvailable) return null;
   if (loading) return <p className="ewb-conversation-feedback-note">正在读取采纳状态…</p>;
   if (loadError) return <Alert type="warning" showIcon message="采纳状态暂未读取" description={loadError} />;
   if (!task?.feedbackAvailability && !feedback) return null;

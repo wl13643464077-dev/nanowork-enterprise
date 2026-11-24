@@ -1,7 +1,10 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider, theme as antdTheme } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
+// 必须走 ESM 入口 antd/es/locale：antd/locale/zh_CN 是 CJS 转发壳（module.exports = require('../lib/locale/zh_CN')），
+// Vite 8 dev 预构建后 default 导出拿到的是 { __esModule, default: {...} } 整个包装对象，
+// ConfigProvider 读不到 locale.Calendar / locale.Empty 等字段就静默回退英文（Su Mo Tu / No data）。
+import zhCN from 'antd/es/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import App from './App';

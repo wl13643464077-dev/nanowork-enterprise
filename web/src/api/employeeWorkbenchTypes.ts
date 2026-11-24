@@ -233,6 +233,8 @@ export type EmployeeRuntimeTask = {
     credits?: number | null;
     heldCredits?: number | null;
     settledCredits?: number | null;
+    // 失败退款已核验时服务端返回的退回积分数
+    refundedCredits?: number | null;
     costYuan?: number | null;
     authoritative?: boolean;
   };

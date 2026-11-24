@@ -64,7 +64,17 @@ const DEFAULT_IDENTITIES = ['企业主', '高管', '个体创业者', '普通消
 const BUDGETS = ['高', '中', '低', '未知'];
 const budgetColor: Record<string, string> = { 高: 'red', 中: 'orange', 低: 'default', 未知: 'default' };
 
-const fmtTime = (v: any) => (v ? String(v).replace('T', ' ').slice(0, 16) : '');
+// 统一成 "YYYY-MM-DD HH:mm"。后端/种子存在小时未补零的 "2026-11-24 9:49:00"，
+// 直接 slice(0, 16) 会截出 "… 9:49:"（多冒号、缺补零），所以按字段解析后再拼。
+const fmtTime = (v: any) => {
+  if (!v) return '';
+  const raw = String(v).trim();
+  const m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{1,2}))?/);
+  if (!m) return raw.replace('T', ' ').slice(0, 16);
+  const pad = (n: string) => n.padStart(2, '0');
+  const date = `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  return m[4] ? `${date} ${pad(m[4])}:${pad(m[5])}` : date;
+};
 
 function leadBucketTags(lead: any) {
   if (!lead || ['已成交', '复购', '已流失'].includes(lead.stage)) return [];
