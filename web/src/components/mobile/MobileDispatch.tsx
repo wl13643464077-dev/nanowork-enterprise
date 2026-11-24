@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, Typography, message } from 'antd';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 import {
   AimOutlined,
   ArrowLeftOutlined,
@@ -12,7 +13,13 @@ import {
   SendOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { api, getUser } from '../../api/client';
+import { api, BUDGET_EXCEEDED_CODE, getUser, type ApiRequestError } from '../../api/client';
+import {
+  creditShortfallText,
+  findDispatchPlaceholders,
+  parseCreditShortfall,
+  type CreditShortfall,
+} from '../../utils/dispatchGuards';
 import { isPersonalApiUser } from '../personalApiBilling.js';
 import RestaurantDispatchAssist from '../RestaurantDispatchAssist';
 import type { EmployeeExpertKernelSummary, EmployeeWorkbenchProfile } from '../../api/employeeWorkbenchTypes';
@@ -126,13 +133,22 @@ export function writeDispatchPrefill(prefill: DispatchPrefill) {
   }
 }
 
+// 读一次即清除。开发环境 StrictMode 会把 useState 的初始化函数连调两次，第二次读到的是已清空的存储，
+// 所以把刚取走的那份短暂留在内存里，同一次挂载的重复调用拿到同一份预填。
+let lastTakenPrefill: { idx: number; value: DispatchPrefill | null; at: number } | null = null;
 function takeDispatchPrefill(idx: number): DispatchPrefill | null {
   try {
     const raw = window.sessionStorage.getItem(PREFILL_KEY);
-    if (!raw) return null;
+    if (!raw) {
+      return lastTakenPrefill && lastTakenPrefill.idx === idx && Date.now() - lastTakenPrefill.at < 1000
+        ? lastTakenPrefill.value
+        : null;
+    }
     window.sessionStorage.removeItem(PREFILL_KEY);
     const parsed = JSON.parse(raw) as DispatchPrefill;
-    return Number(parsed?.idx) === idx ? parsed : null;
+    const value = Number(parsed?.idx) === idx ? parsed : null;
+    lastTakenPrefill = { idx, value, at: Date.now() };
+    return value;
   } catch {
     return null;
   }
@@ -761,6 +777,15 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
   const [intentType, setIntentType] = useState<string | null>(null);
   const [followupAnswers, setFollowupAnswers] = useState<Record<string, string>>({});
   const [voiceRefining, setVoiceRefining] = useState(false);
+  const [creditShortfall, setCreditShortfall] = useState<CreditShortfall | null>(null);
+  const [placeholderCheck, setPlaceholderCheck] = useState(false);
+  const questionRef = useRef<TextAreaRef>(null);
+  const shortfallRef = useRef<HTMLDivElement>(null);
+  // 提示条排在表单末尾，出现时滚到可见处，免得被底部固定按钮栏挡在屏幕外。
+  useEffect(() => {
+    if (creditShortfall) shortfallRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [creditShortfall]);
+  const isBoss = getUser()?.role === 'boss';
   const formVoice = useVoiceInput(() => question, setQuestion, {
     onFinish: finalText => {
       setVoiceRefining(true);
@@ -819,16 +844,33 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
       message.warning('先说一句要TA做什么');
       return;
     }
+    // 常用问法里的 {城市}{商圈} 没换成自己的信息就发出去，只会花积分买一份没用的结果。
+    const leftover = findDispatchPlaceholders(question);
+    if (leftover.length) {
+      setPlaceholderCheck(true);
+      const first = leftover[0];
+      const textarea = questionRef.current?.resizableTextArea?.textArea;
+      if (textarea) {
+        textarea.focus();
+        textarea.setSelectionRange(first.index, first.index + first.token.length);
+      }
+      return;
+    }
     setSubmitting(true);
     try {
-      const result = await api.post(`/employee-workbench/restaurant/${idx}/dispatch`, {
-        question: goal,
-        ...(type ? { type } : {}),
-        ...(requirement.trim() ? { requirement: requirement.trim() } : {}),
-        ...(files.length ? { fileIds: files.map(file => file.id) } : {}),
-        ...(intentType ? { intentType } : {}),
-        ...(Object.keys(followupAnswers).length ? { followupAnswers } : {}),
-      });
+      const result = await api.post(
+        `/employee-workbench/restaurant/${idx}/dispatch`,
+        {
+          question: goal,
+          ...(type ? { type } : {}),
+          ...(requirement.trim() ? { requirement: requirement.trim() } : {}),
+          ...(files.length ? { fileIds: files.map(file => file.id) } : {}),
+          ...(intentType ? { intentType } : {}),
+          ...(Object.keys(followupAnswers).length ? { followupAnswers } : {}),
+        },
+        { silent: true },
+      );
+      setCreditShortfall(null);
       const payload = (result && typeof result === 'object' ? result : {}) as Record<string, unknown>;
       const taskId = Number(payload.runId ?? payload.taskId);
       if (!Number.isSafeInteger(taskId) || taskId <= 0) {
@@ -839,12 +881,32 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
       pushRecentDispatch({ id: taskId, title: goal.slice(0, 60), employee: displayName, at: new Date().toISOString() });
       message.success(`已派给${displayName}，正在生成`);
       nav(mobilePath('tasks', { task: taskId }));
-    } catch {
-      // api 客户端已提示服务端错误（含预算/积分拦截）；保留表单便于修正后重试
+    } catch (error) {
+      // 保留表单内容，方便充值或修正后直接重试。
+      const shortfall = parseCreditShortfall(error);
+      if (shortfall) {
+        setCreditShortfall(shortfall);
+      } else if ((error as ApiRequestError)?.code !== BUDGET_EXCEEDED_CODE) {
+        // 月度预算拦截已由 api 客户端统一提示，这里不重复弹。
+        message.error((error as Error)?.message || '派活没有发出去，请稍后重试');
+      }
     } finally {
       setSubmitting(false);
     }
   };
+
+  // 去充值会离开派活页：先把没发出去的内容存成预填，充值回来重新打开这名员工时自动填回。
+  const goRecharge = () => {
+    writeDispatchPrefill({
+      idx,
+      question,
+      ...(requirement.trim() ? { requirement } : {}),
+      ...(type ? { type } : {}),
+    });
+    nav('/recharge');
+  };
+  const leftoverPlaceholders = placeholderCheck ? findDispatchPlaceholders(question) : [];
+  const leftoverTokens = Array.from(new Set(leftoverPlaceholders.map(item => item.token)));
 
   return (
     <div className="m-stack m-has-action-bar">
@@ -911,6 +973,7 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
                 </Button>
               </div>
               <Input.TextArea
+                ref={questionRef}
                 value={question}
                 onChange={event => setQuestion(event.target.value)}
                 placeholder={
@@ -934,6 +997,16 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
                       : '正在按餐饮经营语境整理任务目标…'}
                   </span>
                 </div>
+              )}
+              {leftoverPlaceholders.length > 0 && (
+                <Alert
+                  className="m-dispatch-notice"
+                  type="warning"
+                  showIcon
+                  role="alert"
+                  message={`还有 ${leftoverPlaceholders.length} 处需要换成你自己的信息：${leftoverTokens.join('、')}`}
+                  description="把花括号里的词连同花括号一起换掉再派，这样不会白花积分。"
+                />
               )}
               <RestaurantDispatchAssist
                 idx={idx}
@@ -1039,9 +1112,39 @@ function DispatchForm({ idx, nav }: { idx: number; nav: (path: string) => void }
               </div>
             </details>
           )}
+          {creditShortfall && (
+            <div ref={shortfallRef}>
+              <Alert
+                className="m-dispatch-notice"
+                type="warning"
+                showIcon
+                role="alert"
+                message="积分不够，这次派活还没发出"
+                description={
+                  <div className="m-stack">
+                    <span>{creditShortfallText(creditShortfall)}</span>
+                    <span>
+                      {isBoss
+                        ? '你写的内容会保留，充值后回来直接点「派给TA」。'
+                        : '你写的内容已保留。充值需要老板操作，可以把下面这句话发给老板。'}
+                    </span>
+                    {isBoss ? (
+                      <Button type="primary" block onClick={goRecharge}>
+                        去充值
+                      </Button>
+                    ) : (
+                      <Typography.Text copyable={{ tooltips: ['复制提示语', '已复制'] }}>
+                        {`老板，我给数字员工派活时积分不够了：${creditShortfallText(creditShortfall)}麻烦充值一下，到账后我再继续。`}
+                      </Typography.Text>
+                    )}
+                  </div>
+                }
+              />
+            </div>
+          )}
           <div className="m-action-bar">
             <Button
-              type="primary"
+              type={creditShortfall && isBoss ? 'default' : 'primary'}
               size="large"
               icon={<SendOutlined />}
               loading={submitting}

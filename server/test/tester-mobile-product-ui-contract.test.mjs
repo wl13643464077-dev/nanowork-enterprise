@@ -24,6 +24,7 @@ function fixture(file, { user = {}, states = [], queryData = {}, extra = '' } = 
         return [Object.hasOwn(states, index) ? states[index] : typeof initial === 'function' ? initial() : initial, () => {}];
       },
       useEffect: callback => effects.push(callback), useCallback: callback => callback, useMemo: callback => callback(),
+      useRef: initial => ({ current: initial }),
     },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     antd: new Proxy({ message: { success() {}, warning() {}, error() {} }, Input: { TextArea: 'TextArea' } }, {
@@ -39,6 +40,10 @@ function fixture(file, { user = {}, states = [], queryData = {}, extra = '' } = 
     './mobileRoutes': routes.exports,
     './employeeCatalog': { employeeDisplayName: employee => employee?.name || '', deptToneIndex: () => 1 },
     '../RestaurantDispatchAssist': { default: 'RestaurantDispatchAssist' },
+    // 派活护栏（占位符未替换、积分不足提示）与桌面工作台共用
+    '../../utils/dispatchGuards': {
+      findDispatchPlaceholders: () => [], parseCreditShortfall: () => null, creditShortfallText: () => '',
+    },
     '../personalApiBilling.js': { isPersonalApiUser: u => u?.accountType === 'tester' || u?.billingMode === 'personal_api' },
     '../EmployeeAvatar': { default: 'EmployeeAvatar' },
     '../UnifiedFilePicker': { UnifiedFilePicker: 'UnifiedFilePicker' },
