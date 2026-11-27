@@ -91,7 +91,8 @@ test("专家卡：61 位员工每人 6–8 张、四类齐全、带来源与置�
     for (const card of expert) {
       const where = `${card.id}「${card.title}」`;
       assert.ok([...card.title].length <= 22, `${where} 标题过长`);
-      assert.ok([...card.detail].length >= 100 && [...card.detail].length <= 300, `${where} 正文长度`);
+      // 调研原文 100–300 字；合并时补的业态标注（如 海底捞〔火锅〕）会再多出几十字
+      assert.ok([...card.detail].length >= 100 && [...card.detail].length <= 360, `${where} 正文长度`);
       assert.doesNotMatch(`${card.title}${card.detail}`, /https?:\/\//, `${where} 正文含链接`);
       assert.match(card.sourceUrl, /^https?:\/\//, `${where} 缺来源链接`);
       assert.ok(card.source && card.sourceDate, `${where} 缺来源名称或日期`);
@@ -112,6 +113,12 @@ test("专家卡进提示词：带口径说明与使用守则，仍不含 URL；�
   const text = supplement.supplementSkillPromptLines(enabled).join("\n");
   assert.match(text, /行业基准是带年份和口径的参照值，不是这家店的实际数/);
   assert.match(text, /经验判读线，不是法定标准/);
+  // 线上实测 #556：跨业态的数被并进同一个区间。对标样本必须带业态标注，提示词必须要求同业态对标
+  assert.match(text, /只拿与这家店同业态的样本做对标/);
+  assert.match(text, /海底捞〔火锅〕/);
+  assert.match(text, /小菜园〔大众中餐〕/);
+  assert.match(text, /九毛九〔多品牌集团，酸菜鱼为主〕/);
+  assert.doesNotMatch(text, /〔[^〕]*〕〔/);
   assert.match(text, /（口径：/);
   assert.doesNotMatch(text, /https?:\/\//);
   // 没有专家卡时不加这段守则，旧行为不变

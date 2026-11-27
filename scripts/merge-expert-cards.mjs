@@ -20,6 +20,41 @@ const dryRun = process.argv.includes('--dry-run');
 const EXPERT_PREFIX = 'supp-2026-11b:';
 const TYPE_LABEL = { BENCH: '专家卡·行业基准', REG: '专家卡·法规条款', METHOD: '专家卡·诊断方法', PITFALL: '专家卡·常见误判' };
 const length = value => [...String(value ?? '')].length;
+
+// 对标样本所属业态。线上实测（任务 #556）发现：卡片把几家公司的数字并排写，模型会把小菜园、九毛九的数
+// 也当成“火锅”样本。合并时在每张卡里给每个品牌首次出现处补上业态标注，调研原件不改。
+const BRAND_FORMATS = [
+  [['海底捞'], '火锅'],
+  [['怂火锅', '怂'], '火锅'],
+  [['湊湊', '凑凑'], '火锅'],
+  [['呷哺呷哺', '呷哺'], '小火锅'],
+  [['小菜园'], '大众中餐'],
+  [['绿茶'], '休闲中餐'],
+  [['九毛九'], '多品牌集团，酸菜鱼为主'],
+  [['太二'], '酸菜鱼'],
+  [['百胜中国'], '西式快餐'],
+  [['肯德基'], '西式快餐'],
+  [['必胜客'], '休闲西餐'],
+  [['遇见小面'], '面馆快餐'],
+  [['瑞幸'], '咖啡'],
+  [['蜜雪冰城', '蜜雪'], '茶饮'],
+  [['古茗'], '茶饮'],
+  [['奈雪'], '茶饮'],
+];
+const BRAND_LOOKUP = new Map(BRAND_FORMATS.flatMap(([aliases, format], group) => aliases.map(alias => [alias, { format, group }])));
+const BRAND_PATTERN = new RegExp(
+  [...BRAND_LOOKUP.keys()].sort((a, b) => b.length - a.length).join('|'),
+  'gu',
+);
+function tagBrandFormats(detail) {
+  const tagged = new Set();
+  return String(detail).replace(BRAND_PATTERN, (name, offset, whole) => {
+    const { format, group } = BRAND_LOOKUP.get(name);
+    if (tagged.has(group) || whole.startsWith('〔', offset + name.length)) return name;
+    tagged.add(group);
+    return `${name}〔${format}〕`;
+  });
+}
 const fingerprint = card =>
   `sha256:${crypto.createHash('sha256').update(JSON.stringify([card.title, card.detail, card.source])).digest('hex')}`;
 
@@ -51,6 +86,7 @@ for (const file of files) {
       if (!TYPE_LABEL[card.type]) throw new Error(`${where}：未知类型 ${card.type}`);
       if (!card.title || length(card.title) > 22) throw new Error(`${where}：标题须为 1–22 字`);
       if (length(card.detail) < 100 || length(card.detail) > 300) throw new Error(`${where}：正文须为 100–300 字`);
+      const detail = tagBrandFormats(card.detail);
       if (/https?:\/\//u.test(`${card.title}${card.detail}`)) throw new Error(`${where}：正文不得含链接`);
       if (!/^https?:\/\//u.test(card.sourceUrl || '')) throw new Error(`${where}：缺少来源链接`);
       if (!['high', 'medium'].includes(card.confidence)) throw new Error(`${where}：置信度须为 high/medium`);
@@ -59,7 +95,7 @@ for (const file of files) {
       const merged = {
         id: `${EXPERT_PREFIX}${employee.idx}:${String(index + 1).padStart(2, '0')}`,
         title: card.title,
-        detail: card.detail,
+        detail,
         source: card.source,
         sourceUrl: card.sourceUrl,
         sourceDate: String(card.sourceDate || ''),
