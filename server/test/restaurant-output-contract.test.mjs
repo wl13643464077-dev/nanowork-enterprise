@@ -959,6 +959,37 @@ test('含来源硬错的完整候选不能交付，后续截断仍保留各轮�
   );
 });
 
+test('硬门不把“是否已预约”这类假设语境当成越权动作，但仍拦截直接声称已预约/已收款', () => {
+  const base = {
+    mode: 'api',
+    model: 'qa-real-delivery-model',
+    usage: { inputTokens: 11, outputTokens: 19 },
+    internalProfileLeakage: { detected: false },
+    task: { title: '健康证处置', type: '分析', requirement: '员工没有健康证还在切配，怎么处理。' },
+    allowedSources: [],
+  };
+  // 线上任务 #567 的原句：讨论的是员工有没有预约办证，不是员工替顾客订座
+  for (const text of [
+    '# 处置建议\n不要用“先干着、证在办”过渡：无证即违规，与是否已预约无关。',
+    '# 核对清单\n先确认顾客是否已预订包间，再安排接待。',
+    '# 核对清单\n查一下这笔定金有没有已收款记录，没有就不要确认。',
+  ]) {
+    const decision = restaurantEmployeeHardDeliveryDecision({ ...base, text });
+    assert.equal(decision.valid, true, `假设语境不应被拦截：${text} → ${decision.errors.join('；')}`);
+  }
+  for (const text of [
+    '# 结果\n我已预约了周六晚上的包间，顾客到店即可。',
+    '# 结果\n系统已收取定金200元，无需再确认。',
+    '# 结果\n是否需要我来处理？我已直接接单并分配桌台。',
+  ]) {
+    assert.equal(
+      restaurantEmployeeHardDeliveryDecision({ ...base, text }).valid,
+      false,
+      `直接声称已执行的动作必须仍被拦截：${text}`,
+    );
+  }
+});
+
 test('餐饮最终硬门独立于岗位契约状态阻断伪URL、越权动作、假模型与零Token', () => {
   const base = {
     text: '# 真实内部报告\n仅形成内部判断，后续由负责人核验。',

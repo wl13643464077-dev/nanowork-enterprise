@@ -838,6 +838,56 @@ export async function readCampaignMaterialFile(url, tenantId) {
   }
 }
 
+const normalizeBrandLabel = value => textOf(value).replace(/[\s·・\-—_（）()【】\[\]]/gu, '').toLowerCase();
+
+/**
+ * 物料图上用哪个品牌：老板在“我的版本”里填的店名优先于品牌知识包。
+ * 两者指向同一品牌（互相包含）时沿用知识包的 Logo 与调性；
+ * 不是同一品牌时只用老板的店名，知识包的 Logo、招牌菜、调性一律不带进来，
+ * 否则会给罗二火锅出一套印着别家 Logo 的海报。
+ */
+export function resolveCampaignIdentity({ ownerStoreName = '', brandIdentity = null, fallbackStoreName = '' } = {}) {
+  const owner = usableStoreName(ownerStoreName);
+  const brand = usableStoreName(brandIdentity?.brandName);
+  if (!owner) {
+    return { storeName: brand || usableStoreName(fallbackStoreName) || '', brandIdentity, source: brand ? 'brand_pack' : 'fallback' };
+  }
+  const a = normalizeBrandLabel(owner);
+  const b = normalizeBrandLabel(brand);
+  if (b && (a.includes(b) || b.includes(a))) {
+    return { storeName: owner, brandIdentity: { ...brandIdentity, brandName: owner }, source: 'owner_matches_brand_pack' };
+  }
+  return { storeName: owner, brandIdentity: { brandName: owner }, source: brand ? 'owner_overrides_brand_pack' : 'owner' };
+}
+
+const CAMPAIGN_MATERIAL_REQUEST_PATTERN =
+  /海报|宣传单|传单|物料|banner|横幅|桌贴|台卡|易拉宝|主\s*KV|朋友圈(?:图|配图|方图)|成图|出图|设计图|单页/iu;
+const CAMPAIGN_PLANNING_PATTERN =
+  /(?:策划|筹备|办|做|搞|来)[^，。！？\n]{0,12}(?:活动|促销|引流|拉新|开业|周年庆|店庆|会员日)|(?:活动|促销|引流|拉新|开业|周年庆|店庆)[^，。！？\n]{0,12}(?:方案|策划|怎么做|怎么办)/u;
+const CAMPAIGN_QUESTION_ONLY_PATTERN =
+  /可以吗|行不行|行吗|能不能|可不可以|合规吗|合法吗|违法吗|违规吗|是否(?:合规|合法|可以|可行)|有(?:什么|哪些)(?:风险|要注意|注意事项)|怎么算|为什么|怎么设计才不亏|会不会亏/u;
+const CAMPAIGN_REFUSAL_PATTERN =
+  /不能做|不可行|不能(?:直接)?(?:执行|上线|开卖)|属于违法|违法行为|不合规|必须先改方案|不建议(?:做|执行|上线)|先别(?:做|上)/u;
+
+/**
+ * 店小满这单要不要出活动物料图。此前是无条件出 7 张，连“一等奖 6 万元可以吗”这种合规问题、
+ * 而且答案是“不能做”时也照出，既慢（十几分钟）又白花图片费。
+ *  - 老板明说要海报/宣传单/物料：出。
+ *  - 只是问行不行、合不合规、怎么算：不出。
+ *  - 答案开头就判定这个活动不能做：不出（没必要给一个要改的方案配图）。
+ *  - 老板要的是一场活动的策划方案：出。
+ *  - 其余：不出。
+ */
+export function shouldGenerateCampaignMaterials({ requirement = '', text = '' } = {}) {
+  const ask = textOf(requirement);
+  if (CAMPAIGN_MATERIAL_REQUEST_PATTERN.test(ask)) return { generate: true, reason: 'materials_requested' };
+  if (CAMPAIGN_QUESTION_ONLY_PATTERN.test(ask)) return { generate: false, reason: 'question_only' };
+  const head = [...textOf(text)].slice(0, 400).join('');
+  if (CAMPAIGN_REFUSAL_PATTERN.test(head)) return { generate: false, reason: 'answer_refused' };
+  if (CAMPAIGN_PLANNING_PATTERN.test(ask)) return { generate: true, reason: 'campaign_planning' };
+  return { generate: false, reason: 'not_a_campaign' };
+}
+
 export async function attachSuperManagerCampaignMaterials(result, context = {}) {
   const markdown = String(result?.text || '').trim();
   if (!markdown) return result;
@@ -868,6 +918,10 @@ export async function attachSuperManagerCampaignMaterials(result, context = {}) 
     ...result,
     text: appendCampaignMaterialsSection(markdown, pack),
     campaignMaterials: pack,
-    usage: mergeSupplierCosts(result.usage || {}, pack.usage || {}),
+    // 物料图在 generateSuperManagerCampaignMaterials 里已用独立的图片预授权结算过一次。
+    // 这里不能再把图片的供应商回执并进文字任务的用量：文字预授权带着图片回执去结算会被校验拦下，
+    // 任务从此停在“待账务对账”（#456/#465/#536/#577–#579）；若校验放行则是同一笔图片费用扣两次。
+    // 图片用量与回执仍完整保留在 campaignMaterials.usage 里供对账。
+    usage: result.usage || {},
   };
 }

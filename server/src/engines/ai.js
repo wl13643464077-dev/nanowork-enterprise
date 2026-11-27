@@ -37,8 +37,11 @@ import {
   appendCampaignMaterialsSection,
   attachSuperManagerCampaignMaterials,
   collectCampaignReferenceImages,
+  resolveCampaignIdentity,
   resolveCampaignMaterialSlots,
+  shouldGenerateCampaignMaterials,
 } from "./super-manager-campaign-materials.js";
+import { getSlotPreferences } from "./employee-dispatch-followups.js";
 import { refsBlock, webSearch } from "./websearch.js";
 import {
   collectLocationIntelligence,
@@ -5495,15 +5498,40 @@ export async function marshalWork(marshal, task, role, options = {}) {
         ];
       }
     }
-    if (employeeIdx === SUPER_MANAGER_EMPLOYEE_IDX && options.generateImageFn && employeeOutputText) {
+    const campaignMaterialsDecision =
+      employeeIdx === SUPER_MANAGER_EMPLOYEE_IDX && options.generateImageFn && employeeOutputText
+        ? shouldGenerateCampaignMaterials({
+            requirement: task.requirement || task.title || "",
+            text: employeeOutputText,
+          })
+        : { generate: false, reason: "not_applicable" };
+    if (campaignMaterialsDecision.generate) {
       reportExecutionStage("campaign_materials", { status: "active" });
+      // 老板在“我的版本”里填的店名优先于品牌知识包；不是同一品牌时不带知识包的 Logo 与调性。
+      const campaignIdentity = resolveCampaignIdentity({
+        ownerStoreName: (() => {
+          try {
+            const saved = getSlotPreferences(options.tenantId || curTenant()).values || {};
+            return saved["店名"] || saved["门店名"] || "";
+          } catch {
+            return "";
+          }
+        })(),
+        brandIdentity: campaignBrandIdentity(),
+        fallbackStoreName: options.storeName || "",
+      });
       try {
         const attached = await attachSuperManagerCampaignMaterials(
           { ...out, text: employeeOutputText },
           {
             requirement: task.requirement || task.title || "",
-            storeName: campaignBrandIdentity()?.brandName || options.storeName || "",
-            storeFacts: options.storeFacts,
+            storeName: campaignIdentity.storeName,
+            brandIdentity: campaignIdentity.brandIdentity || undefined,
+            // 门店事实包里也掺了品牌知识包的招牌菜；品牌对不上时不带，避免火锅店的海报上出现烤鸭。
+            storeFacts:
+              campaignIdentity.source === "owner_overrides_brand_pack"
+                ? { storeName: campaignIdentity.storeName, facts: [] }
+                : options.storeFacts,
             referenceImages: collectCampaignReferenceImages([
               options.image,
               options.attachments,

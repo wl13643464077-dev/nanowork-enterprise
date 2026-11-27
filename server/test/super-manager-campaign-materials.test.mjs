@@ -38,6 +38,8 @@ const {
   generateSuperManagerCampaignMaterials,
   overlayLayersForSlot,
   parseCampaignMaterialBrief,
+  resolveCampaignIdentity,
+  shouldGenerateCampaignMaterials,
   parseCampaignMaterialsPack,
   collectCampaignReferenceImages,
   isUnusableCampaignStamp,
@@ -426,4 +428,64 @@ test('附加物料图后仍保留原方案，工作台与体验页都能展示�
   assert.match(workbenchJs, /活动SOP|活动执行表/);
   assert.match(workbenchJs, /宣传单两套备选/);
   assert.match(ai, /attachSuperManagerCampaignMaterials/);
+});
+
+test('物料图的供应商回执不并入文字任务用量（否则文字预授权结算被拦、任务永久待账务对账）', async () => {
+  const receipt = {
+    status: 'known',
+    requestId: 'img-receipt-1',
+    model: 'openai/gpt-image-2',
+    costYuanOverride: 0.154,
+    costSource: {
+      type: 'provider_receipt', provider: '360', requestId: 'img-receipt-1',
+      currency: 'CNY', amount: 0.154, exchangeRate: 1,
+    },
+  };
+  const attached = await attachSuperManagerCampaignMaterials(
+    { text: PLAN, usage: { inputTokens: 12, outputTokens: 8 } },
+    {
+      requirement: '给我宣传单样，招牌菜红烧牛肉面。门店名称：老王牛肉面',
+      storeName: '老王牛肉面',
+      tenantId: 1,
+      generateImageFn: async args => ({ b64: basePngB64, model: args.model, usage: { supplierCosts: [receipt] } }),
+    },
+  );
+  assert.deepEqual(attached.usage, { inputTokens: 12, outputTokens: 8 });
+  assert.equal(attached.usage.supplierCosts, undefined);
+  // 回执没有丢：仍留在物料包自己的用量里，供图片那笔预授权对账
+  assert.ok(attached.campaignMaterials.usage.supplierCosts.length >= 1);
+});
+
+test('只有要活动方案或明说要物料时才出图；问行不行、答案是不能做时不出', () => {
+  const yes = (requirement, text = '# 活动方案\n一句话：周末双人套餐引流。') =>
+    shouldGenerateCampaignMaterials({ requirement, text }).generate;
+  assert.equal(yes('这个周末想做一场引流活动，预算3000元，帮我策划。'), true);
+  assert.equal(yes('给我一套国庆活动的海报和桌贴'), true);
+  assert.equal(yes('帮我出开业活动方案'), true);
+  // 线上任务 #578：合规问题，且答案开头就是“不能做”
+  assert.equal(yes('我想做抽奖活动，一等奖送价值6万元的全年免单卡，可以吗？', '# 抽奖活动可行性答复：不能做\n结论：不可行，属于违法行为。'), false);
+  // 线上任务 #579：问的是怎么设计才不亏，不是要物料
+  assert.equal(yes('想做“充500送锅底，第二份半价”，怎么设计才不亏？'), false);
+  assert.equal(yes('帮我策划一场周年庆活动', '# 结论\n这个活动不能做，必须先改方案。'), false);
+  assert.equal(yes('本月人工成本为什么高'), false);
+  // 明说要物料时，即使句式是问句也出
+  assert.equal(yes('周末活动的海报可以帮我出吗'), true);
+});
+
+test('物料图品牌：老板填的店名优先；与品牌知识包不是同一品牌时不带知识包的 Logo 与调性', () => {
+  const pack = { brandName: '北京大鸭梨', logoUrl: 'http://example.test/logo.png', dishes: ['挂炉烤鸭'], style: '红色' };
+  const mismatch = resolveCampaignIdentity({ ownerStoreName: '罗二火锅', brandIdentity: pack });
+  assert.equal(mismatch.storeName, '罗二火锅');
+  assert.deepEqual(mismatch.brandIdentity, { brandName: '罗二火锅' });
+  assert.equal(mismatch.source, 'owner_overrides_brand_pack');
+
+  const match = resolveCampaignIdentity({ ownerStoreName: '大鸭梨', brandIdentity: pack });
+  assert.equal(match.storeName, '大鸭梨');
+  assert.equal(match.brandIdentity.logoUrl, pack.logoUrl);
+
+  const noOwner = resolveCampaignIdentity({ brandIdentity: pack, fallbackStoreName: '默认门店' });
+  assert.equal(noOwner.storeName, '北京大鸭梨');
+  assert.equal(noOwner.brandIdentity, pack);
+
+  assert.equal(resolveCampaignIdentity({ fallbackStoreName: '老王牛肉面' }).storeName, '老王牛肉面');
 });

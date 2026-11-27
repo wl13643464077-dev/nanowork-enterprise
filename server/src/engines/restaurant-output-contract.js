@@ -2880,6 +2880,15 @@ function automaticExternalActionHasApprovalGate(text, index, matchedText) {
   return approvalAfter.test(after) || requiredAfter.test(after);
 }
 
+// “是否已预约”“有没有已收款”是在讨论某件事发生没有，不是员工声称自己做了这件事。
+// 只认紧贴匹配处的疑问/假设词，不放宽“已预约”“已收款”这类直接陈述。
+// 线上任务 #567：答案里一句“无证即违规，与是否已预约无关”（指员工是否预约了办健康证）
+// 被当成越权订座，整单判为质检失败。
+function isHypotheticalActionMention(text, index) {
+  const before = String(text || "").slice(Math.max(0, Number(index || 0) - 8), Number(index || 0));
+  return /(?:是否|有无|有没有|是不是|无论是否|不论是否|不管是否)$/u.test(before);
+}
+
 function isNegatedExternalActionClaim(text, index, matchedText = "") {
   const before = String(text || "").slice(
     Math.max(0, Number(index || 0) - 48),
@@ -2889,6 +2898,7 @@ function isNegatedExternalActionClaim(text, index, matchedText = "") {
   // Keep normal governance language such as “不自动发布” and
   // “不因单一指标自动调价” deliverable.  Only the current punctuation-delimited
   // clause is considered so “无需审核，内容已经发布” is still blocked.
+  if (isHypotheticalActionMention(text, index)) return true;
   return (
     /(?:不因|不把|尚未|当前不|绝不|并未|从未|不得|禁止|不能|不会|不可|不应|不允许|未经|未获)[^，,。！？!?;；\n]{0,32}$/u.test(
       clause,
@@ -2948,6 +2958,7 @@ function hasUnauthorizedExternalActionClaim(value) {
 }
 
 function platformActionIsProhibitedOrAuthorized(text, index, matchedText = "") {
+  if (isHypotheticalActionMention(text, index)) return true;
   if (
     /^[^，,。！？!?;；\n]{0,6}(?:不得|禁止|严禁|切勿|不可|不能|不允许|不要|避免|拒绝|绝不|不应|不会|未经|未获)/u.test(
       String(matchedText || ""),
