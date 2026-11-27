@@ -2517,6 +2517,12 @@
   background: var(--ui-surface);
 }
 
+/* 专家卡的口径说明：让老板在启用前分清哪些是来源原文、哪些是经验判读线 */
+.ewb-skill-supplement-note.ant-typography {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-1);
+}
+
 .ewb-handoffs {
   display: flex;
   flex-direction: column;

@@ -13,6 +13,9 @@ type SupplementCard = {
   sourceUrl?: string | null;
   sourceDate?: string | null;
   gapNote?: string;
+  // 专家卡附带：来源置信度（medium = 媒体或二手转述）与口径说明
+  confidence?: 'high' | 'medium' | null;
+  expertNote?: string | null;
   scope: 'employee' | 'common';
   status: 'supplement_pending_owner_review' | 'owner_verified_enabled' | 'owner_declined';
   needsRecheck?: boolean;
@@ -89,7 +92,7 @@ export default function EmployeeSkillSupplement({ idx }: { idx: number }) {
         )}
       </Space>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-        原来的岗位技能一张没动；下面是按中国法规、平台新规和门店实际补充的技能，启用后追加在原技能之后。
+        原来的岗位技能一张没动；下面是按中国法规、平台新规和门店实际补充的技能，以及带出处的行业基准、法规条款、诊断方法和常见误判（专家卡），启用后追加在原技能之后。
       </Typography.Paragraph>
       <div className="ewb-skill-supplement-list">
         {view.cards.map(card => (
@@ -100,8 +103,14 @@ export default function EmployeeSkillSupplement({ idx }: { idx: number }) {
               {card.scope === 'common' && <Tag>全员通用</Tag>}
               {card.gapNote && <Tag color="blue">{card.gapNote}</Tag>}
               {card.needsRecheck && <Tag color="red">平台规则需复核</Tag>}
+              {card.confidence === 'medium' && <Tag color="orange">二手来源，启用前建议复核</Tag>}
             </Space>
             <Typography.Paragraph style={{ margin: '6px 0' }}>{card.detail}</Typography.Paragraph>
+            {card.expertNote && (
+              <Typography.Paragraph type="secondary" className="ewb-skill-supplement-note">
+                口径说明：{card.expertNote}
+              </Typography.Paragraph>
+            )}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               来源：
               {card.sourceUrl ? (

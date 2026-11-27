@@ -136,6 +136,10 @@ export function withReviewStatus(cards, reviews = new Map(), { now = Date.now() 
       sourceDate: card.sourceDate || null,
       gap: card.gap,
       gapNote: card.gapNote,
+      // 专家卡（2026-11 第二批）附带的类型、来源置信度与口径说明；旧卡没有这些字段。
+      cardType: card.cardType || null,
+      confidence: card.confidence || null,
+      expertNote: card.expertNote || null,
       scope: card.employeeKey === "all" ? "common" : "employee",
       origin: "supplement_2026_11",
       appendOnly: true,
@@ -156,6 +160,15 @@ export function enabledSupplementCards(cardsWithStatus = []) {
 /**
  * 注入 system prompt 的“补充技能”段。原卡段落之后调用。
  */
+// 专家卡的口径说明进提示词时截短，只保留让模型分清“来源原文”与“经验判读线”所需的一句话。
+const EXPERT_CAVEAT_MAX = 90;
+function expertCaveat(card) {
+  const note = String(card.expertNote || "").replace(/\s+/gu, " ").trim();
+  if (!note) return "";
+  const chars = [...note];
+  return `（口径：${chars.length > EXPERT_CAVEAT_MAX ? `${chars.slice(0, EXPERT_CAVEAT_MAX).join("")}…` : note}）`;
+}
+
 export function supplementSkillPromptLines(enabledCards = []) {
   if (!enabledCards.length) return [];
   const own = enabledCards.filter((card) => card.scope !== "common");
@@ -163,8 +176,15 @@ export function supplementSkillPromptLines(enabledCards = []) {
   const lines = [
     "【补充技能（中国门店以此为准，运行期追加，不替代上方岗位技能）】",
     "上方技能中引用海外法规、平台或美元基准的，作为海外参考；在中国门店场景下，以下补充技能优先。补充技能的出处只用于你判断可信度，正文不要写这些出处的链接。",
-    ...own.map((card) => `- 【${card.title}】${card.detail}`),
+    ...own.map((card) => `- 【${card.title}】${card.detail}${expertCaveat(card)}`),
   ];
+  if (own.some((card) => card.cardType)) {
+    lines.splice(
+      2,
+      0,
+      "其中的行业基准是带年份和口径的参照值，不是这家店的实际数；引用时写明年份与口径，拿门店自己的数来对比，门店数据缺失就明说缺什么。标了“口径”的阈值是经验判读线，不是法定标准，不要说成法规要求。法规条款以卡内写明的版本为准，涉及处罚金额或时限的结论，提醒老板以当地监管部门最新口径为准。",
+    );
+  }
   if (common.length) {
     lines.push("【全员通用作答习惯】", ...common.map((card) => `- 【${card.title}】${card.detail}`));
   }

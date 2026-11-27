@@ -62,14 +62,67 @@ test("原卡被改动时补充包拒绝加载（原卡不受影响）", () => {
   supplement.resetEmployeeSkillSupplementCache();
 });
 
-test("61 位餐饮员工每人至少 1 张补充卡，查巡巡补 8 张，另有 4 张通用卡", () => {
+const isExpertCard = (card) => String(card.id).startsWith("supp-2026-11b:");
+
+test("61 位餐饮员工每人至少 1 张补充卡，查巡巡首批补 8 张，另有 4 张通用卡", () => {
   for (let idx = 101; idx <= 161; idx += 1) {
     const own = supplement.supplementCardsForEmployee(idx, { includeCommon: false });
-    assert.ok(own.length >= 1, `员工${idx}没有补充卡`);
+    assert.ok(own.filter((card) => !isExpertCard(card)).length >= 1, `员工${idx}没有首批补充卡`);
   }
-  assert.equal(supplement.supplementCardsForEmployee(161, { includeCommon: false }).length, 8);
+  const patrol = supplement.supplementCardsForEmployee(161, { includeCommon: false });
+  assert.equal(patrol.filter((card) => !isExpertCard(card)).length, 8);
   const loaded = supplement.loadEmployeeSkillSupplement();
   assert.equal(loaded.common.length, 4);
+});
+
+test("专家卡：61 位员工每人 6–8 张、四类齐全、带来源与置信度，排在首批补充卡之后", () => {
+  const titles = new Set();
+  for (let idx = 101; idx <= 161; idx += 1) {
+    const own = supplement.supplementCardsForEmployee(idx, { includeCommon: false });
+    const expert = own.filter(isExpertCard);
+    assert.ok(expert.length >= 6 && expert.length <= 8, `员工${idx}专家卡 ${expert.length} 张`);
+    assert.deepEqual(
+      [...new Set(expert.map((card) => card.cardType))].sort(),
+      ["BENCH", "METHOD", "PITFALL", "REG"],
+      `员工${idx}专家卡类型不全`,
+    );
+    // 只追加：专家卡全部排在首批补充卡之后
+    assert.ok(own.findIndex(isExpertCard) >= own.filter((card) => !isExpertCard(card)).length, `员工${idx}专家卡顺序`);
+    for (const card of expert) {
+      const where = `${card.id}「${card.title}」`;
+      assert.ok([...card.title].length <= 22, `${where} 标题过长`);
+      assert.ok([...card.detail].length >= 100 && [...card.detail].length <= 300, `${where} 正文长度`);
+      assert.doesNotMatch(`${card.title}${card.detail}`, /https?:\/\//, `${where} 正文含链接`);
+      assert.match(card.sourceUrl, /^https?:\/\//, `${where} 缺来源链接`);
+      assert.ok(card.source && card.sourceDate, `${where} 缺来源名称或日期`);
+      assert.ok(["high", "medium"].includes(card.confidence), `${where} 置信度`);
+      assert.equal(card.verificationStatus, "supplement_pending_owner_review", `${where} 须默认待老板确认`);
+      assert.ok(!titles.has(card.title), `${where} 标题重复`);
+      titles.add(card.title);
+    }
+  }
+});
+
+test("专家卡进提示词：带口径说明与使用守则，仍不含 URL；审核视图透出置信度", () => {
+  const view = supplement.withReviewStatus(supplement.supplementCardsForEmployee(150));
+  const expert = view.filter(isExpertCard);
+  assert.ok(expert.every((card) => card.cardType && card.confidence));
+  assert.ok(expert.some((card) => card.expertNote));
+  const enabled = view.map((card) => ({ ...card, status: supplement.SUPPLEMENT_STATUS_ENABLED }));
+  const text = supplement.supplementSkillPromptLines(enabled).join("\n");
+  assert.match(text, /行业基准是带年份和口径的参照值，不是这家店的实际数/);
+  assert.match(text, /经验判读线，不是法定标准/);
+  assert.match(text, /（口径：/);
+  assert.doesNotMatch(text, /https?:\/\//);
+  // 没有专家卡时不加这段守则，旧行为不变
+  const legacyOnly = enabled.filter((card) => !isExpertCard(card));
+  assert.doesNotMatch(supplement.supplementSkillPromptLines(legacyOnly).join("\n"), /经验判读线/);
+});
+
+test("首批补充卡里的温度口径已按操作规范原文更正（冷藏 0~8℃、冷冻宜低于 -12℃）", () => {
+  const card = supplement.loadEmployeeSkillSupplement().cardsById.get("supp-2026-11:118:01");
+  assert.match(card.detail, /冷藏 0~8℃、冷冻宜低于 -12℃/);
+  assert.doesNotMatch(card.detail, /^冷藏0~10℃/);
 });
 
 test("补充技能提示词不含任何 URL（交付硬门会拦截未核验链接）", () => {
